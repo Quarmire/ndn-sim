@@ -1,0 +1,22 @@
+[package]
+name = "ndn-sim"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "In-process NDN network simulation with configurable link properties"
+
+[dependencies]
+ndn-transport = { workspace = true }
+ndn-engine    = { workspace = true }
+ndn-packet    = { workspace = true }
+ndn-store     = { workspace = true }
+
+bytes   = { workspace = true }
+tokio   = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing = { workspace = true }
+anyhow  = { workspace = true }
+rand    = "0.9"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

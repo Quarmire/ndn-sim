@@ -1,0 +1,47 @@
+name: CI — ndn-sim
+
+# Depends on ndn-rs via ../ path deps → sibling checkout.
+
+on:
+  push:
+    branches: [main]
+    paths: ["crates/**", "Cargo.toml", ".github/workflows/ci.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["crates/**", "Cargo.toml", ".github/workflows/ci.yml"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: sim (clippy / test / doc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: ndn-sim }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: main, path: ndn-rs }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ndn-sim/target
+          key: ${{ runner.os }}-cargo-sim-${{ hashFiles('ndn-sim/**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-sim-
+      - name: Format
+        working-directory: ndn-sim
+        run: cargo fmt --all -- --check
+      - name: Lint
+        working-directory: ndn-sim
+        run: cargo clippy -- -D warnings
+      - name: Test
+        working-directory: ndn-sim
+        run: cargo test
+      - name: Doc build
+        working-directory: ndn-sim
+        run: cargo doc --no-deps

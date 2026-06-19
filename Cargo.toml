@@ -18,10 +18,10 @@ name = "ndn-rs"
 
 [workspace.dependencies]
 # NDN workspace crates — grouped by subdirectory layer
-ndn-packet    = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1", default-features = false }
-ndn-transport = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-store     = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
-ndn-engine    = { git = "https://github.com/Quarmire/ndn-rs", tag = "v0.1.0-alpha.1" }
+ndn-packet    = { path = "../ndn-rs/crates/core/ndn-packet", default-features = false }
+ndn-transport = { path = "../ndn-rs/crates/core/ndn-transport" }
+ndn-store     = { path = "../ndn-rs/crates/forwarding/ndn-store" }
+ndn-engine    = { path = "../ndn-rs/crates/forwarding/ndn-engine" }
 
 # Core async runtime — individual crates enable only the features they need
 tokio      = { version = "1", default-features = false }

@@ -270,3 +270,133 @@ impl ndn_runtime::Now for VirtualRuntime {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Runtime for VirtualRuntime {}
+
+// ---- Steppable kernel (explicit virtual-time control: pause / step / run_until) -----------
+
+/// **Steppable kernel**: the same deterministic virtual clock as [`VirtualKernel`], but time
+/// advances only when *you say so* — `advance` / `run_for` / `run_until`, with "pause" being
+/// simply "don't advance". This is the controllable-time substrate the GUI scrubber and a
+/// single-stepping debugger need.
+///
+/// **What this is, honestly.** It does *not* replace Tokio with a from-scratch discrete-event
+/// executor — it can't, because the engine, apps, and faces are built on Tokio primitives
+/// (`tokio::time`/`timeout`/`sync`) that only a Tokio runtime can drive. Instead it drives
+/// Tokio's *paused* clock (a deterministic virtual-time source) with **explicit advancement**
+/// instead of auto-advance. So you get: deterministic virtual time + pause + forward stepping by
+/// time quantum + run-until-T. You do *not* get (yet): event-granular single-step (advancement is
+/// by time, not one event), backward `seek` (needs state checkpointing), or per-partition PDES
+/// clocks (needs a multi-clock executor). Same-instant event ordering is still Tokio's
+/// (empirically stable — see the determinism gate).
+///
+/// Usage: open a [`StepSession`] (it owns the paused runtime), build the fabric inside it via
+/// [`block_on`](StepSession::block_on), then drive time with [`advance`](StepSession::advance).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct SteppableKernel {
+    epoch_base_ns: u64,
+    runtime: std::sync::OnceLock<Arc<dyn Runtime>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SteppableKernel {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { epoch_base_ns: DEFAULT_VIRTUAL_EPOCH_NS, runtime: std::sync::OnceLock::new() })
+    }
+
+    pub fn with_epoch_ns(epoch_base_ns: u64) -> Arc<Self> {
+        Arc::new(Self { epoch_base_ns, runtime: std::sync::OnceLock::new() })
+    }
+
+    fn ensure_runtime(&self) -> Arc<dyn Runtime> {
+        self.runtime
+            .get_or_init(|| {
+                Arc::new(VirtualRuntime {
+                    start: tokio::time::Instant::now(),
+                    epoch_base_ns: self.epoch_base_ns,
+                })
+            })
+            .clone()
+    }
+
+    /// Open a stepping session: builds the paused single-threaded runtime and initializes the
+    /// virtual clock inside it. The returned [`StepSession`] owns the runtime; drive time through
+    /// it. Call from a plain `#[test]` (it owns the runtime; not `#[tokio::test]`).
+    pub fn session(self: &Arc<Self>) -> StepSession {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("paused current-thread runtime");
+        let me = Arc::clone(self);
+        rt.block_on(async {
+            me.ensure_runtime();
+        });
+        StepSession { rt, kernel: me }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SimKernel for SteppableKernel {
+    fn runtime(&self) -> Arc<dyn Runtime> {
+        self.ensure_runtime()
+    }
+    fn name(&self) -> &'static str {
+        "steppable"
+    }
+}
+
+/// A live stepping session over a [`SteppableKernel`] — owns the paused runtime and the
+/// explicit time controls. Build the fabric with [`block_on`](Self::block_on); advance with
+/// [`advance`](Self::advance) / [`run_for`](Self::run_for) / [`run_until`](Self::run_until);
+/// "pause" = stop advancing; inspect fabric state (synchronously) between steps.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct StepSession {
+    rt: tokio::runtime::Runtime,
+    kernel: Arc<SteppableKernel>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StepSession {
+    /// The kernel to hand to [`Simulation::kernel`](crate::Simulation::kernel).
+    pub fn kernel(&self) -> Arc<dyn SimKernel> {
+        Arc::clone(&self.kernel) as Arc<dyn SimKernel>
+    }
+
+    /// Run an async action to completion (auto-advancing virtual time as needed) — for setup
+    /// (`Simulation::start`) and for issuing actions whose result you need now (a one-shot fetch,
+    /// `shutdown`).
+    pub fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
+        self.rt.block_on(f)
+    }
+
+    /// **Advance virtual time by `step`**, running everything that happens in that window
+    /// (app loops, face deliveries, engine timers). Returns when the clock reaches now+`step`.
+    /// This is the explicit time control: call it to step; don't call it to pause.
+    ///
+    /// Implemented by driving the paused runtime over a `sleep(step)`: under `start_paused`,
+    /// `block_on` runs every ready task and auto-advances the clock to the next timer until the
+    /// sleep fires at now+`step` — so all background tasks within the window run, and time stops
+    /// exactly at the target (nothing past `step` fires). Between calls nothing is polled = paused.
+    pub fn advance(&self, step: std::time::Duration) {
+        self.rt.block_on(async move { tokio::time::sleep(step).await });
+    }
+
+    /// Alias for [`advance`](Self::advance) — run the sim forward by `d`.
+    pub fn run_for(&self, d: std::time::Duration) {
+        self.advance(d);
+    }
+
+    /// Advance until the virtual clock reaches `target_ns` (no-op if already past it).
+    pub fn run_until(&self, target_ns: u64) {
+        let now = self.now_ns();
+        if target_ns > now {
+            self.advance(std::time::Duration::from_nanos(target_ns - now));
+        }
+    }
+
+    /// The current virtual time (ns since the logical epoch). Read inside the runtime context
+    /// (the paused clock is only valid there).
+    pub fn now_ns(&self) -> u64 {
+        let kernel = Arc::clone(&self.kernel);
+        self.rt.block_on(async move { kernel.runtime().unix_nanos() })
+    }
+}

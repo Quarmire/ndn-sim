@@ -31,7 +31,7 @@
 //!
 //! | Module | Description |
 //! |--------|-------------|
-//! | [`kernel`]   | `SimKernel` / `WallClockKernel` / `VirtualKernel` — the execution + time engine (the dial) |
+//! | [`kernel`]   | `SimKernel` / `WallClock` / `Virtual` / `RealTime` / `Steppable` — the execution + time engine |
 //! | [`profile`]  | `NodeProfile` — named node template |
 //! | [`control`]  | `FabricControl` — the one control + introspection surface |
 //! | [`app`]      | `AppSpec` / `AppHandle` — declarative producers/consumers on a node |
@@ -84,7 +84,7 @@ pub use control_plane::{
 };
 pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
-pub use kernel::VirtualKernel;
+pub use kernel::{StepSession, SteppableKernel, VirtualKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use mcp::SimMcp;
 pub use otel_export::OtlpExporter;

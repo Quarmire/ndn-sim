@@ -36,6 +36,7 @@
 //! | [`control`]  | `FabricControl` — the one control + introspection surface |
 //! | [`app`]      | `AppSpec` / `AppHandle` — declarative producers/consumers on a node |
 //! | [`control_plane`] | `ControlPlane` — declarative JSON commands/queries over NDN / RPC / in-proc |
+//! | [`replay`]   | `Recording` — journal live commands → replay a session deterministically |
 //! | [`mcp`]      | `SimMcp` — Model Context Protocol tools projecting the control plane |
 //! | [`scene`]    | `SceneSnapshot` + SVG renderers — the `world_snapshot()` a GUI client draws |
 //! | [`otel_export`] | `OtlpExporter` — forward virtual-clocked spans/metrics to an OTLP/HTTP collector |
@@ -65,6 +66,7 @@ pub mod medium;
 pub mod otel_export;
 pub mod profile;
 pub mod radio;
+pub mod replay;
 pub mod scenario;
 pub mod scene;
 pub mod span_capture;
@@ -87,6 +89,7 @@ pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use mcp::SimMcp;
 pub use otel_export::OtlpExporter;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
+pub use replay::{RecordedCommand, Recording};
 pub use scenario::{
     EnvSpec, KernelSpec, NodeSpec, PropSpec, RadioMediumSpec, RouteSpec, Scenario, ScenarioLink,
 };

@@ -167,6 +167,10 @@ pub struct ControlPlane {
     /// Optional engine-span capture (see [`span_capture`](crate::span_capture)) — when set,
     /// `why_did` returns the causal trace, not just lifecycle events.
     span_log: Mutex<Option<Arc<crate::span_capture::SpanLog>>>,
+    /// Command journal (the [`replay`](crate::replay) recording) — `None` until recording starts.
+    journal: Mutex<Option<Vec<crate::replay::RecordedCommand>>>,
+    /// Initial scenario embedded in the recording, if `start_recording_with` was used.
+    recording_scenario: Mutex<Option<crate::scenario::Scenario>>,
 }
 
 impl ControlPlane {
@@ -178,7 +182,38 @@ impl ControlPlane {
                 .parse()
                 .expect("static prefix"),
         );
-        Arc::new(Self { fabric, notifications, span_log: Mutex::new(None) })
+        Arc::new(Self {
+            fabric,
+            notifications,
+            span_log: Mutex::new(None),
+            journal: Mutex::new(None),
+            recording_scenario: Mutex::new(None),
+        })
+    }
+
+    /// Start journaling every executed command (the [`replay`](crate::replay) recording).
+    pub fn start_recording(&self) {
+        *self.journal.lock().unwrap() = Some(Vec::new());
+    }
+
+    /// Start journaling with an embedded initial [`Scenario`](crate::Scenario), so the recording
+    /// is self-contained (build the scenario, replay the journal).
+    pub fn start_recording_with(&self, scenario: crate::scenario::Scenario) {
+        *self.recording_scenario.lock().unwrap() = Some(scenario);
+        *self.journal.lock().unwrap() = Some(Vec::new());
+    }
+
+    /// Snapshot the recording so far (scenario + journaled commands). Empty journal if recording
+    /// was never started.
+    pub fn recording(&self) -> crate::replay::Recording {
+        crate::replay::Recording {
+            scenario: self.recording_scenario.lock().unwrap().clone(),
+            commands: self.journal.lock().unwrap().clone().unwrap_or_default(),
+        }
+    }
+
+    fn now_ns(&self) -> u64 {
+        self.fabric.kernel().runtime().unix_nanos()
     }
 
     /// Attach a [`SpanLog`](crate::span_capture::SpanLog) so `why_did` (MCP) and
@@ -203,6 +238,10 @@ impl ControlPlane {
 
     /// Execute a mutating command, publishing a [`SimNotification`] on success.
     pub async fn execute(&self, cmd: SimCommand) -> SimResponse {
+        // Journal the command (with its virtual timestamp) if recording is on.
+        if let Some(journal) = self.journal.lock().unwrap().as_mut() {
+            journal.push(crate::replay::RecordedCommand { at_ns: self.now_ns(), command: cmd.clone() });
+        }
         match cmd {
             SimCommand::SpawnNode { label } => {
                 let label = label.unwrap_or_else(|| "node".to_string());

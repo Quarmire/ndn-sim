@@ -191,4 +191,36 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_millis(100), face_b.recv_bytes()).await;
         assert!(result.is_err(), "expected timeout with 100% loss");
     }
+
+    /// Slice 0: the seeded RNG makes a partial-loss link **reproducible** — the same face
+    /// ids + config drop the same packets every run (was `thread_rng`, nondeterministic).
+    #[tokio::test]
+    async fn partial_loss_is_deterministic_across_runs() {
+        async fn run() -> Vec<u8> {
+            let config = LinkConfig {
+                loss_rate: 0.5,
+                delay: Duration::ZERO, // zero delay ⇒ inline delivery, stable ordering
+                jitter: Duration::ZERO,
+                bandwidth_bps: 0,
+            };
+            // Same ids ⇒ same seed ⇒ same drop pattern.
+            let (face_a, face_b) = SimLink::pair(FaceId(7), FaceId(8), config, 64);
+            for i in 0..40u8 {
+                face_a.send_bytes(bytes::Bytes::copy_from_slice(&[i])).await.unwrap();
+            }
+            // Drain whatever survived, in order.
+            let mut got = Vec::new();
+            while let Ok(Ok(b)) =
+                tokio::time::timeout(Duration::from_millis(20), face_b.recv_bytes()).await
+            {
+                got.push(b[0]);
+            }
+            got
+        }
+
+        let first = run().await;
+        let second = run().await;
+        assert_eq!(first, second, "same topology must replay the identical drop pattern");
+        assert!(!first.is_empty() && first.len() < 40, "~half delivered, not all/none");
+    }
 }

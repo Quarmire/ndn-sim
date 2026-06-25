@@ -6,11 +6,20 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ndn_transport::{FaceError, FaceId, FaceKind, Transport};
-use rand::Rng;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::sync::mpsc;
 use tracing::trace;
 
 use crate::sim_link::LinkConfig;
+
+/// SplitMix64 finalizer — spreads adjacent face ids into well-separated RNG seeds so two
+/// faces' loss/jitter streams are independent.
+fn mix_seed(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
 
 /// A simulated face. Created in pairs by [`SimLink::pair`](crate::SimLink::pair);
 /// backed by Tokio MPSC with link emulation on send.
@@ -21,6 +30,10 @@ pub struct SimFace {
     config: LinkConfig,
     /// Bandwidth shaping cursor: earliest time the next byte can transmit.
     next_tx_ready: Mutex<tokio::time::Instant>,
+    /// **Seeded** PRNG for loss/jitter rolls — never `thread_rng`, so a run is
+    /// reproducible. Seeded deterministically from the face id (the fabric will own a
+    /// master seed in a later slice; mixing it in here is then a one-line change).
+    rng: Mutex<StdRng>,
 }
 
 impl SimFace {
@@ -36,6 +49,7 @@ impl SimFace {
             rx: tokio::sync::Mutex::new(rx),
             config,
             next_tx_ready: Mutex::new(tokio::time::Instant::now()),
+            rng: Mutex::new(StdRng::seed_from_u64(mix_seed(id.0))),
         }
     }
 }
@@ -59,7 +73,7 @@ impl Transport for SimFace {
 
     async fn send_bytes(&self, pkt: Bytes) -> Result<(), FaceError> {
         if self.config.loss_rate > 0.0 {
-            let roll: f64 = rand::rng().random();
+            let roll: f64 = self.rng.lock().unwrap().random();
             if roll < self.config.loss_rate {
                 trace!(face = %self.id, "SimFace: packet dropped (loss)");
                 return Ok(());
@@ -88,9 +102,9 @@ impl Transport for SimFace {
 
             // Arrival = tx_start + propagation_delay + jitter.
             let wait_for_tx = tx_start.saturating_duration_since(now);
-            wait_for_tx + self.config.delay + random_jitter(self.config.jitter)
+            wait_for_tx + self.config.delay + self.jitter()
         } else {
-            self.config.delay + random_jitter(self.config.jitter)
+            self.config.delay + self.jitter()
         };
 
         if deliver_delay.is_zero() {
@@ -110,10 +124,14 @@ impl Transport for SimFace {
     }
 }
 
-fn random_jitter(max_jitter: Duration) -> Duration {
-    if max_jitter.is_zero() {
-        return Duration::ZERO;
+impl SimFace {
+    /// A uniform jitter in `[0, config.jitter]`, drawn from the seeded PRNG (reproducible).
+    fn jitter(&self) -> Duration {
+        let max = self.config.jitter;
+        if max.is_zero() {
+            return Duration::ZERO;
+        }
+        let nanos = self.rng.lock().unwrap().random_range(0..=max.as_nanos() as u64);
+        Duration::from_nanos(nanos)
     }
-    let nanos = rand::rng().random_range(0..=max_jitter.as_nanos() as u64);
-    Duration::from_nanos(nanos)
 }

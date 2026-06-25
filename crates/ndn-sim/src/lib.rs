@@ -37,6 +37,7 @@
 //! | [`control_plane`] | `ControlPlane` — declarative JSON commands/queries over NDN / RPC / in-proc |
 //! | [`mcp`]      | `SimMcp` — Model Context Protocol tools projecting the control plane |
 //! | [`scene`]    | `SceneSnapshot` + SVG renderers — the `world_snapshot()` a GUI client draws |
+//! | [`otel_export`] | `OtlpExporter` — forward virtual-clocked spans/metrics to an OTLP/HTTP collector |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
 //! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
 //! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
@@ -55,6 +56,7 @@ pub mod kernel;
 pub mod link_model;
 pub mod mcp;
 pub mod medium;
+pub mod otel_export;
 pub mod profile;
 pub mod radio;
 pub mod scene;
@@ -74,6 +76,7 @@ pub use kernel::{SimKernel, WallClockKernel};
 pub use kernel::VirtualKernel;
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use mcp::SimMcp;
+pub use otel_export::OtlpExporter;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use scene::{
     SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,

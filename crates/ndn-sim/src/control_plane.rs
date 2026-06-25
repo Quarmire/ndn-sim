@@ -20,7 +20,7 @@
 //! mutation (move/mobility) and lifecycle (pause/step/seek) await the mutable-`World` and
 //! DES-event-queue follow-ons; they are deliberately not yet in the command set.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use ndn_app::EngineAppExt;
@@ -164,6 +164,9 @@ impl NotificationEvent for SimNotification {
 pub struct ControlPlane {
     fabric: Arc<RunningSimulation>,
     notifications: Arc<NotificationStream<SimNotification>>,
+    /// Optional engine-span capture (see [`span_capture`](crate::span_capture)) — when set,
+    /// `why_did` returns the causal trace, not just lifecycle events.
+    span_log: Mutex<Option<Arc<crate::span_capture::SpanLog>>>,
 }
 
 impl ControlPlane {
@@ -175,7 +178,18 @@ impl ControlPlane {
                 .parse()
                 .expect("static prefix"),
         );
-        Arc::new(Self { fabric, notifications })
+        Arc::new(Self { fabric, notifications, span_log: Mutex::new(None) })
+    }
+
+    /// Attach a [`SpanLog`](crate::span_capture::SpanLog) so `why_did` (MCP) and
+    /// [`span_log`](Self::span_log) expose the captured engine causal trace.
+    pub fn set_span_log(&self, log: Arc<crate::span_capture::SpanLog>) {
+        *self.span_log.lock().unwrap() = Some(log);
+    }
+
+    /// The attached engine span log, if any.
+    pub fn span_log(&self) -> Option<Arc<crate::span_capture::SpanLog>> {
+        self.span_log.lock().unwrap().clone()
     }
 
     pub fn fabric(&self) -> &Arc<RunningSimulation> {

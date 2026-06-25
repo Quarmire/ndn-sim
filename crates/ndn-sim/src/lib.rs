@@ -39,6 +39,7 @@
 //! | [`mcp`]      | `SimMcp` — Model Context Protocol tools projecting the control plane |
 //! | [`scene`]    | `SceneSnapshot` + SVG renderers — the `world_snapshot()` a GUI client draws |
 //! | [`otel_export`] | `OtlpExporter` — forward virtual-clocked spans/metrics to an OTLP/HTTP collector |
+//! | [`span_capture`] | `SpanLog` — capture the engine's own tracing spans on the virtual clock |
 //! | [`bridge`]   | real UDP faces on a node — external device / NFD / NDNts interop (slice 9) |
 //! | [`scenario`] | `Scenario` — a whole sim as one diff-able TOML/JSON artifact → `Simulation` |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
@@ -66,6 +67,7 @@ pub mod profile;
 pub mod radio;
 pub mod scenario;
 pub mod scene;
+pub mod span_capture;
 pub mod sim_face;
 pub mod sim_link;
 pub mod telemetry;
@@ -92,6 +94,7 @@ pub use scene::{
     SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
     render_topology_svg,
 };
+pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use medium::{
     CarrierSenseInterference, Delivery, FreeSpacePathLoss, InterferenceModel, NoInterference,
     PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,

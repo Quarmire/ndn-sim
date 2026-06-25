@@ -35,6 +35,8 @@ bytes       = { workspace = true }
 tokio       = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util", "io-std", "io-util", "net"] }
 tokio-util  = { workspace = true }
 tracing     = { workspace = true }
+# Capture the engine's own tracing spans into the virtual-clocked span store.
+tracing-subscriber = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
 rand        = "0.9"

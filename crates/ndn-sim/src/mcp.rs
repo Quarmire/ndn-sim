@@ -188,7 +188,14 @@ impl SimMcp {
                 let mut events = self.control.fabric().tracer().events();
                 let start = events.len().saturating_sub(limit);
                 let recent = events.split_off(start);
-                Ok(serde_json::json!({ "events": recent }))
+                // If engine-span capture is attached, include the causal trace (the rich
+                // fwd.pipeline/fwd.pit spans), not just lifecycle events.
+                let engine_spans = self
+                    .control
+                    .span_log()
+                    .map(|log| log.recent(limit))
+                    .unwrap_or_default();
+                Ok(serde_json::json!({ "events": recent, "engine_spans": engine_spans }))
             }
             "spawn_node" => {
                 let label = args.get("label").and_then(Value::as_str).map(String::from);

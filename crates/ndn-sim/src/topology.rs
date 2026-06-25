@@ -133,6 +133,33 @@ impl Simulation {
         self
     }
 
+    /// Ensure the builder has a world, returning a handle to it.
+    fn ensure_world(&mut self) -> std::sync::Arc<World> {
+        std::sync::Arc::clone(
+            self.world.get_or_insert_with(|| std::sync::Arc::new(World::new())),
+        )
+    }
+
+    /// Place a (already-added) node at a fixed world position — for positioning wired nodes so
+    /// the scene/medium can see them. Ensures a world exists.
+    pub fn place_node(&mut self, node: NodeId, position: crate::world::Position) {
+        self.ensure_world().place(node, position);
+    }
+
+    /// Give a node a mobility model declaratively (ensures a world exists).
+    pub fn set_node_mobility(
+        &mut self,
+        node: NodeId,
+        model: std::sync::Arc<dyn crate::world::MobilityModel>,
+    ) {
+        self.ensure_world().set_mobility(node, model);
+    }
+
+    /// Set the world's environment model (ensures a world exists).
+    pub fn environment(&mut self, env: std::sync::Arc<dyn crate::world::Environment>) {
+        self.ensure_world().set_environment(env);
+    }
+
     /// Add a forwarding node from an engine config (label auto-assigned), return its handle.
     pub fn add_node(&mut self, config: EngineConfig) -> NodeId {
         let id = NodeId(self.profiles.len());

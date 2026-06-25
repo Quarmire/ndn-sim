@@ -39,6 +39,7 @@
 //! | [`scene`]    | `SceneSnapshot` + SVG renderers — the `world_snapshot()` a GUI client draws |
 //! | [`otel_export`] | `OtlpExporter` — forward virtual-clocked spans/metrics to an OTLP/HTTP collector |
 //! | [`bridge`]   | real UDP faces on a node — external device / NFD / NDNts interop (slice 9) |
+//! | [`scenario`] | `Scenario` — a whole sim as one diff-able TOML/JSON artifact → `Simulation` |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
 //! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
 //! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
@@ -61,6 +62,7 @@ pub mod medium;
 pub mod otel_export;
 pub mod profile;
 pub mod radio;
+pub mod scenario;
 pub mod scene;
 pub mod sim_face;
 pub mod sim_link;
@@ -80,6 +82,9 @@ pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use mcp::SimMcp;
 pub use otel_export::OtlpExporter;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
+pub use scenario::{
+    EnvSpec, KernelSpec, NodeSpec, PropSpec, RadioMediumSpec, RouteSpec, Scenario, ScenarioLink,
+};
 pub use scene::{
     SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
     render_topology_svg,

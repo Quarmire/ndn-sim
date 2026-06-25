@@ -40,6 +40,9 @@ tokio-util = { version = "0.7.10", default-features = false }
 # Zero-copy byte buffers (no default features — crates opt in to bytes/std explicitly)
 bytes = { version = "1", default-features = false }
 
+# Declarative scenario files (ndn-lab run scenario.toml)
+toml = "0.8"
+
 # Embedded support
 heapless = "0.8"
 nb       = "1"

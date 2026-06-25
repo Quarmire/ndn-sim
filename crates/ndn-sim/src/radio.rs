@@ -34,8 +34,8 @@ use tracing::trace;
 
 use crate::NodeId;
 use crate::link_model::LinkModel;
-use crate::medium::{PropagationModel, TxContext};
-use crate::world::World;
+use crate::medium::{InterferenceModel, PropagationModel, TxContext};
+use crate::world::{Position, World};
 
 /// A frame that propagated *and* survived erasure, handed to a receiving radio.
 #[derive(Clone, Debug)]
@@ -63,11 +63,14 @@ pub struct RadioBus {
     world: Arc<World>,
     propagation: Arc<dyn PropagationModel>,
     link_model: LinkModel,
+    interference: Arc<dyn InterferenceModel>,
     /// World epoch (ns) — `transmit`'s `now_ns` minus this gives seconds for mobility.
     epoch_ns: u64,
     tx_power_dbm: f64,
     rng: Mutex<StdRng>,
     receivers: Mutex<HashMap<NodeId, mpsc::Sender<RadioRx>>>,
+    /// Frames currently on the air `(sender, start_ns, end_ns)` — for collision detection.
+    in_air: Mutex<Vec<(NodeId, u64, u64)>>,
     buffer: usize,
 }
 
@@ -80,14 +83,39 @@ impl RadioBus {
         epoch_ns: u64,
         seed: u64,
     ) -> Arc<Self> {
+        Self::build(world, propagation, epoch_ns, seed, Arc::new(crate::medium::NoInterference))
+    }
+
+    /// Build a bus that models collisions with `interference` (e.g.
+    /// [`CarrierSenseInterference`](crate::medium::CarrierSenseInterference)). The bus tracks
+    /// frame airtime (from MCS PHY rate) so concurrent in-range transmissions collide.
+    pub fn with_interference(
+        world: Arc<World>,
+        propagation: Arc<dyn PropagationModel>,
+        epoch_ns: u64,
+        seed: u64,
+        interference: Arc<dyn InterferenceModel>,
+    ) -> Arc<Self> {
+        Self::build(world, propagation, epoch_ns, seed, interference)
+    }
+
+    fn build(
+        world: Arc<World>,
+        propagation: Arc<dyn PropagationModel>,
+        epoch_ns: u64,
+        seed: u64,
+        interference: Arc<dyn InterferenceModel>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             world,
             propagation,
             link_model: LinkModel::new(),
+            interference,
             epoch_ns,
             tx_power_dbm: 20.0,
             rng: Mutex::new(StdRng::seed_from_u64(seed)),
             receivers: Mutex::new(HashMap::new()),
+            in_air: Mutex::new(Vec::new()),
             buffer: 256,
         })
     }
@@ -128,6 +156,26 @@ impl RadioBus {
         };
         let env = self.world.environment();
 
+        // This frame's airtime (bits / PHY rate) → its on-air window. Snapshot the *other*
+        // frames overlapping the start instant (concurrent transmitters) before recording ours.
+        // Collision model: the newcomer loses at any receiver that also hears a concurrent
+        // in-range transmitter (hidden-terminal). Deterministic — no RNG.
+        let rate = mcs_phy_rate_bps(mcs_index).max(1) as u64;
+        let airtime_ns = (frame.len() as u64).saturating_mul(8).saturating_mul(1_000_000_000) / rate;
+        let end_ns = now_ns.saturating_add(airtime_ns);
+        let concurrent: Vec<(NodeId, Position)> = {
+            let mut in_air = self.in_air.lock().unwrap();
+            in_air.retain(|(_, _, e)| *e > now_ns); // prune finished transmissions
+            let snapshot: Vec<(NodeId, Position)> = in_air
+                .iter()
+                .filter(|(s, _, _)| *s != node)
+                .filter_map(|(s, _, _)| view.position(*s).map(|p| (*s, p)))
+                .collect();
+            in_air.push((node, now_ns, end_ns));
+            snapshot
+        };
+        let max_range = self.propagation.max_range_m();
+
         let mut out = Vec::new();
         let receivers = self.receivers.lock().unwrap();
         // NodeId-sorted (spatial index) ⇒ the erasure draws happen in a deterministic order.
@@ -148,6 +196,17 @@ impl RadioBus {
             let d = self.propagation.deliver(&ctx);
             if !d.delivered {
                 continue; // below receiver sensitivity — not even detectable
+            }
+            // Collision: did this receiver also hear a concurrent (in-range) transmitter?
+            let clashers: Vec<NodeId> = concurrent
+                .iter()
+                .filter(|(_, p)| p.distance(rx_pos) <= max_range)
+                .map(|(s, _)| *s)
+                .collect();
+            if self.interference.collides(rx_node, &clashers) {
+                out.push((rx_node, d.rssi_dbm, false));
+                trace!(from = node.0, to = rx_node.0, "radio: frame lost to collision");
+                continue;
             }
             let snr = LinkModel::snr_db(d.rssi_dbm);
             let p = self.link_model.frame_delivery(mcs_index, snr);
@@ -367,5 +426,51 @@ mod tests {
         assert_eq!(a, b, "same seed + positions ⇒ identical erasure pattern");
         let hits: usize = a.iter().flatten().filter(|ok| **ok).count();
         assert!(hits > 0 && hits < 50, "a genuine mix, not all/none: {hits}/50");
+    }
+
+    #[tokio::test]
+    async fn concurrent_transmissions_collide_under_carrier_sense() {
+        use crate::medium::CarrierSenseInterference;
+        let world = World::new();
+        world.place(NodeId(0), Position::xy(0.0, 0.0)); // receiver
+        world.place(NodeId(1), Position::xy(5.0, 0.0)); // sender 1
+        world.place(NodeId(2), Position::xy(5.0, 1.0)); // sender 2 (also in range of rx)
+        let bus = RadioBus::with_interference(
+            Arc::new(world),
+            Arc::new(FreeSpacePathLoss::default()),
+            0,
+            1,
+            Arc::new(CarrierSenseInterference),
+        );
+        bus.attach(NodeId(0));
+
+        // Both fire at t=0; sender 1 is still on the air when sender 2 starts.
+        let r1 = bus.transmit(NodeId(1), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        let r2 = bus.transmit(NodeId(2), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        assert!(
+            r1.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok),
+            "first frame reaches the receiver"
+        );
+        assert!(
+            r2.iter().any(|(n, _, ok)| *n == NodeId(0) && !*ok),
+            "the concurrent second frame collides at the receiver"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_interference_lets_concurrent_frames_through() {
+        let bus = bus_with(
+            &[
+                (NodeId(0), Position::xy(0.0, 0.0)),
+                (NodeId(1), Position::xy(5.0, 0.0)),
+                (NodeId(2), Position::xy(5.0, 1.0)),
+            ],
+            1,
+        );
+        bus.attach(NodeId(0));
+        let r1 = bus.transmit(NodeId(1), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        let r2 = bus.transmit(NodeId(2), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        assert!(r1.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok));
+        assert!(r2.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok), "no collision without a model");
     }
 }

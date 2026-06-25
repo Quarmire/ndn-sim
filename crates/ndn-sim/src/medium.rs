@@ -166,6 +166,16 @@ pub trait InterferenceModel: Send + Sync {
 pub struct NoInterference;
 impl InterferenceModel for NoInterference {}
 
+/// Carrier-sense collision: a frame is lost at a receiver if *any* other in-range transmitter
+/// is mid-frame when it arrives (the hidden-terminal / concurrent-transmission failure). Used by
+/// [`RadioBus`](crate::RadioBus) with its in-air tracking.
+pub struct CarrierSenseInterference;
+impl InterferenceModel for CarrierSenseInterference {
+    fn collides(&self, _rx: NodeId, concurrent_senders: &[NodeId]) -> bool {
+        !concurrent_senders.is_empty()
+    }
+}
+
 /// A shared, position-driven broadcast medium. Radios [`attach`](Self::attach) to get a
 /// receiver; a [`transmit`](Self::transmit) fans the frame to every node the
 /// [`PropagationModel`] can reach (found via the world's spatial index), each after its own

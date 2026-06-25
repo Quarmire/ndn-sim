@@ -80,8 +80,8 @@ pub use scene::{
     render_topology_svg,
 };
 pub use medium::{
-    Delivery, FreeSpacePathLoss, InterferenceModel, NoInterference, PropagationModel,
-    RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
+    CarrierSenseInterference, Delivery, FreeSpacePathLoss, InterferenceModel, NoInterference,
+    PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
 };
 pub use profile::NodeProfile;
 pub use sim_face::SimFace;

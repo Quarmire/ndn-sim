@@ -51,6 +51,8 @@ pub mod tracer;
 
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use kernel::{SimKernel, WallClockKernel};
+#[cfg(not(target_arch = "wasm32"))]
+pub use kernel::VirtualKernel;
 pub use profile::NodeProfile;
 pub use sim_face::SimFace;
 pub use sim_link::{LinkConfig, SimLink};

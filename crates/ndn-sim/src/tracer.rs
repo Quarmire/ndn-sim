@@ -1,8 +1,11 @@
 //! `SimTracer` — in-memory packet-event recorder for simulation analysis with
 //! filter helpers and JSON serialisation.
 
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
+
+use ndn_runtime::Runtime;
 
 /// A recorded simulation event.
 #[derive(Clone, Debug)]
@@ -66,6 +69,11 @@ impl std::fmt::Display for EventKind {
 /// components, drain after the run.
 pub struct SimTracer {
     start: Instant,
+    /// When set (the fabric passes the kernel's runtime), event timestamps come from the
+    /// kernel clock — *virtual* (and thus reproducible) under a `VirtualKernel`, real under
+    /// the wall-clock kernel. `None` ⇒ wall-clock elapsed since construction (standalone use).
+    clock: Option<Arc<dyn Runtime>>,
+    epoch_base_us: u64,
     events: Mutex<Vec<SimEvent>>,
 }
 
@@ -73,7 +81,30 @@ impl SimTracer {
     pub fn new() -> Self {
         Self {
             start: Instant::now(),
+            clock: None,
+            epoch_base_us: 0,
             events: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A tracer whose timestamps come from `clock` (the fabric's kernel runtime), measured
+    /// relative to "now" so a run starts at t≈0 — deterministic under a `VirtualKernel`.
+    pub fn with_clock(clock: Arc<dyn Runtime>) -> Self {
+        let epoch_base_us = clock.unix_nanos() / 1_000;
+        Self {
+            start: Instant::now(),
+            clock: Some(clock),
+            epoch_base_us,
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Microseconds since the tracer started, on the kernel clock when present (virtual under
+    /// a `VirtualKernel`), else wall-clock.
+    fn elapsed_us(&self) -> u64 {
+        match &self.clock {
+            Some(rt) => (rt.unix_nanos() / 1_000).saturating_sub(self.epoch_base_us),
+            None => self.start.elapsed().as_micros() as u64,
         }
     }
 
@@ -90,7 +121,7 @@ impl SimTracer {
         name: impl Into<String>,
         detail: Option<String>,
     ) {
-        let ts = self.start.elapsed().as_micros() as u64;
+        let ts = self.elapsed_us();
         self.record(SimEvent {
             timestamp_us: ts,
             node,

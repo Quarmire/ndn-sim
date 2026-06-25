@@ -127,7 +127,9 @@ impl Simulation {
             "ndn-lab: starting fabric"
         );
 
-        let tracer = std::sync::Arc::new(SimTracer::new());
+        // Tracer timestamps come from the kernel clock — virtual (reproducible) under a
+        // VirtualKernel, real under wall-clock.
+        let tracer = std::sync::Arc::new(SimTracer::with_clock(self.kernel.runtime()));
         let mut nodes: HashMap<NodeId, NodeEntry> = HashMap::new();
 
         // Build every node on the kernel's runtime, with a tracer face-sink installed

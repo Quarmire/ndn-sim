@@ -17,7 +17,8 @@ ndn-packet    = { workspace = true, features = ["std"] }
 ndn-store     = { workspace = true }
 
 bytes       = { workspace = true }
-tokio       = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+# `test-util` enables the paused single-threaded runtime the VirtualKernel drives.
+tokio       = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util"] }
 tracing     = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }

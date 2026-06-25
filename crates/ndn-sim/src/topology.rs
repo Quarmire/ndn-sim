@@ -22,6 +22,7 @@ use tracing::info;
 use crate::control::{LinkInfo, NodeInfo, TopologySnapshot, TracerFaceSink};
 use crate::kernel::{SimKernel, WallClockKernel};
 use crate::profile::NodeProfile;
+use crate::radio::{RadioBus, SimRadioFace};
 use crate::sim_link::{LinkConfig, SimLink};
 use crate::tracer::{EventKind, SimTracer};
 use crate::world::World;
@@ -59,6 +60,10 @@ pub struct Simulation {
     channel_buffer: usize,
     kernel: std::sync::Arc<dyn SimKernel>,
     world: Option<std::sync::Arc<World>>,
+    /// Shared radio medium spec `(propagation, seed)` — built into a `RadioBus` at `start`.
+    radio: Option<(std::sync::Arc<dyn crate::medium::PropagationModel>, u64)>,
+    /// Nodes that get a `SimRadioFace` on the shared bus, with their world positions.
+    radio_nodes: Vec<(NodeId, crate::world::Position)>,
 }
 
 impl Default for Simulation {
@@ -76,7 +81,34 @@ impl Simulation {
             channel_buffer: 256,
             kernel: std::sync::Arc::new(WallClockKernel::new()),
             world: None,
+            radio: None,
+            radio_nodes: Vec::new(),
         }
+    }
+
+    /// Enable a shared **radio medium** ([`RadioBus`]) over the world, using `propagation` for
+    /// RSSI and `seed` for the per-frame erasure RNG. Nodes added with
+    /// [`add_radio_node`](Self::add_radio_node) get a [`SimRadioFace`] on it at `start`, each
+    /// publishing `LinkSignals` into its own engine's signal table.
+    pub fn with_radio_medium(
+        mut self,
+        propagation: std::sync::Arc<dyn crate::medium::PropagationModel>,
+        seed: u64,
+    ) -> Self {
+        self.radio = Some((propagation, seed));
+        self
+    }
+
+    /// Add a node placed at `position` that will get a radio face on the shared medium (see
+    /// [`with_radio_medium`](Self::with_radio_medium)). Ensures a world exists and places it.
+    pub fn add_radio_node(&mut self, config: EngineConfig, position: crate::world::Position) -> NodeId {
+        let id = self.add_node(config);
+        let world = self
+            .world
+            .get_or_insert_with(|| std::sync::Arc::new(World::new()));
+        world.place(id, position);
+        self.radio_nodes.push((id, position));
+        id
     }
 
     /// Run on a specific [`SimKernel`] (default: [`WallClockKernel`]). This is the one knob
@@ -194,11 +226,36 @@ impl Simulation {
         // A fabric always has a world (empty by default) so live-world commands and scene
         // snapshots work whether or not the scenario declared one.
         let world = self.world.unwrap_or_else(|| std::sync::Arc::new(World::new()));
+
+        // Build the shared radio medium (if enabled) and attach a SimRadioFace to each radio
+        // node — publishing LinkSignals into that node's own engine signal table.
+        let mut radio_faces: HashMap<NodeId, FaceId> = HashMap::new();
+        let radio_bus = self.radio.map(|(propagation, seed)| {
+            let bus = RadioBus::new(std::sync::Arc::clone(&world), propagation, epoch_ns, seed);
+            for (id, _pos) in &self.radio_nodes {
+                let Some(entry) = nodes.get(id) else { continue };
+                let face_id = entry.engine.faces().alloc_id();
+                let face = SimRadioFace::new(
+                    face_id,
+                    *id,
+                    std::sync::Arc::clone(&bus),
+                    entry.engine.runtime(),
+                )
+                .with_signals(entry.engine.signals());
+                entry.engine.add_face(face, entry.handle.cancel_token());
+                radio_faces.insert(*id, face_id);
+                info!(node = id.0, face = %face_id, "ndn-lab: radio face attached");
+            }
+            bus
+        });
+
         Ok(RunningSimulation {
             kernel: self.kernel,
             tracer,
             world,
             epoch_ns,
+            radio_bus,
+            radio_faces,
             inner: Mutex::new(FabricInner { nodes, links }),
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
@@ -248,6 +305,10 @@ pub struct RunningSimulation {
     /// Kernel clock at fabric start — the world's `t=0`, so scene snapshots query mobility at
     /// the elapsed virtual time.
     epoch_ns: u64,
+    /// The shared radio medium, if the scenario enabled one via `with_radio_medium`.
+    radio_bus: Option<std::sync::Arc<RadioBus>>,
+    /// Per-radio-node face id, for routing over the radio.
+    radio_faces: HashMap<NodeId, FaceId>,
     inner: Mutex<FabricInner>,
     channel_buffer: usize,
     next_node: AtomicUsize,
@@ -269,6 +330,37 @@ impl RunningSimulation {
     /// positions/mobility from here; it is live-mutable through `&self`.
     pub fn world(&self) -> std::sync::Arc<World> {
         std::sync::Arc::clone(&self.world)
+    }
+
+    /// The shared radio medium ([`RadioBus`]), if the scenario enabled one via
+    /// [`Simulation::with_radio_medium`]. Use it to inspect deliveries or attach more radios.
+    pub fn radio_bus(&self) -> Option<std::sync::Arc<RadioBus>> {
+        self.radio_bus.clone()
+    }
+
+    /// The [`FaceId`] of `node`'s radio face (if it has one) — route over the radio with
+    /// `engine.fib().add_nexthop(prefix, radio_face(node)?, cost)`.
+    pub fn radio_face(&self, node: NodeId) -> Option<FaceId> {
+        self.radio_faces.get(&node).copied()
+    }
+
+    /// Install a FIB route at `node`: `prefix` → its radio face (broadcast to all in-range
+    /// radios). Convenience over [`radio_face`](Self::radio_face).
+    pub fn route_over_radio(&self, node: NodeId, prefix: &Name) -> Result<()> {
+        let face = self
+            .radio_face(node)
+            .ok_or_else(|| anyhow::anyhow!("node {node} has no radio face"))?;
+        let engine = self
+            .inner
+            .lock()
+            .unwrap()
+            .nodes
+            .get(&node)
+            .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?
+            .engine
+            .clone();
+        engine.fib().add_nexthop(prefix, face, 10);
+        Ok(())
     }
 
     /// Move a node to a fixed position (live). The scene + any position-driven medium pick it

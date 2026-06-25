@@ -24,7 +24,7 @@ use crate::control::{LinkInfo, NodeInfo, TopologySnapshot, TracerFaceSink};
 use crate::kernel::{SimKernel, WallClockKernel};
 use crate::profile::NodeProfile;
 use crate::radio::{RadioBus, SimRadioFace};
-use crate::sim_link::{LinkConfig, SimLink};
+use crate::sim_link::{FaceProfile, LinkConfig, SimLink};
 use crate::tracer::{EventKind, SimTracer};
 use crate::world::World;
 
@@ -42,7 +42,7 @@ impl std::fmt::Display for NodeId {
 struct PendingLink {
     a: NodeId,
     b: NodeId,
-    config: LinkConfig,
+    profile: FaceProfile,
 }
 
 struct PendingRoute {
@@ -185,9 +185,15 @@ impl Simulation {
         id
     }
 
-    /// Connect two nodes with a symmetric link.
+    /// Connect two nodes with a symmetric in-proc wired link.
     pub fn link(&mut self, a: NodeId, b: NodeId, config: LinkConfig) {
-        self.links.push(PendingLink { a, b, config });
+        self.links.push(PendingLink { a, b, profile: FaceProfile::internal().with_link(config) });
+    }
+
+    /// Connect two nodes with a typed link from the per-face catalogue (UDP/TCP/QUIC/BLE/…) — the
+    /// engine sees that face type's `FaceKind`/MTU/delivery semantics.
+    pub fn link_profiled(&mut self, a: NodeId, b: NodeId, profile: FaceProfile) {
+        self.links.push(PendingLink { a, b, profile });
     }
 
     /// Pre-install a FIB route: packets for `prefix` at `node` forward toward `nexthop_node`
@@ -241,7 +247,7 @@ impl Simulation {
             if !nodes.contains_key(&link.a) || !nodes.contains_key(&link.b) {
                 bail!("link references non-existent node");
             }
-            wire_link(&nodes, &mut links, link.a, link.b, &link.config, self.channel_buffer);
+            wire_link(&nodes, &mut links, link.a, link.b, &link.profile, self.channel_buffer);
         }
 
         for route in &self.routes {
@@ -333,14 +339,14 @@ fn wire_link(
     links: &mut HashMap<(NodeId, NodeId), FaceId>,
     a: NodeId,
     b: NodeId,
-    config: &LinkConfig,
+    profile: &FaceProfile,
     channel_buffer: usize,
 ) {
     let ea = &nodes[&a];
     let eb = &nodes[&b];
     let id_a = ea.engine.faces().alloc_id();
     let id_b = eb.engine.faces().alloc_id();
-    let (face_a, face_b) = SimLink::pair(id_a, id_b, config.clone(), channel_buffer);
+    let (face_a, face_b) = SimLink::pair_profiled(id_a, id_b, profile, channel_buffer);
     ea.engine.add_face(face_a, ea.handle.cancel_token());
     eb.engine.add_face(face_b, eb.handle.cancel_token());
     links.insert((a, b), id_a);
@@ -584,14 +590,19 @@ impl RunningSimulation {
         Ok(())
     }
 
-    /// Connect two live nodes with a symmetric link.
+    /// Connect two live nodes with a symmetric in-proc wired link.
     pub fn connect(&self, a: NodeId, b: NodeId, config: LinkConfig) -> Result<()> {
+        self.connect_profiled(a, b, FaceProfile::internal().with_link(config))
+    }
+
+    /// Connect two live nodes with a typed link from the per-face catalogue.
+    pub fn connect_profiled(&self, a: NodeId, b: NodeId, profile: FaceProfile) -> Result<()> {
         let mut guard = self.inner.lock().unwrap();
         if !guard.nodes.contains_key(&a) || !guard.nodes.contains_key(&b) {
             bail!("connect references non-existent node");
         }
         let FabricInner { nodes, links } = &mut *guard;
-        wire_link(nodes, links, a, b, &config, self.channel_buffer);
+        wire_link(nodes, links, a, b, &profile, self.channel_buffer);
         drop(guard);
         self.tracer.record_now(a.0, None, EventKind::Custom("link".into()), b.to_string(), None);
         Ok(())

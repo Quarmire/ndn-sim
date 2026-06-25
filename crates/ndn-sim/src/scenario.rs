@@ -164,10 +164,15 @@ pub struct NodeSpec {
 }
 
 /// A wired link between two nodes (durations in ms; `0` = none).
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ScenarioLink {
     pub a: usize,
     pub b: usize,
+    /// Face type from the catalogue (`"udp"`, `"tcp"`, `"quic"`, `"ble"`, …). When set, the link
+    /// uses that type's preset behavior (kind/MTU/loss/ordering) and the `*_ms`/`loss`/`bandwidth`
+    /// fields are ignored; omit it for a plain in-proc wired link configured by those fields.
+    #[serde(default)]
+    pub face: Option<String>,
     #[serde(default)]
     pub delay_ms: u64,
     #[serde(default)]
@@ -244,16 +249,23 @@ impl Scenario {
         for l in &self.links {
             self.check_node(l.a)?;
             self.check_node(l.b)?;
-            sim.link(
-                NodeId(l.a),
-                NodeId(l.b),
-                crate::LinkConfig {
-                    delay: std::time::Duration::from_millis(l.delay_ms),
-                    jitter: std::time::Duration::from_millis(l.jitter_ms),
-                    loss_rate: l.loss_rate,
-                    bandwidth_bps: l.bandwidth_bps,
-                },
-            );
+            match &l.face {
+                Some(name) => {
+                    let profile = crate::FaceProfile::from_name(name)
+                        .ok_or_else(|| anyhow::anyhow!("unknown face type {name:?}"))?;
+                    sim.link_profiled(NodeId(l.a), NodeId(l.b), profile);
+                }
+                None => sim.link(
+                    NodeId(l.a),
+                    NodeId(l.b),
+                    crate::LinkConfig {
+                        delay: std::time::Duration::from_millis(l.delay_ms),
+                        jitter: std::time::Duration::from_millis(l.jitter_ms),
+                        loss_rate: l.loss_rate,
+                        bandwidth_bps: l.bandwidth_bps,
+                    },
+                ),
+            }
         }
 
         for r in &self.routes {

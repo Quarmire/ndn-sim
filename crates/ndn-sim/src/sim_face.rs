@@ -1,16 +1,20 @@
-//! `SimFace` — one endpoint of a [`SimLink`](crate::SimLink). The send path
-//! applies delay, jitter, loss, and bandwidth shaping before delivery.
+//! `SimFace` — one endpoint of a [`SimLink`](crate::SimLink). The send path applies delay,
+//! jitter, loss, and bandwidth shaping before delivery, and presents the **per-face-type
+//! behavior** of its [`FaceProfile`](crate::FaceProfile): the engine sees the right `FaceKind`,
+//! `LinkType`, and `send_mtu`, and either datagram semantics (loss + jitter-reorder) or
+//! reliable-stream semantics (no loss, in-order) — so a scenario can express "this is UDP" vs
+//! "this is TCP/QUIC" and the forwarder behaves accordingly.
 
 use std::sync::Mutex;
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_transport::{FaceError, FaceId, FaceKind, Transport};
+use ndn_transport::{FaceError, FaceId, FaceKind, LinkType, Transport};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::sync::mpsc;
 use tracing::trace;
 
-use crate::sim_link::LinkConfig;
+use crate::sim_link::{FaceProfile, LinkConfig};
 
 /// SplitMix64 finalizer — spreads adjacent face ids into well-separated RNG seeds so two
 /// faces' loss/jitter streams are independent.
@@ -21,18 +25,25 @@ fn mix_seed(x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// A simulated face. Created in pairs by [`SimLink::pair`](crate::SimLink::pair);
-/// backed by Tokio MPSC with link emulation on send.
+/// A simulated face. Created in pairs by [`SimLink`](crate::SimLink); backed by Tokio MPSC with
+/// link emulation on send, and typed by a [`FaceProfile`](crate::FaceProfile).
 pub struct SimFace {
     id: FaceId,
     tx: mpsc::Sender<Bytes>,
     rx: tokio::sync::Mutex<mpsc::Receiver<Bytes>>,
     config: LinkConfig,
+    /// Face-type behavior (what the engine sees + delivery semantics).
+    kind: FaceKind,
+    link_type: LinkType,
+    send_mtu: Option<usize>,
+    /// Reliable streams (TCP/QUIC/WS/SHM): no loss, in-order delivery.
+    reliable: bool,
     /// Bandwidth shaping cursor: earliest time the next byte can transmit.
     next_tx_ready: Mutex<tokio::time::Instant>,
-    /// **Seeded** PRNG for loss/jitter rolls — never `thread_rng`, so a run is
-    /// reproducible. Seeded deterministically from the face id (the fabric will own a
-    /// master seed in a later slice; mixing it in here is then a one-line change).
+    /// Monotonic delivery cursor for reliable faces — guarantees in-order arrival despite
+    /// per-packet scheduling.
+    last_delivery: Mutex<tokio::time::Instant>,
+    /// **Seeded** PRNG for loss/jitter rolls — reproducible (never `thread_rng`).
     rng: Mutex<StdRng>,
 }
 
@@ -41,14 +52,20 @@ impl SimFace {
         id: FaceId,
         tx: mpsc::Sender<Bytes>,
         rx: mpsc::Receiver<Bytes>,
-        config: LinkConfig,
+        profile: &FaceProfile,
     ) -> Self {
+        let now = tokio::time::Instant::now();
         Self {
             id,
             tx,
             rx: tokio::sync::Mutex::new(rx),
-            config,
-            next_tx_ready: Mutex::new(tokio::time::Instant::now()),
+            config: profile.link.clone(),
+            kind: profile.kind,
+            link_type: profile.link_type,
+            send_mtu: profile.send_mtu,
+            reliable: profile.reliable,
+            next_tx_ready: Mutex::new(now),
+            last_delivery: Mutex::new(now),
             rng: Mutex::new(StdRng::seed_from_u64(mix_seed(id.0))),
         }
     }
@@ -60,11 +77,19 @@ impl Transport for SimFace {
     }
 
     fn kind(&self) -> FaceKind {
-        FaceKind::Internal
+        self.kind
+    }
+
+    fn link_type(&self) -> LinkType {
+        self.link_type
+    }
+
+    fn send_mtu(&self) -> Option<usize> {
+        self.send_mtu
     }
 
     fn remote_uri(&self) -> Option<String> {
-        Some(format!("sim://face#{}", self.id.0))
+        Some(format!("sim-{}://face#{}", self.kind, self.id.0))
     }
 
     async fn recv_bytes(&self) -> Result<Bytes, FaceError> {
@@ -72,7 +97,8 @@ impl Transport for SimFace {
     }
 
     async fn send_bytes(&self, pkt: Bytes) -> Result<(), FaceError> {
-        if self.config.loss_rate > 0.0 {
+        // Datagram loss (reliable streams never drop).
+        if !self.reliable && self.config.loss_rate > 0.0 {
             let roll: f64 = self.rng.lock().unwrap().random();
             if roll < self.config.loss_rate {
                 trace!(face = %self.id, "SimFace: packet dropped (loss)");
@@ -80,41 +106,46 @@ impl Transport for SimFace {
             }
         }
 
-        // bandwidth_bps == 0 means "no shaping," not a divide-by-zero. The
-        // branch also serialises the `next_tx_ready` cursor under a lock, so
-        // a `checked_div` rewrite would change behaviour.
+        let now = tokio::time::Instant::now();
+
+        // Bandwidth shaping: serialize transmit start through a cursor (bandwidth 0 = no shaping).
         #[allow(clippy::manual_checked_ops)]
-        let deliver_delay = if self.config.bandwidth_bps > 0 {
+        let tx_start = if self.config.bandwidth_bps > 0 {
             let pkt_bits = (pkt.len() as u64) * 8;
             let tx_duration =
                 Duration::from_nanos(pkt_bits * 1_000_000_000 / self.config.bandwidth_bps);
-
-            let now = tokio::time::Instant::now();
-            let tx_start = {
-                let mut next = self.next_tx_ready.lock().unwrap();
-                if *next < now {
-                    *next = now;
-                }
-                let start = *next;
-                *next = start + tx_duration;
-                start
-            };
-
-            // Arrival = tx_start + propagation_delay + jitter.
-            let wait_for_tx = tx_start.saturating_duration_since(now);
-            wait_for_tx + self.config.delay + self.jitter()
+            let mut next = self.next_tx_ready.lock().unwrap();
+            if *next < now {
+                *next = now;
+            }
+            let start = *next;
+            *next = start + tx_duration;
+            start
         } else {
-            self.config.delay + self.jitter()
+            now
         };
 
-        if deliver_delay.is_zero() {
+        // Reliable streams add no reordering jitter; datagrams may reorder.
+        let jitter = if self.reliable { Duration::ZERO } else { self.jitter() };
+        let mut deliver_at = tx_start + self.config.delay + jitter;
+
+        // Reliable: never deliver before the previous packet (in-order, HOL-style).
+        if self.reliable {
+            let mut last = self.last_delivery.lock().unwrap();
+            if deliver_at <= *last {
+                deliver_at = *last + Duration::from_nanos(1);
+            }
+            *last = deliver_at;
+        }
+
+        let wait = deliver_at.saturating_duration_since(now);
+        if wait.is_zero() {
             self.tx.send(pkt).await.map_err(|_| FaceError::Closed)
         } else {
-            // Background task so send() returns immediately.
             let tx = self.tx.clone();
             let face_id = self.id;
             tokio::spawn(async move {
-                tokio::time::sleep(deliver_delay).await;
+                tokio::time::sleep(wait).await;
                 if tx.send(pkt).await.is_err() {
                     trace!(face = %face_id, "SimFace: remote end closed during delayed delivery");
                 }

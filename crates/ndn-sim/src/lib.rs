@@ -31,11 +31,13 @@
 //!
 //! | Module | Description |
 //! |--------|-------------|
-//! | [`kernel`]   | `SimKernel` / `WallClockKernel` — the execution + time engine (the dial) |
+//! | [`kernel`]   | `SimKernel` / `WallClockKernel` / `VirtualKernel` — the execution + time engine (the dial) |
 //! | [`profile`]  | `NodeProfile` — named node template |
 //! | [`control`]  | `FabricControl` — the one control + introspection surface |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
-//! | [`sim_link`] | `SimLink` — creates connected face pairs with link properties |
+//! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
+//! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
+//! | [`medium`]   | `WirelessMedium` / `PropagationModel` — position-driven broadcast delivery |
 //! | [`topology`] | `Simulation` builder + `RunningSimulation` live fabric |
 //! | [`tracer`]   | `SimTracer` — structured event capture for analysis |
 
@@ -43,21 +45,31 @@
 
 pub mod control;
 pub mod kernel;
+pub mod medium;
 pub mod profile;
 pub mod sim_face;
 pub mod sim_link;
 pub mod topology;
 pub mod tracer;
+pub mod world;
 
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use kernel::{SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::VirtualKernel;
+pub use medium::{
+    Delivery, FreeSpacePathLoss, InterferenceModel, NoInterference, PropagationModel,
+    RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
+};
 pub use profile::NodeProfile;
 pub use sim_face::SimFace;
 pub use sim_link::{LinkConfig, SimLink};
 pub use topology::{NodeId, RunningSimulation, Simulation};
 pub use tracer::{EventKind, SimEvent, SimTracer};
+pub use world::{
+    Environment, FreeSpace, LinearMobility, MobilityModel, Position, StaticMobility,
+    UniformAttenuation, WaypointMobility, World, WorldView,
+};
 
 /// The live fabric handle (alias for [`RunningSimulation`]) — the ndn-lab name.
 pub type Fabric = RunningSimulation;

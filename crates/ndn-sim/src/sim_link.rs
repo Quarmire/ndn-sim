@@ -1,4 +1,12 @@
 //! `SimLink` — configurable bidirectional link between two simulated faces.
+//!
+//! In the slice-3 world model this is the **wired static channel**: a fixed point-to-point
+//! pipe whose delay/loss/bandwidth are properties of the *link*, not of node positions. It is
+//! the degenerate counterpart of the position-driven [`WirelessMedium`](crate::WirelessMedium)
+//! — same "deliver a frame after a delay over a Tokio channel" mechanism (so both are virtual
+//! under a [`VirtualKernel`](crate::VirtualKernel)), minus propagation/range/fan-out. Existing
+//! callers are unaffected; reach for the medium when delivery should depend on *where* nodes
+//! are and *how they move*.
 
 use std::time::Duration;
 

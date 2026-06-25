@@ -24,6 +24,7 @@ use crate::kernel::{SimKernel, WallClockKernel};
 use crate::profile::NodeProfile;
 use crate::sim_link::{LinkConfig, SimLink};
 use crate::tracer::{EventKind, SimTracer};
+use crate::world::World;
 
 /// Opaque, stable handle to a node in the fabric (survives other nodes being removed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -56,6 +57,7 @@ pub struct Simulation {
     routes: Vec<PendingRoute>,
     channel_buffer: usize,
     kernel: std::sync::Arc<dyn SimKernel>,
+    world: Option<std::sync::Arc<World>>,
 }
 
 impl Default for Simulation {
@@ -72,6 +74,7 @@ impl Simulation {
             routes: Vec::new(),
             channel_buffer: 256,
             kernel: std::sync::Arc::new(WallClockKernel::new()),
+            world: None,
         }
     }
 
@@ -79,6 +82,15 @@ impl Simulation {
     /// that switches the whole time model (wall-clock now; virtual/parallel later).
     pub fn kernel(mut self, kernel: std::sync::Arc<dyn SimKernel>) -> Self {
         self.kernel = kernel;
+        self
+    }
+
+    /// Attach a spatial [`World`] (node positions + mobility + environment). It's carried onto
+    /// the running fabric ([`RunningSimulation::world`]) where position-driven faces — a
+    /// [`WirelessMedium`](crate::WirelessMedium) and the slice-4 named-radio face — read it.
+    /// Wired links don't need a world; this is only for position-dependent delivery.
+    pub fn world(mut self, world: World) -> Self {
+        self.world = Some(std::sync::Arc::new(world));
         self
     }
 
@@ -180,6 +192,7 @@ impl Simulation {
         Ok(RunningSimulation {
             kernel: self.kernel,
             tracer,
+            world: self.world,
             inner: Mutex::new(FabricInner { nodes, links }),
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
@@ -225,6 +238,7 @@ fn wire_link(
 pub struct RunningSimulation {
     kernel: std::sync::Arc<dyn SimKernel>,
     tracer: std::sync::Arc<SimTracer>,
+    world: Option<std::sync::Arc<World>>,
     inner: Mutex<FabricInner>,
     channel_buffer: usize,
     next_node: AtomicUsize,
@@ -239,6 +253,12 @@ impl RunningSimulation {
     /// The shared event tracer (engine face events + control-plane events).
     pub fn tracer(&self) -> std::sync::Arc<SimTracer> {
         std::sync::Arc::clone(&self.tracer)
+    }
+
+    /// The spatial [`World`] attached via [`Simulation::world`], if any. Position-driven faces
+    /// (a [`WirelessMedium`](crate::WirelessMedium)) read node positions/mobility from here.
+    pub fn world(&self) -> Option<std::sync::Arc<World>> {
+        self.world.clone()
     }
 
     /// The node's engine handle (a cheap `Arc` clone), or `None` if no such node.

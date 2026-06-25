@@ -15,6 +15,9 @@ ndn-engine    = { workspace = true }
 ndn-runtime   = { workspace = true }
 ndn-packet    = { workspace = true, features = ["std"] }
 ndn-store     = { workspace = true }
+ndn-frame-io  = { workspace = true }
+ndn-signals-core = { workspace = true }
+ndn-strategy  = { workspace = true }
 
 bytes       = { workspace = true }
 # `test-util` enables the paused single-threaded runtime the VirtualKernel drives.

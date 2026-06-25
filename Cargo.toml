@@ -21,7 +21,10 @@ name = "ndn-rs"
 ndn-packet    = { path = "../ndn-rs/crates/core/ndn-packet", default-features = false }
 ndn-transport = { path = "../ndn-rs/crates/core/ndn-transport" }
 ndn-runtime   = { path = "../ndn-rs/crates/core/ndn-runtime" }
+ndn-frame-io  = { path = "../ndn-rs/crates/core/ndn-frame-io" }
+ndn-signals-core = { path = "../ndn-rs/crates/core/ndn-signals-core" }
 ndn-store     = { path = "../ndn-rs/crates/forwarding/ndn-store" }
+ndn-strategy  = { path = "../ndn-rs/crates/forwarding/ndn-strategy" }
 ndn-engine    = { path = "../ndn-rs/crates/forwarding/ndn-engine" }
 ndn-app       = { path = "../ndn-rs/crates/app/ndn-app" }
 

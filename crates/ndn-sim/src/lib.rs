@@ -38,6 +38,8 @@
 //! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
 //! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
 //! | [`medium`]   | `WirelessMedium` / `PropagationModel` — position-driven broadcast delivery |
+//! | [`link_model`] | `LinkModel` — RSSI/SNR → MCS → per-frame delivery (the 802.11n logical link) |
+//! | [`radio`]    | `RadioBus` / `SimRadioFace` — the named-radio simulated face (engine `Face`) |
 //! | [`topology`] | `Simulation` builder + `RunningSimulation` live fabric |
 //! | [`tracer`]   | `SimTracer` — structured event capture for analysis |
 
@@ -45,8 +47,10 @@
 
 pub mod control;
 pub mod kernel;
+pub mod link_model;
 pub mod medium;
 pub mod profile;
+pub mod radio;
 pub mod sim_face;
 pub mod sim_link;
 pub mod topology;
@@ -57,6 +61,8 @@ pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use kernel::{SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::VirtualKernel;
+pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
+pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use medium::{
     Delivery, FreeSpacePathLoss, InterferenceModel, NoInterference, PropagationModel,
     RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,

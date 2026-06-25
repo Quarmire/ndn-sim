@@ -20,6 +20,8 @@ ndn-signals-core = { workspace = true }
 ndn-strategy  = { workspace = true }
 ndn-mgmt      = { workspace = true }
 ndn-observability = { workspace = true }
+# Real UDP transport for the interop bridge (slice 9).
+ndn-face      = { workspace = true }
 # Used by the control plane to serve /localhop/sim/control as an NDN producer.
 ndn-app       = { workspace = true }
 

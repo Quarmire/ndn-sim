@@ -459,6 +459,12 @@ impl RunningSimulation {
         self.inner.lock().unwrap().nodes.len()
     }
 
+    /// A cancellation token tied to `node`'s lifetime — bridge faces use it so they shut down
+    /// with the node. `None` if no such node.
+    pub(crate) fn node_cancel(&self, node: NodeId) -> Option<tokio_util::sync::CancellationToken> {
+        self.inner.lock().unwrap().nodes.get(&node).map(|e| e.handle.cancel_token())
+    }
+
     /// The FaceId of `from`'s face toward `to`, if linked.
     pub fn face_between(&self, from: NodeId, to: NodeId) -> Option<FaceId> {
         self.inner.lock().unwrap().links.get(&(from, to)).copied()

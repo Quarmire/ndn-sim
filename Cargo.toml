@@ -21,6 +21,7 @@ name = "ndn-rs"
 ndn-packet    = { path = "../ndn-rs/crates/core/ndn-packet", default-features = false }
 ndn-transport = { path = "../ndn-rs/crates/core/ndn-transport" }
 ndn-runtime   = { path = "../ndn-rs/crates/core/ndn-runtime" }
+ndn-face      = { path = "../ndn-rs/crates/faces/ndn-face" }
 ndn-frame-io  = { path = "../ndn-rs/crates/core/ndn-frame-io" }
 ndn-signals-core = { path = "../ndn-rs/crates/core/ndn-signals-core" }
 ndn-store     = { path = "../ndn-rs/crates/forwarding/ndn-store" }

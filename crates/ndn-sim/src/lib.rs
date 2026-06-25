@@ -38,6 +38,7 @@
 //! | [`mcp`]      | `SimMcp` — Model Context Protocol tools projecting the control plane |
 //! | [`scene`]    | `SceneSnapshot` + SVG renderers — the `world_snapshot()` a GUI client draws |
 //! | [`otel_export`] | `OtlpExporter` — forward virtual-clocked spans/metrics to an OTLP/HTTP collector |
+//! | [`bridge`]   | real UDP faces on a node — external device / NFD / NDNts interop (slice 9) |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
 //! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
 //! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
@@ -50,6 +51,7 @@
 
 #![allow(missing_docs)]
 
+pub mod bridge;
 pub mod control;
 pub mod control_plane;
 pub mod kernel;

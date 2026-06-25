@@ -68,10 +68,12 @@ pub struct RadioBus {
     epoch_ns: u64,
     tx_power_dbm: f64,
     rng: Mutex<StdRng>,
-    receivers: Mutex<HashMap<NodeId, mpsc::Sender<RadioRx>>>,
+    receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<RadioRx>>>,
     /// Frames currently on the air `(sender, start_ns, end_ns)` — for collision detection.
     in_air: Mutex<Vec<(NodeId, u64, u64)>>,
-    buffer: usize,
+    /// Per-instant world-snapshot cache `(now_ns, world_generation, view)` — rebuild the
+    /// spatial index once per instant, not per transmit.
+    view_cache: Mutex<Option<(u64, u64, Arc<crate::world::WorldView>)>>,
 }
 
 impl RadioBus {
@@ -116,7 +118,7 @@ impl RadioBus {
             rng: Mutex::new(StdRng::seed_from_u64(seed)),
             receivers: Mutex::new(HashMap::new()),
             in_air: Mutex::new(Vec::new()),
-            buffer: 256,
+            view_cache: Mutex::new(None),
         })
     }
 
@@ -124,11 +126,28 @@ impl RadioBus {
         &self.link_model
     }
 
-    /// Attach `node` as a radio; returns the channel its surviving frames land on.
-    pub fn attach(&self, node: NodeId) -> mpsc::Receiver<RadioRx> {
-        let (tx, rx) = mpsc::channel(self.buffer);
+    /// Attach `node` as a radio; returns the channel its surviving frames land on. **Unbounded**:
+    /// loss is purely the link model's seeded erasure, never buffer pressure or consumer timing.
+    pub fn attach(&self, node: NodeId) -> mpsc::UnboundedReceiver<RadioRx> {
+        let (tx, rx) = mpsc::unbounded_channel();
         self.receivers.lock().unwrap().insert(node, tx);
         rx
+    }
+
+    /// World snapshot for `now_ns`, reusing the cached one when neither the instant nor the world
+    /// changed (keyed on `(now_ns, world.generation())`).
+    fn view_at(&self, now_ns: u64) -> Arc<crate::world::WorldView> {
+        let generation = self.world.generation();
+        let mut cache = self.view_cache.lock().unwrap();
+        if let Some((cn, cg, view)) = cache.as_ref()
+            && *cn == now_ns
+            && *cg == generation
+        {
+            return Arc::clone(view);
+        }
+        let view = Arc::new(self.world.snapshot(self.t_secs(now_ns)));
+        *cache = Some((now_ns, generation, Arc::clone(&view)));
+        view
     }
 
     pub fn detach(&self, node: NodeId) {
@@ -150,7 +169,7 @@ impl RadioBus {
         frame: Bytes,
         now_ns: u64,
     ) -> Vec<(NodeId, f64, bool)> {
-        let view = self.world.snapshot(self.t_secs(now_ns));
+        let view = self.view_at(now_ns);
         let Some(tx_pos) = view.position(node) else {
             return Vec::new();
         };
@@ -217,12 +236,12 @@ impl RadioBus {
             if survived {
                 let rf = RadioRx { from: node, rssi_dbm: d.rssi_dbm, mcs_index, bytes: frame.clone() };
                 if d.delay.is_zero() {
-                    let _ = sender.try_send(rf);
+                    let _ = sender.send(rf);
                 } else {
                     let delay = d.delay;
                     tokio::spawn(async move {
                         tokio::time::sleep(delay).await;
-                        let _ = sender.send(rf).await;
+                        let _ = sender.send(rf);
                     });
                 }
             } else {
@@ -245,7 +264,7 @@ pub struct SimRadioFace {
     id: FaceId,
     node: NodeId,
     bus: Arc<RadioBus>,
-    rx: tokio::sync::Mutex<mpsc::Receiver<RadioRx>>,
+    rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<RadioRx>>,
     signals: Option<Arc<SignalsTable>>,
     mcs: RadioMcs,
     /// Last RSSI heard from each peer — drives [`RadioMcs::Adaptive`].

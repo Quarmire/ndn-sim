@@ -21,7 +21,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use crate::NodeId;
-use crate::world::{Environment, Position, World};
+use crate::world::{Environment, Position, World, WorldView};
 
 /// Speed of light, m/s — propagation delay is `distance / C`.
 const C: f64 = 299_792_458.0;
@@ -188,8 +188,11 @@ pub struct WirelessMedium {
     /// World epoch in nanoseconds — `transmit`'s `now_ns` is converted to seconds-since-epoch
     /// to query mobility. Matches the engine's `unix_nanos` clock.
     epoch_ns: u64,
-    receivers: Mutex<HashMap<NodeId, mpsc::Sender<ReceivedFrame>>>,
-    buffer: usize,
+    receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<ReceivedFrame>>>,
+    /// Per-instant snapshot cache `(now_ns, world_generation, view)` — so a burst of transmits
+    /// at the same virtual instant rebuilds the `SpatialGrid` once, not per packet (the
+    /// "snapshot per tick" the design calls for; recovers O(local) range queries).
+    view_cache: Mutex<Option<(u64, u64, Arc<WorldView>)>>,
 }
 
 impl WirelessMedium {
@@ -202,7 +205,7 @@ impl WirelessMedium {
             interference: Arc::new(NoInterference),
             epoch_ns,
             receivers: Mutex::new(HashMap::new()),
-            buffer: 256,
+            view_cache: Mutex::new(None),
         }
     }
 
@@ -211,15 +214,11 @@ impl WirelessMedium {
         self
     }
 
-    pub fn with_buffer(mut self, buffer: usize) -> Self {
-        self.buffer = buffer;
-        self
-    }
-
     /// Attach `node` as a radio on this medium; returns the channel its received frames land
-    /// on. Re-attaching replaces the previous receiver.
-    pub fn attach(&self, node: NodeId) -> mpsc::Receiver<ReceivedFrame> {
-        let (tx, rx) = mpsc::channel(self.buffer);
+    /// on. Re-attaching replaces the previous receiver. The channel is **unbounded**: buffering
+    /// never drops or stalls, so loss is purely the propagation model — not consumer scheduling.
+    pub fn attach(&self, node: NodeId) -> mpsc::UnboundedReceiver<ReceivedFrame> {
+        let (tx, rx) = mpsc::unbounded_channel();
         self.receivers.lock().unwrap().insert(node, tx);
         rx
     }
@@ -233,12 +232,28 @@ impl WirelessMedium {
         now_ns.saturating_sub(self.epoch_ns) as f64 / 1e9
     }
 
+    /// The world snapshot for `now_ns`, reusing the cached one when neither the instant nor the
+    /// world has changed (keyed on `(now_ns, world.generation())`).
+    fn view_at(&self, now_ns: u64) -> Arc<WorldView> {
+        let generation = self.world.generation();
+        let mut cache = self.view_cache.lock().unwrap();
+        if let Some((cn, cg, view)) = cache.as_ref()
+            && *cn == now_ns
+            && *cg == generation
+        {
+            return Arc::clone(view);
+        }
+        let view = Arc::new(self.world.snapshot(self.t_secs(now_ns)));
+        *cache = Some((now_ns, generation, Arc::clone(&view)));
+        view
+    }
+
     /// Broadcast `frame` from `node` at virtual time `now_ns`. Returns the list of receivers
     /// the frame was (or will be) delivered to, with their computed RSSI — useful for tests
     /// and telemetry. Each delivery is scheduled after its own propagation delay (virtual
     /// under a [`VirtualKernel`](crate::VirtualKernel)).
     pub fn transmit(&self, node: NodeId, frame: Bytes, now_ns: u64) -> Vec<(NodeId, f64)> {
-        let view = self.world.snapshot(self.t_secs(now_ns));
+        let view = self.view_at(now_ns);
         let Some(tx_pos) = view.position(node) else {
             return Vec::new(); // unplaced sender ⇒ heard by no one
         };
@@ -269,12 +284,12 @@ impl WirelessMedium {
 
             let rf = ReceivedFrame { from: node, rssi_dbm: d.rssi_dbm, bytes: frame.clone() };
             if d.delay.is_zero() {
-                let _ = sender.try_send(rf);
+                let _ = sender.send(rf);
             } else {
                 let delay = d.delay;
                 tokio::spawn(async move {
                     tokio::time::sleep(delay).await;
-                    let _ = sender.send(rf).await;
+                    let _ = sender.send(rf);
                 });
             }
         }

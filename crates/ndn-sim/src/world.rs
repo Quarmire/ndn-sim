@@ -15,6 +15,7 @@
 //! clock into these seconds.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::NodeId;
@@ -146,6 +147,9 @@ pub struct World {
     mobility: RwLock<HashMap<NodeId, Arc<dyn MobilityModel>>>,
     environment: RwLock<Arc<dyn Environment>>,
     grid_cell_m: f64,
+    /// Bumped on every mutation so cached [`WorldView`]s (the medium/radio per-instant snapshot
+    /// cache) invalidate when positions/mobility/environment change live.
+    generation: AtomicU64,
 }
 
 impl Default for World {
@@ -161,7 +165,13 @@ impl World {
             mobility: RwLock::new(HashMap::new()),
             environment: RwLock::new(Arc::new(FreeSpace)),
             grid_cell_m: 100.0,
+            generation: AtomicU64::new(0),
         }
+    }
+
+    /// A monotonic counter bumped on every mutation — cache key for per-instant snapshots.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     pub fn with_environment(env: Arc<dyn Environment>) -> Self {
@@ -184,21 +194,25 @@ impl World {
             .write()
             .unwrap()
             .insert(node, Arc::new(StaticMobility(position)));
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Give a node a mobility model. Live: callable on a shared `Arc<World>`.
     pub fn set_mobility(&self, node: NodeId, model: Arc<dyn MobilityModel>) {
         self.mobility.write().unwrap().insert(node, model);
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Remove a node from the world (it becomes unplaced — heard by no radio).
     pub fn remove(&self, node: NodeId) {
         self.mobility.write().unwrap().remove(&node);
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Swap the shared environment model live.
     pub fn set_environment(&self, env: Arc<dyn Environment>) {
         *self.environment.write().unwrap() = env;
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The current environment model (cheap `Arc` clone).

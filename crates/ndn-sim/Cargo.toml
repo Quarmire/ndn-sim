@@ -12,14 +12,18 @@ classification = "research"
 [dependencies]
 ndn-transport = { workspace = true }
 ndn-engine    = { workspace = true }
+ndn-runtime   = { workspace = true }
 ndn-packet    = { workspace = true, features = ["std"] }
 ndn-store     = { workspace = true }
 
-bytes   = { workspace = true }
-tokio   = { workspace = true, features = ["sync", "time", "rt", "macros"] }
-tracing = { workspace = true }
-anyhow  = { workspace = true }
-rand    = "0.9"
+bytes       = { workspace = true }
+tokio       = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+rand        = "0.9"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio      = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+ndn-app    = { workspace = true }

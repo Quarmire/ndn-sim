@@ -1,25 +1,28 @@
-//! In-process NDN network simulation.
+//! **ndn-lab** — in-process NDN network simulation / emulation hub.
 //!
-//! Provides [`SimFace`], [`SimLink`], and a [`Simulation`] topology builder
-//! for constructing multi-node NDN networks inside a single Tokio runtime
-//! with configurable link properties (delay, loss, bandwidth).
+//! (Crate name stays `ndn-sim`; the tool is **ndn-lab**.) Multi-node networks of *real*
+//! `ForwarderEngine`s run on a pluggable [`SimKernel`] (wall-clock now; virtual / parallel
+//! later — the engine's clock flows entirely through the runtime seam). The
+//! [`Simulation`] builder declares an initial topology; [`RunningSimulation`] is the live
+//! headless **fabric** handle that implements [`FabricControl`] (spawn / remove / connect /
+//! route / introspect at runtime) with a [`SimTracer`] capturing engine events.
 //!
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use ndn_sim::{Simulation, LinkConfig, NodeId};
+//! use ndn_sim::{Simulation, LinkConfig};
 //! use ndn_engine::builder::EngineConfig;
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! let mut sim = Simulation::new();
+//! let mut sim = Simulation::new();                 // default WallClockKernel
 //! let n1 = sim.add_node(EngineConfig::default());
 //! let n2 = sim.add_node(EngineConfig::default());
 //! sim.link(n1, n2, LinkConfig::lan());
 //! sim.add_route(n1, "/prefix", n2);
 //!
-//! let running = sim.start().await?;
-//! // ... run experiment using running.engine(n1), running.engine(n2) ...
-//! running.shutdown().await;
+//! let fabric = sim.start().await?;
+//! // interact via fabric.engine_of(n1); live ops via fabric.spawn_node / connect / route
+//! fabric.shutdown().await;
 //! # Ok(())
 //! # }
 //! ```
@@ -28,19 +31,31 @@
 //!
 //! | Module | Description |
 //! |--------|-------------|
+//! | [`kernel`]   | `SimKernel` / `WallClockKernel` — the execution + time engine (the dial) |
+//! | [`profile`]  | `NodeProfile` — named node template |
+//! | [`control`]  | `FabricControl` — the one control + introspection surface |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
 //! | [`sim_link`] | `SimLink` — creates connected face pairs with link properties |
-//! | [`topology`] | `Simulation` — multi-node topology builder and runner |
+//! | [`topology`] | `Simulation` builder + `RunningSimulation` live fabric |
 //! | [`tracer`]   | `SimTracer` — structured event capture for analysis |
 
 #![allow(missing_docs)]
 
+pub mod control;
+pub mod kernel;
+pub mod profile;
 pub mod sim_face;
 pub mod sim_link;
 pub mod topology;
 pub mod tracer;
 
+pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
+pub use kernel::{SimKernel, WallClockKernel};
+pub use profile::NodeProfile;
 pub use sim_face::SimFace;
 pub use sim_link::{LinkConfig, SimLink};
 pub use topology::{NodeId, RunningSimulation, Simulation};
 pub use tracer::{EventKind, SimEvent, SimTracer};
+
+/// The live fabric handle (alias for [`RunningSimulation`]) — the ndn-lab name.
+pub type Fabric = RunningSimulation;

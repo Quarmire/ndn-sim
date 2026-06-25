@@ -140,6 +140,31 @@ impl SimMcp {
                 }
             },
             {
+                "name": "spawn_app",
+                "description": "Run an app on a node: a 'producer' serving a prefix, or a 'consumer' fetching prefix/<i>.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "node": { "type": "integer" },
+                        "kind": { "type": "string", "enum": ["producer", "consumer"] },
+                        "prefix": { "type": "string" },
+                        "content": { "type": "string", "description": "producer payload" },
+                        "count": { "type": "integer", "description": "consumer fetch count (0 = until stopped)" },
+                        "interval_ms": { "type": "integer", "description": "consumer pace" }
+                    },
+                    "required": ["node", "kind", "prefix"]
+                }
+            },
+            {
+                "name": "stop_app",
+                "description": "Stop a running app by id.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "app": { "type": "integer" } },
+                    "required": ["app"]
+                }
+            },
+            {
                 "name": "why_did",
                 "description": "Explain recent fabric activity: the last N captured sim events (face up/down, control-plane changes) — the trace/explain surface.",
                 "inputSchema": {
@@ -203,6 +228,29 @@ impl SimMcp {
                 })
                 .await
             }
+            "spawn_app" => {
+                let node = req_usize(args, "node")?;
+                let prefix = args
+                    .get("prefix")
+                    .and_then(Value::as_str)
+                    .ok_or("missing 'prefix'")?
+                    .to_string();
+                let kind = args.get("kind").and_then(Value::as_str).unwrap_or("producer");
+                let app = match kind {
+                    "producer" => crate::AppSpec::Producer {
+                        prefix,
+                        content: args.get("content").and_then(Value::as_str).map(String::from),
+                    },
+                    "consumer" => crate::AppSpec::Consumer {
+                        prefix,
+                        count: args.get("count").and_then(Value::as_u64).unwrap_or(0),
+                        interval_ms: args.get("interval_ms").and_then(Value::as_u64).unwrap_or(0),
+                    },
+                    other => return Err(format!("unknown app kind: {other}")),
+                };
+                self.run(SimCommand::SpawnApp { node, app }).await
+            }
+            "stop_app" => self.run(SimCommand::StopApp { app: req_usize(args, "app")? }).await,
             other => Err(format!("unknown tool: {other}")),
         }
     }
@@ -331,8 +379,9 @@ fn rpc_error(id: Value, code: i64, message: &str) -> String {
 /// composes scenarios from real building blocks rather than guessing.
 fn capability_catalogue() -> Value {
     json!({
-        "commands": ["spawn_node", "remove_node", "connect", "route", "move_node", "set_linear_mobility"],
+        "commands": ["spawn_node", "remove_node", "connect", "route", "move_node", "set_linear_mobility", "spawn_app", "stop_app"],
         "queries": ["topology", "metrics", "scene"],
+        "apps": ["producer", "consumer"],
         "mediums": ["wired_static_channel", "wireless_medium", "radio_bus"],
         "propagation_models": ["range_threshold", "free_space_path_loss"],
         "mobility_models": ["static", "linear", "waypoint"],

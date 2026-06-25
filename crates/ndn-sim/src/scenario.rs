@@ -158,6 +158,9 @@ pub struct NodeSpec {
     /// Attach a radio face on the shared medium (requires `[radio]`).
     #[serde(default)]
     pub radio: bool,
+    /// Apps to run on this node (producers/consumers).
+    #[serde(default)]
+    pub apps: Vec<crate::app::AppSpec>,
 }
 
 /// A wired link between two nodes (durations in ms; `0` = none).
@@ -232,6 +235,9 @@ impl Scenario {
                         velocity: (vx, vy, vz),
                     }),
                 );
+            }
+            for app in &spec.apps {
+                sim.add_app(id, app.clone());
             }
         }
 

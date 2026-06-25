@@ -99,6 +99,15 @@ pub enum SimCommand {
         #[serde(default)]
         vz: f64,
     },
+    /// Spawn an app (producer/consumer) on a node.
+    SpawnApp {
+        node: usize,
+        app: crate::app::AppSpec,
+    },
+    /// Stop a running app by id.
+    StopApp {
+        app: usize,
+    },
 }
 
 /// A read-only introspection query.
@@ -127,6 +136,7 @@ pub enum SimRequest {
 pub enum SimResponse {
     Ok,
     Node { id: usize },
+    App { id: usize },
     Topology(TopologySnapshot),
     Metrics(Vec<MetricsSample>),
     Scene(crate::scene::SceneSnapshot),
@@ -239,6 +249,14 @@ impl ControlPlane {
                 self.notifications.publish(SimNotification::NodeMoved { node, x, y, z });
                 SimResponse::Ok
             }
+            SimCommand::SpawnApp { node, app } => match self.fabric.spawn_app(NodeId(node), app) {
+                Ok(id) => SimResponse::App { id: id.0 },
+                Err(e) => SimResponse::Error { message: e.to_string() },
+            },
+            SimCommand::StopApp { app } => match self.fabric.stop_app(crate::app::AppId(app)) {
+                Ok(()) => SimResponse::Ok,
+                Err(e) => SimResponse::Error { message: e.to_string() },
+            },
         }
     }
 

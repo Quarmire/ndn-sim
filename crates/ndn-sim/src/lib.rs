@@ -34,6 +34,7 @@
 //! | [`kernel`]   | `SimKernel` / `WallClockKernel` / `VirtualKernel` — the execution + time engine (the dial) |
 //! | [`profile`]  | `NodeProfile` — named node template |
 //! | [`control`]  | `FabricControl` — the one control + introspection surface |
+//! | [`app`]      | `AppSpec` / `AppHandle` — declarative producers/consumers on a node |
 //! | [`control_plane`] | `ControlPlane` — declarative JSON commands/queries over NDN / RPC / in-proc |
 //! | [`mcp`]      | `SimMcp` — Model Context Protocol tools projecting the control plane |
 //! | [`scene`]    | `SceneSnapshot` + SVG renderers — the `world_snapshot()` a GUI client draws |
@@ -52,6 +53,7 @@
 
 #![allow(missing_docs)]
 
+pub mod app;
 pub mod bridge;
 pub mod control;
 pub mod control_plane;
@@ -71,6 +73,7 @@ pub mod topology;
 pub mod tracer;
 pub mod world;
 
+pub use app::{AppHandle, AppId, AppSpec};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,

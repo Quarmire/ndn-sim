@@ -19,6 +19,7 @@ use ndn_packet::Name;
 use ndn_transport::FaceId;
 use tracing::info;
 
+use crate::app::{AppHandle, AppId, AppSpec};
 use crate::control::{LinkInfo, NodeInfo, TopologySnapshot, TracerFaceSink};
 use crate::kernel::{SimKernel, WallClockKernel};
 use crate::profile::NodeProfile;
@@ -64,6 +65,8 @@ pub struct Simulation {
     radio: Option<(std::sync::Arc<dyn crate::medium::PropagationModel>, u64)>,
     /// Nodes that get a `SimRadioFace` on the shared bus, with their world positions.
     radio_nodes: Vec<(NodeId, crate::world::Position)>,
+    /// Apps to spawn on each node once its engine is up (declarative producers/consumers).
+    pending_apps: Vec<(NodeId, AppSpec)>,
 }
 
 impl Default for Simulation {
@@ -83,7 +86,14 @@ impl Simulation {
             world: None,
             radio: None,
             radio_nodes: Vec::new(),
+            pending_apps: Vec::new(),
         }
+    }
+
+    /// Declare an app to spawn on `node` at [`start`](Self::start) (a producer/consumer). The
+    /// "test my apps" surface: scenarios + the builder say what runs where.
+    pub fn add_app(&mut self, node: NodeId, app: AppSpec) {
+        self.pending_apps.push((node, app));
     }
 
     /// Enable a shared **radio medium** ([`RadioBus`]) over the world, using `propagation` for
@@ -276,6 +286,19 @@ impl Simulation {
             bus
         });
 
+        // Spawn declared apps now that every engine is up.
+        let mut apps: HashMap<AppId, AppHandle> = HashMap::new();
+        for (i, (node, spec)) in self.pending_apps.iter().enumerate() {
+            let Some(entry) = nodes.get(node) else {
+                bail!("app references non-existent node {node}");
+            };
+            let id = AppId(i);
+            let handle = crate::app::spawn_app(&entry.engine, id, *node, spec)?;
+            apps.insert(id, handle);
+            info!(node = node.0, app = id.0, kind = spec.kind(), "ndn-lab: app spawned");
+        }
+        let next_app = self.pending_apps.len();
+
         Ok(RunningSimulation {
             kernel: self.kernel,
             tracer,
@@ -283,6 +306,8 @@ impl Simulation {
             epoch_ns,
             radio_bus,
             radio_faces,
+            apps: Mutex::new(apps),
+            next_app: AtomicUsize::new(next_app),
             inner: Mutex::new(FabricInner { nodes, links }),
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
@@ -336,6 +361,9 @@ pub struct RunningSimulation {
     radio_bus: Option<std::sync::Arc<RadioBus>>,
     /// Per-radio-node face id, for routing over the radio.
     radio_faces: HashMap<NodeId, FaceId>,
+    /// Live apps (producers/consumers) by id.
+    apps: Mutex<HashMap<AppId, AppHandle>>,
+    next_app: AtomicUsize,
     inner: Mutex<FabricInner>,
     channel_buffer: usize,
     next_node: AtomicUsize,
@@ -357,6 +385,47 @@ impl RunningSimulation {
     /// positions/mobility from here; it is live-mutable through `&self`.
     pub fn world(&self) -> std::sync::Arc<World> {
         std::sync::Arc::clone(&self.world)
+    }
+
+    /// Spawn an app (producer/consumer) on `node` live; returns its [`AppId`].
+    pub fn spawn_app(&self, node: NodeId, spec: AppSpec) -> Result<AppId> {
+        let engine = self
+            .engine_of(node)
+            .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?;
+        let id = AppId(self.next_app.fetch_add(1, Ordering::Relaxed));
+        let handle = crate::app::spawn_app(&engine, id, node, &spec)?;
+        self.apps.lock().unwrap().insert(id, handle);
+        Ok(id)
+    }
+
+    /// Stop an app (cancels its tasks). Returns an error if no such app.
+    pub fn stop_app(&self, app: AppId) -> Result<()> {
+        let handle = self
+            .apps
+            .lock()
+            .unwrap()
+            .remove(&app)
+            .ok_or_else(|| anyhow::anyhow!("no such app {}", app.0))?;
+        handle.stop();
+        Ok(())
+    }
+
+    /// Data served (producer) / fetched (consumer) by an app so far, if it exists.
+    pub fn app_successes(&self, app: AppId) -> Option<u64> {
+        self.apps.lock().unwrap().get(&app).map(|h| h.successes())
+    }
+
+    /// `(id, node, kind)` for every live app.
+    pub fn apps(&self) -> Vec<(AppId, NodeId, &'static str)> {
+        let mut v: Vec<_> = self
+            .apps
+            .lock()
+            .unwrap()
+            .values()
+            .map(|h| (h.id(), h.node(), h.kind()))
+            .collect();
+        v.sort_by_key(|(id, _, _)| id.0);
+        v
     }
 
     /// The shared radio medium ([`RadioBus`]), if the scenario enabled one via
@@ -598,6 +667,9 @@ impl RunningSimulation {
     /// `Arc` (e.g. behind a [`ControlPlane`](crate::ControlPlane)); after this the fabric is
     /// empty.
     pub async fn shutdown(&self) {
+        for (_, handle) in std::mem::take(&mut *self.apps.lock().unwrap()) {
+            handle.stop();
+        }
         let nodes = std::mem::take(&mut self.inner.lock().unwrap().nodes);
         for (_, entry) in nodes {
             entry.handle.shutdown().await;

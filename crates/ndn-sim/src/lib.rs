@@ -36,6 +36,7 @@
 //! | [`control`]  | `FabricControl` — the one control + introspection surface |
 //! | [`control_plane`] | `ControlPlane` — declarative JSON commands/queries over NDN / RPC / in-proc |
 //! | [`mcp`]      | `SimMcp` — Model Context Protocol tools projecting the control plane |
+//! | [`scene`]    | `SceneSnapshot` + SVG renderers — the `world_snapshot()` a GUI client draws |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
 //! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
 //! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
@@ -56,6 +57,7 @@ pub mod mcp;
 pub mod medium;
 pub mod profile;
 pub mod radio;
+pub mod scene;
 pub mod sim_face;
 pub mod sim_link;
 pub mod telemetry;
@@ -73,6 +75,10 @@ pub use kernel::VirtualKernel;
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use mcp::SimMcp;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
+pub use scene::{
+    SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
+    render_topology_svg,
+};
 pub use medium::{
     Delivery, FreeSpacePathLoss, InterferenceModel, NoInterference, PropagationModel,
     RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,

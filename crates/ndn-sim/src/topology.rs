@@ -190,10 +190,12 @@ impl Simulation {
                 .add_nexthop(&route.prefix, *face_id, 10);
         }
 
+        let epoch_ns = self.kernel.runtime().unix_nanos();
         Ok(RunningSimulation {
             kernel: self.kernel,
             tracer,
             world: self.world,
+            epoch_ns,
             inner: Mutex::new(FabricInner { nodes, links }),
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
@@ -240,6 +242,9 @@ pub struct RunningSimulation {
     kernel: std::sync::Arc<dyn SimKernel>,
     tracer: std::sync::Arc<SimTracer>,
     world: Option<std::sync::Arc<World>>,
+    /// Kernel clock at fabric start — the world's `t=0`, so scene snapshots query mobility at
+    /// the elapsed virtual time.
+    epoch_ns: u64,
     inner: Mutex<FabricInner>,
     channel_buffer: usize,
     next_node: AtomicUsize,
@@ -275,6 +280,30 @@ impl RunningSimulation {
             .collect();
         samples.sort_by_key(|s| s.node.0);
         samples
+    }
+
+    /// A renderable [`SceneSnapshot`](crate::scene::SceneSnapshot) of the fabric — node
+    /// positions (from the [`World`] at the current elapsed virtual time, else a deterministic
+    /// circle layout), links, per-node metric badges, and world bounds. The `world_snapshot()`
+    /// a GUI client draws (see [`scene`](crate::scene)).
+    pub fn scene_snapshot(&self) -> crate::scene::SceneSnapshot {
+        let topo = self.topology();
+        let metrics = self.snapshot_metrics();
+        let now = self.kernel.runtime().unix_nanos();
+        let ids: Vec<usize> = topo.nodes.iter().map(|n| n.id.0).collect();
+
+        // Default to an auto-layout, then override with real positions where a world places them.
+        let mut positions = crate::scene::circle_layout(&ids, 100.0);
+        if let Some(world) = &self.world {
+            let t_secs = now.saturating_sub(self.epoch_ns) as f64 / 1e9;
+            let view = world.snapshot(t_secs);
+            for id in &ids {
+                if let Some(p) = view.position(NodeId(*id)) {
+                    positions.insert(*id, crate::scene::ScenePoint { x: p.x, y: p.y });
+                }
+            }
+        }
+        crate::scene::project_scene(&topo, &metrics, &positions, now)
     }
 
     /// Spawn a periodic gauge emitter that snapshots every node into `log` once per `interval`

@@ -89,6 +89,8 @@ pub enum SimQuery {
     Topology,
     /// A metrics snapshot of every node at the current (virtual) time.
     Metrics,
+    /// A renderable scene (positions + links + metric badges + bounds) — what a GUI draws.
+    Scene,
 }
 
 /// The request envelope decoded from a transport (`{"command": …}` or `{"query": …}`).
@@ -107,6 +109,7 @@ pub enum SimResponse {
     Node { id: usize },
     Topology(TopologySnapshot),
     Metrics(Vec<MetricsSample>),
+    Scene(crate::scene::SceneSnapshot),
     Error { message: String },
 }
 
@@ -207,6 +210,7 @@ impl ControlPlane {
         match q {
             SimQuery::Topology => SimResponse::Topology(self.fabric.topology()),
             SimQuery::Metrics => SimResponse::Metrics(self.fabric.snapshot_metrics()),
+            SimQuery::Scene => SimResponse::Scene(self.fabric.scene_snapshot()),
         }
     }
 

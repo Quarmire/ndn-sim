@@ -75,7 +75,7 @@ pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
 };
-pub use kernel::{SimKernel, WallClockKernel};
+pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::VirtualKernel;
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};

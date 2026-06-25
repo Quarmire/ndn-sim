@@ -54,6 +54,11 @@ pub enum KernelSpec {
         #[serde(default)]
         epoch_ns: Option<u64>,
     },
+    /// Real-time governor: real pace (hosts real devices) + a logical scenario-relative clock.
+    RealTime {
+        #[serde(default)]
+        epoch_ns: Option<u64>,
+    },
 }
 
 impl KernelSpec {

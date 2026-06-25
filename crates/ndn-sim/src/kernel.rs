@@ -58,6 +58,87 @@ impl SimKernel for WallClockKernel {
     }
 }
 
+// ---- Real-time governor (the sim↔emulation continuum bridge) ------------------------------
+
+/// **Real-time governor**: runs on a normal (non-paused) Tokio runtime — real time, real I/O, so
+/// it can host real external devices over real sockets (the [`bridge`](crate::bridge)) — *but*
+/// presents a **logical, scenario-relative clock** through the [`Runtime`] seam: `unix_nanos` is
+/// `epoch_base + real-elapsed-since-start`, not the absolute system clock.
+///
+/// This is the missing keystone of the continuum. [`WallClockKernel`] (absolute system time) and
+/// [`VirtualKernel`] (virtual time that *jumps* idle gaps, so real I/O can't interleave) are the
+/// two ends; the governor is the middle — real pace so a real device participates, unified
+/// logical timestamps so telemetry reads the same scenario-relative time the virtual run would.
+/// Timing isn't bit-reproducible (real pacing), but the clock *source* and timestamp *base* are
+/// the scenario's, not the wall's. Used like [`WallClockKernel`] — no `run` wrapper.
+pub struct RealTimeKernel {
+    epoch_base_ns: u64,
+    runtime: std::sync::OnceLock<Arc<dyn Runtime>>,
+}
+
+impl RealTimeKernel {
+    /// A governor with the default logical epoch.
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            epoch_base_ns: DEFAULT_VIRTUAL_EPOCH_NS,
+            runtime: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// A governor whose logical clock starts at `epoch_base_ns`.
+    pub fn with_epoch_ns(epoch_base_ns: u64) -> Arc<Self> {
+        Arc::new(Self { epoch_base_ns, runtime: std::sync::OnceLock::new() })
+    }
+}
+
+impl SimKernel for RealTimeKernel {
+    fn runtime(&self) -> Arc<dyn Runtime> {
+        self.runtime
+            .get_or_init(|| {
+                Arc::new(RealTimeRuntime {
+                    start: ndn_runtime::Instant::now(),
+                    epoch_base_ns: self.epoch_base_ns,
+                })
+            })
+            .clone()
+    }
+    fn name(&self) -> &'static str {
+        "real-time"
+    }
+}
+
+/// The [`Runtime`] a [`RealTimeKernel`] hands to engines: spawn/sleep on the real Tokio runtime
+/// (real pace), but `unix_nanos` is logical (epoch + real elapsed), so all engines share one
+/// scenario-relative clock instead of reading the absolute system clock independently.
+struct RealTimeRuntime {
+    start: ndn_runtime::Instant,
+    epoch_base_ns: u64,
+}
+
+impl ndn_runtime::Spawn for RealTimeRuntime {
+    fn spawn(&self, fut: ndn_runtime::BoxFuture) {
+        tokio::spawn(fut);
+    }
+}
+
+impl ndn_runtime::Sleep for RealTimeRuntime {
+    fn sleep(&self, dur: std::time::Duration) -> ndn_runtime::BoxFuture {
+        Box::pin(tokio::time::sleep(dur))
+    }
+}
+
+impl ndn_runtime::Now for RealTimeRuntime {
+    fn now(&self) -> ndn_runtime::Instant {
+        ndn_runtime::Instant::now()
+    }
+    fn unix_nanos(&self) -> u64 {
+        self.epoch_base_ns
+            .saturating_add(self.start.elapsed().as_nanos() as u64)
+    }
+}
+
+impl Runtime for RealTimeRuntime {}
+
 // ---- Virtual-time kernel (deterministic, faster-than-real) -------------------------------
 
 /// Default virtual epoch (ns) — a fixed point so absolute timestamps look like real epoch

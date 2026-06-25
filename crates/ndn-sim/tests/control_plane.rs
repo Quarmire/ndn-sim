@@ -152,6 +152,39 @@ async fn move_node_command_relocates_the_node_in_the_scene() {
     fabric.shutdown().await;
 }
 
+#[tokio::test]
+async fn tcp_rpc_server_handles_json_lines() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let mut sim = Simulation::new();
+    let _a = sim.add_node(EngineConfig::default());
+    let fabric = Arc::new(sim.start().await.unwrap());
+    let control = ControlPlane::new(Arc::clone(&fabric));
+
+    let addr = control
+        .serve_tcp("127.0.0.1:0", CancellationToken::new())
+        .await
+        .unwrap();
+
+    // A plain TCP client speaks newline-delimited JSON.
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+
+    write.write_all(b"{\"command\":{\"cmd\":\"spawn_node\"}}\n").await.unwrap();
+    let line = lines.next_line().await.unwrap().unwrap();
+    assert!(line.contains(r#""result":"node""#) && line.contains(r#""id":1"#), "got {line}");
+
+    write.write_all(b"{\"query\":{\"query\":\"topology\"}}\n").await.unwrap();
+    let line = lines.next_line().await.unwrap().unwrap();
+    assert!(line.contains(r#""result":"topology""#), "got {line}");
+    let resp: SimResponse = serde_json::from_str(&line).unwrap();
+    let SimResponse::Topology(topo) = resp else { panic!("expected topology") };
+    assert_eq!(topo.nodes.len(), 2, "the spawn over TCP took effect");
+
+    fabric.shutdown().await;
+}
+
 /// Send a JSON control request over NDN (ApplicationParameters) and parse the JSON reply.
 async fn ask(consumer: &mut ndn_app::Consumer, json: &[u8]) -> SimResponse {
     let builder = InterestBuilder::new("/localhop/sim/control".parse::<Name>().unwrap())

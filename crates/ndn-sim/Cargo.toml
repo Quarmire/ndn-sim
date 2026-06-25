@@ -29,7 +29,7 @@ serde_json = { workspace = true }
 bytes       = { workspace = true }
 # `test-util` enables the paused single-threaded runtime the VirtualKernel drives;
 # `io-std`/`io-util` back the MCP stdio JSON-RPC server loop.
-tokio       = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util", "io-std", "io-util"] }
+tokio       = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util", "io-std", "io-util", "net"] }
 tokio-util  = { workspace = true }
 tracing     = { workspace = true }
 anyhow      = { workspace = true }

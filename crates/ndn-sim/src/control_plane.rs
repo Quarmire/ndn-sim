@@ -293,6 +293,55 @@ impl ControlPlane {
             }
         });
     }
+
+    /// Serve the control surface over **TCP** as newline-delimited JSON (one
+    /// [`handle_json`](Self::handle_json) request/response per line) — the thin RPC/WS transport
+    /// for the GUI and external tooling. Binds `addr`, spawns the accept loop, and returns the
+    /// bound [`SocketAddr`] (pass `"127.0.0.1:0"` for an ephemeral port). Runs until `cancel`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn serve_tcp(
+        self: &Arc<Self>,
+        addr: impl tokio::net::ToSocketAddrs,
+        cancel: CancellationToken,
+    ) -> std::io::Result<std::net::SocketAddr> {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let local = listener.local_addr()?;
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    accepted = listener.accept() => {
+                        let Ok((stream, _peer)) = accepted else { break };
+                        let me = Arc::clone(&me);
+                        tokio::spawn(async move {
+                            if let Err(e) = me.handle_tcp_conn(stream).await {
+                                warn!(error = %e, "ndn-lab control TCP connection ended");
+                            }
+                        });
+                    }
+                }
+            }
+        });
+        Ok(local)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn handle_tcp_conn(&self, stream: tokio::net::TcpStream) -> std::io::Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        while let Some(line) = lines.next_line().await? {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let reply = self.handle_json(&line).await;
+            write.write_all(reply.as_bytes()).await?;
+            write.write_all(b"\n").await?;
+            write.flush().await?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

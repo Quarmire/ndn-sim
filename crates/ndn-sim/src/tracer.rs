@@ -8,7 +8,7 @@ use std::time::Instant;
 use ndn_runtime::Runtime;
 
 /// A recorded simulation event.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct SimEvent {
     /// Microseconds since simulation start.
     pub timestamp_us: u64,
@@ -24,7 +24,7 @@ pub struct SimEvent {
     pub detail: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum EventKind {
     InterestIn,
     InterestOut,

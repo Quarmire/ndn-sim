@@ -138,6 +138,14 @@ impl SimMcp {
                     },
                     "required": ["node", "x", "y"]
                 }
+            },
+            {
+                "name": "why_did",
+                "description": "Explain recent fabric activity: the last N captured sim events (face up/down, control-plane changes) — the trace/explain surface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "limit": { "type": "integer", "description": "max events (default 20)" } }
+                }
             }
         ])
     }
@@ -150,6 +158,13 @@ impl SimMcp {
             "query_metrics" => Ok(to_value(self.control.query(SimQuery::Metrics))),
             "capabilities" => Ok(capability_catalogue()),
             "node_state" => self.node_state(req_usize(args, "node")?),
+            "why_did" => {
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+                let mut events = self.control.fabric().tracer().events();
+                let start = events.len().saturating_sub(limit);
+                let recent = events.split_off(start);
+                Ok(serde_json::json!({ "events": recent }))
+            }
             "spawn_node" => {
                 let label = args.get("label").and_then(Value::as_str).map(String::from);
                 self.run(SimCommand::SpawnNode { label }).await
@@ -413,6 +428,15 @@ mod tests {
             .handle_rpc(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
             .await;
         assert!(note.is_empty());
+    }
+
+    #[tokio::test]
+    async fn why_did_returns_recent_events() {
+        let mcp = mcp_over_fabric().await;
+        // Spawn a node so there is fabric activity to explain.
+        let _ = mcp.call_tool("spawn_node", &serde_json::json!({})).await.unwrap();
+        let v = mcp.call_tool("why_did", &serde_json::json!({ "limit": 10 })).await.unwrap();
+        assert!(v["events"].is_array(), "why_did returns a structured event list: {v}");
     }
 
     #[tokio::test]

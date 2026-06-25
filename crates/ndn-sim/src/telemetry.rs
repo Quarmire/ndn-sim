@@ -105,6 +105,52 @@ pub fn sample_engine(node: NodeId, engine: &ForwarderEngine) -> MetricsSample {
     }
 }
 
+/// The result of comparing two metric series (two runs) — for determinism checks and A/B
+/// regression analysis (the `compare_runs` substrate).
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct MetricsDiff {
+    /// `true` iff the two series match sample-for-sample (same length, same fields).
+    pub identical: bool,
+    /// Human-readable divergences (`node@time field: a != b`), capped for readability.
+    pub divergences: Vec<String>,
+}
+
+/// Compare two metric series (e.g. two runs of the same scenario). Sorts each by
+/// `(node, virtual_time)`, zips, and reports field-level divergences — the basis for a
+/// determinism check or an A/B `compare_runs`. Identical inputs ⇒ `identical = true`.
+pub fn compare_metrics(baseline: &[MetricsSample], candidate: &[MetricsSample]) -> MetricsDiff {
+    let key = |s: &MetricsSample| (s.node.0, s.virtual_time_ns);
+    let mut a = baseline.to_vec();
+    let mut b = candidate.to_vec();
+    a.sort_by_key(key);
+    b.sort_by_key(key);
+
+    let mut divergences = Vec::new();
+    if a.len() != b.len() {
+        divergences.push(format!("sample count: {} != {}", a.len(), b.len()));
+    }
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x != y {
+            divergences.push(format!(
+                "node {}@{}ns: cs_hits {}/{} pit {}/{} out_data {}/{} in_bytes {}/{}",
+                x.node.0,
+                x.virtual_time_ns,
+                x.cs_hits,
+                y.cs_hits,
+                x.pit_depth,
+                y.pit_depth,
+                x.out_data,
+                y.out_data,
+                x.in_bytes,
+                y.in_bytes,
+            ));
+        }
+    }
+    let identical = divergences.is_empty();
+    divergences.truncate(50);
+    MetricsDiff { identical, divergences }
+}
+
 /// A thread-safe, append-only series of [`MetricsSample`]s — the destination for the fabric's
 /// gauge emitter. Drain or query after (or during) a run.
 #[derive(Default)]
@@ -261,6 +307,40 @@ mod tests {
         assert_eq!(span.start_unix_nano, 42_000);
         assert_eq!(span.end_unix_nano, 42_000);
         assert_eq!(publisher.len(), 1, "span served over NDN");
+    }
+
+    fn sample(node: usize, t: u64, hits: u64) -> MetricsSample {
+        MetricsSample {
+            node: NodeId(node),
+            virtual_time_ns: t,
+            faces: 1,
+            in_interests: 0,
+            out_interests: 0,
+            in_data: 0,
+            out_data: 0,
+            in_bytes: 0,
+            out_bytes: 0,
+            out_drops: 0,
+            cs_hits: hits,
+            cs_misses: 0,
+            cs_inserts: 0,
+            cs_evictions: 0,
+            cs_entries: 0,
+            cs_bytes: 0,
+            pit_depth: 0,
+        }
+    }
+
+    #[test]
+    fn compare_metrics_detects_identity_and_divergence() {
+        let a = vec![sample(0, 100, 5), sample(1, 100, 7)];
+        let same = vec![sample(1, 100, 7), sample(0, 100, 5)]; // reordered, same content
+        assert!(compare_metrics(&a, &same).identical, "order-independent identity");
+
+        let diff = vec![sample(0, 100, 5), sample(1, 100, 9)]; // node 1 hits differ
+        let d = compare_metrics(&a, &diff);
+        assert!(!d.identical);
+        assert!(d.divergences.iter().any(|s| s.contains("node 1")));
     }
 
     #[test]

@@ -89,7 +89,9 @@ pub use medium::{
 pub use profile::NodeProfile;
 pub use sim_face::SimFace;
 pub use sim_link::{LinkConfig, SimLink};
-pub use telemetry::{MetricsLog, MetricsSample, SimSpanEmitter, sample_engine};
+pub use telemetry::{
+    MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter, compare_metrics, sample_engine,
+};
 pub use topology::{NodeId, RunningSimulation, Simulation};
 pub use tracer::{EventKind, SimEvent, SimTracer};
 pub use world::{

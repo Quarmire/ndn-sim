@@ -79,6 +79,26 @@ pub enum SimCommand {
         prefix: String,
         nexthop: usize,
     },
+    /// Move a node to a fixed position (metres) in the world — live drag-to-move.
+    MoveNode {
+        node: usize,
+        x: f64,
+        y: f64,
+        #[serde(default)]
+        z: f64,
+    },
+    /// Give a node constant-velocity motion (m/s per axis) from a start position.
+    SetLinearMobility {
+        node: usize,
+        x: f64,
+        y: f64,
+        #[serde(default)]
+        z: f64,
+        vx: f64,
+        vy: f64,
+        #[serde(default)]
+        vz: f64,
+    },
 }
 
 /// A read-only introspection query.
@@ -121,6 +141,7 @@ pub enum SimNotification {
     NodeRemoved { node: usize },
     LinkAdded { a: usize, b: usize },
     RouteAdded { node: usize, prefix: String, nexthop: usize },
+    NodeMoved { node: usize, x: f64, y: f64, z: f64 },
 }
 
 impl NotificationEvent for SimNotification {
@@ -201,6 +222,22 @@ impl ControlPlane {
                     }
                     Err(e) => SimResponse::Error { message: e.to_string() },
                 }
+            }
+            SimCommand::MoveNode { node, x, y, z } => {
+                self.fabric.move_node(NodeId(node), crate::world::Position::xyz(x, y, z));
+                self.notifications.publish(SimNotification::NodeMoved { node, x, y, z });
+                SimResponse::Ok
+            }
+            SimCommand::SetLinearMobility { node, x, y, z, vx, vy, vz } => {
+                self.fabric.set_mobility(
+                    NodeId(node),
+                    std::sync::Arc::new(crate::world::LinearMobility {
+                        start: crate::world::Position::xyz(x, y, z),
+                        velocity: (vx, vy, vz),
+                    }),
+                );
+                self.notifications.publish(SimNotification::NodeMoved { node, x, y, z });
+                SimResponse::Ok
             }
         }
     }

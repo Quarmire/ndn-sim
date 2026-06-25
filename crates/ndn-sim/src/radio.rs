@@ -304,7 +304,7 @@ mod tests {
     use crate::world::{Position, World};
 
     fn bus_with(positions: &[(NodeId, Position)], seed: u64) -> Arc<RadioBus> {
-        let mut world = World::new();
+        let world = World::new();
         for (id, p) in positions {
             world.place(*id, *p);
         }

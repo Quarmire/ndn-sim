@@ -191,10 +191,13 @@ impl Simulation {
         }
 
         let epoch_ns = self.kernel.runtime().unix_nanos();
+        // A fabric always has a world (empty by default) so live-world commands and scene
+        // snapshots work whether or not the scenario declared one.
+        let world = self.world.unwrap_or_else(|| std::sync::Arc::new(World::new()));
         Ok(RunningSimulation {
             kernel: self.kernel,
             tracer,
-            world: self.world,
+            world,
             epoch_ns,
             inner: Mutex::new(FabricInner { nodes, links }),
             channel_buffer: self.channel_buffer,
@@ -241,7 +244,7 @@ fn wire_link(
 pub struct RunningSimulation {
     kernel: std::sync::Arc<dyn SimKernel>,
     tracer: std::sync::Arc<SimTracer>,
-    world: Option<std::sync::Arc<World>>,
+    world: std::sync::Arc<World>,
     /// Kernel clock at fabric start — the world's `t=0`, so scene snapshots query mobility at
     /// the elapsed virtual time.
     epoch_ns: u64,
@@ -261,10 +264,26 @@ impl RunningSimulation {
         std::sync::Arc::clone(&self.tracer)
     }
 
-    /// The spatial [`World`] attached via [`Simulation::world`], if any. Position-driven faces
-    /// (a [`WirelessMedium`](crate::WirelessMedium)) read node positions/mobility from here.
-    pub fn world(&self) -> Option<std::sync::Arc<World>> {
-        self.world.clone()
+    /// The fabric's spatial [`World`] (empty unless declared via [`Simulation::world`]).
+    /// Position-driven faces (a [`WirelessMedium`](crate::WirelessMedium)) read node
+    /// positions/mobility from here; it is live-mutable through `&self`.
+    pub fn world(&self) -> std::sync::Arc<World> {
+        std::sync::Arc::clone(&self.world)
+    }
+
+    /// Move a node to a fixed position (live). The scene + any position-driven medium pick it
+    /// up on their next snapshot — the seam for GUI drag-to-move.
+    pub fn move_node(&self, node: NodeId, position: crate::world::Position) {
+        self.world.place(node, position);
+    }
+
+    /// Give a node a mobility model live (e.g. a [`LinearMobility`](crate::world::LinearMobility)).
+    pub fn set_mobility(
+        &self,
+        node: NodeId,
+        model: std::sync::Arc<dyn crate::world::MobilityModel>,
+    ) {
+        self.world.set_mobility(node, model);
     }
 
     /// Snapshot every live node's engine metrics at the current (virtual) time — CS hit-rate,
@@ -292,15 +311,13 @@ impl RunningSimulation {
         let now = self.kernel.runtime().unix_nanos();
         let ids: Vec<usize> = topo.nodes.iter().map(|n| n.id.0).collect();
 
-        // Default to an auto-layout, then override with real positions where a world places them.
+        // Default to an auto-layout, then override with real positions where the world places them.
         let mut positions = crate::scene::circle_layout(&ids, 100.0);
-        if let Some(world) = &self.world {
-            let t_secs = now.saturating_sub(self.epoch_ns) as f64 / 1e9;
-            let view = world.snapshot(t_secs);
-            for id in &ids {
-                if let Some(p) = view.position(NodeId(*id)) {
-                    positions.insert(*id, crate::scene::ScenePoint { x: p.x, y: p.y });
-                }
+        let t_secs = now.saturating_sub(self.epoch_ns) as f64 / 1e9;
+        let view = self.world.snapshot(t_secs);
+        for id in &ids {
+            if let Some(p) = view.position(NodeId(*id)) {
+                positions.insert(*id, crate::scene::ScenePoint { x: p.x, y: p.y });
             }
         }
         crate::scene::project_scene(&topo, &metrics, &positions, now)

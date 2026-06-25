@@ -120,6 +120,38 @@ async fn ndn_native_control_serves_commands_and_queries() {
     fabric.shutdown().await;
 }
 
+#[tokio::test]
+async fn move_node_command_relocates_the_node_in_the_scene() {
+    let mut sim = Simulation::new();
+    let _a = sim.add_node(EngineConfig::default());
+    let fabric = Arc::new(sim.start().await.unwrap());
+    let control = ControlPlane::new(Arc::clone(&fabric));
+
+    // Drag node 0 to (123, 456) live.
+    assert!(matches!(
+        control
+            .execute(SimCommand::MoveNode { node: 0, x: 123.0, y: 456.0, z: 0.0 })
+            .await,
+        SimResponse::Ok
+    ));
+
+    // The scene reflects the new position immediately.
+    let scene = fabric.scene_snapshot();
+    let n0 = scene.nodes.iter().find(|n| n.id == 0).unwrap();
+    assert_eq!((n0.x, n0.y), (123.0, 456.0));
+
+    // And it was announced on the notification stream.
+    let joined: String = control
+        .notifications()
+        .recent_event_bytes()
+        .iter()
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .collect();
+    assert!(joined.contains("node_moved"));
+
+    fabric.shutdown().await;
+}
+
 /// Send a JSON control request over NDN (ApplicationParameters) and parse the JSON reply.
 async fn ask(consumer: &mut ndn_app::Consumer, json: &[u8]) -> SimResponse {
     let builder = InterestBuilder::new("/localhop/sim/control".parse::<Name>().unwrap())

@@ -279,7 +279,7 @@ mod tests {
     use crate::world::{LinearMobility, World};
 
     fn medium_with(positions: &[(NodeId, Position)], prop: Arc<dyn PropagationModel>) -> WirelessMedium {
-        let mut world = World::new();
+        let world = World::new();
         for (id, p) in positions {
             world.place(*id, *p);
         }
@@ -355,7 +355,7 @@ mod tests {
     /// reflects the world at that instant.
     #[tokio::test(start_paused = true)]
     async fn mobility_brings_node_into_range() {
-        let mut world = World::new();
+        let world = World::new();
         world.place(NodeId(0), Position::xy(0.0, 0.0));
         // Node 1 starts 500 m away, approaches at 100 m/s along −x.
         world.set_mobility(

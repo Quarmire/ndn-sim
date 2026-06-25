@@ -12,7 +12,7 @@ use ndn_sim::{
 
 #[tokio::test]
 async fn fabric_carries_world_and_medium_fans_out_by_range() {
-    let mut world = World::new().with_grid_cell(50.0);
+    let world = World::new().with_grid_cell(50.0);
     world.place(NodeId(0), Position::xy(0.0, 0.0));
     world.place(NodeId(1), Position::xy(40.0, 0.0)); // in range (100 m)
     world.place(NodeId(2), Position::xy(400.0, 0.0)); // out of range
@@ -24,7 +24,7 @@ async fn fabric_carries_world_and_medium_fans_out_by_range() {
     let fabric = sim.start().await.unwrap();
 
     // The declared world is reachable on the live fabric.
-    let world = fabric.world().expect("world carried onto fabric");
+    let world = fabric.world();
     let medium = WirelessMedium::new(
         world,
         Arc::new(RangeThreshold { range_m: 100.0, tx_power_dbm: 20.0 }),
@@ -56,7 +56,7 @@ async fn fabric_carries_world_and_medium_fans_out_by_range() {
 /// per-transmit snapshot tracks it. Deterministic time so this is reproducible.
 #[tokio::test(start_paused = true)]
 async fn waypoint_mover_comes_into_range() {
-    let mut world = World::new();
+    let world = World::new();
     world.place(NodeId(0), Position::xy(0.0, 0.0));
     world.set_mobility(
         NodeId(1),

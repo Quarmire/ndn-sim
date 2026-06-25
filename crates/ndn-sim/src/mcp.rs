@@ -124,6 +124,20 @@ impl SimMcp {
                     },
                     "required": ["node", "prefix", "nexthop"]
                 }
+            },
+            {
+                "name": "move_node",
+                "description": "Move a node to a fixed world position (metres) — live drag-to-move.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "node": { "type": "integer" },
+                        "x": { "type": "number" },
+                        "y": { "type": "number" },
+                        "z": { "type": "number" }
+                    },
+                    "required": ["node", "x", "y"]
+                }
             }
         ])
     }
@@ -162,6 +176,15 @@ impl SimMcp {
                     node: req_usize(args, "node")?,
                     prefix,
                     nexthop: req_usize(args, "nexthop")?,
+                })
+                .await
+            }
+            "move_node" => {
+                self.run(SimCommand::MoveNode {
+                    node: req_usize(args, "node")?,
+                    x: req_f64(args, "x")?,
+                    y: req_f64(args, "y")?,
+                    z: args.get("z").and_then(Value::as_f64).unwrap_or(0.0),
                 })
                 .await
             }
@@ -275,6 +298,12 @@ fn req_usize(args: &Value, key: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("missing or non-integer '{key}'"))
 }
 
+fn req_f64(args: &Value, key: &str) -> Result<f64, String> {
+    args.get(key)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("missing or non-number '{key}'"))
+}
+
 fn rpc_ok(id: Value, result: Value) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
 }
@@ -287,14 +316,15 @@ fn rpc_error(id: Value, code: i64, message: &str) -> String {
 /// composes scenarios from real building blocks rather than guessing.
 fn capability_catalogue() -> Value {
     json!({
-        "commands": ["spawn_node", "remove_node", "connect", "route"],
-        "queries": ["topology", "metrics"],
+        "commands": ["spawn_node", "remove_node", "connect", "route", "move_node", "set_linear_mobility"],
+        "queries": ["topology", "metrics", "scene"],
         "mediums": ["wired_static_channel", "wireless_medium", "radio_bus"],
         "propagation_models": ["range_threshold", "free_space_path_loss"],
         "mobility_models": ["static", "linear", "waypoint"],
+        "interference_models": ["none", "carrier_sense"],
         "radio_mcs_modes": ["fixed", "adaptive"],
         "kernels": ["wall_clock", "virtual"],
-        "notes": "Live-world (move/mobility) and lifecycle (pause/step/seek) verbs are not yet available."
+        "notes": "Lifecycle (pause/step/seek) verbs require the DES event-queue and are not yet available."
     })
 }
 

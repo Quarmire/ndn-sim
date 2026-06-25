@@ -15,7 +15,7 @@
 //! clock into these seconds.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::NodeId;
 
@@ -136,9 +136,15 @@ impl Environment for UniformAttenuation {
 
 /// The spatial world: each node's mobility model + the shared environment. Analytic, so a
 /// [`snapshot`](World::snapshot) at any time is pure and reproducible.
+///
+/// **Live-mutable through `&self`** (interior `RwLock`s): [`place`](World::place) /
+/// [`set_mobility`](World::set_mobility) / [`set_environment`](World::set_environment) can be
+/// called on a shared `Arc<World>` while a fabric runs — the seam for GUI drag-to-move and the
+/// control plane's live-world commands. A [`snapshot`](World::snapshot) takes a consistent
+/// read; concurrent edits land on the next snapshot.
 pub struct World {
-    mobility: HashMap<NodeId, Arc<dyn MobilityModel>>,
-    environment: Arc<dyn Environment>,
+    mobility: RwLock<HashMap<NodeId, Arc<dyn MobilityModel>>>,
+    environment: RwLock<Arc<dyn Environment>>,
     grid_cell_m: f64,
 }
 
@@ -152,14 +158,16 @@ impl World {
     /// An empty world in free space, with a 100 m spatial-grid cell.
     pub fn new() -> Self {
         Self {
-            mobility: HashMap::new(),
-            environment: Arc::new(FreeSpace),
+            mobility: RwLock::new(HashMap::new()),
+            environment: RwLock::new(Arc::new(FreeSpace)),
             grid_cell_m: 100.0,
         }
     }
 
     pub fn with_environment(env: Arc<dyn Environment>) -> Self {
-        Self { environment: env, ..Self::new() }
+        let w = Self::new();
+        *w.environment.write().unwrap() = env;
+        w
     }
 
     /// Set the spatial-grid cell size (metres). Pick ≈ the typical transmission range for the
@@ -169,18 +177,33 @@ impl World {
         self
     }
 
-    /// Place a node at a fixed position (shorthand for [`StaticMobility`]).
-    pub fn place(&mut self, node: NodeId, position: Position) {
-        self.mobility.insert(node, Arc::new(StaticMobility(position)));
+    /// Place a node at a fixed position (shorthand for [`StaticMobility`]). Live: callable on a
+    /// shared `Arc<World>`.
+    pub fn place(&self, node: NodeId, position: Position) {
+        self.mobility
+            .write()
+            .unwrap()
+            .insert(node, Arc::new(StaticMobility(position)));
     }
 
-    /// Give a node a mobility model.
-    pub fn set_mobility(&mut self, node: NodeId, model: Arc<dyn MobilityModel>) {
-        self.mobility.insert(node, model);
+    /// Give a node a mobility model. Live: callable on a shared `Arc<World>`.
+    pub fn set_mobility(&self, node: NodeId, model: Arc<dyn MobilityModel>) {
+        self.mobility.write().unwrap().insert(node, model);
     }
 
-    pub fn environment(&self) -> &Arc<dyn Environment> {
-        &self.environment
+    /// Remove a node from the world (it becomes unplaced — heard by no radio).
+    pub fn remove(&self, node: NodeId) {
+        self.mobility.write().unwrap().remove(&node);
+    }
+
+    /// Swap the shared environment model live.
+    pub fn set_environment(&self, env: Arc<dyn Environment>) {
+        *self.environment.write().unwrap() = env;
+    }
+
+    /// The current environment model (cheap `Arc` clone).
+    pub fn environment(&self) -> Arc<dyn Environment> {
+        Arc::clone(&self.environment.read().unwrap())
     }
 
     /// An immutable snapshot of every node's position at `t_secs`, with a spatial index ready
@@ -188,6 +211,8 @@ impl World {
     pub fn snapshot(&self, t_secs: f64) -> WorldView {
         let positions: HashMap<NodeId, Position> = self
             .mobility
+            .read()
+            .unwrap()
             .iter()
             .map(|(id, m)| (*id, m.position(t_secs)))
             .collect();
@@ -309,7 +334,7 @@ mod tests {
 
     #[test]
     fn spatial_query_finds_only_in_range_nodes() {
-        let mut world = World::new().with_grid_cell(10.0);
+        let world = World::new().with_grid_cell(10.0);
         world.place(NodeId(0), Position::xy(0.0, 0.0));
         world.place(NodeId(1), Position::xy(5.0, 0.0)); // 5 m
         world.place(NodeId(2), Position::xy(50.0, 0.0)); // 50 m
@@ -323,7 +348,7 @@ mod tests {
 
     #[test]
     fn snapshot_reflects_movement_over_time() {
-        let mut world = World::new();
+        let world = World::new();
         world.set_mobility(
             NodeId(0),
             Arc::new(LinearMobility {

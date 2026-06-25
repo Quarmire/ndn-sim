@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 #[tokio::test]
 async fn two_radios_exchange_signed_data_and_publish_link_signals() {
     // A world with the two nodes a few metres apart ⇒ very high SNR ⇒ reliable at MCS7.
-    let mut world = World::new();
+    let world = World::new();
     world.place(NodeId(0), Position::xy(0.0, 0.0));
     world.place(NodeId(1), Position::xy(5.0, 0.0));
 
@@ -33,7 +33,7 @@ async fn two_radios_exchange_signed_data_and_publish_link_signals() {
 
     // One shared radio medium over the fabric's world.
     let bus = RadioBus::new(
-        fabric.world().unwrap(),
+        fabric.world(),
         Arc::new(FreeSpacePathLoss::default()),
         0,
         7,

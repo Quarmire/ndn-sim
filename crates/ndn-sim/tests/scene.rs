@@ -13,7 +13,7 @@ use ndn_sim::{
 
 #[tokio::test]
 async fn scene_reflects_world_positions_and_renders_svg() {
-    let mut world = World::new();
+    let world = World::new();
     world.place(NodeId(0), Position::xy(0.0, 0.0));
     world.place(NodeId(1), Position::xy(30.0, 40.0)); // 50 m away
 
@@ -55,7 +55,7 @@ async fn scene_reflects_world_positions_and_renders_svg() {
 fn scene_animates_mobility_under_virtual_time() {
     let kernel = VirtualKernel::new();
     let (x0, x1) = kernel.run(|k: Arc<dyn SimKernel>| async move {
-        let mut world = World::new();
+        let world = World::new();
         world.set_mobility(
             NodeId(0),
             Arc::new(LinearMobility { start: Position::xy(0.0, 0.0), velocity: (10.0, 0.0, 0.0) }),

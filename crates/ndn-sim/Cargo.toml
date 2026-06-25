@@ -18,7 +18,13 @@ ndn-store     = { workspace = true }
 ndn-frame-io  = { workspace = true }
 ndn-signals-core = { workspace = true }
 ndn-strategy  = { workspace = true }
+ndn-mgmt      = { workspace = true }
 ndn-observability = { workspace = true }
+# Used by the control plane to serve /localhop/sim/control as an NDN producer.
+ndn-app       = { workspace = true }
+
+serde      = { workspace = true }
+serde_json = { workspace = true }
 
 bytes       = { workspace = true }
 # `test-util` enables the paused single-threaded runtime the VirtualKernel drives.
@@ -31,5 +37,3 @@ rand        = "0.9"
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["full"] }
-tokio-util = { workspace = true }
-ndn-app    = { workspace = true }

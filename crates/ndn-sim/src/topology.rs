@@ -27,7 +27,8 @@ use crate::tracer::{EventKind, SimTracer};
 use crate::world::World;
 
 /// Opaque, stable handle to a node in the fabric (survives other nodes being removed).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct NodeId(pub usize);
 
 impl std::fmt::Display for NodeId {
@@ -422,7 +423,10 @@ impl RunningSimulation {
         TopologySnapshot { nodes, links }
     }
 
-    pub async fn shutdown(self) {
+    /// Shut down every node's engine. Takes `&self` so the fabric can be held in an
+    /// `Arc` (e.g. behind a [`ControlPlane`](crate::ControlPlane)); after this the fabric is
+    /// empty.
+    pub async fn shutdown(&self) {
         let nodes = std::mem::take(&mut self.inner.lock().unwrap().nodes);
         for (_, entry) in nodes {
             entry.handle.shutdown().await;

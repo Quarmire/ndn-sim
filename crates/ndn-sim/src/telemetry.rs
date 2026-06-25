@@ -30,7 +30,7 @@ use ndn_runtime::Runtime;
 use crate::NodeId;
 
 /// A point-in-time snapshot of one node's engine metrics, stamped with **virtual** time.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MetricsSample {
     pub node: NodeId,
     /// Kernel-clock time of the sample (virtual under a `VirtualKernel`).

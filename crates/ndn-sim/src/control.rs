@@ -20,14 +20,14 @@ use crate::tracer::{EventKind, SimTracer};
 use crate::{LinkConfig, NodeId, NodeProfile};
 
 /// One node in a [`TopologySnapshot`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeInfo {
     pub id: NodeId,
     pub label: String,
 }
 
 /// One directed link face in a [`TopologySnapshot`] (`from`'s face toward `to`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LinkInfo {
     pub from: NodeId,
     pub to: NodeId,
@@ -35,7 +35,7 @@ pub struct LinkInfo {
 }
 
 /// A point-in-time view of the fabric graph — for the GUI, MCP introspection, and tests.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TopologySnapshot {
     pub nodes: Vec<NodeInfo>,
     pub links: Vec<LinkInfo>,

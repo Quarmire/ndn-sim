@@ -34,6 +34,7 @@
 //! | [`kernel`]   | `SimKernel` / `WallClockKernel` / `VirtualKernel` — the execution + time engine (the dial) |
 //! | [`profile`]  | `NodeProfile` — named node template |
 //! | [`control`]  | `FabricControl` — the one control + introspection surface |
+//! | [`control_plane`] | `ControlPlane` — declarative JSON commands/queries over NDN / RPC / in-proc |
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
 //! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
 //! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
@@ -47,6 +48,7 @@
 #![allow(missing_docs)]
 
 pub mod control;
+pub mod control_plane;
 pub mod kernel;
 pub mod link_model;
 pub mod medium;
@@ -60,6 +62,9 @@ pub mod tracer;
 pub mod world;
 
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
+pub use control_plane::{
+    ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
+};
 pub use kernel::{SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::VirtualKernel;

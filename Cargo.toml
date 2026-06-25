@@ -26,6 +26,9 @@ ndn-signals-core = { path = "../ndn-rs/crates/core/ndn-signals-core" }
 ndn-store     = { path = "../ndn-rs/crates/forwarding/ndn-store" }
 ndn-strategy  = { path = "../ndn-rs/crates/forwarding/ndn-strategy" }
 ndn-engine    = { path = "../ndn-rs/crates/forwarding/ndn-engine" }
+# OTLP span types + NDN-native publisher; default-features off drops the
+# process-global tracing-subscriber Layer (the sim feeds virtual-clock timestamps directly).
+ndn-observability = { path = "../ndn-rs/crates/platform/ndn-observability", default-features = false }
 ndn-app       = { path = "../ndn-rs/crates/app/ndn-app" }
 
 # Core async runtime — individual crates enable only the features they need

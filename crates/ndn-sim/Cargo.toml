@@ -18,10 +18,12 @@ ndn-store     = { workspace = true }
 ndn-frame-io  = { workspace = true }
 ndn-signals-core = { workspace = true }
 ndn-strategy  = { workspace = true }
+ndn-observability = { workspace = true }
 
 bytes       = { workspace = true }
 # `test-util` enables the paused single-threaded runtime the VirtualKernel drives.
 tokio       = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util"] }
+tokio-util  = { workspace = true }
 tracing     = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }

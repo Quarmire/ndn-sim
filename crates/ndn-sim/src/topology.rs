@@ -261,6 +261,55 @@ impl RunningSimulation {
         self.world.clone()
     }
 
+    /// Snapshot every live node's engine metrics at the current (virtual) time — CS hit-rate,
+    /// PIT depth, per-face throughput/drops — each stamped with the kernel clock. The on-demand
+    /// counterpart of [`spawn_gauge_emitter`](Self::spawn_gauge_emitter); deterministic under a
+    /// [`VirtualKernel`](crate::VirtualKernel).
+    pub fn snapshot_metrics(&self) -> Vec<crate::telemetry::MetricsSample> {
+        let guard = self.inner.lock().unwrap();
+        let mut samples: Vec<_> = guard
+            .nodes
+            .iter()
+            .map(|(id, e)| crate::telemetry::sample_engine(*id, &e.engine))
+            .collect();
+        samples.sort_by_key(|s| s.node.0);
+        samples
+    }
+
+    /// Spawn a periodic gauge emitter that snapshots every node into `log` once per `interval`
+    /// (on the kernel clock — **virtual** time under a [`VirtualKernel`](crate::VirtualKernel),
+    /// so samples land at deterministic virtual instants). Runs until `cancel` fires or the
+    /// runtime is dropped. The sampled node set is fixed at spawn (engine handles are cloned).
+    pub fn spawn_gauge_emitter(
+        &self,
+        interval: std::time::Duration,
+        log: std::sync::Arc<crate::telemetry::MetricsLog>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        let mut engines: Vec<(NodeId, ForwarderEngine)> = self
+            .inner
+            .lock()
+            .unwrap()
+            .nodes
+            .iter()
+            .map(|(id, e)| (*id, e.engine.clone()))
+            .collect();
+        // Stable order ⇒ the emitted sample series replays identically.
+        engines.sort_by_key(|(id, _)| id.0);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(interval) => {
+                        for (id, engine) in &engines {
+                            log.record(crate::telemetry::sample_engine(*id, engine));
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     /// The node's engine handle (a cheap `Arc` clone), or `None` if no such node.
     pub fn engine_of(&self, node: NodeId) -> Option<ForwarderEngine> {
         self.inner.lock().unwrap().nodes.get(&node).map(|e| e.engine.clone())

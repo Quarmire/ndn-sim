@@ -40,6 +40,7 @@
 //! | [`medium`]   | `WirelessMedium` / `PropagationModel` — position-driven broadcast delivery |
 //! | [`link_model`] | `LinkModel` — RSSI/SNR → MCS → per-frame delivery (the 802.11n logical link) |
 //! | [`radio`]    | `RadioBus` / `SimRadioFace` — the named-radio simulated face (engine `Face`) |
+//! | [`telemetry`] | `MetricsLog` / `SimSpanEmitter` — Runtime-clocked metric gauges + OTLP spans |
 //! | [`topology`] | `Simulation` builder + `RunningSimulation` live fabric |
 //! | [`tracer`]   | `SimTracer` — structured event capture for analysis |
 
@@ -53,6 +54,7 @@ pub mod profile;
 pub mod radio;
 pub mod sim_face;
 pub mod sim_link;
+pub mod telemetry;
 pub mod topology;
 pub mod tracer;
 pub mod world;
@@ -70,6 +72,7 @@ pub use medium::{
 pub use profile::NodeProfile;
 pub use sim_face::SimFace;
 pub use sim_link::{LinkConfig, SimLink};
+pub use telemetry::{MetricsLog, MetricsSample, SimSpanEmitter, sample_engine};
 pub use topology::{NodeId, RunningSimulation, Simulation};
 pub use tracer::{EventKind, SimEvent, SimTracer};
 pub use world::{

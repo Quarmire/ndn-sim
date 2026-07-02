@@ -19,7 +19,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ndn_sim::{
     ControlPlane, DesKernel, KernelSpec, NodeId, Recording, RunningSimulation, Scenario, SimKernel,
-    SimMcp, Simulation, VirtualKernel, WallClockKernel,
+    SimMcp, Simulation, ValidationSpec, VirtualKernel, WallClockKernel, run_validation,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -53,6 +53,14 @@ enum Command {
     Mcp { scenario: Option<PathBuf> },
     /// Rebuild the recorded scenario and replay its command journal, then print the topology.
     Replay { recording: PathBuf },
+    /// Run a validation spec (scenario + fault schedule + property assertions) headless and report
+    /// pass/fail. Exits non-zero on failure — drop it straight into CI.
+    Check {
+        spec: PathBuf,
+        /// Emit the full report as JSON instead of the human summary.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -64,6 +72,7 @@ fn main() -> Result<()> {
         }
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
+        Command::Check { spec, json } => cmd_check(spec, json),
     }
 }
 
@@ -138,6 +147,20 @@ fn cmd_run(path: PathBuf, secs: u64) -> Result<()> {
             "metrics": metrics,
         }))?
     );
+    Ok(())
+}
+
+fn cmd_check(path: PathBuf, json: bool) -> Result<()> {
+    let spec = ValidationSpec::from_toml(&std::fs::read_to_string(&path)?)?;
+    let report = run_validation(&spec)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.summary());
+    }
+    if !report.passed {
+        std::process::exit(1);
+    }
     Ok(())
 }
 

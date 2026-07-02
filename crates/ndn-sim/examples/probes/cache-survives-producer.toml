@@ -1,0 +1,97 @@
+# PROBE (currently FAILS — an open finding, not a passing check). See probes/README.md.
+#
+# Finding: forwarders in the sim do not populate their Content Store on the forwarding path. A relay
+# that forwards 20 Data objects reports cs_inserts == 0, so nothing is cached and content cannot
+# outlive its producer. Disruption-tolerant, in-network caching — the property that most sharply
+# distinguishes content-centric networking from host-centric transport — is not observable here yet.
+#
+#   producer(0) ── relay(1) ── consumerA(2)
+#                     │
+#                  consumerB(3)
+#
+# 1. consumerA fetches /svc/0..19 through the relay (which SHOULD cache every Data).
+# 2. At t=2.5s the producer is killed.
+# 3. At t=3s a fresh consumerB fetches the SAME /svc/0..19 — which should be served from the relay's
+#    cache. Today consumerB gets nothing (cs_hits == 0), because step 1 never populated the cache.
+#
+# What would flip this green: forwarders inserting forwarded Data into the CS (a forwarder-side fix
+# in ndn-engine), plus optionally a scenario CS knob to size/enable it per node.
+
+duration_ms = 6000
+kernels = ["des"]
+
+[scenario.kernel]
+kind = "des"
+
+[[scenario.nodes]]
+label = "producer"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/svc"
+content = "cached-and-durable"
+
+[[scenario.nodes]]
+label = "relay"
+
+[[scenario.nodes]]
+label = "consumerA"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/svc"
+count = 20
+interval_ms = 100
+
+[[scenario.nodes]]
+label = "consumerB"
+
+[[scenario.links]]
+a = 0
+b = 1
+delay_ms = 3
+[[scenario.links]]
+a = 1
+b = 2
+delay_ms = 3
+[[scenario.links]]
+a = 1
+b = 3
+delay_ms = 3
+
+[[scenario.routes]]
+node = 2
+prefix = "/svc"
+nexthop = 1
+[[scenario.routes]]
+node = 1
+prefix = "/svc"
+nexthop = 0
+[[scenario.routes]]
+node = 3
+prefix = "/svc"
+nexthop = 1
+
+[[faults]]
+at_ms = 2500
+fault = { kind = "remove_node", node = 0 }
+
+[[faults]]
+at_ms = 3000
+fault = { kind = "spawn_app", node = 3, app = { app = "consumer", prefix = "/svc", count = 20, interval_ms = 100 } }
+
+[[properties]]
+name = "consumerA fetched all 20 from the live producer"
+probe = { kind = "app_successes", app = 1 }
+cmp = "ge"
+value = 20
+
+[[properties]]
+name = "consumerB fetched all 20 AFTER the producer died (served from cache)"
+probe = { kind = "app_successes", app = 2 }
+cmp = "ge"
+value = 20
+
+[[properties]]
+name = "the relay actually cached forwarded Data"
+probe = { kind = "metric", field = "cs_inserts", node = 1 }
+cmp = "ge"
+value = 20

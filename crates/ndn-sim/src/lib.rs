@@ -76,6 +76,8 @@ pub mod sim_link;
 pub mod telemetry;
 pub mod topology;
 pub mod tracer;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod validate;
 pub mod world;
 
 pub use app::{AppHandle, AppId, AppSpec};
@@ -112,6 +114,11 @@ pub use telemetry::{
 };
 pub use topology::{NodeId, RunningSimulation, Simulation};
 pub use tracer::{EventKind, SimEvent, SimTracer};
+#[cfg(not(target_arch = "wasm32"))]
+pub use validate::{
+    Agg, CheckKernel, Cmp, Fault, MetricField, Observation, Probe, Property, PropertyResult,
+    RunReport, ScheduledFault, ValidationReport, ValidationSpec, run_validation,
+};
 pub use world::{
     Environment, FreeSpace, LinearMobility, MobilityModel, Position, StaticMobility,
     UniformAttenuation, WaypointMobility, World, WorldView,

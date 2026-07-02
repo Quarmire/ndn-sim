@@ -1,0 +1,81 @@
+# A validation that UNRELATED topology churn does not disrupt an active flow.
+#
+#   consumer(0) ── relay(1) ── producer(2)
+#                     │
+#                  standby(3)   ← attached to the relay, but no traffic routes through it
+#
+# The consumer's flow runs 0→1→2. One second in we tear the standby node out of the topology.
+# A correct forwarder localizes the disruption: the active consumer↔producer flow completes all 30
+# fetches, unaffected. (Contrast live *failover*, which best-route does not yet do — see
+# examples/probes/relay-failover.toml.)
+#
+# Run it:   ndn-lab check examples/checks/churn-tolerated.toml
+
+duration_ms = 5000
+kernels = ["des", "virtual"]
+
+[scenario.kernel]
+kind = "des"
+
+[[scenario.nodes]]
+label = "consumer"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/demo"
+count = 30
+interval_ms = 100
+
+[[scenario.nodes]]
+label = "relay"
+
+[[scenario.nodes]]
+label = "producer"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/demo"
+content = "steady"
+
+[[scenario.nodes]]
+label = "standby"
+
+[[scenario.links]]
+a = 0
+b = 1
+delay_ms = 2
+
+[[scenario.links]]
+a = 1
+b = 2
+delay_ms = 2
+
+[[scenario.links]]
+a = 1
+b = 3
+delay_ms = 2
+
+[[scenario.routes]]
+node = 0
+prefix = "/demo"
+nexthop = 1
+
+[[scenario.routes]]
+node = 1
+prefix = "/demo"
+nexthop = 2
+
+# Rip the off-path standby out mid-flow.
+[[faults]]
+at_ms = 1000
+fault = { kind = "remove_node", node = 3 }
+
+[[properties]]
+name = "the active flow completes all 30 fetches despite the churn"
+probe = { kind = "app_successes", app = 0 }
+cmp = "ge"
+value = 30
+
+[[properties]]
+name = "no PIT state leaks after the node removal"
+probe = { kind = "metric", field = "pit_depth", agg = "max" }
+cmp = "eq"
+value = 0

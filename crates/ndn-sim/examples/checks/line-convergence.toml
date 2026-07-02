@@ -1,0 +1,78 @@
+# The flagship validation: a 3-node line converges and forwards with integrity — proven identically
+# on BOTH deterministic executors (DES and the tokio paused-clock Virtual kernel), with their
+# counters cross-checked for agreement.
+#
+#   consumer(0) ── relay(1) ── producer(2)
+#
+# Run it:   ndn-lab check examples/checks/line-convergence.toml
+#
+# This is the "does the network actually work, deterministically" gate — the baseline every other
+# check builds on. No faults; pure convergence + integrity.
+
+duration_ms = 4000
+kernels = ["des", "virtual"]
+
+[scenario.kernel]
+kind = "des"
+
+[[scenario.nodes]]
+label = "consumer"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/demo"
+count = 30
+interval_ms = 100
+
+[[scenario.nodes]]
+label = "relay"
+
+[[scenario.nodes]]
+label = "producer"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/demo"
+content = "converged"
+
+[[scenario.links]]
+a = 0
+b = 1
+delay_ms = 2
+
+[[scenario.links]]
+a = 1
+b = 2
+delay_ms = 2
+
+[[scenario.routes]]
+node = 0
+prefix = "/demo"
+nexthop = 1
+
+[[scenario.routes]]
+node = 1
+prefix = "/demo"
+nexthop = 2
+
+[[properties]]
+name = "consumer fetches every one of the 30 segments"
+probe = { kind = "app_successes", app = 0 }
+cmp = "ge"
+value = 30
+
+[[properties]]
+name = "no Interest is ever dropped at egress"
+probe = { kind = "metric", field = "out_drops", agg = "sum" }
+cmp = "eq"
+value = 0
+
+[[properties]]
+name = "no PIT state leaks (every Interest is satisfied or expires)"
+probe = { kind = "metric", field = "pit_depth", agg = "max" }
+cmp = "eq"
+value = 0
+
+[[properties]]
+name = "the producer answered all 30 Interests"
+probe = { kind = "metric", field = "out_data", node = 2 }
+cmp = "ge"
+value = 30

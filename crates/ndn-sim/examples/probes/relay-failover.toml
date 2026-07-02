@@ -1,0 +1,99 @@
+# PROBE (currently FAILS — an open finding, not a passing check). See probes/README.md.
+#
+# Finding: the default best-route strategy does not fail over to an alternate next-hop mid-flow,
+# and the consumer app does not retransmit a timed-out segment. When the in-use relay dies, the
+# consumer stalls even though a fully disjoint second path exists.
+#
+# Topology (a diamond — two disjoint paths to the producer):
+#
+#         relayA(1)
+#        /         \
+#   consumer(0)   producer(3)
+#        \         /
+#         relayB(2)
+#
+# The consumer has FIB next-hops via BOTH relays. One second in we kill relayA. A failover-capable
+# forwarder (multicast, or best-route with retransmit-on-timeout) would recover via relayB and the
+# consumer would still complete all 30 fetches. Today it does not — it completes only the ~9 it got
+# before the failure.
+#
+# What would flip this green: a per-prefix strategy knob in the scenario model (e.g. `strategy =
+# "multicast"` on a node/prefix) so the DUT can be configured with a failover-capable strategy —
+# the next axis-2 platform addition.
+
+duration_ms = 6000
+kernels = ["des"]
+
+[scenario.kernel]
+kind = "des"
+
+[[scenario.nodes]]
+label = "consumer"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/svc"
+count = 30
+interval_ms = 100
+
+[[scenario.nodes]]
+label = "relayA"
+
+[[scenario.nodes]]
+label = "relayB"
+
+[[scenario.nodes]]
+label = "producer"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/svc"
+content = "resilient"
+
+[[scenario.links]]
+a = 0
+b = 1
+delay_ms = 3
+[[scenario.links]]
+a = 1
+b = 3
+delay_ms = 3
+[[scenario.links]]
+a = 0
+b = 2
+delay_ms = 3
+[[scenario.links]]
+a = 2
+b = 3
+delay_ms = 3
+
+[[scenario.routes]]
+node = 0
+prefix = "/svc"
+nexthop = 1
+[[scenario.routes]]
+node = 0
+prefix = "/svc"
+nexthop = 2
+[[scenario.routes]]
+node = 1
+prefix = "/svc"
+nexthop = 3
+[[scenario.routes]]
+node = 2
+prefix = "/svc"
+nexthop = 3
+
+[[faults]]
+at_ms = 1000
+fault = { kind = "remove_node", node = 1 }
+
+[[properties]]
+name = "consumer completes all 30 fetches despite the relay failure"
+probe = { kind = "app_successes", app = 0 }
+cmp = "ge"
+value = 30
+
+[[properties]]
+name = "no PIT state leaks after failover"
+probe = { kind = "metric", field = "pit_depth", agg = "max" }
+cmp = "eq"
+value = 0

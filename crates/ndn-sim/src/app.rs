@@ -28,7 +28,7 @@ use crate::NodeId;
 pub struct AppId(pub usize);
 
 /// A declarative app — carried in scenarios and control commands.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "app", rename_all = "snake_case")]
 pub enum AppSpec {
     /// Serve `prefix`, answering every Interest under it with `content` (default `"ndn-lab"`).

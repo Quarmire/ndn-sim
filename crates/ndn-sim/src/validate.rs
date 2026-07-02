@@ -206,24 +206,67 @@ impl Cmp {
 }
 
 /// A named assertion: `probe <cmp> value` must hold at the end of the run.
+///
+/// Under a seed sweep the assertion is checked on every seed. `hold_ratio` (default `1.0`) is the
+/// fraction of seeds on which it must hold for the property to pass: `1.0` is an **invariant** (must
+/// hold on every realization); a value like `0.9` makes it a **statistical** property (holds on at
+/// least 90% of realizations) — the kind of claim a single deterministic run cannot make.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Property {
     pub name: String,
     pub probe: Probe,
     pub cmp: Cmp,
     pub value: f64,
+    #[serde(default = "default_hold_ratio")]
+    pub hold_ratio: f64,
+}
+
+fn default_hold_ratio() -> f64 {
+    1.0
 }
 
 impl Property {
-    fn evaluate(&self, obs: &Observation) -> PropertyResult {
+    /// Whether the property holds on one observation, plus the observed probe value.
+    fn check(&self, obs: &Observation) -> (Option<f64>, bool) {
         let observed = self.probe.eval(obs);
-        let passed = observed.map(|o| self.cmp.test(o, self.value)).unwrap_or(false);
+        let held = observed.map(|o| self.cmp.test(o, self.value)).unwrap_or(false);
+        (observed, held)
+    }
+
+    /// Aggregate the property across a sweep's observations into a verdict.
+    fn evaluate(&self, obs: &[Observation]) -> PropertyResult {
+        let mut values: Vec<f64> = Vec::new();
+        let mut held = 0u64;
+        for o in obs {
+            let (observed, ok) = self.check(o);
+            if let Some(v) = observed {
+                values.push(v);
+            }
+            if ok {
+                held += 1;
+            }
+        }
+        let total = obs.len() as u64;
+        let ratio = if total == 0 { 0.0 } else { held as f64 / total as f64 };
+        let (observed_min, observed_max, observed_mean) = if values.is_empty() {
+            (None, None, None)
+        } else {
+            let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+            let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            (Some(min), Some(max), Some(mean))
+        };
         PropertyResult {
             name: self.name.clone(),
-            observed,
             cmp: self.cmp,
             threshold: self.value,
-            passed,
+            hold_ratio: self.hold_ratio,
+            held,
+            total,
+            observed_min,
+            observed_max,
+            observed_mean,
+            passed: ratio >= self.hold_ratio,
         }
     }
 }
@@ -363,6 +406,15 @@ pub struct ValidationSpec {
     /// agreement.
     #[serde(default = "default_kernels")]
     pub kernels: Vec<CheckKernel>,
+    /// World seeds to sweep — each draws an independent random realization (loss/jitter/erasure).
+    /// Default `[0]` (a single deterministic run). List several (e.g. `[0,1,2,3,4]`) to check
+    /// statistical properties across realizations. A property's `hold_ratio` is measured over these.
+    #[serde(default = "default_seeds")]
+    pub seeds: Vec<u64>,
+}
+
+fn default_seeds() -> Vec<u64> {
+    vec![0]
 }
 
 impl ValidationSpec {
@@ -392,42 +444,64 @@ pub struct Observation {
     pub app_successes: BTreeMap<usize, u64>,
 }
 
-/// The verdict for one [`Property`] on one run.
+/// The verdict for one [`Property`], aggregated across a kernel's seed sweep.
 #[derive(Clone, Debug, Serialize)]
 pub struct PropertyResult {
     pub name: String,
-    /// The observed probe value, or `None` if the probe referenced a missing app/node.
-    pub observed: Option<f64>,
     pub cmp: Cmp,
     pub threshold: f64,
+    /// The required fraction of seeds on which the property must hold.
+    pub hold_ratio: f64,
+    /// Seeds on which the property held / total seeds run.
+    pub held: u64,
+    pub total: u64,
+    /// Observed probe value range across the sweep (`None` if the probe was never observable).
+    pub observed_min: Option<f64>,
+    pub observed_max: Option<f64>,
+    pub observed_mean: Option<f64>,
     pub passed: bool,
 }
 
 impl PropertyResult {
-    /// A one-line human summary, e.g. `PASS  consumer completes (20 >= 20)`.
+    /// A one-line human summary. Single-seed reads `PASS  name (20 >= 20)`; a sweep reads
+    /// `PASS  name (held 5/5; obs 42..53 mean 48.6 >= 42)`.
     pub fn summary(&self) -> String {
         let verdict = if self.passed { "PASS" } else { "FAIL" };
-        let observed = self
-            .observed
-            .map(|o| format!("{o}"))
-            .unwrap_or_else(|| "<unobserved>".to_string());
-        format!(
-            "{verdict}  {} ({observed} {} {})",
-            self.name,
-            self.cmp.symbol(),
-            self.threshold
-        )
+        let obs = match (self.observed_min, self.observed_max, self.observed_mean) {
+            (Some(mn), Some(mx), Some(mean)) if self.total > 1 => {
+                format!("obs {mn}..{mx} mean {mean:.1}")
+            }
+            (Some(mn), _, _) => format!("{mn}"),
+            _ => "<unobserved>".to_string(),
+        };
+        if self.total > 1 {
+            format!(
+                "{verdict}  {} (held {}/{}; {obs} {} {}, need {:.0}%)",
+                self.name,
+                self.held,
+                self.total,
+                self.cmp.symbol(),
+                self.threshold,
+                self.hold_ratio * 100.0,
+            )
+        } else {
+            format!("{verdict}  {} ({obs} {} {})", self.name, self.cmp.symbol(), self.threshold)
+        }
     }
 }
 
-/// The result of one run on one kernel.
+/// The result of one kernel's seed sweep.
 #[derive(Clone, Debug, Serialize)]
 pub struct RunReport {
     pub kernel: String,
+    /// The seeds swept on this kernel.
+    pub seeds: Vec<u64>,
+    /// Property verdicts aggregated across the sweep.
     pub properties: Vec<PropertyResult>,
     pub passed: bool,
-    /// Terminal metrics (for cross-kernel agreement + inspection).
-    pub metrics: Vec<MetricsSample>,
+    /// Terminal metrics per seed (for cross-kernel agreement + inspection).
+    #[serde(skip)]
+    pub seed_metrics: Vec<(u64, Vec<MetricsSample>)>,
 }
 
 /// The overall verdict across all requested kernels.
@@ -449,8 +523,13 @@ impl ValidationReport {
     pub fn summary(&self) -> String {
         let mut out = String::new();
         for run in &self.runs {
+            let sweep = if run.seeds.len() > 1 {
+                format!(" ({} seeds)", run.seeds.len())
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "[{}] {}\n",
+                "[{}]{sweep} {}\n",
                 run.kernel,
                 if run.passed { "PASS" } else { "FAIL" }
             ));
@@ -489,31 +568,50 @@ pub fn run_validation(spec: &ValidationSpec) -> Result<ValidationReport> {
     } else {
         spec.kernels.clone()
     };
+    let seeds = if spec.seeds.is_empty() {
+        default_seeds()
+    } else {
+        spec.seeds.clone()
+    };
 
     let mut runs = Vec::new();
     for ck in &kernels {
-        let obs = run_once(spec, *ck)?;
+        // Sweep every seed on this kernel; aggregate each property over the realizations.
+        let mut observations: Vec<Observation> = Vec::with_capacity(seeds.len());
+        let mut seed_metrics: Vec<(u64, Vec<MetricsSample>)> = Vec::with_capacity(seeds.len());
+        for &seed in &seeds {
+            let obs = run_once(spec, *ck, seed)?;
+            seed_metrics.push((seed, obs.metrics.clone()));
+            observations.push(obs);
+        }
         let properties: Vec<PropertyResult> =
-            spec.properties.iter().map(|p| p.evaluate(&obs)).collect();
+            spec.properties.iter().map(|p| p.evaluate(&observations)).collect();
         let passed = properties.iter().all(|p| p.passed);
         runs.push(RunReport {
             kernel: ck.name().to_string(),
+            seeds: seeds.clone(),
             properties,
             passed,
-            metrics: obs.metrics,
+            seed_metrics,
         });
     }
 
-    // Cross-executor agreement: compare counters across kernels, ignoring virtual timestamps
-    // (the two schedulers advance the clock differently; only the *counts* must agree).
+    // Cross-executor agreement: for each seed, the counters must match across kernels (ignoring
+    // virtual timestamps — the two schedulers advance the clock differently). A seed diverging
+    // across executors is a finding: the two schedulers disagree about what the network did.
     let (cross_kernel_agree, cross_kernel_divergences) = if runs.len() > 1 {
-        let base = normalize_time(&runs[0].metrics);
+        let base = &runs[0];
         let mut divergences = Vec::new();
         for r in &runs[1..] {
-            let diff = compare_metrics(&base, &normalize_time(&r.metrics));
-            if !diff.identical {
-                for d in diff.divergences {
-                    divergences.push(format!("{} vs {}: {d}", runs[0].kernel, r.kernel));
+            for ((seed, base_m), (_, cand_m)) in base.seed_metrics.iter().zip(&r.seed_metrics) {
+                let diff = compare_metrics(&normalize_time(base_m), &normalize_time(cand_m));
+                if !diff.identical {
+                    for d in diff.divergences {
+                        divergences.push(format!(
+                            "{} vs {} (seed {seed}): {d}",
+                            base.kernel, r.kernel
+                        ));
+                    }
                 }
             }
         }
@@ -543,10 +641,11 @@ fn normalize_time(samples: &[MetricsSample]) -> Vec<MetricsSample> {
         .collect()
 }
 
-/// Build + drive the scenario on one kernel, apply the fault schedule at virtual instants, and
-/// capture the terminal [`Observation`].
-fn run_once(spec: &ValidationSpec, kernel: CheckKernel) -> Result<Observation> {
-    let scenario = spec.scenario.clone();
+/// Build + drive the scenario on one kernel at one `seed`, apply the fault schedule at virtual
+/// instants, and capture the terminal [`Observation`].
+fn run_once(spec: &ValidationSpec, kernel: CheckKernel, seed: u64) -> Result<Observation> {
+    let mut scenario = spec.scenario.clone();
+    scenario.seed = seed;
     let faults = spec.faults.clone();
     let duration_ms = spec.duration_ms;
 
@@ -670,6 +769,7 @@ value = 0
             probe: Probe::AppSuccesses { app: 0 },
             cmp: Cmp::Ge,
             value: 1_000_000.0,
+            hold_ratio: 1.0,
         });
         let report = run_validation(&spec).unwrap();
         assert!(!report.passed, "expected FAIL:\n{}", report.summary());
@@ -680,6 +780,88 @@ value = 0
         let spec = ValidationSpec::from_toml(LINE).unwrap();
         let again = ValidationSpec::from_toml(&spec.to_toml().unwrap()).unwrap();
         assert_eq!(spec.to_json().unwrap(), again.to_json().unwrap());
+    }
+
+    /// A lossy link — the seed sweep should draw *different* realizations.
+    const LOSSY: &str = r#"
+duration_ms = 4000
+kernels = ["des"]
+seeds = [0, 1, 2, 3]
+
+[scenario.kernel]
+kind = "des"
+
+[[scenario.nodes]]
+label = "consumer"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/demo"
+count = 20
+interval_ms = 15
+lifetime_ms = 150
+
+[[scenario.nodes]]
+label = "producer"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/demo"
+content = "x"
+
+[[scenario.links]]
+a = 0
+b = 1
+delay_ms = 2
+loss_rate = 0.2
+
+[[scenario.routes]]
+node = 0
+prefix = "/demo"
+nexthop = 1
+
+[[properties]]
+name = "floor holds every realization"
+probe = { kind = "app_successes", app = 0 }
+cmp = "ge"
+value = 5
+hold_ratio = 1.0
+"#;
+
+    #[test]
+    fn seed_sweep_varies_realizations_and_aggregates() {
+        let spec = ValidationSpec::from_toml(LOSSY).unwrap();
+        let report = run_validation(&spec).unwrap();
+        let run = &report.runs[0];
+        assert_eq!(run.seeds.len(), 4);
+        let p = &run.properties[0];
+        assert_eq!(p.total, 4, "one observation per seed");
+        // Different seeds ⇒ different loss realizations ⇒ a non-degenerate spread.
+        assert!(
+            p.observed_min < p.observed_max,
+            "seeds should vary the completed count, got {:?}..{:?}",
+            p.observed_min,
+            p.observed_max
+        );
+    }
+
+    #[test]
+    fn hold_ratio_makes_a_property_statistical() {
+        let spec = ValidationSpec::from_toml(LOSSY).unwrap();
+        let report = run_validation(&spec).unwrap();
+        let mean = report.runs[0].properties[0].observed_mean.unwrap();
+        // A threshold just above the mean fails as an invariant (some seeds miss it) but passes as a
+        // statistical property that only a fraction of seeds must clear.
+        let mut strict = ValidationSpec::from_toml(LOSSY).unwrap();
+        strict.properties[0].value = mean + 1.0;
+        strict.properties[0].hold_ratio = 1.0;
+        assert!(!run_validation(&strict).unwrap().passed, "invariant above the mean should fail");
+
+        let mut lenient = ValidationSpec::from_toml(LOSSY).unwrap();
+        lenient.properties[0].value = mean + 1.0;
+        lenient.properties[0].hold_ratio = 0.25;
+        assert!(
+            run_validation(&lenient).unwrap().passed,
+            "a 25%-of-seeds threshold above the mean should hold"
+        );
     }
 
     #[test]

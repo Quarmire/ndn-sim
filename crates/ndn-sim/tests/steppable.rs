@@ -15,7 +15,7 @@ async fn build(session: &StepSession) -> RunningSimulation {
     sim.link(a, b, LinkConfig { delay: Duration::from_millis(1), ..LinkConfig::default() });
     sim.add_route(a, "/svc", b);
     sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("ok".into()) , freshness_ms: None }); // id 0
-    sim.add_app(a, AppSpec::Consumer { prefix: "/svc".into(), count: 0, interval_ms: 100 }); // id 1
+    sim.add_app(a, AppSpec::Consumer { prefix: "/svc".into(), count: 0, interval_ms: 100 , lifetime_ms: None }); // id 1
     sim.start().await.unwrap()
 }
 

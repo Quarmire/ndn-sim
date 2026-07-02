@@ -22,6 +22,7 @@ fn simlink_delivers_over_the_event_queue() {
             }),
             16,
             rt,
+            0,
         );
         a.send_bytes(Bytes::from_static(b"hello")).await.unwrap();
         // The 10 ms link delay is scheduled on the event queue; recv completes when the executor
@@ -48,6 +49,7 @@ fn reliable_stream_is_in_order_and_deterministic_on_des() {
                 }),
                 64,
                 rt,
+                0,
             );
             for i in 0..10u8 {
                 a.send_bytes(Bytes::copy_from_slice(&[i])).await.unwrap();

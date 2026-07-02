@@ -232,7 +232,7 @@ impl SimLink {
         profile: &FaceProfile,
         buffer: usize,
     ) -> (SimFace, SimFace) {
-        Self::pair_profiled_on(id_a, id_b, profile, buffer, ndn_runtime::default_runtime())
+        Self::pair_profiled_on(id_a, id_b, profile, buffer, ndn_runtime::default_runtime(), 0)
     }
 
     /// As [`pair_profiled`](Self::pair_profiled) but with a distinct profile per direction.
@@ -250,6 +250,7 @@ impl SimLink {
             profile_b,
             buffer,
             ndn_runtime::default_runtime(),
+            0,
         )
     }
 
@@ -262,11 +263,13 @@ impl SimLink {
         profile: &FaceProfile,
         buffer: usize,
         runtime: Arc<dyn Runtime>,
+        world_seed: u64,
     ) -> (SimFace, SimFace) {
-        Self::pair_profiled_asymmetric_on(id_a, id_b, profile, profile, buffer, runtime)
+        Self::pair_profiled_asymmetric_on(id_a, id_b, profile, profile, buffer, runtime, world_seed)
     }
 
-    /// The full form: distinct profile per direction, on a specific runtime.
+    /// The full form: distinct profile per direction, on a specific runtime, with a `world_seed`
+    /// that perturbs the faces' loss/jitter RNG (0 = the id-only default; a seed sweep varies it).
     pub fn pair_profiled_asymmetric_on(
         id_a: FaceId,
         id_b: FaceId,
@@ -274,12 +277,13 @@ impl SimLink {
         profile_b: &FaceProfile,
         buffer: usize,
         runtime: Arc<dyn Runtime>,
+        world_seed: u64,
     ) -> (SimFace, SimFace) {
         let (tx_a, rx_a) = tokio::sync::mpsc::channel(buffer);
         let (tx_b, rx_b) = tokio::sync::mpsc::channel(buffer);
         // face_a writes into tx_b → rx_b (face_b's recv); face_b writes into tx_a → rx_a.
-        let face_a = SimFace::new(id_a, tx_b, rx_a, profile_a, Arc::clone(&runtime));
-        let face_b = SimFace::new(id_b, tx_a, rx_b, profile_b, runtime);
+        let face_a = SimFace::new(id_a, tx_b, rx_a, profile_a, Arc::clone(&runtime), world_seed);
+        let face_b = SimFace::new(id_b, tx_a, rx_b, profile_b, runtime, world_seed);
         (face_a, face_b)
     }
 }

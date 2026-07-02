@@ -53,7 +53,7 @@ fn app_driven_fabric_replays_deterministically_on_des() {
             // A declared consumer fetching /svc/0../svc/4 at 10 ms cadence — all on the event queue.
             sim.add_app(
                 a,
-                AppSpec::Consumer { prefix: "/svc".into(), count: 5, interval_ms: 10 },
+                AppSpec::Consumer { prefix: "/svc".into(), count: 5, interval_ms: 10 , lifetime_ms: None },
             );
             let fabric = sim.start().await.unwrap();
 

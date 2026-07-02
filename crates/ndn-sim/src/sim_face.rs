@@ -58,8 +58,13 @@ impl SimFace {
         rx: mpsc::Receiver<Bytes>,
         profile: &FaceProfile,
         runtime: Arc<dyn Runtime>,
+        world_seed: u64,
     ) -> Self {
         let now = runtime.now();
+        // The loss/jitter stream is seeded from BOTH the face id (so two faces are independent) and
+        // a per-run `world_seed` (so a seed sweep draws a *different* realization each run). A
+        // `world_seed` of 0 reproduces the id-only seeding exactly (`id ^ 0 == id`).
+        let face_seed = mix_seed(id.0 ^ world_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         Self {
             id,
             tx,
@@ -72,7 +77,7 @@ impl SimFace {
             next_tx_ready: Mutex::new(now),
             last_delivery: Mutex::new(now),
             runtime,
-            rng: Mutex::new(StdRng::seed_from_u64(mix_seed(id.0))),
+            rng: Mutex::new(StdRng::seed_from_u64(face_seed)),
         }
     }
 }

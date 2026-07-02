@@ -1,0 +1,74 @@
+# A STATISTICAL validation over a seed sweep — a claim a single deterministic run cannot make.
+#
+#   consumer(0) ──[ 10% loss ]── producer(1)
+#
+# The single-shot consumer fetches 60 segments over a lossy link (each Interest and each Data has a
+# 10% drop chance, ~0.81 per-segment success). Each `seed` draws an independent loss realization, so
+# the completed count varies run to run (~42..53 of 60). We sweep 8 seeds and assert *statistical*
+# properties over the distribution:
+#
+#   - in EVERY realization the consumer completes at least 38/60   (hold_ratio 1.0 — an invariant)
+#   - in a majority of realizations it completes at least 45/60     (hold_ratio 0.6 — statistical)
+#
+# This is the point of the sweep: `hold_ratio` turns a per-run pass/fail into a claim about the
+# whole distribution of realizations. Deterministic on each (seed, kernel); DES and Virtual agree.
+#
+# Run it:   ndn-lab check examples/checks/loss-resilience-sweep.toml
+
+duration_ms = 40000
+kernels = ["des", "virtual"]
+seeds = [0, 1, 2, 3, 4, 5, 6, 7]
+
+[scenario.kernel]
+kind = "des"
+
+[[scenario.nodes]]
+label = "consumer"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/demo"
+count = 60
+interval_ms = 20
+lifetime_ms = 300        # short timeout so a lost segment is abandoned quickly
+
+[[scenario.nodes]]
+label = "producer"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/demo"
+content = "lossy"
+
+[[scenario.links]]
+a = 0
+b = 1
+delay_ms = 2
+loss_rate = 0.1
+
+[[scenario.routes]]
+node = 0
+prefix = "/demo"
+nexthop = 1
+
+# Invariant: every realization clears a floor.
+[[properties]]
+name = "consumer always completes at least 38/60 despite loss"
+probe = { kind = "app_successes", app = 0 }
+cmp = "ge"
+value = 38
+hold_ratio = 1.0
+
+# Statistical: a majority of realizations do much better.
+[[properties]]
+name = "a majority of realizations complete >= 45/60"
+probe = { kind = "app_successes", app = 0 }
+cmp = "ge"
+value = 45
+hold_ratio = 0.6
+
+# No leaks in any realization.
+[[properties]]
+name = "no PIT state leaks in any realization"
+probe = { kind = "metric", field = "pit_depth", agg = "max" }
+cmp = "eq"
+value = 0
+hold_ratio = 1.0

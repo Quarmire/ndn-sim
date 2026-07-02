@@ -29,6 +29,10 @@ use crate::{NodeId, SimKernel, Simulation};
 pub struct Scenario {
     #[serde(default)]
     pub kernel: KernelSpec,
+    /// World seed — perturbs every face's loss/jitter RNG and the radio erasure RNG. 0 = the
+    /// default realization; a validation seed sweep overrides it to draw independent realizations.
+    #[serde(default)]
+    pub seed: u64,
     #[serde(default)]
     pub environment: EnvSpec,
     #[serde(default)]
@@ -239,7 +243,7 @@ impl Scenario {
     /// For a `virtual` scenario, call this *inside* `VirtualKernel::run` with that kernel; for
     /// `wall_clock`, pass a [`WallClockKernel`](crate::WallClockKernel).
     pub fn build(&self, kernel: Arc<dyn SimKernel>) -> Result<Simulation> {
-        let mut sim = Simulation::new().kernel(kernel);
+        let mut sim = Simulation::new().kernel(kernel).seed(self.seed);
 
         if let Some(radio) = &self.radio {
             sim = sim.with_radio_medium(radio.propagation.build(), radio.seed);

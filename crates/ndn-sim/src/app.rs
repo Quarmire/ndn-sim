@@ -51,6 +51,10 @@ pub enum AppSpec {
         count: u64,
         #[serde(default)]
         interval_ms: u64,
+        /// Per-Interest lifetime (ms, default 4000) — this single-shot consumer waits it out on a
+        /// lost segment before moving on, so a shorter lifetime makes a lossy link converge faster.
+        #[serde(default)]
+        lifetime_ms: Option<u64>,
     },
 }
 
@@ -142,7 +146,7 @@ pub(crate) fn spawn_app(
             });
             Ok(AppHandle { id, node, kind: "producer", cancel, successes })
         }
-        AppSpec::Consumer { prefix: pfx, count, interval_ms } => {
+        AppSpec::Consumer { prefix: pfx, count, interval_ms, lifetime_ms } => {
             let mut consumer = engine.app_consumer(cancel.clone());
             let pfx = pfx.clone();
             let count = *count;
@@ -151,13 +155,14 @@ pub(crate) fn spawn_app(
                 (0, 0) => Duration::from_millis(50),
                 (ms, _) => Duration::from_millis(ms),
             };
+            let lifetime = Duration::from_millis(lifetime_ms.unwrap_or(4000));
             let fetched = Arc::clone(&successes);
             let cancel2 = cancel.clone();
             ndn_app::rt::spawn(async move {
                 let mut i = 0u64;
                 while !cancel2.is_cancelled() && (count == 0 || i < count) {
                     if let Ok(name) = format!("{pfx}/{i}").parse::<Name>() {
-                        let builder = InterestBuilder::new(name).lifetime(Duration::from_secs(4));
+                        let builder = InterestBuilder::new(name).lifetime(lifetime);
                         if consumer.fetch_with(builder).await.is_ok() {
                             fetched.fetch_add(1, Ordering::Relaxed);
                         }

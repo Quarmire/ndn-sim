@@ -77,6 +77,9 @@ pub struct Simulation {
     pending_apps: Vec<(NodeId, AppSpec)>,
     /// Per-node/prefix strategy choices applied once every engine is up.
     strategies: Vec<PendingStrategy>,
+    /// Perturbs every face's loss/jitter RNG (and the radio erasure RNG). 0 = the default single
+    /// realization; a validation seed sweep varies it to draw independent random realizations.
+    seed: u64,
 }
 
 impl Default for Simulation {
@@ -98,7 +101,16 @@ impl Simulation {
             radio_nodes: Vec::new(),
             pending_apps: Vec::new(),
             strategies: Vec::new(),
+            seed: 0,
         }
+    }
+
+    /// Set the world seed — perturbs every simulated face's loss/jitter RNG (and the radio erasure
+    /// RNG) so a different `seed` draws an independent random realization. Determinism is preserved:
+    /// the same seed always replays identically. Default 0.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
     }
 
     /// Declare an app to spawn on `node` at [`start`](Self::start) (a producer/consumer). The
@@ -269,7 +281,15 @@ impl Simulation {
             if !nodes.contains_key(&link.a) || !nodes.contains_key(&link.b) {
                 bail!("link references non-existent node");
             }
-            wire_link(&nodes, &mut links, link.a, link.b, &link.profile, self.channel_buffer);
+            wire_link(
+                &nodes,
+                &mut links,
+                link.a,
+                link.b,
+                &link.profile,
+                self.channel_buffer,
+                self.seed,
+            );
         }
 
         for route in &self.routes {
@@ -306,7 +326,11 @@ impl Simulation {
         // node — publishing LinkSignals into that node's own engine signal table.
         let mut radio_faces: HashMap<NodeId, FaceId> = HashMap::new();
         let kernel_runtime = self.kernel.runtime();
+        let world_seed = self.seed;
         let radio_bus = self.radio.map(|(propagation, seed)| {
+            // Fold the world seed into the radio erasure seed so a sweep varies radio realizations
+            // too (world_seed 0 leaves the declared radio seed untouched).
+            let seed = seed ^ world_seed;
             // Build the bus on the fabric's kernel runtime so radio delivery timing rides the same
             // clock/executor as the engines (including the discrete-event kernel).
             let bus = RadioBus::new_on(
@@ -358,6 +382,7 @@ impl Simulation {
             inner: Mutex::new(FabricInner { nodes, links }),
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
+            seed: self.seed,
         })
     }
 }
@@ -382,6 +407,7 @@ fn wire_link(
     b: NodeId,
     profile: &FaceProfile,
     channel_buffer: usize,
+    world_seed: u64,
 ) {
     let ea = &nodes[&a];
     let eb = &nodes[&b];
@@ -389,8 +415,14 @@ fn wire_link(
     let id_b = eb.engine.faces().alloc_id();
     // Build the link faces on the fabric's kernel runtime so their delivery timing rides the
     // same clock/executor as the engines — including the discrete-event kernel.
-    let (face_a, face_b) =
-        SimLink::pair_profiled_on(id_a, id_b, profile, channel_buffer, ea.engine.runtime());
+    let (face_a, face_b) = SimLink::pair_profiled_on(
+        id_a,
+        id_b,
+        profile,
+        channel_buffer,
+        ea.engine.runtime(),
+        world_seed,
+    );
     ea.engine.add_face(face_a, ea.handle.cancel_token());
     eb.engine.add_face(face_b, eb.handle.cancel_token());
     links.insert((a, b), id_a);
@@ -417,6 +449,8 @@ pub struct RunningSimulation {
     inner: Mutex<FabricInner>,
     channel_buffer: usize,
     next_node: AtomicUsize,
+    /// The world seed, so links added at runtime (`connect`) seed their RNG consistently.
+    seed: u64,
 }
 
 impl RunningSimulation {
@@ -683,7 +717,7 @@ impl RunningSimulation {
             bail!("connect references non-existent node");
         }
         let FabricInner { nodes, links } = &mut *guard;
-        wire_link(nodes, links, a, b, &profile, self.channel_buffer);
+        wire_link(nodes, links, a, b, &profile, self.channel_buffer, self.seed);
         drop(guard);
         self.tracer.record_now(a.0, None, EventKind::Custom("link".into()), b.to_string(), None);
         Ok(())

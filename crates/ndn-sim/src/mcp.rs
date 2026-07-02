@@ -253,6 +253,7 @@ impl SimMcp {
                         prefix,
                         count: args.get("count").and_then(Value::as_u64).unwrap_or(0),
                         interval_ms: args.get("interval_ms").and_then(Value::as_u64).unwrap_or(0),
+                        lifetime_ms: args.get("lifetime_ms").and_then(Value::as_u64),
                     },
                     other => return Err(format!("unknown app kind: {other}")),
                 };

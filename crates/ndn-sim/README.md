@@ -26,10 +26,17 @@ ndn-lab run   examples/line.toml --secs 2       # build + run, print topology + 
 ndn-lab run   examples/line.toml --capture a.json   # capture a run for diffing
 ndn-lab diff  a.json b.json                     # pinpoint + explain where two runs diverge
 ndn-lab check examples/checks/line-convergence.toml # validate (faults + properties); CI-ready, exits non-zero on fail
+ndn-lab gen   grid --rows 4 --cols 5 -o grid.toml   # generate a topology (line/ring/star/grid/mesh/tree/random)
+ndn-lab step  examples/des-line.toml            # interactively step the DES event queue (deterministic debugger)
 ndn-lab serve examples/line.toml                # control plane: TCP + WebSocket JSON-RPC + NDN-native
 ndn-lab mcp   [scenario.toml]                   # MCP server over stdio (point Claude at it)
 ndn-lab replay recording.json                   # rebuild + replay a recorded session
 ```
+
+`ndn-lab gen <shape>` writes a ready-to-run scenario (add `--toward /demo@0` for shortest-path
+routes toward a producer). `ndn-lab step <scenario>` opens a REPL on the deterministic DES event
+queue — `step [n]` / `run [ms]` / `until <ms>` advance the clock event-by-event, `topo` / `metrics`
+/ `where` inspect between events; fully reproducible.
 
 `ndn-lab serve` extras: `--mavlink <ep>` (+ `--launch`) for the live bidirectional co-sim session,
 `--feed <host:port>` for a JSON mobility feed, `--telemetry-ms`/`--otlp` for live/OTLP telemetry,
@@ -52,7 +59,8 @@ validate (`run_validation`) — a model composes, inspects, drives, and gates a 
 | **Faces** | per-type behavioral catalogue (`FaceProfile`: udp/tcp/quic/ws/ethernet/multicast/shm/serial/ble/nan) — the engine sees each type's `FaceKind`/MTU/loss/ordering |
 | **Control plane** | one declarative API (`SimCommand`/`SimQuery`) over three transports: in-proc, TCP JSON-RPC, and NDN-native `/localhop/sim/control` + a notification stream |
 | **Apps** | declarative producers/consumers (`AppSpec`) — "a producer of /foo here, a consumer there" |
-| **Scenarios** | a whole sim as one diff-able TOML/JSON artifact (`Scenario`) |
+| **Scenarios** | a whole sim as one diff-able TOML/JSON artifact (`Scenario`); `topo::{line,ring,star,grid,mesh,tree,random}` generators + shortest-path routing |
+| **Stepping** | `Stepper` — drive a fabric on the DES event queue one event at a time, inspecting between steps (the deterministic debugger; `ndn-lab step`) |
 | **Record / replay** | journal live commands (`Recording`) → replay a session deterministically |
 | **Telemetry** | Runtime-clocked metric gauges + OTLP spans; engine tracing captured on the virtual clock (`SpanLog`, causal `why_did`); OTLP/HTTP export |
 | **GUI seam** | `SceneSnapshot` (`world_snapshot()`) + SVG renderers — headless; a GUI is a client of the control API |
@@ -84,10 +92,10 @@ or `VirtualKernel`; see `tests/determinism.rs` for the replay gate.
 ## Known limitations
 
 - **Scenario export from a live fabric is not yet available** — you can author a `Scenario` (TOML/JSON)
-  and round-trip it (`to_toml`/`from_toml`), but there is no `export-scenario` that reconstructs one
-  from a running fabric built via MCP/RPC.
-- **Interactive DES stepping isn't projected as a surface** — `DesSession` supports event-granular
-  `step()`/`run_until()`, but there's no CLI/MCP verb to pause/step/seek a live session yet.
+  and round-trip it (`to_toml`/`from_toml`) or generate one (`topo::*` / `ndn-lab gen`), but there is
+  no `export-scenario` that reconstructs one from a running fabric built via MCP/RPC.
+- **Backward seek (time-travel) isn't available** — `ndn-lab step` advances event-by-event
+  (`step`/`run`/`until`) but can't rewind; that needs state checkpointing.
 - **Per-node `EngineConfig` isn't serialized** in scenarios (nodes use the default engine config).
 - **Mobility via live commands** covers static (`move_node`) and linear (`set_linear_mobility`);
   `WaypointMobility` exists as a model but isn't reachable through a command.

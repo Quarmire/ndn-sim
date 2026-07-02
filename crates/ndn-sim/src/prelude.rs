@@ -33,8 +33,8 @@ pub use crate::{DesKernel, RealTimeKernel, SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::{SteppableKernel, VirtualKernel};
 
-// Declarative artifacts: whole-sim scenarios + validation specs.
-pub use crate::{Scenario, ScenarioLink};
+// Declarative artifacts: whole-sim scenarios (+ the `topo` generators) + validation specs.
+pub use crate::{Scenario, ScenarioLink, Stepper, topo};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::{Property, ValidationReport, ValidationSpec, run_validation, run_validation_against};
 

@@ -244,6 +244,25 @@ impl SimMcp {
                     "properties": { "spec": { "type": "string", "description": "TOML of a ValidationSpec" } },
                     "required": ["spec"]
                 }
+            },
+            {
+                "name": "generate_topology",
+                "description": "Generate a topology (line/ring/star/grid/mesh/tree/random) as a ready-to-run scenario, without hand-authoring nodes/links. Returns the scenario `toml` (+ node/link/route counts) — feed it to run_validation or `ndn-lab run`. Optional `toward` (\"/prefix@node\") installs shortest-path routes so it forwards immediately.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "shape": { "type": "string", "enum": ["line", "ring", "star", "grid", "mesh", "tree", "random"] },
+                        "n": { "type": "integer", "description": "node count (line/ring/star/mesh/random)" },
+                        "rows": { "type": "integer" },
+                        "cols": { "type": "integer" },
+                        "branching": { "type": "integer", "description": "tree branching factor" },
+                        "depth": { "type": "integer", "description": "tree depth" },
+                        "prob": { "type": "number", "description": "random edge probability 0..1" },
+                        "seed": { "type": "integer", "description": "random PRNG seed" },
+                        "toward": { "type": "string", "description": "install routes for a prefix toward a node, e.g. \"/demo@0\"" }
+                    },
+                    "required": ["shape"]
+                }
             }
         ])
     }
@@ -385,6 +404,41 @@ impl SimMcp {
                     .map_err(|e| format!("validation failed to run: {e}"))?;
                 Ok(to_value(report))
             }
+            "generate_topology" => {
+                let shape = req_str(args, "shape")?;
+                let n = |d: usize| args.get("n").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(d);
+                let usize_arg = |k: &str, d: usize| {
+                    args.get(k).and_then(Value::as_u64).map(|v| v as usize).unwrap_or(d)
+                };
+                let mut scenario = match shape.as_str() {
+                    "line" => crate::topo::line(n(3)),
+                    "ring" => crate::topo::ring(n(4)),
+                    "star" => crate::topo::star(n(5)),
+                    "grid" => crate::topo::grid(usize_arg("rows", 3), usize_arg("cols", 3)),
+                    "mesh" | "full_mesh" => crate::topo::full_mesh(n(5)),
+                    "tree" => crate::topo::tree(usize_arg("branching", 2), usize_arg("depth", 3)),
+                    "random" => crate::topo::random(
+                        n(20),
+                        args.get("prob").and_then(Value::as_f64).unwrap_or(0.15),
+                        args.get("seed").and_then(Value::as_u64).unwrap_or(0),
+                    ),
+                    other => return Err(format!("unknown shape '{other}'")),
+                };
+                if let Some(spec) = args.get("toward").and_then(Value::as_str) {
+                    let (prefix, dest) = spec
+                        .rsplit_once('@')
+                        .ok_or("'toward' must be PREFIX@NODE, e.g. /demo@0")?;
+                    let dest: usize = dest.parse().map_err(|_| "'toward' node index")?;
+                    crate::topo::add_routes_toward(&mut scenario, prefix, dest);
+                }
+                let toml = scenario.to_toml().map_err(|e| format!("encode scenario: {e}"))?;
+                Ok(json!({
+                    "toml": toml,
+                    "nodes": scenario.nodes.len(),
+                    "links": scenario.links.len(),
+                    "routes": scenario.routes.len(),
+                }))
+            }
             other => Err(format!("unknown tool: {other}")),
         }
     }
@@ -522,7 +576,8 @@ fn capability_catalogue() -> Value {
     json!({
         "commands": ["spawn_node", "remove_node", "connect", "route", "move_node", "set_linear_mobility", "spawn_app", "stop_app", "cosim", "set_strategy", "route_over_radio"],
         "queries": ["topology", "metrics", "scene", "scene_svg", "explain"],
-        "tools": ["describe_topology", "query_metrics", "node_state", "capabilities", "explain_link", "why_did", "scene_svg", "spawn_node", "remove_node", "connect", "route", "move_node", "spawn_app", "stop_app", "cosim", "set_strategy", "add_radio_route", "start_recording", "get_recording", "run_validation"],
+        "tools": ["describe_topology", "query_metrics", "node_state", "capabilities", "explain_link", "why_did", "scene_svg", "spawn_node", "remove_node", "connect", "route", "move_node", "spawn_app", "stop_app", "cosim", "set_strategy", "add_radio_route", "start_recording", "get_recording", "run_validation", "generate_topology"],
+        "topology_generators": ["line", "ring", "star", "grid", "mesh", "tree", "random"],
         "apps": ["producer", "consumer"],
         "mediums": ["wired_static_channel", "wireless_medium", "radio_bus"],
         "propagation_models": ["range_threshold", "free_space_path_loss", "obstructed"],
@@ -705,5 +760,20 @@ value = 1
 "#;
         let v = mcp.call_tool("run_validation", &json!({ "spec": spec })).await.unwrap();
         assert_eq!(v["passed"], true, "the consumer fetched from the producer: {v}");
+    }
+
+    #[tokio::test]
+    async fn generate_topology_tool_emits_a_runnable_scenario() {
+        let mcp = mcp_over_fabric().await;
+        let v = mcp
+            .call_tool("generate_topology", &json!({ "shape": "grid", "rows": 3, "cols": 3, "toward": "/demo@0" }))
+            .await
+            .unwrap();
+        assert_eq!(v["nodes"], 9);
+        assert_eq!(v["routes"], 8, "every non-destination node routes toward node 0");
+        let toml = v["toml"].as_str().expect("scenario toml");
+        // The emitted TOML round-trips back into a Scenario.
+        let scenario = crate::Scenario::from_toml(toml).unwrap();
+        assert_eq!(scenario.nodes.len(), 9);
     }
 }

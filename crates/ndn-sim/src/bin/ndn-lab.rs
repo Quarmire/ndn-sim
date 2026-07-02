@@ -19,8 +19,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ndn_sim::{
     ControlPlane, DesKernel, KernelSpec, NodeId, RealTimeKernel, Recording, RunningSimulation,
-    Scenario, SimKernel, SimMcp, Simulation, ValidationSpec, VirtualKernel, WallClockKernel,
-    run_validation, run_validation_against,
+    Scenario, SimKernel, SimMcp, Simulation, Stepper, ValidationSpec, VirtualKernel, WallClockKernel,
+    run_validation, run_validation_against, topo,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -98,6 +98,43 @@ enum Command {
     Mcp { scenario: Option<PathBuf> },
     /// Rebuild the recorded scenario and replay its command journal, then print the topology.
     Replay { recording: PathBuf },
+    /// Interactively step a scenario on the deterministic DES event queue: pause between events,
+    /// inspect the topology / metrics / positions, and continue. Reads commands from stdin
+    /// (step/run/until/topo/metrics/where/help/quit) — the deterministic debugger surface.
+    Step { scenario: PathBuf },
+    /// Generate a topology (line/ring/star/grid/mesh/tree/random) as a scenario TOML — build a
+    /// 50-node grid without hand-authoring it. Writes to stdout, or a file with `-o`.
+    Gen {
+        /// line | ring | star | grid | mesh | tree | random
+        shape: String,
+        /// Node count (line/ring/star/mesh/random).
+        #[arg(long)]
+        n: Option<usize>,
+        /// Grid rows.
+        #[arg(long)]
+        rows: Option<usize>,
+        /// Grid columns.
+        #[arg(long)]
+        cols: Option<usize>,
+        /// Tree branching factor.
+        #[arg(long)]
+        branching: Option<usize>,
+        /// Tree depth.
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Random edge probability (0..1).
+        #[arg(long)]
+        prob: Option<f64>,
+        /// PRNG seed for `random` (same seed → same graph).
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        /// Install shortest-path routes for a prefix toward a node, e.g. `--toward /demo@0`.
+        #[arg(long)]
+        toward: Option<String>,
+        /// Write the scenario TOML here (default: stdout).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Run a validation spec (scenario + fault schedule + property assertions) headless and report
     /// pass/fail. Exits non-zero on failure — drop it straight into CI.
     Check {
@@ -166,6 +203,10 @@ fn main() -> Result<()> {
         )),
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
+        Command::Step { scenario } => cmd_step(scenario),
+        Command::Gen { shape, n, rows, cols, branching, depth, prob, seed, toward, out } => {
+            cmd_gen(shape, n, rows, cols, branching, depth, prob, seed, toward, out)
+        }
         Command::Check { spec, json, baseline, record_baseline } => {
             cmd_check(spec, json, baseline, record_baseline)
         }
@@ -519,5 +560,137 @@ async fn cmd_replay(path: PathBuf) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&fabric.topology())?);
 
     fabric.shutdown().await;
+    Ok(())
+}
+
+/// Interactive DES stepping REPL (reads commands from stdin, deterministic + reproducible).
+fn cmd_step(path: PathBuf) -> Result<()> {
+    use std::io::BufRead;
+
+    let scenario = read_scenario(&path)?;
+    if !scenario.kernel.is_des() {
+        eprintln!("ndn-lab: interactive stepping forces the DES kernel (the scenario's kernel is ignored)");
+    }
+    let stepper = Stepper::build(DesKernel::new(), scenario)?;
+    println!(
+        "ndn-lab step: {} node(s) on the DES event queue. Type 'help' for commands, 'quit' to exit.",
+        stepper.fabric().topology().nodes.len()
+    );
+    print_clock(&stepper);
+
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let mut parts = line.split_whitespace();
+        let Some(cmd) = parts.next() else {
+            print_clock(&stepper);
+            continue;
+        };
+        let arg = parts.next();
+        match cmd {
+            "step" | "s" => {
+                let n: u64 = arg.and_then(|a| a.parse().ok()).unwrap_or(1);
+                for _ in 0..n {
+                    stepper.step();
+                }
+                print_clock(&stepper);
+            }
+            "run" | "r" => {
+                let ms: u64 = arg.and_then(|a| a.parse().ok()).unwrap_or(100);
+                stepper.run_for_ms(ms);
+                print_clock(&stepper);
+            }
+            "until" | "u" => {
+                if let Some(ms) = arg.and_then(|a| a.parse::<u64>().ok()) {
+                    stepper.run_until_ms(ms);
+                } else {
+                    println!("usage: until <ms-since-start>");
+                }
+                print_clock(&stepper);
+            }
+            "topo" | "t" => {
+                println!("{}", serde_json::to_string_pretty(&stepper.fabric().topology())?);
+            }
+            "metrics" | "m" => {
+                println!("{}", serde_json::to_string_pretty(&stepper.fabric().snapshot_metrics())?);
+            }
+            "where" | "w" => {
+                for node in &stepper.fabric().scene_snapshot().nodes {
+                    println!("  n{} @ ({:.1}, {:.1})", node.id, node.x, node.y);
+                }
+            }
+            "help" | "h" | "?" => print_step_help(),
+            "quit" | "q" => break,
+            other => println!("unknown command '{other}' — try 'help'"),
+        }
+    }
+    Ok(())
+}
+
+fn print_clock(stepper: &Stepper) {
+    println!("t = {} ms (virtual)", stepper.elapsed_ms());
+}
+
+fn print_step_help() {
+    println!(
+        "commands:\n  \
+         step [n]     advance n events (default 1)\n  \
+         run  [ms]    advance ms of virtual time (default 100)\n  \
+         until <ms>   advance to ms since start\n  \
+         topo         print the topology (JSON)\n  \
+         metrics      print per-node metrics (JSON)\n  \
+         where        print node positions\n  \
+         help | quit"
+    );
+}
+
+/// Generate a topology and emit it as a scenario TOML.
+#[allow(clippy::too_many_arguments)]
+fn cmd_gen(
+    shape: String,
+    n: Option<usize>,
+    rows: Option<usize>,
+    cols: Option<usize>,
+    branching: Option<usize>,
+    depth: Option<usize>,
+    prob: Option<f64>,
+    seed: u64,
+    toward: Option<String>,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    use anyhow::Context;
+
+    let mut scenario = match shape.as_str() {
+        "line" => topo::line(n.unwrap_or(3)),
+        "ring" => topo::ring(n.unwrap_or(4)),
+        "star" => topo::star(n.unwrap_or(5)),
+        "grid" => topo::grid(rows.unwrap_or(3), cols.unwrap_or(3)),
+        "mesh" | "full_mesh" => topo::full_mesh(n.unwrap_or(5)),
+        "tree" => topo::tree(branching.unwrap_or(2), depth.unwrap_or(3)),
+        "random" => topo::random(n.unwrap_or(20), prob.unwrap_or(0.15), seed),
+        other => {
+            anyhow::bail!("unknown shape '{other}' (line|ring|star|grid|mesh|tree|random)")
+        }
+    };
+    if let Some(spec) = toward {
+        let (prefix, dest) = spec
+            .rsplit_once('@')
+            .context("--toward must be PREFIX@NODE, e.g. /demo@0")?;
+        let dest: usize = dest.parse().context("--toward node index")?;
+        topo::add_routes_toward(&mut scenario, prefix, dest);
+    }
+    let toml = scenario.to_toml()?;
+    match out {
+        Some(path) => {
+            std::fs::write(&path, &toml)?;
+            eprintln!(
+                "ndn-lab: wrote {} node(s) / {} link(s) / {} route(s) to {path:?}",
+                scenario.nodes.len(),
+                scenario.links.len(),
+                scenario.routes.len()
+            );
+        }
+        None => print!("{toml}"),
+    }
     Ok(())
 }

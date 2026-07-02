@@ -115,7 +115,9 @@ pub mod scene;
 pub mod span_capture;
 pub mod sim_face;
 pub mod sim_link;
+pub mod stepper;
 pub mod telemetry;
+pub mod topo;
 pub mod topology;
 pub mod tracer;
 #[cfg(not(target_arch = "wasm32"))]
@@ -155,6 +157,7 @@ pub use scene::{
     render_topology_svg,
 };
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
+pub use stepper::Stepper;
 pub use medium::{
     CarrierSenseInterference, Delivery, DeliveryReason, FreeSpacePathLoss, InterferenceModel,
     NoInterference, PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,

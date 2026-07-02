@@ -34,6 +34,15 @@ use tracing::warn;
 use crate::telemetry::MetricsSample;
 use crate::{LinkConfig, NodeId, NodeProfile, RunningSimulation, TopologySnapshot};
 
+/// A live telemetry frame — a periodic metric snapshot pushed to subscribers and/or an OTLP
+/// collector (axis 4c). Subscribe with [`ControlPlane::subscribe_telemetry`]; drive with
+/// [`ControlPlane::spawn_telemetry`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TelemetryFrame {
+    pub t_ns: u64,
+    pub metrics: Vec<MetricsSample>,
+}
+
 /// Serde-friendly mirror of [`LinkConfig`] (durations as milliseconds).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct LinkSpec {
@@ -200,6 +209,8 @@ pub struct ControlPlane {
     actuator: Mutex<Option<Arc<dyn crate::cosim::CosimActuator>>>,
     /// Radio delivery capture (axis 4) — the evidence `SimQuery::Explain` reads. Enabled on demand.
     radio_log: Mutex<Option<Arc<crate::analysis::RadioLog>>>,
+    /// Live telemetry fan-out (axis 4c) — periodic metric frames to every subscriber.
+    telemetry: tokio::sync::broadcast::Sender<TelemetryFrame>,
 }
 
 impl ControlPlane {
@@ -219,7 +230,50 @@ impl ControlPlane {
             recording_scenario: Mutex::new(None),
             actuator: Mutex::new(None),
             radio_log: Mutex::new(None),
+            telemetry: tokio::sync::broadcast::channel(64).0,
         })
+    }
+
+    /// Subscribe to the live telemetry stream (axis 4c) — each [`spawn_telemetry`] tick delivers a
+    /// [`TelemetryFrame`] here. A WebSocket / NDN server forwards these to remote dashboards.
+    pub fn subscribe_telemetry(&self) -> tokio::sync::broadcast::Receiver<TelemetryFrame> {
+        self.telemetry.subscribe()
+    }
+
+    /// Start periodic live telemetry: every `interval`, sample metrics, broadcast a [`TelemetryFrame`]
+    /// to subscribers, and (if `otlp` is set, e.g. `"127.0.0.1:4318"`) export them to an OTLP/HTTP
+    /// collector (Grafana / Jaeger / Prometheus-OTLP). Returns a token that stops the emitter.
+    /// Call from a Tokio context (`serve`).
+    pub fn spawn_telemetry(
+        self: &Arc<Self>,
+        interval: std::time::Duration,
+        otlp: Option<String>,
+    ) -> CancellationToken {
+        let cancel = CancellationToken::new();
+        let me = Arc::clone(self);
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            let exporter = otlp.map(crate::otel_export::OtlpExporter::new);
+            let mut tick = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = stop.cancelled() => break,
+                    _ = tick.tick() => {
+                        let metrics = me.fabric.snapshot_metrics();
+                        let t_ns = metrics.first().map(|m| m.virtual_time_ns).unwrap_or(0);
+                        // Broadcast to live subscribers (ignore if none).
+                        let _ = me.telemetry.send(TelemetryFrame { t_ns, metrics: metrics.clone() });
+                        // Export to the OTLP collector, if configured.
+                        if let Some(ex) = &exporter
+                            && let Err(e) = ex.export_metrics(&metrics).await
+                        {
+                            warn!(error = %e, "ndn-lab: OTLP metrics export failed");
+                        }
+                    }
+                }
+            }
+        });
+        cancel
     }
 
     /// Start recording radio delivery decisions so [`SimQuery::Explain`] can answer causal "why"

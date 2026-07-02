@@ -93,6 +93,7 @@ pub use app::{AppHandle, AppId, AppSpec};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
+    TelemetryFrame,
 };
 pub use cosim::{
     ChannelSource, CosimActuator, Lockstep, MobilitySource, MobilityTrace, NodeState,

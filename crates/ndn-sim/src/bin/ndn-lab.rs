@@ -73,6 +73,13 @@ enum Command {
         /// MAVLink system id that maps to node 0.
         #[arg(long, default_value_t = 1)]
         base_sysid: u8,
+        /// Emit a live telemetry frame every N ms (a subscribable stream + OTLP export). 0 = off.
+        #[arg(long, default_value_t = 0)]
+        telemetry_ms: u64,
+        /// Export live telemetry to an OTLP/HTTP collector at `host:port` (e.g. 127.0.0.1:4318 —
+        /// Grafana / Jaeger / Prometheus-OTLP). Implies a 1 s telemetry tick if `--telemetry-ms` is 0.
+        #[arg(long)]
+        otlp: Option<String>,
     },
     /// Run the MCP server over stdio — point an MCP client (e.g. Claude) at this.
     Mcp { scenario: Option<PathBuf> },
@@ -128,9 +135,18 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Run { scenario, secs, capture } => cmd_run(scenario, secs, capture),
         Command::Diff { a, b, json } => cmd_diff(a, b, json),
-        Command::Serve { scenario, addr, ws_addr, mavlink, launch, base_sysid } => {
-            runtime()?.block_on(cmd_serve(scenario, addr, ws_addr, mavlink, launch, base_sysid))
-        }
+        Command::Serve {
+            scenario,
+            addr,
+            ws_addr,
+            mavlink,
+            launch,
+            base_sysid,
+            telemetry_ms,
+            otlp,
+        } => runtime()?.block_on(cmd_serve(
+            scenario, addr, ws_addr, mavlink, launch, base_sysid, telemetry_ms, otlp,
+        )),
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
         Command::Check { spec, json, baseline, record_baseline } => {
@@ -333,6 +349,7 @@ async fn cmd_fly(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_serve(
     scenario: Option<PathBuf>,
     addr: String,
@@ -340,6 +357,8 @@ async fn cmd_serve(
     mavlink: Option<String>,
     launch: Option<String>,
     base_sysid: u8,
+    telemetry_ms: u64,
+    otlp: Option<String>,
 ) -> Result<()> {
     let scenario = scenario.as_ref().map(read_scenario).transpose()?;
     // Live co-sim rides the real-time governor (clock mode B); plain control uses wall-clock.
@@ -352,6 +371,17 @@ async fn cmd_serve(
     let control = ControlPlane::new(Arc::clone(&fabric));
     // Causal capture (axis 4): record radio delivery decisions so `explain` can answer "why".
     control.enable_radio_capture();
+
+    // Live telemetry (axis 4c): stream metric frames + optionally export to an OTLP collector.
+    if telemetry_ms > 0 || otlp.is_some() {
+        let interval = Duration::from_millis(if telemetry_ms > 0 { telemetry_ms } else { 1000 });
+        control.spawn_telemetry(interval, otlp.clone());
+        eprintln!(
+            "ndn-lab: live telemetry every {}ms{}",
+            interval.as_millis(),
+            otlp.map(|a| format!(" → OTLP {a}")).unwrap_or_default()
+        );
+    }
 
     let bound = control.serve_tcp(&addr, CancellationToken::new()).await?;
     eprintln!("ndn-lab: control plane (JSON-RPC) on tcp://{bound}");

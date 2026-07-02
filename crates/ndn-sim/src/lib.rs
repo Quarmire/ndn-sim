@@ -90,8 +90,8 @@ pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
 };
 pub use cosim::{
-    ChannelSource, Lockstep, MobilitySource, MobilityTrace, NodeState, SampledMobility,
-    ScriptedSource, SteppableSource, drive_cosim,
+    ChannelSource, CosimActuator, Lockstep, MobilitySource, MobilityTrace, NodeState,
+    SampledMobility, ScriptedSource, SteppableSource, VehicleCommand, drive_cosim,
 };
 pub use des::{DesKernel, DesSession};
 pub use geometry::{Obstacle, ObstructedPropagation};

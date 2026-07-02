@@ -50,6 +50,49 @@ pub struct NodeState {
     pub velocity: Option<[f64; 3]>,
 }
 
+/// A command from ndn-lab to the external simulator — the **inverse** of a [`MobilitySource`]. This
+/// is what makes co-simulation bidirectional: instead of only *observing* the swarm, ndn-lab (a
+/// human at the dashboard, an agent over MCP, an Interest over NDN, or a scenario) can *retask* it.
+/// `node` is the scenario node index; an adapter maps it to the vehicle it drives.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum VehicleCommand {
+    /// Arm the vehicle's motors.
+    Arm { node: usize },
+    /// Disarm the vehicle's motors.
+    Disarm { node: usize },
+    /// Take off to `alt_m` above the current position (guided mode).
+    Takeoff { node: usize, alt_m: f64 },
+    /// Fly to an ENU position (metres, guided mode) — the operator's "go there and watch NDN react".
+    Goto { node: usize, x: f64, y: f64, z: f64 },
+    /// Command an ENU velocity (m/s, guided mode).
+    Velocity { node: usize, vx: f64, vy: f64, vz: f64 },
+    /// Land at the current position.
+    Land { node: usize },
+}
+
+impl VehicleCommand {
+    /// The scenario node this command targets.
+    pub fn node(&self) -> usize {
+        match self {
+            VehicleCommand::Arm { node }
+            | VehicleCommand::Disarm { node }
+            | VehicleCommand::Takeoff { node, .. }
+            | VehicleCommand::Goto { node, .. }
+            | VehicleCommand::Velocity { node, .. }
+            | VehicleCommand::Land { node } => *node,
+        }
+    }
+}
+
+/// The actuation back-channel: ndn-lab → external simulator. An adapter (a MAVLink sender for SITL,
+/// a Gazebo model-command client) implements it; the control plane holds one and routes
+/// [`VehicleCommand`]s to it — so the same command works from the CLI, the dashboard, MCP, or an NDN
+/// Interest. Bidirectional, single-surface co-simulation.
+pub trait CosimActuator: Send + Sync {
+    fn command(&self, cmd: &VehicleCommand) -> Result<()>;
+}
+
 /// A live source of node kinematics — the push seam. An adapter (SITL/Gazebo/Bevy) implements it.
 pub trait MobilitySource: Send {
     /// Return every state available at logical time `now_secs` that hasn't been returned yet

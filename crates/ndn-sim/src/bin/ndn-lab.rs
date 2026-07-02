@@ -18,9 +18,9 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ndn_sim::{
-    ControlPlane, DesKernel, KernelSpec, NodeId, Recording, RunningSimulation, Scenario, SimKernel,
-    SimMcp, Simulation, ValidationSpec, VirtualKernel, WallClockKernel, run_validation,
-    run_validation_against,
+    ControlPlane, DesKernel, KernelSpec, NodeId, RealTimeKernel, Recording, RunningSimulation,
+    Scenario, SimKernel, SimMcp, Simulation, ValidationSpec, VirtualKernel, WallClockKernel,
+    run_validation, run_validation_against,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -40,7 +40,9 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         secs: u64,
     },
-    /// Serve the control plane over TCP + WebSocket (JSON-RPC) + NDN-native control.
+    /// Serve the control plane over TCP + WebSocket (JSON-RPC) + NDN-native control. With
+    /// `--mavlink`, this is the unified live co-sim session: poses stream IN and `Cosim` commands
+    /// fly the swarm OUT — one surface for the network and the vehicles (needs the `mavlink` feature).
     Serve {
         scenario: Option<PathBuf>,
         /// TCP JSON-RPC bind address.
@@ -49,6 +51,17 @@ enum Command {
         /// WebSocket bind address (for browser / Dioxus dashboard clients).
         #[arg(long, default_value = "127.0.0.1:6465")]
         ws_addr: String,
+        /// Live MAVLink endpoint (e.g. `udpin:0.0.0.0:14550`): stream vehicle positions in AND
+        /// enable `Cosim` actuation out. Turns `serve` into the bidirectional single-pane session.
+        #[arg(long)]
+        mavlink: Option<String>,
+        /// A shell command that launches the external simulator (e.g. an ArduPilot SITL invocation).
+        /// ndn-lab spawns and supervises it, so the whole loop is one command.
+        #[arg(long)]
+        launch: Option<String>,
+        /// MAVLink system id that maps to node 0.
+        #[arg(long, default_value_t = 1)]
+        base_sysid: u8,
     },
     /// Run the MCP server over stdio — point an MCP client (e.g. Claude) at this.
     Mcp { scenario: Option<PathBuf> },
@@ -103,8 +116,8 @@ fn main() -> Result<()> {
     init_tracing();
     match Cli::parse().command {
         Command::Run { scenario, secs } => cmd_run(scenario, secs),
-        Command::Serve { scenario, addr, ws_addr } => {
-            runtime()?.block_on(cmd_serve(scenario, addr, ws_addr))
+        Command::Serve { scenario, addr, ws_addr, mavlink, launch, base_sysid } => {
+            runtime()?.block_on(cmd_serve(scenario, addr, ws_addr, mavlink, launch, base_sysid))
         }
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
@@ -235,7 +248,6 @@ async fn cmd_fly(
     ref_lon: Option<f64>,
     ref_alt: f64,
 ) -> Result<()> {
-    use ndn_sim::RealTimeKernel;
     use ndn_sim::mavlink::{GeoRef, MavlinkConfig, mavlink_source};
 
     let scenario = read_scenario(&path)?;
@@ -289,9 +301,22 @@ async fn cmd_fly(
     Ok(())
 }
 
-async fn cmd_serve(scenario: Option<PathBuf>, addr: String, ws_addr: String) -> Result<()> {
+async fn cmd_serve(
+    scenario: Option<PathBuf>,
+    addr: String,
+    ws_addr: String,
+    mavlink: Option<String>,
+    launch: Option<String>,
+    base_sysid: u8,
+) -> Result<()> {
     let scenario = scenario.as_ref().map(read_scenario).transpose()?;
-    let fabric = Arc::new(build_fabric(scenario, Arc::new(WallClockKernel::new())).await?);
+    // Live co-sim rides the real-time governor (clock mode B); plain control uses wall-clock.
+    let kernel: Arc<dyn SimKernel> = if mavlink.is_some() {
+        RealTimeKernel::new()
+    } else {
+        Arc::new(WallClockKernel::new())
+    };
+    let fabric = Arc::new(build_fabric(scenario, kernel).await?);
     let control = ControlPlane::new(Arc::clone(&fabric));
 
     let bound = control.serve_tcp(&addr, CancellationToken::new()).await?;
@@ -304,10 +329,56 @@ async fn cmd_serve(scenario: Option<PathBuf>, addr: String, ws_addr: String) -> 
         control.serve_ndn(&engine, CancellationToken::new());
         eprintln!("ndn-lab: NDN-native control on /localhop/sim/control (node 0)");
     }
-    eprintln!("ndn-lab: {} node(s) up — Ctrl-C to stop", fabric.nodes());
 
+    // Live bidirectional co-sim: launch the external sim, stream positions in, actuate out.
+    let drive_cancel = CancellationToken::new();
+    #[allow(unused_mut)]
+    let mut child: Option<std::process::Child> = None;
+    if let Some(endpoint) = mavlink {
+        #[cfg(feature = "mavlink")]
+        {
+            use anyhow::Context;
+            if let Some(cmd) = launch {
+                eprintln!("ndn-lab: launching external sim: {cmd}");
+                child = Some(
+                    std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&cmd)
+                        .spawn()
+                        .with_context(|| format!("launch external sim: {cmd}"))?,
+                );
+            }
+            eprintln!("ndn-lab: live co-sim on MAVLink {endpoint} — Cosim commands fly the swarm");
+            let (source, reader, actuator) = ndn_sim::mavlink::mavlink_link(
+                ndn_sim::mavlink::MavlinkConfig {
+                    endpoint,
+                    reference: None,
+                    base_sysid,
+                    node_count: fabric.nodes(),
+                },
+            )?;
+            control.set_actuator(std::sync::Arc::new(actuator));
+            let df = Arc::clone(&fabric);
+            let dc = drive_cancel.clone();
+            tokio::spawn(async move {
+                let _reader = reader; // keep the reader thread alive for the session
+                df.drive_mobility(Box::new(source), Duration::from_millis(50), dc).await;
+            });
+        }
+        #[cfg(not(feature = "mavlink"))]
+        {
+            let _ = (endpoint, launch, base_sysid);
+            anyhow::bail!("--mavlink needs a build with `--features mavlink`");
+        }
+    }
+
+    eprintln!("ndn-lab: {} node(s) up — Ctrl-C to stop", fabric.nodes());
     tokio::signal::ctrl_c().await?;
     eprintln!("ndn-lab: shutting down");
+    drive_cancel.cancel();
+    if let Some(mut c) = child {
+        let _ = c.kill();
+    }
     fabric.shutdown().await;
     Ok(())
 }

@@ -108,6 +108,11 @@ pub enum SimCommand {
     StopApp {
         app: usize,
     },
+    /// Command the external co-simulator (bidirectional co-sim) — arm/takeoff/goto/velocity a
+    /// vehicle. Requires a live actuator (a `--mavlink` link); observe-only otherwise.
+    Cosim {
+        command: crate::cosim::VehicleCommand,
+    },
 }
 
 /// A read-only introspection query.
@@ -183,6 +188,9 @@ pub struct ControlPlane {
     journal: Mutex<Option<Vec<crate::replay::RecordedCommand>>>,
     /// Initial scenario embedded in the recording, if `start_recording_with` was used.
     recording_scenario: Mutex<Option<crate::scenario::Scenario>>,
+    /// The co-sim actuation back-channel (a MAVLink sender to ArduPilot, …) — when set, a
+    /// [`SimCommand::Cosim`] flies the external swarm. `None` ⇒ observe-only.
+    actuator: Mutex<Option<Arc<dyn crate::cosim::CosimActuator>>>,
 }
 
 impl ControlPlane {
@@ -200,7 +208,14 @@ impl ControlPlane {
             span_log: Mutex::new(None),
             journal: Mutex::new(None),
             recording_scenario: Mutex::new(None),
+            actuator: Mutex::new(None),
         })
+    }
+
+    /// Install the co-sim actuation back-channel — after this, a [`SimCommand::Cosim`] arriving on
+    /// ANY transport (CLI, WebSocket, MCP, an NDN Interest) commands the external simulator.
+    pub fn set_actuator(&self, actuator: Arc<dyn crate::cosim::CosimActuator>) {
+        *self.actuator.lock().unwrap() = Some(actuator);
     }
 
     /// Start journaling every executed command (the [`replay`](crate::replay) recording).
@@ -322,6 +337,19 @@ impl ControlPlane {
                 Ok(()) => SimResponse::Ok,
                 Err(e) => SimResponse::Error { message: e.to_string() },
             },
+            SimCommand::Cosim { command } => {
+                let actuator = self.actuator.lock().unwrap().clone();
+                match actuator {
+                    Some(a) => match a.command(&command) {
+                        Ok(()) => SimResponse::Ok,
+                        Err(e) => SimResponse::Error { message: e.to_string() },
+                    },
+                    None => SimResponse::Error {
+                        message: "no co-sim actuator configured (run with a live --mavlink link)"
+                            .to_string(),
+                    },
+                }
+            }
         }
     }
 

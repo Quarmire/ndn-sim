@@ -165,6 +165,15 @@ impl SimMcp {
                 }
             },
             {
+                "name": "cosim",
+                "description": "Command the external co-simulator (bidirectional co-sim): fly a vehicle. Requires a live --mavlink link. E.g. command={\"action\":\"goto\",\"node\":1,\"x\":100,\"y\":0,\"z\":0}; actions: arm/disarm/takeoff/goto/velocity/land.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "command": { "type": "object", "description": "a VehicleCommand: {action, node, ...}" } },
+                    "required": ["command"]
+                }
+            },
+            {
                 "name": "why_did",
                 "description": "Explain recent fabric activity: the last N captured sim events (face up/down, control-plane changes) — the trace/explain surface.",
                 "inputSchema": {
@@ -260,6 +269,13 @@ impl SimMcp {
                 self.run(SimCommand::SpawnApp { node, app }).await
             }
             "stop_app" => self.run(SimCommand::StopApp { app: req_usize(args, "app")? }).await,
+            "cosim" => {
+                // Fly the external swarm: {"command": {"action": "goto", "node": 1, ...}}.
+                let command: crate::cosim::VehicleCommand =
+                    serde_json::from_value(args.get("command").cloned().unwrap_or(Value::Null))
+                        .map_err(|e| format!("bad co-sim command: {e}"))?;
+                self.run(SimCommand::Cosim { command }).await
+            }
             other => Err(format!("unknown tool: {other}")),
         }
     }

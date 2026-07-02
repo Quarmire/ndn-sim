@@ -84,6 +84,29 @@ impl OtlpExporter {
         http_post_json(&self.addr, "/v1/traces", &self.spans_payload(spans)).await
     }
 
+    /// The OTLP/JSON `ResourceSpans` document for captured engine spans (the [`SpanLog`] entries),
+    /// so the sim's own fwd.pipeline / fwd.pit / radio spans flow to Jaeger.
+    pub fn captured_spans_payload(&self, spans: &[crate::span_capture::CapturedSpan]) -> String {
+        let span_json: Vec<Value> =
+            spans.iter().enumerate().map(|(i, s)| captured_span_to_json(s, i)).collect();
+        json!({
+            "resourceSpans": [{
+                "resource": self.resource(),
+                "scopeSpans": [{ "scope": { "name": "ndn-lab" }, "spans": span_json }]
+            }]
+        })
+        .to_string()
+    }
+
+    /// POST captured engine spans to `<addr>/v1/traces`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn export_captured_spans(
+        &self,
+        spans: &[crate::span_capture::CapturedSpan],
+    ) -> std::io::Result<u16> {
+        http_post_json(&self.addr, "/v1/traces", &self.captured_spans_payload(spans)).await
+    }
+
     /// POST metrics to `<addr>/v1/metrics`. Returns the collector's HTTP status code.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn export_metrics(&self, samples: &[MetricsSample]) -> std::io::Result<u16> {
@@ -105,6 +128,28 @@ fn gauge(name: &str, samples: &[MetricsSample], f: impl Fn(&MetricsSample) -> Va
         })
         .collect();
     json!({ "name": name, "gauge": { "dataPoints": points } })
+}
+
+/// Fixed 16-byte trace id ("ndn-lab" ASCII, padded) so a run's captured spans share one trace.
+const NDNLAB_TRACE_ID: [u8; 16] =
+    [0x6e, 0x64, 0x6e, 0x2d, 0x6c, 0x61, 0x62, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+
+fn captured_span_to_json(s: &crate::span_capture::CapturedSpan, idx: usize) -> Value {
+    // Captured spans are point-in-time; give each a deterministic span id from its index.
+    let span_id = ((idx as u64) + 1).to_be_bytes();
+    json!({
+        "traceId": hex(&NDNLAB_TRACE_ID),
+        "spanId": hex(&span_id),
+        "name": s.name,
+        "kind": 1, // SPAN_KIND_INTERNAL
+        "startTimeUnixNano": s.virtual_time_ns.to_string(),
+        "endTimeUnixNano": s.virtual_time_ns.to_string(),
+        "attributes": [
+            { "key": "target", "value": { "stringValue": s.target } },
+            { "key": "level", "value": { "stringValue": s.level } },
+            { "key": "message", "value": { "stringValue": s.message } },
+        ]
+    })
 }
 
 fn span_to_json(s: &Span) -> Value {
@@ -215,6 +260,25 @@ mod tests {
         assert_eq!(s["startTimeUnixNano"], "1000"); // int64 as string per OTLP/JSON
         assert_eq!(s["attributes"][0]["key"], "rx");
         assert_eq!(s["attributes"][0]["value"]["intValue"], "3");
+    }
+
+    #[test]
+    fn captured_spans_payload_is_otlp_shaped() {
+        let exporter = OtlpExporter::new("127.0.0.1:4318");
+        let span = crate::span_capture::CapturedSpan {
+            virtual_time_ns: 1234,
+            kind: "span",
+            level: "INFO".into(),
+            target: "fwd.pit".into(),
+            name: "pit.insert".into(),
+            message: String::new(),
+        };
+        let payload = exporter.captured_spans_payload(&[span]);
+        let v: Value = serde_json::from_str(&payload).unwrap();
+        let s = &v["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        assert_eq!(s["name"], "pit.insert");
+        assert_eq!(s["startTimeUnixNano"], "1234");
+        assert!(s["attributes"].as_array().unwrap().iter().any(|a| a["key"] == "target"));
     }
 
     #[test]

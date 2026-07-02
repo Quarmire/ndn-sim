@@ -218,7 +218,14 @@ impl SimMcp {
                     .span_log()
                     .map(|log| log.recent(limit))
                     .unwrap_or_default();
-                Ok(serde_json::json!({ "events": recent, "engine_spans": engine_spans }))
+                // Radio delivery decisions (out-of-range / obstructed / collision / erased) — the
+                // packet-level radio flow, so "why" covers the medium, not just lifecycle + engine.
+                let radio = self.control.recent_radio(limit);
+                Ok(serde_json::json!({
+                    "events": recent,
+                    "engine_spans": engine_spans,
+                    "radio": radio,
+                }))
             }
             "spawn_node" => {
                 let label = args.get("label").and_then(Value::as_str).map(String::from);

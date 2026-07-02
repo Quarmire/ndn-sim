@@ -178,3 +178,31 @@ fn run_capture_json_round_trips() {
     let d = ndn_sim::diff_runs(&cap, &again, 0.0);
     assert!(d.identical, "a capture equals itself after JSON round-trip");
 }
+
+/// The control plane surfaces the packet-level radio flow (`recent_radio` / `why_did`), not just
+/// lifecycle events — observability that shows the medium.
+#[test]
+fn control_plane_surfaces_radio_flow() {
+    use ndn_sim::ControlPlane;
+    let n = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let wall = Obstacle::from_corners(Position::xyz(20.0, -20.0, 0.0), Position::xyz(25.0, 20.0, 30.0));
+        let prop = ObstructedPropagation::new(
+            Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }),
+            vec![wall],
+        );
+        let mut sim = Simulation::new().kernel(k).with_radio_medium(Arc::new(prop), 1);
+        let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
+        let drone = sim.add_radio_node(EngineConfig::default(), Position::xy(60.0, 0.0));
+        sim.add_app(prod, AppSpec::Producer { prefix: "/svc".into(), content: Some("x".into()), freshness_ms: None });
+        sim.add_app(drone, AppSpec::Consumer { prefix: "/svc".into(), count: 8, interval_ms: 300, lifetime_ms: Some(300) });
+        sim.add_radio_route(drone, "/svc");
+        let fabric = Arc::new(sim.start().await.unwrap());
+        let control = ControlPlane::new(Arc::clone(&fabric));
+        control.enable_radio_capture();
+        ndn_app::rt::sleep(Duration::from_secs(3)).await;
+        let radio = control.recent_radio(50);
+        fabric.shutdown().await;
+        radio.len()
+    });
+    assert!(n > 0, "radio delivery decisions are recorded and surfaced");
+}

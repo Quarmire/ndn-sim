@@ -48,7 +48,8 @@ impl SpanLog {
         Arc::new(Self::default())
     }
 
-    fn record(&self, span: CapturedSpan) {
+    /// Append a captured span (used by the [`EngineSpanLayer`] and by producers of sim-level spans).
+    pub fn record(&self, span: CapturedSpan) {
         self.entries.lock().unwrap().push(span);
     }
 

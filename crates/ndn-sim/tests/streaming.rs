@@ -62,3 +62,56 @@ async fn otlp_export_reaches_a_collector() {
     cancel.cancel();
     fabric.shutdown().await;
 }
+
+/// Captured engine spans set on the control plane are exported to the OTLP collector's /v1/traces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn otlp_span_export_reaches_the_collector() {
+    use ndn_sim::{CapturedSpan, SpanLog};
+
+    // A mock collector that accepts several POSTs and reports the first /v1/traces it sees.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    tokio::spawn(async move {
+        let mut tx = Some(tx);
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { break };
+            let mut buf = vec![0u8; 65536];
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+            if req.starts_with("POST /v1/traces") {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(req);
+                }
+            }
+        }
+    });
+
+    let mut sim = Simulation::new().kernel(RealTimeKernel::new());
+    sim.add_node(EngineConfig::default());
+    let fabric = Arc::new(sim.start().await.unwrap());
+    let control = ControlPlane::new(Arc::clone(&fabric));
+
+    // Populate a span log (as engine-span capture would) and attach it.
+    let log = SpanLog::new();
+    log.record(CapturedSpan {
+        virtual_time_ns: 42,
+        kind: "span",
+        level: "DEBUG".into(),
+        target: "fwd.pipeline".into(),
+        name: "interest.forward".into(),
+        message: String::new(),
+    });
+    control.set_span_log(Arc::clone(&log));
+
+    let cancel = control.spawn_telemetry(Duration::from_millis(30), Some(addr.to_string()));
+    let req = tokio::time::timeout(Duration::from_secs(3), rx).await.unwrap().unwrap();
+    assert!(req.contains("resourceSpans"), "OTLP trace document present");
+    assert!(req.contains("interest.forward"), "carries the captured span");
+
+    cancel.cancel();
+    fabric.shutdown().await;
+}

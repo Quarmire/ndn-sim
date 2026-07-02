@@ -255,6 +255,7 @@ impl ControlPlane {
         tokio::spawn(async move {
             let exporter = otlp.map(crate::otel_export::OtlpExporter::new);
             let mut tick = tokio::time::interval(interval);
+            let mut span_cursor = 0usize; // only export spans captured since the last tick
             loop {
                 tokio::select! {
                     _ = stop.cancelled() => break,
@@ -263,11 +264,23 @@ impl ControlPlane {
                         let t_ns = metrics.first().map(|m| m.virtual_time_ns).unwrap_or(0);
                         // Broadcast to live subscribers (ignore if none).
                         let _ = me.telemetry.send(TelemetryFrame { t_ns, metrics: metrics.clone() });
-                        // Export to the OTLP collector, if configured.
-                        if let Some(ex) = &exporter
-                            && let Err(e) = ex.export_metrics(&metrics).await
-                        {
-                            warn!(error = %e, "ndn-lab: OTLP metrics export failed");
+                        if let Some(ex) = &exporter {
+                            // Metrics.
+                            if let Err(e) = ex.export_metrics(&metrics).await {
+                                warn!(error = %e, "ndn-lab: OTLP metrics export failed");
+                            }
+                            // New captured engine spans (fwd.pipeline / fwd.pit / …), if capture is on.
+                            let spans = me.span_log.lock().unwrap().clone();
+                            if let Some(log) = spans {
+                                let all = log.entries();
+                                if span_cursor < all.len() {
+                                    let fresh = &all[span_cursor..];
+                                    if let Err(e) = ex.export_captured_spans(fresh).await {
+                                        warn!(error = %e, "ndn-lab: OTLP span export failed");
+                                    }
+                                    span_cursor = all.len();
+                                }
+                            }
                         }
                     }
                 }
@@ -282,6 +295,21 @@ impl ControlPlane {
         if let Some(log) = self.fabric.capture_radio() {
             *self.radio_log.lock().unwrap() = Some(log);
         }
+    }
+
+    /// The most recent recorded radio delivery decisions (axis 4) — the packet-level radio flow, for
+    /// `why_did` / debugging. Empty unless [`enable_radio_capture`](Self::enable_radio_capture) is on.
+    pub fn recent_radio(&self, limit: usize) -> Vec<crate::analysis::RadioDelivery> {
+        self.radio_log
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|l| {
+                let mut r = l.records();
+                let start = r.len().saturating_sub(limit);
+                r.split_off(start)
+            })
+            .unwrap_or_default()
     }
 
     /// Install the co-sim actuation back-channel — after this, a [`SimCommand::Cosim`] arriving on

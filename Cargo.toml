@@ -32,6 +32,7 @@ ndn-engine    = { path = "../ndn-rs/crates/forwarding/ndn-engine" }
 # process-global tracing-subscriber Layer (the sim feeds virtual-clock timestamps directly).
 ndn-observability = { path = "../ndn-rs/crates/platform/ndn-observability", default-features = false }
 ndn-app       = { path = "../ndn-rs/crates/app/ndn-app" }
+ndn-security  = { path = "../ndn-rs/crates/security/ndn-security" }
 
 # Core async runtime — individual crates enable only the features they need
 tokio      = { version = "1", default-features = false }

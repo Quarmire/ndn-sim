@@ -24,6 +24,8 @@ ndn-observability = { workspace = true }
 ndn-face      = { workspace = true }
 # Used by the control plane to serve /localhop/sim/control as an NDN producer.
 ndn-app       = { workspace = true }
+# Signed-Interest verification for authenticated control-over-NDN (mutating commands).
+ndn-security  = { workspace = true }
 
 serde      = { workspace = true }
 serde_json = { workspace = true }
@@ -61,3 +63,5 @@ required-features = ["bin"]
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["full"] }
+# Sign control Interests in the authenticated-control-over-NDN test.
+ndn-security = { workspace = true }

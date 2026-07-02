@@ -211,6 +211,11 @@ pub struct ControlPlane {
     radio_log: Mutex<Option<Arc<crate::analysis::RadioLog>>>,
     /// Live telemetry fan-out (axis 4c) — periodic metric frames to every subscriber.
     telemetry: tokio::sync::broadcast::Sender<TelemetryFrame>,
+    /// Authenticated control-over-NDN: when set, a mutating [`SimCommand`] arriving over NDN
+    /// ([`serve_ndn`](Self::serve_ndn)) must be carried by a **signed Interest** that this
+    /// validator accepts. Read-only queries stay open. `None` ⇒ the NDN surface is unauthenticated
+    /// (fine for a trusted, single-tenant sim; required off for the loopback TCP/WS transports).
+    control_validator: Mutex<Option<Arc<ndn_security::Validator>>>,
 }
 
 impl ControlPlane {
@@ -231,7 +236,19 @@ impl ControlPlane {
             actuator: Mutex::new(None),
             radio_log: Mutex::new(None),
             telemetry: tokio::sync::broadcast::channel(64).0,
+            control_validator: Mutex::new(None),
         })
+    }
+
+    /// Require **signed Interests** for mutating commands arriving over NDN. After this, a
+    /// `/localhop/sim/control` Interest carrying a [`SimCommand`] must be signed by a key the
+    /// `validator` accepts (its trust anchors); an unsigned or untrusted command is rejected with
+    /// an `unauthorized` error and never touches the fabric. Read-only [`SimQuery`]s stay open.
+    ///
+    /// This is the honest answer to "control over NDN, not TCP": actuation (arm / takeoff / goto)
+    /// is authenticated the NDN-native way — a signed Interest — rather than trusting the transport.
+    pub fn require_signed_control(&self, validator: Arc<ndn_security::Validator>) {
+        *self.control_validator.lock().unwrap() = Some(validator);
     }
 
     /// Subscribe to the live telemetry stream (axis 4c) — each [`spawn_telemetry`] tick delivers a
@@ -493,6 +510,35 @@ impl ControlPlane {
         })
     }
 
+    /// Dispatch an NDN-native control request, enforcing the [`require_signed_control`] gate: if a
+    /// validator is installed and the request is a mutating [`SimCommand`], the carrying Interest
+    /// must be a signed Interest the validator accepts. Otherwise it behaves like [`handle_json`].
+    ///
+    /// [`require_signed_control`]: Self::require_signed_control
+    async fn handle_ndn_request(&self, interest: &ndn_packet::Interest, request: &str) -> String {
+        let validator = self.control_validator.lock().unwrap().clone();
+        if let Some(validator) = validator {
+            // Only mutating commands need authorization; read-only queries stay open.
+            let is_command =
+                matches!(serde_json::from_str::<SimRequest>(request), Ok(SimRequest::Command(_)));
+            if is_command {
+                use ndn_security::InterestValidationOutcome as O;
+                match validator.validate_interest(interest).await {
+                    O::Valid => {}
+                    other => {
+                        let response = SimResponse::Error {
+                            message: format!("unauthorized control command: {other:?}"),
+                        };
+                        return serde_json::to_string(&response).unwrap_or_else(|e| {
+                            format!(r#"{{"result":"error","message":"encode: {e}"}}"#)
+                        });
+                    }
+                }
+            }
+        }
+        self.handle_json(request).await
+    }
+
     /// Serve the control surface over NDN on `engine`: a producer at `/localhop/sim/control`
     /// (JSON request in ApplicationParameters → JSON Data) plus the notification stream at
     /// `/localhop/sim/control/notifications`. Runs until `cancel` fires.
@@ -510,7 +556,7 @@ impl ControlPlane {
                             .app_parameters()
                             .map(|b| String::from_utf8_lossy(b).into_owned())
                             .unwrap_or_default();
-                        let reply = me.handle_json(&request).await;
+                        let reply = me.handle_ndn_request(&interest, &request).await;
                         let _ = responder
                             .respond((*interest.name).clone(), Bytes::from(reply))
                             .await;

@@ -173,6 +173,24 @@ impl Drop for FeedReader {
 /// bridge, a script, another process — pushes positions in this way, so ndn-lab consumes external
 /// simulators without depending on any of them. Wire the returned [`ChannelSource`] to
 /// [`drive_mobility`](crate::RunningSimulation::drive_mobility).
+///
+/// ## Integrating a specific external simulator
+///
+/// This feed **is** the Gazebo / Bevy / Unity integration seam — there is deliberately no
+/// per-engine adapter crate to keep. To drive ndn-lab from one of them, emit one UDP datagram
+/// per model update from a small bridge on the engine's side:
+///
+/// - **Gazebo** (Ignition/Harmonic): subscribe to `/model/<name>/pose` (or a `PosePublisher`
+///   plugin) and forward each pose as `{"node":N,"t_secs":…,"position":{"x":…,"y":…,"z":…}}`.
+///   A ~15-line Python `gz topic -e` → `socket.sendto` script is enough.
+/// - **Bevy-headless**: in a fixed-timestep system, serialize each tracked entity's `Transform`
+///   translation to the same JSON and `UdpSocket::send_to` it.
+/// - **ArduPilot SITL**: prefer the first-class MAVLink path
+///   ([`mavlink_source`](crate::mavlink::mavlink_source), feature `mavlink`) — it also carries the
+///   actuation back-channel ([`CosimActuator`]); the UDP feed is observe-only.
+///
+/// The mapping from an external body id to a sim [`NodeId`] is the bridge's responsibility (it sets
+/// `node`), keeping ndn-lab free of any engine's scene-graph model.
 pub fn udp_json_feed(endpoint: &str) -> Result<(ChannelSource, FeedReader)> {
     let (tx, source) = ChannelSource::new();
     let socket = std::net::UdpSocket::bind(endpoint)

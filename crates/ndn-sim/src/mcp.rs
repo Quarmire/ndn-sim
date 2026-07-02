@@ -189,6 +189,61 @@ impl SimMcp {
                     "type": "object",
                     "properties": { "limit": { "type": "integer", "description": "max events (default 20)" } }
                 }
+            },
+            {
+                "name": "scene_svg",
+                "description": "Server-rendered SVG of the topology (positions, links, node fill by CS hit-rate) — a client with no shared Rust types just displays the returned `svg` string.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "width": { "type": "integer", "description": "px (default 600)" },
+                        "height": { "type": "integer", "description": "px (default 600)" }
+                    }
+                }
+            },
+            {
+                "name": "set_strategy",
+                "description": "Change a node's forwarding strategy for a prefix. 'multicast' floods all nexthops (retx-free failover round a dead relay); 'best-route' is the default single-path.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "node": { "type": "integer" },
+                        "prefix": { "type": "string" },
+                        "strategy": { "type": "string", "description": "e.g. 'multicast' or 'best-route'" }
+                    },
+                    "required": ["node", "prefix", "strategy"]
+                }
+            },
+            {
+                "name": "add_radio_route",
+                "description": "Install a broadcast route on a node's radio face: the prefix is offered to every neighbour over the shared wireless medium (the wireless FIB nexthop).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "node": { "type": "integer" },
+                        "prefix": { "type": "string" }
+                    },
+                    "required": ["node", "prefix"]
+                }
+            },
+            {
+                "name": "start_recording",
+                "description": "Begin journaling every mutating command (with its virtual timestamp) so the session can be replayed deterministically. Pair with get_recording.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "get_recording",
+                "description": "Return the recording so far (embedded scenario + timestamped command journal) as JSON — save it, then `ndn-lab replay` it.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "run_validation",
+                "description": "Run a validation spec (scenario + fault schedule + property assertions + optional seed sweep) headless across kernels and return the pass/fail report. The property-based testing surface. `spec` is the TOML text of a ValidationSpec.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "spec": { "type": "string", "description": "TOML of a ValidationSpec" } },
+                    "required": ["spec"]
+                }
             }
         ])
     }
@@ -296,6 +351,39 @@ impl SimMcp {
                     serde_json::from_value(args.get("command").cloned().unwrap_or(Value::Null))
                         .map_err(|e| format!("bad co-sim command: {e}"))?;
                 self.run(SimCommand::Cosim { command }).await
+            }
+            "scene_svg" => {
+                let width = args.get("width").and_then(Value::as_u64).unwrap_or(600) as u32;
+                let height = args.get("height").and_then(Value::as_u64).unwrap_or(600) as u32;
+                Ok(to_value(self.control.query(SimQuery::SceneSvg { width, height })))
+            }
+            "set_strategy" => {
+                let prefix = req_str(args, "prefix")?;
+                let strategy = req_str(args, "strategy")?;
+                self.run(SimCommand::SetStrategy { node: req_usize(args, "node")?, prefix, strategy })
+                    .await
+            }
+            "add_radio_route" => {
+                let prefix = req_str(args, "prefix")?;
+                self.run(SimCommand::RouteOverRadio { node: req_usize(args, "node")?, prefix }).await
+            }
+            "start_recording" => {
+                self.control.start_recording();
+                Ok(json!({ "result": "ok" }))
+            }
+            "get_recording" => Ok(to_value(self.control.recording())),
+            #[cfg(not(target_arch = "wasm32"))]
+            "run_validation" => {
+                let spec_toml = req_str(args, "spec")?;
+                let spec = crate::validate::ValidationSpec::from_toml(&spec_toml)
+                    .map_err(|e| format!("bad validation spec: {e}"))?;
+                // `run_validation` drives its own kernel runtimes (block_on), so it must run off the
+                // async worker — otherwise it nests a runtime inside this one and panics.
+                let report = tokio::task::spawn_blocking(move || crate::validate::run_validation(&spec))
+                    .await
+                    .map_err(|e| format!("validation task panicked: {e}"))?
+                    .map_err(|e| format!("validation failed to run: {e}"))?;
+                Ok(to_value(report))
             }
             other => Err(format!("unknown tool: {other}")),
         }
@@ -413,6 +501,13 @@ fn req_f64(args: &Value, key: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("missing or non-number '{key}'"))
 }
 
+fn req_str(args: &Value, key: &str) -> Result<String, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| format!("missing or non-string '{key}'"))
+}
+
 fn rpc_ok(id: Value, result: Value) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
 }
@@ -425,16 +520,22 @@ fn rpc_error(id: Value, code: i64, message: &str) -> String {
 /// composes scenarios from real building blocks rather than guessing.
 fn capability_catalogue() -> Value {
     json!({
-        "commands": ["spawn_node", "remove_node", "connect", "route", "move_node", "set_linear_mobility", "spawn_app", "stop_app"],
-        "queries": ["topology", "metrics", "scene"],
+        "commands": ["spawn_node", "remove_node", "connect", "route", "move_node", "set_linear_mobility", "spawn_app", "stop_app", "cosim", "set_strategy", "route_over_radio"],
+        "queries": ["topology", "metrics", "scene", "scene_svg", "explain"],
+        "tools": ["describe_topology", "query_metrics", "node_state", "capabilities", "explain_link", "why_did", "scene_svg", "spawn_node", "remove_node", "connect", "route", "move_node", "spawn_app", "stop_app", "cosim", "set_strategy", "add_radio_route", "start_recording", "get_recording", "run_validation"],
         "apps": ["producer", "consumer"],
         "mediums": ["wired_static_channel", "wireless_medium", "radio_bus"],
-        "propagation_models": ["range_threshold", "free_space_path_loss"],
+        "propagation_models": ["range_threshold", "free_space_path_loss", "obstructed"],
         "mobility_models": ["static", "linear", "waypoint"],
+        "mobility_via_commands": ["static (move_node)", "linear (set_linear_mobility)"],
         "interference_models": ["none", "carrier_sense"],
         "radio_mcs_modes": ["fixed", "adaptive"],
-        "kernels": ["wall_clock", "virtual"],
-        "notes": "Lifecycle (pause/step/seek) verbs require the DES event-queue and are not yet available."
+        "forwarding_strategies": ["best-route", "multicast"],
+        "kernels": ["wall_clock", "virtual", "des", "real_time"],
+        "validation": "run_validation gates a ValidationSpec (faults + property assertions + seed sweep + baselines) across kernels",
+        "recording": "start_recording + get_recording journal a session for deterministic `ndn-lab replay`",
+        "co_simulation": "a live --mavlink or --feed link streams external vehicle positions in; `cosim` commands actuate them out",
+        "notes": "Interactive DES lifecycle verbs (pause/step/seek) exist in the engine (DesSession) but are not yet projected as tools. Scenario export from a live fabric is not yet available."
     })
 }
 
@@ -540,5 +641,69 @@ mod tests {
         let v = mcp.call_tool("capabilities", &Value::Null).await.unwrap();
         assert!(v["propagation_models"].as_array().unwrap().iter().any(|m| m == "free_space_path_loss"));
         assert!(v["kernels"].as_array().unwrap().iter().any(|k| k == "virtual"));
+        // The refreshed catalogue advertises the newly-projected tools + drops the stale claim.
+        assert!(v["commands"].as_array().unwrap().iter().any(|c| c == "set_strategy"));
+        assert!(v["kernels"].as_array().unwrap().iter().any(|k| k == "des"));
+        assert!(v["tools"].as_array().unwrap().iter().any(|t| t == "run_validation"));
+    }
+
+    #[tokio::test]
+    async fn scene_svg_tool_renders() {
+        let mcp = mcp_over_fabric().await;
+        let v = mcp.call_tool("scene_svg", &json!({ "width": 320, "height": 240 })).await.unwrap();
+        let svg = v["svg"].as_str().expect("an svg string");
+        assert!(svg.contains("<svg"), "returns a rendered SVG document");
+    }
+
+    #[tokio::test]
+    async fn recording_tools_journal_a_session() {
+        let mcp = mcp_over_fabric().await;
+        let _ = mcp.call_tool("start_recording", &Value::Null).await.unwrap();
+        let _ = mcp.call_tool("spawn_node", &json!({ "label": "edge" })).await.unwrap();
+        let rec = mcp.call_tool("get_recording", &Value::Null).await.unwrap();
+        let cmds = rec["commands"].as_array().expect("a command journal");
+        assert!(!cmds.is_empty(), "the spawn was journaled: {rec}");
+    }
+
+    #[tokio::test]
+    async fn run_validation_tool_gates_a_spec() {
+        let mcp = mcp_over_fabric().await;
+        // A trivial spec: a two-node line where a consumer fetches from a producer; assert it works.
+        let spec = r#"
+duration_ms = 2000
+kernels = ["des"]
+
+[scenario.kernel]
+kind = "des"
+[[scenario.nodes]]
+label = "prod"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/svc"
+content = "hi"
+freshness_ms = 4000
+[[scenario.nodes]]
+label = "cons"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/svc"
+count = 3
+interval_ms = 200
+[[scenario.links]]
+a = 0
+b = 1
+[[scenario.routes]]
+node = 1
+prefix = "/svc"
+nexthop = 0
+
+[[properties]]
+name = "consumer fetches at least one segment"
+probe = { kind = "app_successes", app = 1 }
+cmp = "ge"
+value = 1
+"#;
+        let v = mcp.call_tool("run_validation", &json!({ "spec": spec })).await.unwrap();
+        assert_eq!(v["passed"], true, "the consumer fetched from the producer: {v}");
     }
 }

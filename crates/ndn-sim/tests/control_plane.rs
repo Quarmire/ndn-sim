@@ -153,6 +153,36 @@ async fn move_node_command_relocates_the_node_in_the_scene() {
 }
 
 #[tokio::test]
+async fn set_strategy_command_applies_over_the_control_plane() {
+    let mut sim = Simulation::new();
+    let _a = sim.add_node(EngineConfig::default());
+    let fabric = Arc::new(sim.start().await.unwrap());
+    let control = ControlPlane::new(Arc::clone(&fabric));
+
+    // Switch node 0 to the multicast strategy for /x (the failover knob) over the wire.
+    let resp = control
+        .execute(SimCommand::SetStrategy {
+            node: 0,
+            prefix: "/x".into(),
+            strategy: "multicast".into(),
+        })
+        .await;
+    assert!(matches!(resp, SimResponse::Ok), "multicast strategy applied, got {resp:?}");
+
+    // An unknown strategy name is a clean error, not a panic.
+    let bad = control
+        .execute(SimCommand::SetStrategy {
+            node: 0,
+            prefix: "/x".into(),
+            strategy: "no-such-strategy".into(),
+        })
+        .await;
+    assert!(matches!(bad, SimResponse::Error { .. }), "unknown strategy → error, got {bad:?}");
+
+    fabric.shutdown().await;
+}
+
+#[tokio::test]
 async fn tcp_rpc_server_handles_json_lines() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 

@@ -122,6 +122,20 @@ pub enum SimCommand {
     Cosim {
         command: crate::cosim::VehicleCommand,
     },
+    /// Change a node's forwarding strategy for a prefix (e.g. `"multicast"` to flood all nexthops
+    /// for retx-free failover, or `"best-route"`). The strategy name is resolved by the engine's
+    /// strategy registry.
+    SetStrategy {
+        node: usize,
+        prefix: String,
+        strategy: String,
+    },
+    /// Install a broadcast route on a node's radio face — the prefix is offered to every neighbour
+    /// over the shared medium (the wireless equivalent of a FIB nexthop).
+    RouteOverRadio {
+        node: usize,
+        prefix: String,
+    },
 }
 
 /// A read-only introspection query.
@@ -465,6 +479,26 @@ impl ControlPlane {
                         message: "no co-sim actuator configured (run with a live --mavlink link)"
                             .to_string(),
                     },
+                }
+            }
+            SimCommand::SetStrategy { node, prefix, strategy } => {
+                let name: Name = match prefix.parse() {
+                    Ok(n) => n,
+                    Err(e) => return SimResponse::Error { message: format!("bad prefix: {e}") },
+                };
+                match self.fabric.set_strategy(NodeId(node), &name, &strategy) {
+                    Ok(()) => SimResponse::Ok,
+                    Err(e) => SimResponse::Error { message: e.to_string() },
+                }
+            }
+            SimCommand::RouteOverRadio { node, prefix } => {
+                let name: Name = match prefix.parse() {
+                    Ok(n) => n,
+                    Err(e) => return SimResponse::Error { message: format!("bad prefix: {e}") },
+                };
+                match self.fabric.route_over_radio(NodeId(node), &name) {
+                    Ok(()) => SimResponse::Ok,
+                    Err(e) => SimResponse::Error { message: e.to_string() },
                 }
             }
         }

@@ -131,12 +131,27 @@ pub enum EnvSpec {
 }
 
 /// Shared radio medium config (nodes opt in via `NodeSpec.radio`).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RadioMediumSpec {
     #[serde(default)]
     pub propagation: PropSpec,
     #[serde(default)]
     pub seed: u64,
+    /// Line-of-sight obstacles (buildings/terrain). When present, the propagation model is wrapped
+    /// in an [`ObstructedPropagation`](crate::ObstructedPropagation): a frame whose path crosses one
+    /// is attenuated/blocked. Pairs with co-sim mobility — a drone flying behind a building drops.
+    #[serde(default)]
+    pub obstacles: Vec<ObstacleSpec>,
+    /// Attenuation (dB) per obstacle crossed (default 200 = a hard blocker; use ~10 for foliage).
+    #[serde(default)]
+    pub obstruction_loss_db: Option<f64>,
+}
+
+/// An axis-aligned box obstacle, by two opposite corners `[x, y, z]` (metres).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ObstacleSpec {
+    pub min: [f64; 3],
+    pub max: [f64; 3],
 }
 
 /// A propagation model.
@@ -263,7 +278,27 @@ impl Scenario {
         let mut sim = Simulation::new().kernel(kernel).seed(self.seed);
 
         if let Some(radio) = &self.radio {
-            sim = sim.with_radio_medium(radio.propagation.build(), radio.seed);
+            let base = radio.propagation.build();
+            let prop: Arc<dyn crate::medium::PropagationModel> = if radio.obstacles.is_empty() {
+                base
+            } else {
+                let obstacles = radio
+                    .obstacles
+                    .iter()
+                    .map(|o| {
+                        crate::Obstacle::from_corners(
+                            Position::xyz(o.min[0], o.min[1], o.min[2]),
+                            Position::xyz(o.max[0], o.max[1], o.max[2]),
+                        )
+                    })
+                    .collect();
+                let mut op = crate::ObstructedPropagation::new(base, obstacles);
+                if let Some(loss) = radio.obstruction_loss_db {
+                    op = op.with_loss_db(loss);
+                }
+                Arc::new(op)
+            };
+            sim = sim.with_radio_medium(prop, radio.seed);
         } else if self.nodes.iter().any(|n| n.radio) {
             bail!("a node is marked `radio` but no [radio] medium is configured");
         }

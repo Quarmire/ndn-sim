@@ -10,10 +10,40 @@ use ndn_engine::builder::EngineConfig;
 use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{
-    AppSpec, DesKernel, MobilityTrace, NodeState, Position, RangeThreshold, ScriptedSource,
-    SimKernel, Simulation,
+    AppSpec, DesKernel, Lockstep, MobilityTrace, NodeId, NodeState, Position, RangeThreshold,
+    ScriptedSource, SimKernel, Simulation, SteppableSource,
 };
 use tokio_util::sync::CancellationToken;
+
+/// A stepped physics source: forward-Euler integration of a node under constant acceleration. Its
+/// state is carried between steps (not a closed form) — exactly what a lockstep engine looks like.
+struct AccelSource {
+    node: NodeId,
+    pos: Position,
+    vel: [f64; 3],
+    accel: [f64; 3],
+    t_prev: f64,
+    until: f64,
+}
+
+impl SteppableSource for AccelSource {
+    fn advance_to(&mut self, t_secs: f64) -> Vec<NodeState> {
+        let dt = t_secs - self.t_prev;
+        self.t_prev = t_secs;
+        for i in 0..3 {
+            self.vel[i] += self.accel[i] * dt;
+        }
+        self.pos = Position::xyz(
+            self.pos.x + self.vel[0] * dt,
+            self.pos.y + self.vel[1] * dt,
+            self.pos.z + self.vel[2] * dt,
+        );
+        vec![NodeState { node: self.node, t_secs, position: self.pos, velocity: Some(self.vel) }]
+    }
+    fn is_done(&self, t_secs: f64) -> bool {
+        t_secs >= self.until
+    }
+}
 
 /// A live scripted source flies a radio node from origin outward; the driver applies each state to
 /// the World and records the stream. Deterministic on the DES kernel.
@@ -95,6 +125,41 @@ fn replayed_trace_drives_radio_forwarding() {
 #[test]
 fn replayed_trace_is_deterministic() {
     assert_eq!(replay_flight(), replay_flight(), "a recorded flight replays identically on DES");
+}
+
+/// A LOCKSTEP stepped physics source (mode C) drives the World deterministically — the sim owns the
+/// clock, so no record→replay is needed for reproducibility. Proves the seam a stepped engine
+/// (Gazebo / Bevy-headless) plugs into.
+#[test]
+fn lockstep_stepped_source_drives_the_world_deterministically() {
+    let run = || {
+        DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+            let mut sim = Simulation::new()
+                .kernel(k)
+                .with_radio_medium(Arc::new(RangeThreshold { range_m: 50.0, tx_power_dbm: 20.0 }), 1);
+            let n = sim.add_radio_node(ndn_engine::builder::EngineConfig::default(), Position::ORIGIN);
+            let fabric = sim.start().await.unwrap();
+            let source = Lockstep::new(AccelSource {
+                node: n,
+                pos: Position::ORIGIN,
+                vel: [0.0, 0.0, 0.0],
+                accel: [2.0, 0.0, 0.0], // accelerate along +x
+                t_prev: 0.0,
+                until: 5.0,
+            });
+            let trace = fabric
+                .drive_mobility(Box::new(source), Duration::from_millis(100), CancellationToken::new())
+                .await;
+            let pos = fabric.world().snapshot(6.0).position(n).unwrap();
+            fabric.shutdown().await;
+            (pos.x, trace.states.len())
+        })
+    };
+    let (x, states) = run();
+    // Under a=2 m/s² for ~5 s the node accelerates well past 20 m along +x (Euler-approx).
+    assert!(x > 20.0, "stepped physics advanced the node along +x, got x={x}");
+    assert!(states > 10, "the stepped run recorded a trace");
+    assert_eq!(run(), (x, states), "the lockstep run is deterministic on DES");
 }
 
 /// A `Scenario` can reference a recorded trace file declaratively; `build` installs it as

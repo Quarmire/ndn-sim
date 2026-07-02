@@ -61,6 +61,7 @@ pub mod control;
 pub mod cosim;
 pub mod control_plane;
 pub mod des;
+pub mod geometry;
 pub mod kernel;
 pub mod link_model;
 #[cfg(feature = "mavlink")]
@@ -89,10 +90,11 @@ pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
 };
 pub use cosim::{
-    ChannelSource, MobilitySource, MobilityTrace, NodeState, SampledMobility, ScriptedSource,
-    drive_cosim,
+    ChannelSource, Lockstep, MobilitySource, MobilityTrace, NodeState, SampledMobility,
+    ScriptedSource, SteppableSource, drive_cosim,
 };
 pub use des::{DesKernel, DesSession};
+pub use geometry::{Obstacle, ObstructedPropagation};
 pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{StepSession, SteppableKernel, VirtualKernel};
@@ -102,8 +104,8 @@ pub use otel_export::OtlpExporter;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use replay::{RecordedCommand, Recording};
 pub use scenario::{
-    EnvSpec, KernelSpec, NodeSpec, PropSpec, RadioMediumSpec, RadioRouteSpec, RouteSpec, Scenario,
-    ScenarioLink, StrategyChoiceSpec,
+    EnvSpec, KernelSpec, NodeSpec, ObstacleSpec, PropSpec, RadioMediumSpec, RadioRouteSpec,
+    RouteSpec, Scenario, ScenarioLink, StrategyChoiceSpec,
 };
 pub use scene::{
     RadioLink, SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,

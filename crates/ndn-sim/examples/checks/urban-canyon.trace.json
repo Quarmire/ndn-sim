@@ -1,0 +1,6 @@
+{
+  "states": [
+    { "node": 1, "t_secs": 0.0, "position": { "x": 10.0, "y": 0.0, "z": 0.0 }, "velocity": null },
+    { "node": 1, "t_secs": 6.0, "position": { "x": 60.0, "y": 0.0, "z": 0.0 }, "velocity": null }
+  ]
+}

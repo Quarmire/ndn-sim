@@ -1,0 +1,77 @@
+# Geometry-aware radio (axis 3, 3c): line-of-sight obstruction under co-simulated motion.
+#
+#   producer(0) ──/svc──  [ BUILDING x∈20..25 ]  ── drone(1) flies from (10,0) out to (60,0)
+#
+# The drone starts with clear line of sight to the producer and completes fetches; once it flies
+# BEHIND the building (x > 25), the direct path is obstructed and delivery stops. Distance never
+# limits (radio range is 200 m) — only geometry does. The recorded flight replays deterministically,
+# so this is a reproducible check that the LoS backend + co-sim mobility + NDN forwarding compose.
+#
+# (The rigorous drop-and-recover-under-motion proof is tests/geometry.rs; this is the CLI-visible,
+# declarative form.)
+#
+# Run it:   ndn-lab check examples/checks/urban-canyon.toml   (from the crate root)
+
+duration_ms = 7000
+kernels = ["des"]
+
+[scenario]
+mobility_trace = "examples/checks/urban-canyon.trace.json"
+
+[scenario.kernel]
+kind = "des"
+
+[scenario.radio]
+seed = 1
+[scenario.radio.propagation]
+kind = "range_threshold"
+range_m = 200.0
+# A building between the producer and the drone's outbound path.
+[[scenario.radio.obstacles]]
+min = [20.0, -20.0, 0.0]
+max = [25.0, 20.0, 30.0]
+
+[[scenario.nodes]]
+label = "producer"
+position = [0.0, 0.0, 0.0]
+radio = true
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/svc"
+content = "urban"
+
+[[scenario.nodes]]
+label = "drone"
+position = [10.0, 0.0, 0.0]
+radio = true
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/svc"
+count = 30
+interval_ms = 200
+lifetime_ms = 300
+
+[[scenario.radio_routes]]
+node = 1
+prefix = "/svc"
+
+# The drone completes the fetches it makes while it still has line of sight (before it flies behind
+# the building) — a robust floor. The rest are blocked by the obstruction.
+[[properties]]
+name = "drone fetches succeed while it has line of sight"
+probe = { kind = "app_successes", app = 1 }
+cmp = "ge"
+value = 5
+
+# ... and the building genuinely blocks the rest: it does NOT complete all 30.
+[[properties]]
+name = "the building blocks delivery once the drone is behind it"
+probe = { kind = "app_successes", app = 1 }
+cmp = "lt"
+value = 30
+
+[[properties]]
+name = "no PIT state leaks"
+probe = { kind = "metric", field = "pit_depth", agg = "max" }
+cmp = "eq"
+value = 0

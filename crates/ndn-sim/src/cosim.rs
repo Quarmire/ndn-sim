@@ -127,6 +127,48 @@ impl MobilitySource for ScriptedSource {
     }
 }
 
+/// A source whose external physics the **sim advances** (lockstep — clock mode C). Unlike a live
+/// [`MobilitySource`] that pushes at its own pace, the driver hands a stepped source the target time
+/// and it integrates to that instant. Because the sim owns the clock, a stepped source is
+/// **deterministic** — it runs reproducibly on DES and gates directly, with no record→replay needed.
+/// This is the seam a stepped physics engine (Gazebo's step mode, a Bevy-headless fixed timestep)
+/// plugs into: a `GazeboSource` would `advance_to` by issuing world-step commands and reading poses.
+pub trait SteppableSource: Send {
+    /// Advance the external simulation to `t_secs` (scenario-relative) and return the resulting node
+    /// states. Called with monotonically non-decreasing times.
+    fn advance_to(&mut self, t_secs: f64) -> Vec<NodeState>;
+    /// Whether the run has reached its end at `t_secs` (default: never — an open-ended physics sim).
+    fn is_done(&self, t_secs: f64) -> bool {
+        let _ = t_secs;
+        false
+    }
+}
+
+/// Adapt a [`SteppableSource`] into a [`MobilitySource`] so [`drive_cosim`] drives it — the sim's
+/// clock (virtual on DES, real on the governor) becomes the physics clock. `poll(now)` steps the
+/// source to `now`, so on DES the whole co-simulation is deterministic.
+pub struct Lockstep<S> {
+    source: S,
+    done: bool,
+}
+
+impl<S: SteppableSource> Lockstep<S> {
+    pub fn new(source: S) -> Self {
+        Self { source, done: false }
+    }
+}
+
+impl<S: SteppableSource> MobilitySource for Lockstep<S> {
+    fn poll(&mut self, now_secs: f64) -> Vec<NodeState> {
+        let states = self.source.advance_to(now_secs);
+        self.done = self.source.is_done(now_secs);
+        states
+    }
+    fn is_done(&self) -> bool {
+        self.done
+    }
+}
+
 /// A recorded co-sim run — a time-ordered stream of node states. Serialize to JSON, commit it, and
 /// replay it deterministically via [`into_models`](MobilityTrace::into_models).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

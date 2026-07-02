@@ -197,3 +197,36 @@ label = "b"
     // Midpoint of the flight at t=5 s.
     assert_eq!(pos, Position::xy(50.0, 0.0), "the declarative trace drives the node's position");
 }
+
+/// The world-state history sampler captures a run's trajectory (positions over time) — the archive
+/// for correlating failures against where a node was, or for replay.
+#[test]
+fn position_sampler_archives_the_trajectory() {
+    let (samples, moved) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let mut sim = Simulation::new()
+            .kernel(k)
+            .with_radio_medium(Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }), 1);
+        let node = sim.add_radio_node(ndn_engine::builder::EngineConfig::default(), Position::xy(0.0, 0.0));
+        let fabric = sim.start().await.unwrap();
+        // Fly the node from origin to (100,0).
+        let mut trace = MobilityTrace::default();
+        trace.record(NodeState { node, t_secs: 0.0, position: Position::xy(0.0, 0.0), velocity: None });
+        trace.record(NodeState { node, t_secs: 4.0, position: Position::xy(100.0, 0.0), velocity: None });
+        fabric.install_trace(&trace);
+
+        let cancel = CancellationToken::new();
+        let history = fabric.spawn_position_sampler(Duration::from_millis(200), cancel.clone());
+        ndn_app::rt::sleep(Duration::from_secs(4)).await;
+        cancel.cancel();
+        let (samples, delta) = {
+            let h = history.lock().unwrap();
+            let first = h.states.first().map(|s| s.position.x).unwrap_or(0.0);
+            let last = h.states.last().map(|s| s.position.x).unwrap_or(0.0);
+            (h.states.len(), last - first)
+        };
+        fabric.shutdown().await;
+        (samples, delta)
+    });
+    assert!(samples > 5, "the sampler recorded a trajectory, got {samples} samples");
+    assert!(moved > 50.0, "the archived trajectory shows the node moving along +x, moved {moved}");
+}

@@ -586,6 +586,48 @@ impl RunningSimulation {
         Some(log)
     }
 
+    /// Spawn a **world-state history** sampler: every `interval`, record every node's position into a
+    /// shared [`MobilityTrace`](crate::cosim::MobilityTrace) — the run's trajectory archive, for
+    /// correlating a failure against where a node was over time (or for replay). Rides the fabric's
+    /// kernel clock (virtual on DES). Stop it with `cancel`.
+    pub fn spawn_position_sampler(
+        &self,
+        interval: std::time::Duration,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> std::sync::Arc<Mutex<crate::cosim::MobilityTrace>> {
+        let history = std::sync::Arc::new(Mutex::new(crate::cosim::MobilityTrace::default()));
+        let out = std::sync::Arc::clone(&history);
+        let world = self.world();
+        let epoch = self.epoch_ns;
+        let runtime = self.kernel.runtime();
+        let rt = std::sync::Arc::clone(&runtime);
+        let nodes: Vec<NodeId> = self.inner.lock().unwrap().nodes.keys().copied().collect();
+        runtime.spawn(Box::pin(async move {
+            loop {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                let t_secs = rt.unix_nanos().saturating_sub(epoch) as f64 / 1e9;
+                let view = world.snapshot(t_secs);
+                {
+                    let mut h = out.lock().unwrap();
+                    for node in &nodes {
+                        if let Some(pos) = view.position(*node) {
+                            h.record(crate::cosim::NodeState {
+                                node: *node,
+                                t_secs,
+                                position: pos,
+                                velocity: None,
+                            });
+                        }
+                    }
+                }
+                rt.sleep(interval).await;
+            }
+        }));
+        history
+    }
+
     /// Snapshot this run's observable outputs into a [`RunCapture`](crate::analysis::RunCapture) —
     /// terminal metrics, app fetch-successes, and (if a `radio` log is supplied) the radio delivery
     /// evidence. Two captures feed [`diff_runs`](crate::analysis::diff_runs) for a cross-run diff.

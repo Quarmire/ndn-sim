@@ -84,6 +84,15 @@ enum Command {
         /// positions from JSON NodeStates (what a Gazebo / Bevy / any-sim bridge writes). Read-only.
         #[arg(long)]
         feed: Option<String>,
+        /// Journal every mutating command (with its virtual timestamp) and write the recording
+        /// (JSON) to this file on shutdown — replay it later with `ndn-lab replay`.
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// Require signed Interests for mutating commands over NDN control. Opens (or creates) a
+        /// KeyChain PIB at this path and trusts it; unsigned or untrusted NDN commands are rejected.
+        /// Read-only queries stay open. The loopback TCP/WS transports are unaffected.
+        #[arg(long)]
+        require_signed: Option<PathBuf>,
     },
     /// Run the MCP server over stdio — point an MCP client (e.g. Claude) at this.
     Mcp { scenario: Option<PathBuf> },
@@ -149,8 +158,11 @@ fn main() -> Result<()> {
             telemetry_ms,
             otlp,
             feed,
+            record,
+            require_signed,
         } => runtime()?.block_on(cmd_serve(
-            scenario, addr, ws_addr, mavlink, launch, base_sysid, telemetry_ms, otlp, feed,
+            scenario, addr, ws_addr, mavlink, launch, base_sysid, telemetry_ms, otlp, feed, record,
+            require_signed,
         )),
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
@@ -365,6 +377,8 @@ async fn cmd_serve(
     telemetry_ms: u64,
     otlp: Option<String>,
     feed: Option<String>,
+    record: Option<PathBuf>,
+    require_signed: Option<PathBuf>,
 ) -> Result<()> {
     let scenario = scenario.as_ref().map(read_scenario).transpose()?;
     // Live co-sim rides the real-time governor (clock mode B); plain control uses wall-clock.
@@ -377,6 +391,19 @@ async fn cmd_serve(
     let control = ControlPlane::new(Arc::clone(&fabric));
     // Causal capture (axis 4): record radio delivery decisions so `explain` can answer "why".
     control.enable_radio_capture();
+
+    // Require signed Interests on the NDN control surface (authenticated actuation).
+    if let Some(ref path) = require_signed {
+        let kc = ndn_security::KeyChain::open_or_create(path, "/ndn-lab/control")
+            .map_err(|e| anyhow::anyhow!("open control keychain {path:?}: {e}"))?;
+        eprintln!("ndn-lab: NDN control requires signed Interests (trust {})", kc.name());
+        control.require_signed_control(Arc::new(kc.validator()));
+    }
+
+    // Journal every command so the session can be replayed deterministically.
+    if record.is_some() {
+        control.start_recording();
+    }
 
     // Live telemetry (axis 4c): stream metric frames + optionally export to an OTLP collector.
     if telemetry_ms > 0 || otlp.is_some() {
@@ -460,6 +487,11 @@ async fn cmd_serve(
     drive_cancel.cancel();
     if let Some(mut c) = child {
         let _ = c.kill();
+    }
+    // Persist the session recording (if journaling was on) before tearing the fabric down.
+    if let Some(path) = record {
+        std::fs::write(&path, control.recording().to_json()?)?;
+        eprintln!("ndn-lab: recording written to {path:?} — replay with `ndn-lab replay {}`", path.display());
     }
     fabric.shutdown().await;
     Ok(())

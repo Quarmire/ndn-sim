@@ -19,7 +19,7 @@ use crate::medium::DeliveryReason;
 use crate::topology::NodeId;
 
 /// One recorded radio delivery attempt — the causal record for a `(from → to)` frame.
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RadioDelivery {
     pub t_ns: u64,
     pub from: NodeId,
@@ -143,6 +143,213 @@ pub fn explain_link(log: &RadioLog, a: NodeId, b: NodeId) -> Explanation {
     };
 
     Explanation { question, verdict, dominant_cause, attempts, delivered, detail }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-run diff (axis 4, 4b) — pinpoint AND explain where two runs diverge
+// ---------------------------------------------------------------------------
+
+use crate::telemetry::MetricsSample;
+
+/// A run's observable outputs, captured for later comparison. Serialize it, commit it, diff it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RunCapture {
+    /// Terminal per-node metrics.
+    pub metrics: Vec<MetricsSample>,
+    /// Successful fetches by app spawn-index.
+    pub app_successes: BTreeMap<usize, u64>,
+    /// Recorded radio delivery decisions (empty unless capture was enabled).
+    #[serde(default)]
+    pub radio: Vec<RadioDelivery>,
+}
+
+impl RunCapture {
+    pub fn from_json(s: &str) -> anyhow::Result<Self> {
+        serde_json::from_str(s).map_err(Into::into)
+    }
+    pub fn to_json(&self) -> anyhow::Result<String> {
+        serde_json::to_string_pretty(self).map_err(Into::into)
+    }
+
+    /// Delivery rate on link `from → to` and its dominant failure cause (over recorded evidence).
+    fn link_rate(&self, from: NodeId, to: NodeId) -> Option<(f64, Option<DeliveryReason>, usize)> {
+        let recs: Vec<&RadioDelivery> =
+            self.radio.iter().filter(|r| r.from == from && r.to == to).collect();
+        if recs.is_empty() {
+            return None;
+        }
+        let delivered = recs.iter().filter(|r| r.delivered).count();
+        let mut causes: BTreeMap<DeliveryReason, usize> = BTreeMap::new();
+        for r in recs.iter().filter(|r| !r.delivered) {
+            *causes.entry(r.reason).or_default() += 1;
+        }
+        let dominant = causes.iter().max_by_key(|(_, n)| **n).map(|(r, _)| *r);
+        Some((delivered as f64 / recs.len() as f64, dominant, recs.len()))
+    }
+
+    /// Every radio link `(from, to)` that appears in the capture.
+    fn links(&self) -> std::collections::BTreeSet<(NodeId, NodeId)> {
+        self.radio.iter().map(|r| (r.from, r.to)).collect()
+    }
+}
+
+/// A per-app fetch-success change between two runs.
+#[derive(Clone, Debug, Serialize)]
+pub struct AppDelta {
+    pub app: usize,
+    pub baseline: u64,
+    pub candidate: u64,
+}
+
+/// A radio link whose delivery rate changed — with the candidate run's dominant failure cause.
+#[derive(Clone, Debug, Serialize)]
+pub struct LinkDelta {
+    pub from: usize,
+    pub to: usize,
+    pub baseline_rate: f64,
+    pub candidate_rate: f64,
+    /// Why the candidate's frames failed (the dominant recorded cause).
+    pub candidate_cause: Option<DeliveryReason>,
+}
+
+/// A per-node counter that changed beyond tolerance.
+#[derive(Clone, Debug, Serialize)]
+pub struct MetricDelta {
+    pub node: usize,
+    pub field: &'static str,
+    pub baseline: i64,
+    pub candidate: i64,
+}
+
+/// The structured, explained difference between two runs.
+#[derive(Clone, Debug, Serialize)]
+pub struct RunDiff {
+    pub identical: bool,
+    pub app_deltas: Vec<AppDelta>,
+    /// Links whose delivery rate moved by more than `link_tolerance`, worst first.
+    pub link_deltas: Vec<LinkDelta>,
+    pub metric_deltas: Vec<MetricDelta>,
+    /// A ranked, human-readable summary.
+    pub summary: String,
+}
+
+/// Diff two runs and *explain* where they diverge: app-success changes, radio links that degraded
+/// (with the causal reason from the candidate), and per-node counter deltas. `link_tolerance` is the
+/// minimum delivery-rate change (0.0–1.0) worth reporting.
+pub fn diff_runs(baseline: &RunCapture, candidate: &RunCapture, link_tolerance: f64) -> RunDiff {
+    // App-success deltas.
+    let mut app_deltas = Vec::new();
+    let apps: std::collections::BTreeSet<usize> =
+        baseline.app_successes.keys().chain(candidate.app_successes.keys()).copied().collect();
+    for app in apps {
+        let b = baseline.app_successes.get(&app).copied().unwrap_or(0);
+        let c = candidate.app_successes.get(&app).copied().unwrap_or(0);
+        if b != c {
+            app_deltas.push(AppDelta { app, baseline: b, candidate: c });
+        }
+    }
+
+    // Radio link delivery-rate deltas (with the candidate's dominant cause).
+    let mut link_deltas = Vec::new();
+    let links: std::collections::BTreeSet<(NodeId, NodeId)> =
+        baseline.links().union(&candidate.links()).copied().collect();
+    for (from, to) in links {
+        let br = baseline.link_rate(from, to).map(|(r, _, _)| r).unwrap_or(0.0);
+        let (cr, cause) = candidate
+            .link_rate(from, to)
+            .map(|(r, cause, _)| (r, cause))
+            .unwrap_or((0.0, None));
+        if (br - cr).abs() > link_tolerance {
+            link_deltas.push(LinkDelta {
+                from: from.0,
+                to: to.0,
+                baseline_rate: br,
+                candidate_rate: cr,
+                candidate_cause: cause,
+            });
+        }
+    }
+    // Worst degradation first.
+    link_deltas.sort_by(|a, b| {
+        (a.candidate_rate - a.baseline_rate)
+            .partial_cmp(&(b.candidate_rate - b.baseline_rate))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Per-node counter deltas over the meaningful fields.
+    let metric_deltas = diff_metrics(&baseline.metrics, &candidate.metrics);
+
+    let identical = app_deltas.is_empty() && link_deltas.is_empty() && metric_deltas.is_empty();
+    let summary = summarize(&app_deltas, &link_deltas, &metric_deltas, identical);
+
+    RunDiff { identical, app_deltas, link_deltas, metric_deltas, summary }
+}
+
+/// A named counter accessor over a metrics sample.
+type Field = (&'static str, fn(&MetricsSample) -> i64);
+
+fn diff_metrics(base: &[MetricsSample], cand: &[MetricsSample]) -> Vec<MetricDelta> {
+    let fields: &[Field] = &[
+        ("in_data", |s| s.in_data as i64),
+        ("out_data", |s| s.out_data as i64),
+        ("out_drops", |s| s.out_drops as i64),
+        ("cs_hits", |s| s.cs_hits as i64),
+        ("cs_misses", |s| s.cs_misses as i64),
+        ("pit_depth", |s| s.pit_depth as i64),
+    ];
+    let by_node = |m: &[MetricsSample]| -> BTreeMap<usize, MetricsSample> {
+        m.iter().map(|s| (s.node.0, s.clone())).collect()
+    };
+    let (b, c) = (by_node(base), by_node(cand));
+    let nodes: std::collections::BTreeSet<usize> = b.keys().chain(c.keys()).copied().collect();
+    let mut out = Vec::new();
+    for node in nodes {
+        let (bs, cs) = (b.get(&node), c.get(&node));
+        for (field, get) in fields {
+            let bv = bs.map(get).unwrap_or(0);
+            let cv = cs.map(get).unwrap_or(0);
+            if bv != cv {
+                out.push(MetricDelta { node, field, baseline: bv, candidate: cv });
+            }
+        }
+    }
+    out
+}
+
+fn summarize(
+    apps: &[AppDelta],
+    links: &[LinkDelta],
+    metrics: &[MetricDelta],
+    identical: bool,
+) -> String {
+    if identical {
+        return "the two runs are identical".to_string();
+    }
+    let mut lines = Vec::new();
+    for a in apps {
+        lines.push(format!(
+            "app {} fetched {} vs {} ({:+})",
+            a.app,
+            a.candidate,
+            a.baseline,
+            a.candidate as i64 - a.baseline as i64
+        ));
+    }
+    for l in links {
+        let cause = l.candidate_cause.map(|c| format!(" — {}", c.describe())).unwrap_or_default();
+        lines.push(format!(
+            "radio {}→{}: delivery {:.0}% vs {:.0}%{}",
+            l.from,
+            l.to,
+            l.candidate_rate * 100.0,
+            l.baseline_rate * 100.0,
+            cause
+        ));
+    }
+    if !metrics.is_empty() {
+        lines.push(format!("{} node counter(s) changed", metrics.len()));
+    }
+    lines.join("; ")
 }
 
 #[cfg(test)]

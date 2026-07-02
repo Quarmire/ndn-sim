@@ -85,7 +85,10 @@ pub mod tracer;
 pub mod validate;
 pub mod world;
 
-pub use analysis::{Explanation, LinkVerdict, RadioDelivery, RadioLog, explain_link};
+pub use analysis::{
+    AppDelta, Explanation, LinkDelta, LinkVerdict, MetricDelta, RadioDelivery, RadioLog, RunCapture,
+    RunDiff, diff_runs, explain_link,
+};
 pub use app::{AppHandle, AppId, AppSpec};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{

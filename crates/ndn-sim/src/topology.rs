@@ -586,6 +586,26 @@ impl RunningSimulation {
         Some(log)
     }
 
+    /// Snapshot this run's observable outputs into a [`RunCapture`](crate::analysis::RunCapture) —
+    /// terminal metrics, app fetch-successes, and (if a `radio` log is supplied) the radio delivery
+    /// evidence. Two captures feed [`diff_runs`](crate::analysis::diff_runs) for a cross-run diff.
+    pub fn capture_run(
+        &self,
+        radio: Option<&crate::analysis::RadioLog>,
+    ) -> crate::analysis::RunCapture {
+        let mut app_successes = std::collections::BTreeMap::new();
+        for (id, _node, _kind) in self.apps() {
+            if let Some(n) = self.app_successes(id) {
+                app_successes.insert(id.0, n);
+            }
+        }
+        crate::analysis::RunCapture {
+            metrics: self.snapshot_metrics(),
+            app_successes,
+            radio: radio.map(|l| l.records()).unwrap_or_default(),
+        }
+    }
+
     /// The [`FaceId`] of `node`'s radio face (if it has one) — route over the radio with
     /// `engine.fib().add_nexthop(prefix, radio_face(node)?, cost)`.
     pub fn radio_face(&self, node: NodeId) -> Option<FaceId> {

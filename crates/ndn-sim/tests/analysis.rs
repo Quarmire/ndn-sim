@@ -110,3 +110,71 @@ fn explain_query_answers_through_the_control_plane() {
     assert_eq!(successes, 0, "fully behind the wall, nothing gets through");
     assert!(verdict_ok, "the control-plane Explain query names obstruction as the cause");
 }
+
+/// Capture a run where the drone either stays clear of the wall or flies behind it.
+fn capture(behind: bool) -> ndn_sim::RunCapture {
+    DesKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
+        let wall = Obstacle::from_corners(Position::xyz(20.0, -20.0, 0.0), Position::xyz(25.0, 20.0, 30.0));
+        let prop = ObstructedPropagation::new(
+            Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }),
+            vec![wall],
+        );
+        let mut sim = Simulation::new().kernel(k).with_radio_medium(Arc::new(prop), 1);
+        let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
+        let drone = sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 0.0));
+        sim.add_app(prod, AppSpec::Producer { prefix: "/svc".into(), content: Some("x".into()), freshness_ms: None });
+        sim.add_app(drone, AppSpec::Consumer { prefix: "/svc".into(), count: 15, interval_ms: 300, lifetime_ms: Some(300) });
+        sim.add_radio_route(drone, "/svc");
+        let fabric = sim.start().await.unwrap();
+        let log = fabric.capture_radio().unwrap();
+        let mut trace = MobilityTrace::default();
+        trace.record(NodeState { node: drone, t_secs: 0.0, position: Position::xy(10.0, 0.0), velocity: None });
+        // "clear" flies up (x stays 10, never crosses the wall at x∈20..25); "behind" flies to x=60.
+        let (x, y) = if behind { (60.0, 0.0) } else { (10.0, 60.0) };
+        trace.record(NodeState { node: drone, t_secs: 2.0, position: Position::xy(x, y), velocity: None });
+        trace.record(NodeState { node: drone, t_secs: 12.0, position: Position::xy(x, y), velocity: None });
+        fabric.install_trace(&trace);
+        ndn_app::rt::sleep(Duration::from_secs(6)).await;
+        let cap = fabric.capture_run(Some(&log));
+        fabric.shutdown().await;
+        cap
+    })
+}
+
+#[test]
+fn cross_run_diff_pinpoints_and_explains_the_regression() {
+    use ndn_sim::diff_runs;
+    let baseline = capture(false); // clear flight
+    let candidate = capture(true); // flies behind the building
+    let diff = diff_runs(&baseline, &candidate, 0.1);
+
+    assert!(!diff.identical, "the runs differ");
+    // The drone fetched fewer segments in the candidate.
+    assert!(
+        diff.app_deltas.iter().any(|a| a.candidate < a.baseline),
+        "app fetched fewer: {:?}",
+        diff.app_deltas
+    );
+    // The diff pinpoints the degraded radio link AND explains it (obstruction).
+    let link = diff
+        .link_deltas
+        .iter()
+        .find(|l| l.from == 1 && l.to == 0)
+        .expect("the drone→producer link should show a delta");
+    assert!(link.candidate_rate < link.baseline_rate, "delivery rate dropped: {link:?}");
+    assert_eq!(
+        link.candidate_cause,
+        Some(DeliveryReason::Obstructed),
+        "the candidate's failures are explained as obstruction:\n{}",
+        diff.summary
+    );
+    assert!(diff.summary.contains("line of sight"), "summary explains why: {}", diff.summary);
+}
+
+#[test]
+fn run_capture_json_round_trips() {
+    let cap = capture(true);
+    let again = ndn_sim::RunCapture::from_json(&cap.to_json().unwrap()).unwrap();
+    let d = ndn_sim::diff_runs(&cap, &again, 0.0);
+    assert!(d.identical, "a capture equals itself after JSON round-trip");
+}

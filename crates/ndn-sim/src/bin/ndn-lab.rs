@@ -39,6 +39,17 @@ enum Command {
         /// Seconds to run (virtual seconds under a `virtual` kernel — near-instant).
         #[arg(long, default_value_t = 5)]
         secs: u64,
+        /// Also write a diff-able run capture (metrics + radio evidence + app successes) here.
+        #[arg(long)]
+        capture: Option<PathBuf>,
+    },
+    /// Diff two run captures (from `run --capture`) and explain where they diverge (axis 4b).
+    Diff {
+        a: PathBuf,
+        b: PathBuf,
+        /// Emit the full structured diff as JSON instead of the human summary.
+        #[arg(long)]
+        json: bool,
     },
     /// Serve the control plane over TCP + WebSocket (JSON-RPC) + NDN-native control. With
     /// `--mavlink`, this is the unified live co-sim session: poses stream IN and `Cosim` commands
@@ -115,7 +126,8 @@ enum Command {
 fn main() -> Result<()> {
     init_tracing();
     match Cli::parse().command {
-        Command::Run { scenario, secs } => cmd_run(scenario, secs),
+        Command::Run { scenario, secs, capture } => cmd_run(scenario, secs, capture),
+        Command::Diff { a, b, json } => cmd_diff(a, b, json),
         Command::Serve { scenario, addr, ws_addr, mavlink, launch, base_sysid } => {
             runtime()?.block_on(cmd_serve(scenario, addr, ws_addr, mavlink, launch, base_sysid))
         }
@@ -159,44 +171,51 @@ async fn build_fabric(
     })
 }
 
-fn cmd_run(path: PathBuf, secs: u64) -> Result<()> {
+fn cmd_run(path: PathBuf, secs: u64, capture: Option<PathBuf>) -> Result<()> {
     let scenario = read_scenario(&path)?;
     let dur = Duration::from_secs(secs);
 
     // A `virtual` scenario runs deterministically + faster-than-real on the VirtualKernel; a `des`
     // scenario runs on ndn-lab's own discrete-event executor (deterministic, no tokio clock);
-    // anything else runs at real pace on a wall-clock runtime.
-    let (topology, metrics) = if scenario.kernel.is_des() {
+    // anything else runs at real pace on a wall-clock runtime. Each branch also captures radio
+    // evidence so `--capture` produces a diff-able RunCapture (axis 4b).
+    let (topology, metrics, run_capture) = if scenario.kernel.is_des() {
         let kernel = match scenario.kernel {
             KernelSpec::Des { epoch_ns: Some(ns) } => DesKernel::with_epoch_ns(ns),
             _ => DesKernel::new(),
         };
         kernel.run(move |k| async move {
             let fabric = scenario.build(k)?.start().await?;
-            // Ambient-aware sleep advances the DES virtual clock (tokio::time would never fire here).
+            let radio = fabric.capture_radio();
             ndn_app::rt::sleep(dur).await;
-            let out = (fabric.topology(), fabric.snapshot_metrics());
+            let out = (fabric.topology(), fabric.snapshot_metrics(), fabric.capture_run(radio.as_deref()));
             fabric.shutdown().await;
             anyhow::Ok(out)
         })?
     } else if scenario.kernel.is_virtual() {
         VirtualKernel::new().run(|k| async move {
             let fabric = scenario.build(k)?.start().await?;
+            let radio = fabric.capture_radio();
             tokio::time::sleep(dur).await;
-            let out = (fabric.topology(), fabric.snapshot_metrics());
+            let out = (fabric.topology(), fabric.snapshot_metrics(), fabric.capture_run(radio.as_deref()));
             fabric.shutdown().await;
             anyhow::Ok(out)
         })?
     } else {
         runtime()?.block_on(async move {
             let fabric = build_fabric(Some(scenario), Arc::new(WallClockKernel::new())).await?;
+            let radio = fabric.capture_radio();
             tokio::time::sleep(dur).await;
-            let out = (fabric.topology(), fabric.snapshot_metrics());
+            let out = (fabric.topology(), fabric.snapshot_metrics(), fabric.capture_run(radio.as_deref()));
             fabric.shutdown().await;
             anyhow::Ok(out)
         })?
     };
 
+    if let Some(out) = capture {
+        std::fs::write(&out, run_capture.to_json()?)?;
+        eprintln!("ndn-lab: wrote run capture → {}", out.display());
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -204,6 +223,19 @@ fn cmd_run(path: PathBuf, secs: u64) -> Result<()> {
             "metrics": metrics,
         }))?
     );
+    Ok(())
+}
+
+/// Diff two run captures (`ndn-lab run --capture …`) and explain where they diverge.
+fn cmd_diff(a: PathBuf, b: PathBuf, json: bool) -> Result<()> {
+    let base = ndn_sim::RunCapture::from_json(&std::fs::read_to_string(&a)?)?;
+    let cand = ndn_sim::RunCapture::from_json(&std::fs::read_to_string(&b)?)?;
+    let diff = ndn_sim::diff_runs(&base, &cand, 0.05);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&diff)?);
+    } else {
+        println!("{} vs {}\n{}", a.display(), b.display(), diff.summary);
+    }
     Ok(())
 }
 

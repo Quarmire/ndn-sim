@@ -346,7 +346,10 @@ fn wire_link(
     let eb = &nodes[&b];
     let id_a = ea.engine.faces().alloc_id();
     let id_b = eb.engine.faces().alloc_id();
-    let (face_a, face_b) = SimLink::pair_profiled(id_a, id_b, profile, channel_buffer);
+    // Build the link faces on the fabric's kernel runtime so their delivery timing rides the
+    // same clock/executor as the engines — including the discrete-event kernel.
+    let (face_a, face_b) =
+        SimLink::pair_profiled_on(id_a, id_b, profile, channel_buffer, ea.engine.runtime());
     ea.engine.add_face(face_a, ea.handle.cancel_token());
     eb.engine.add_face(face_b, eb.handle.cancel_token());
     links.insert((a, b), id_a);

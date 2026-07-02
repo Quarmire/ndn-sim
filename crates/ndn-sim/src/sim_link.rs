@@ -8,8 +8,10 @@
 //! callers are unaffected; reach for the medium when delivery should depend on *where* nodes
 //! are and *how they move*.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use ndn_runtime::Runtime;
 use ndn_transport::{FaceId, FaceKind, LinkType};
 
 use crate::sim_face::SimFace;
@@ -222,13 +224,15 @@ impl SimLink {
 
     /// Create a pair of faces of a given [`FaceProfile`] (the per-type behavioral catalogue):
     /// both endpoints present that type's `FaceKind`/`LinkType`/`send_mtu` + delivery semantics.
+    /// Uses the default (Tokio) runtime; use [`pair_profiled_on`](Self::pair_profiled_on) to run
+    /// the faces on a specific kernel (virtual / discrete-event).
     pub fn pair_profiled(
         id_a: FaceId,
         id_b: FaceId,
         profile: &FaceProfile,
         buffer: usize,
     ) -> (SimFace, SimFace) {
-        Self::pair_profiled_asymmetric(id_a, id_b, profile, profile, buffer)
+        Self::pair_profiled_on(id_a, id_b, profile, buffer, ndn_runtime::default_runtime())
     }
 
     /// As [`pair_profiled`](Self::pair_profiled) but with a distinct profile per direction.
@@ -239,11 +243,43 @@ impl SimLink {
         profile_b: &FaceProfile,
         buffer: usize,
     ) -> (SimFace, SimFace) {
+        Self::pair_profiled_asymmetric_on(
+            id_a,
+            id_b,
+            profile_a,
+            profile_b,
+            buffer,
+            ndn_runtime::default_runtime(),
+        )
+    }
+
+    /// [`pair_profiled`](Self::pair_profiled) on a specific [`Runtime`] — the faces' delivery
+    /// delay + task spawn ride it, so the link runs on whatever kernel drives the fabric
+    /// (wall-clock, virtual, or the discrete-event executor). This is what the fabric uses.
+    pub fn pair_profiled_on(
+        id_a: FaceId,
+        id_b: FaceId,
+        profile: &FaceProfile,
+        buffer: usize,
+        runtime: Arc<dyn Runtime>,
+    ) -> (SimFace, SimFace) {
+        Self::pair_profiled_asymmetric_on(id_a, id_b, profile, profile, buffer, runtime)
+    }
+
+    /// The full form: distinct profile per direction, on a specific runtime.
+    pub fn pair_profiled_asymmetric_on(
+        id_a: FaceId,
+        id_b: FaceId,
+        profile_a: &FaceProfile,
+        profile_b: &FaceProfile,
+        buffer: usize,
+        runtime: Arc<dyn Runtime>,
+    ) -> (SimFace, SimFace) {
         let (tx_a, rx_a) = tokio::sync::mpsc::channel(buffer);
         let (tx_b, rx_b) = tokio::sync::mpsc::channel(buffer);
         // face_a writes into tx_b → rx_b (face_b's recv); face_b writes into tx_a → rx_a.
-        let face_a = SimFace::new(id_a, tx_b, rx_a, profile_a);
-        let face_b = SimFace::new(id_b, tx_a, rx_b, profile_b);
+        let face_a = SimFace::new(id_a, tx_b, rx_a, profile_a, Arc::clone(&runtime));
+        let face_b = SimFace::new(id_b, tx_a, rx_b, profile_b, runtime);
         (face_a, face_b)
     }
 }

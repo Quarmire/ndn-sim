@@ -5,10 +5,11 @@
 //! reliable-stream semantics (no loss, in-order) — so a scenario can express "this is UDP" vs
 //! "this is TCP/QUIC" and the forwarder behaves accordingly.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use ndn_runtime::{Instant, Runtime};
 use ndn_transport::{FaceError, FaceId, FaceKind, LinkType, Transport};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::sync::mpsc;
@@ -39,10 +40,13 @@ pub struct SimFace {
     /// Reliable streams (TCP/QUIC/WS/SHM): no loss, in-order delivery.
     reliable: bool,
     /// Bandwidth shaping cursor: earliest time the next byte can transmit.
-    next_tx_ready: Mutex<tokio::time::Instant>,
+    next_tx_ready: Mutex<Instant>,
     /// Monotonic delivery cursor for reliable faces — guarantees in-order arrival despite
     /// per-packet scheduling.
-    last_delivery: Mutex<tokio::time::Instant>,
+    last_delivery: Mutex<Instant>,
+    /// The clock + executor seam: delivery delay + task spawn ride this, so the face runs on any
+    /// kernel — wall-clock, virtual, or the discrete-event executor (never `tokio::time` directly).
+    runtime: Arc<dyn Runtime>,
     /// **Seeded** PRNG for loss/jitter rolls — reproducible (never `thread_rng`).
     rng: Mutex<StdRng>,
 }
@@ -53,8 +57,9 @@ impl SimFace {
         tx: mpsc::Sender<Bytes>,
         rx: mpsc::Receiver<Bytes>,
         profile: &FaceProfile,
+        runtime: Arc<dyn Runtime>,
     ) -> Self {
-        let now = tokio::time::Instant::now();
+        let now = runtime.now();
         Self {
             id,
             tx,
@@ -66,6 +71,7 @@ impl SimFace {
             reliable: profile.reliable,
             next_tx_ready: Mutex::new(now),
             last_delivery: Mutex::new(now),
+            runtime,
             rng: Mutex::new(StdRng::seed_from_u64(mix_seed(id.0))),
         }
     }
@@ -106,7 +112,7 @@ impl Transport for SimFace {
             }
         }
 
-        let now = tokio::time::Instant::now();
+        let now = self.runtime.now();
 
         // Bandwidth shaping: serialize transmit start through a cursor (bandwidth 0 = no shaping).
         #[allow(clippy::manual_checked_ops)]
@@ -142,14 +148,16 @@ impl Transport for SimFace {
         if wait.is_zero() {
             self.tx.send(pkt).await.map_err(|_| FaceError::Closed)
         } else {
+            // Delayed delivery on the runtime seam (virtual under the virtual/DES kernels).
             let tx = self.tx.clone();
             let face_id = self.id;
-            tokio::spawn(async move {
-                tokio::time::sleep(wait).await;
+            let rt = Arc::clone(&self.runtime);
+            self.runtime.spawn(Box::pin(async move {
+                rt.sleep(wait).await;
                 if tx.send(pkt).await.is_err() {
                     trace!(face = %face_id, "SimFace: remote end closed during delayed delivery");
                 }
-            });
+            }));
             Ok(())
         }
     }

@@ -18,8 +18,8 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ndn_sim::{
-    ControlPlane, NodeId, Recording, RunningSimulation, Scenario, SimKernel, SimMcp, Simulation,
-    VirtualKernel, WallClockKernel,
+    ControlPlane, DesKernel, KernelSpec, NodeId, Recording, RunningSimulation, Scenario, SimKernel,
+    SimMcp, Simulation, VirtualKernel, WallClockKernel,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -97,9 +97,23 @@ fn cmd_run(path: PathBuf, secs: u64) -> Result<()> {
     let scenario = read_scenario(&path)?;
     let dur = Duration::from_secs(secs);
 
-    // A `virtual` scenario runs deterministically + faster-than-real on the VirtualKernel;
+    // A `virtual` scenario runs deterministically + faster-than-real on the VirtualKernel; a `des`
+    // scenario runs on ndn-lab's own discrete-event executor (deterministic, no tokio clock);
     // anything else runs at real pace on a wall-clock runtime.
-    let (topology, metrics) = if scenario.kernel.is_virtual() {
+    let (topology, metrics) = if scenario.kernel.is_des() {
+        let kernel = match scenario.kernel {
+            KernelSpec::Des { epoch_ns: Some(ns) } => DesKernel::with_epoch_ns(ns),
+            _ => DesKernel::new(),
+        };
+        kernel.run(move |k| async move {
+            let fabric = scenario.build(k)?.start().await?;
+            // Ambient-aware sleep advances the DES virtual clock (tokio::time would never fire here).
+            ndn_app::rt::sleep(dur).await;
+            let out = (fabric.topology(), fabric.snapshot_metrics());
+            fabric.shutdown().await;
+            anyhow::Ok(out)
+        })?
+    } else if scenario.kernel.is_virtual() {
         VirtualKernel::new().run(|k| async move {
             let fabric = scenario.build(k)?.start().await?;
             tokio::time::sleep(dur).await;

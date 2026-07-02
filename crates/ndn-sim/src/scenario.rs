@@ -59,11 +59,22 @@ pub enum KernelSpec {
         #[serde(default)]
         epoch_ns: Option<u64>,
     },
+    /// Discrete-event executor: a from-scratch deterministic event queue (no tokio). Runs
+    /// event-stepped in virtual time — the same replay guarantees as `virtual`, but on ndn-lab's
+    /// own scheduler rather than tokio's paused clock. `epoch_ns` seeds the virtual `now()` origin.
+    Des {
+        #[serde(default)]
+        epoch_ns: Option<u64>,
+    },
 }
 
 impl KernelSpec {
     pub fn is_virtual(&self) -> bool {
         matches!(self, KernelSpec::Virtual { .. })
+    }
+
+    pub fn is_des(&self) -> bool {
+        matches!(self, KernelSpec::Des { .. })
     }
 }
 
@@ -321,6 +332,25 @@ nexthop = 1
         assert!(scenario.kernel.is_virtual());
 
         // Re-serialize and re-parse → structurally identical (JSON as the stable comparison).
+        let again = Scenario::from_toml(&scenario.to_toml().unwrap()).unwrap();
+        assert_eq!(scenario.to_json().unwrap(), again.to_json().unwrap());
+    }
+
+    #[test]
+    fn des_kernel_round_trips() {
+        let src = r#"
+[kernel]
+kind = "des"
+epoch_ns = 42
+
+[[nodes]]
+label = "a"
+"#;
+        let scenario = Scenario::from_toml(src).unwrap();
+        assert!(scenario.kernel.is_des());
+        assert!(!scenario.kernel.is_virtual());
+        assert!(matches!(scenario.kernel, KernelSpec::Des { epoch_ns: Some(42) }));
+        // Re-serialize and re-parse → structurally identical.
         let again = Scenario::from_toml(&scenario.to_toml().unwrap()).unwrap();
         assert_eq!(scenario.to_json().unwrap(), again.to_json().unwrap());
     }

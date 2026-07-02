@@ -1,0 +1,48 @@
+# The 3-node line — consumer ── relay ── producer — on ndn-lab's discrete-event executor.
+# Run it:   ndn-lab run examples/des-line.toml --secs 2
+#
+# `des` runs the whole fabric (engine + apps + faces) on ndn-lab's own from-scratch event queue:
+# deterministic and event-stepped in virtual time — the same replay guarantee as `virtual`, but on
+# our scheduler rather than tokio's paused clock. Two runs are byte-identical.
+
+[kernel]
+kind = "des"
+epoch_ns = 0            # origin of the virtual clock (optional; omit for the default origin)
+
+[[nodes]]
+label = "consumer"
+[[nodes.apps]]
+app = "consumer"
+prefix = "/demo"
+count = 20
+interval_ms = 50
+
+[[nodes]]
+label = "relay"
+
+[[nodes]]
+label = "producer"
+[[nodes.apps]]
+app = "producer"
+prefix = "/demo"
+content = "hello from ndn-lab"
+
+[[links]]
+a = 0
+b = 1
+delay_ms = 2
+
+[[links]]
+a = 1
+b = 2
+delay_ms = 2
+
+[[routes]]
+node = 0
+prefix = "/demo"
+nexthop = 1
+
+[[routes]]
+node = 1
+prefix = "/demo"
+nexthop = 2

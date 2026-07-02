@@ -7,11 +7,13 @@
 //! headless **fabric** handle that implements [`FabricControl`] (spawn / remove / connect /
 //! route / introspect at runtime) with a [`SimTracer`] capturing engine events.
 //!
-//! ## Quick Start
+//! ## Two ways in
+//!
+//! **1. The Rust builder** — declare a topology, `start()`, then interact live. Import everyday
+//! types from the [`prelude`]:
 //!
 //! ```rust,no_run
-//! use ndn_sim::{Simulation, LinkConfig};
-//! use ndn_engine::builder::EngineConfig;
+//! use ndn_sim::prelude::*;
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! let mut sim = Simulation::new();                 // default WallClockKernel
@@ -26,6 +28,40 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! **2. A declarative [`Scenario`]** — the whole network as one diff-able TOML/JSON artifact,
+//! runnable from the `ndn-lab` CLI or built in-process. This example actually runs:
+//!
+//! ```rust
+//! use ndn_sim::Scenario;
+//!
+//! let scenario = Scenario::from_toml(r#"
+//!     [kernel]
+//!     kind = "des"          # deterministic discrete-event executor
+//!     [[nodes]]
+//!     label = "consumer"
+//!     [[nodes]]
+//!     label = "producer"
+//!     [[links]]
+//!     a = 0
+//!     b = 1
+//! "#).unwrap();
+//! assert_eq!(scenario.nodes.len(), 2);
+//! ```
+//!
+//! ## The four capability axes
+//!
+//! - **Kernels** ([`DesKernel`], [`VirtualKernel`], [`WallClockKernel`], [`RealTimeKernel`]) — from a
+//!   deterministic event queue (bit-reproducible replay) to real-time (hosts live devices).
+//! - **Validation** ([`ValidationSpec`], [`run_validation`]) — scenario + fault schedule + property
+//!   assertions + seed sweeps + regression baselines; `ndn-lab check` is a CI gate.
+//! - **Co-simulation** ([`cosim`], [`udp_json_feed`], [`MobilitySource`]) — external simulators
+//!   (ArduPilot SITL / Gazebo / Bevy) drive node motion; `cosim` commands actuate them back.
+//! - **Observability** ([`analysis::explain_link`], [`diff_runs`], [`OtlpExporter`]) — causal "why"
+//!   over radio delivery, cross-run diff, and OTLP/Jaeger export.
+//!
+//! The [`ControlPlane`] projects all of this over one JSON surface (in-process / NDN-native / TCP /
+//! WebSocket), and [`SimMcp`] projects *that* as Model Context Protocol tools for agents.
 //!
 //! ## Components
 //!
@@ -70,6 +106,7 @@ pub mod mavlink;
 pub mod mcp;
 pub mod medium;
 pub mod otel_export;
+pub mod prelude;
 pub mod profile;
 pub mod radio;
 pub mod replay;

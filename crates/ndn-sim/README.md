@@ -5,26 +5,48 @@ multi-node networks of *real* `ForwarderEngine`s on a pluggable time kernel, wit
 a named-radio face, one control + telemetry API, an MCP server, and a UDP bridge to real
 forwarders — all behind the `Face` + `Runtime` seams, so the engine stays simulation-oblivious.
 
+## The four capability axes
+
+1. **Executor-agnostic core** — from a deterministic discrete-event queue (`DesKernel`,
+   bit-reproducible replay) through the tokio paused-clock `VirtualKernel` to real-time
+   (`RealTimeKernel`, hosts live devices).
+2. **Validation platform** — `ValidationSpec` = scenario + fault schedule + property assertions +
+   seed sweeps + regression baselines; `ndn-lab check` is a headless CI gate.
+3. **Pluggable backends + co-simulation** — external simulators (ArduPilot SITL / Gazebo / Bevy)
+   drive node motion; `cosim` commands actuate them back (bidirectional, NDN-native).
+4. **Observability / analysis** — causal "why" over radio delivery (`explain_link`), cross-run diff
+   (`diff_runs`), live telemetry streaming + OTLP/Jaeger export.
+
 ## The `ndn-lab` binary (the doorway)
 
 ```
-cargo build -p ndn-sim --features bin
+cargo build -p ndn-sim --features bin           # add ,mavlink for ArduPilot SITL co-sim
 
-ndn-lab run   examples/line.toml --secs 2   # build + run, print topology + metrics (JSON)
-ndn-lab serve examples/line.toml            # control plane over TCP JSON-RPC + NDN-native
-ndn-lab mcp   [scenario.toml]               # MCP server over stdio (point Claude at it)
-ndn-lab replay recording.json               # rebuild + replay a recorded session
+ndn-lab run   examples/line.toml --secs 2       # build + run, print topology + metrics (JSON)
+ndn-lab run   examples/line.toml --capture a.json   # capture a run for diffing
+ndn-lab diff  a.json b.json                     # pinpoint + explain where two runs diverge
+ndn-lab check examples/checks/line-convergence.toml # validate (faults + properties); CI-ready, exits non-zero on fail
+ndn-lab serve examples/line.toml                # control plane: TCP + WebSocket JSON-RPC + NDN-native
+ndn-lab mcp   [scenario.toml]                   # MCP server over stdio (point Claude at it)
+ndn-lab replay recording.json                   # rebuild + replay a recorded session
 ```
 
-`ndn-lab mcp` exposes the whole fabric to an MCP client (12 tools + a capability catalogue):
-`spawn_node` / `connect` / `route` / `move_node` / `spawn_app` / `describe_topology` /
-`query_metrics` / `why_did` / … — a model can compose and inspect a scenario directly.
+`ndn-lab serve` extras: `--mavlink <ep>` (+ `--launch`) for the live bidirectional co-sim session,
+`--feed <host:port>` for a JSON mobility feed, `--telemetry-ms`/`--otlp` for live/OTLP telemetry,
+`--record <file>` to journal the session for replay, `--require-signed <keychain>` to demand signed
+Interests on NDN control.
+
+`ndn-lab mcp` exposes the whole fabric to an MCP client (**20 tools** + a capability catalogue):
+build/inspect (`spawn_node` / `connect` / `route` / `move_node` / `spawn_app` / `set_strategy` /
+`add_radio_route` / `describe_topology` / `query_metrics` / `scene_svg`), reason
+(`explain_link` / `why_did`), actuate (`cosim`), record (`start_recording` / `get_recording`), and
+validate (`run_validation`) — a model composes, inspects, drives, and gates a scenario directly.
 
 ## What's inside
 
 | Piece | What |
 |-------|------|
-| **Kernels** | `WallClockKernel` (real time), `VirtualKernel` (deterministic, faster-than-real, bit-reproducible), `RealTimeKernel` (governor: real pace + logical clock, hosts real devices), `SteppableKernel` (pause / step / run-until) |
+| **Kernels** | `DesKernel` (from-scratch deterministic event queue; event-granular single-step), `VirtualKernel` (tokio paused clock; deterministic, faster-than-real), `WallClockKernel` (real time), `RealTimeKernel` (governor: real pace + logical clock, hosts real devices), `SteppableKernel` (pause / step / run-until) |
 | **World** | `Position` + `MobilityModel` (static/linear/waypoint) + `Environment`, `WorldView` snapshots over a uniform spatial grid |
 | **Medium / radio** | `WirelessMedium` (propagation + range) and `RadioBus` + `SimRadioFace` — the named-radio face with RSSI→MCS→per-frame delivery (`LinkModel`) + carrier-sense collisions |
 | **Faces** | per-type behavioral catalogue (`FaceProfile`: udp/tcp/quic/ws/ethernet/multicast/shm/serial/ble/nan) — the engine sees each type's `FaceKind`/MTU/loss/ordering |
@@ -39,9 +61,10 @@ ndn-lab replay recording.json               # rebuild + replay a recorded sessio
 
 ## Library quick start
 
+Import the everyday vocabulary from the [`prelude`](src/prelude.rs):
+
 ```rust
-use ndn_sim::{Simulation, LinkConfig};
-use ndn_engine::builder::EngineConfig;
+use ndn_sim::prelude::*;
 
 // async context:
 let mut sim = Simulation::new();                 // default WallClockKernel
@@ -54,6 +77,21 @@ let fabric = sim.start().await?;
 fabric.shutdown().await;
 ```
 
-Deterministic (bit-reproducible) runs go through the `VirtualKernel`; see `tests/determinism.rs`
-for the replay gate. Design + roadmap:
-`.claude/notes/sim-framework-design-v2-2026-06-24.md`.
+Or declare the whole network as one `Scenario` TOML and `ndn-lab run`/`check` it (see
+`examples/` and `examples/checks/`). Deterministic (bit-reproducible) runs go through the `DesKernel`
+or `VirtualKernel`; see `tests/determinism.rs` for the replay gate.
+
+## Known limitations
+
+- **Scenario export from a live fabric is not yet available** — you can author a `Scenario` (TOML/JSON)
+  and round-trip it (`to_toml`/`from_toml`), but there is no `export-scenario` that reconstructs one
+  from a running fabric built via MCP/RPC.
+- **Interactive DES stepping isn't projected as a surface** — `DesSession` supports event-granular
+  `step()`/`run_until()`, but there's no CLI/MCP verb to pause/step/seek a live session yet.
+- **Per-node `EngineConfig` isn't serialized** in scenarios (nodes use the default engine config).
+- **Mobility via live commands** covers static (`move_node`) and linear (`set_linear_mobility`);
+  `WaypointMobility` exists as a model but isn't reachable through a command.
+- **Co-simulation is not bit-reproducible while live** (real external input) — record the resulting
+  `MobilityTrace` and replay it on `DesKernel` for a deterministic, gate-able run.
+
+Design + roadmap: `.claude/notes/sim-framework-design-v2-2026-06-24.md`.

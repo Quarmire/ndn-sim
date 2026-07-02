@@ -27,7 +27,7 @@ async fn declared_apps_generate_traffic_then_stop() {
     sim.link(a, b, ndn_sim::LinkConfig::lan());
     sim.add_route(a, "/app", b);
     // Producer on B (id 0), consumer on A fetching /app/0../app/4 (id 1) — declared, not coded.
-    sim.add_app(b, AppSpec::Producer { prefix: "/app".into(), content: Some("hi".into()) });
+    sim.add_app(b, AppSpec::Producer { prefix: "/app".into(), content: Some("hi".into()) , freshness_ms: None });
     sim.add_app(a, AppSpec::Consumer { prefix: "/app".into(), count: 5, interval_ms: 0 });
     let fabric = sim.start().await.unwrap();
 

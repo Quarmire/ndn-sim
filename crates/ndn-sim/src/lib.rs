@@ -96,6 +96,7 @@ pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use replay::{RecordedCommand, Recording};
 pub use scenario::{
     EnvSpec, KernelSpec, NodeSpec, PropSpec, RadioMediumSpec, RouteSpec, Scenario, ScenarioLink,
+    StrategyChoiceSpec,
 };
 pub use scene::{
     RadioLink, SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,

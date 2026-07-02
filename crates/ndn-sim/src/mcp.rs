@@ -247,6 +247,7 @@ impl SimMcp {
                     "producer" => crate::AppSpec::Producer {
                         prefix,
                         content: args.get("content").and_then(Value::as_str).map(String::from),
+                        freshness_ms: args.get("freshness_ms").and_then(Value::as_u64),
                     },
                     "consumer" => crate::AppSpec::Consumer {
                         prefix,

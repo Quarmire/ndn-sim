@@ -23,7 +23,7 @@ fn app_driven_exchange_runs_on_the_des_kernel() {
         let b = sim.add_node(EngineConfig::default());
         sim.link(a, b, LinkConfig { delay: Duration::from_millis(5), ..LinkConfig::default() });
         sim.add_route(a, "/svc", b);
-        sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("des".into()) });
+        sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("des".into()) , freshness_ms: None });
         let fabric = sim.start().await.unwrap();
 
         // A's consumer fetches over the link — Interest and Data traverse the event queue.
@@ -49,7 +49,7 @@ fn app_driven_fabric_replays_deterministically_on_des() {
             let b = sim.add_node(EngineConfig::default());
             sim.link(a, b, LinkConfig { delay: Duration::from_millis(2), ..LinkConfig::default() });
             sim.add_route(a, "/svc", b);
-            sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("ok".into()) });
+            sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("ok".into()) , freshness_ms: None });
             // A declared consumer fetching /svc/0../svc/4 at 10 ms cadence — all on the event queue.
             sim.add_app(
                 a,

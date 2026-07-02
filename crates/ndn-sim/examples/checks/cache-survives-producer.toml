@@ -1,24 +1,23 @@
-# PROBE (currently FAILS — an open finding, not a passing check). See probes/README.md.
-#
-# Finding: forwarders in the sim do not populate their Content Store on the forwarding path. A relay
-# that forwards 20 Data objects reports cs_inserts == 0, so nothing is cached and content cannot
-# outlive its producer. Disruption-tolerant, in-network caching — the property that most sharply
-# distinguishes content-centric networking from host-centric transport — is not observable here yet.
+# A validation of NDN's core resilience property: DATA OUTLIVES ITS PRODUCER.
 #
 #   producer(0) ── relay(1) ── consumerA(2)
 #                     │
 #                  consumerB(3)
 #
-# 1. consumerA fetches /svc/0..19 through the relay (which SHOULD cache every Data).
-# 2. At t=2.5s the producer is killed.
-# 3. At t=3s a fresh consumerB fetches the SAME /svc/0..19 — which should be served from the relay's
-#    cache. Today consumerB gets nothing (cs_hits == 0), because step 1 never populated the cache.
+# 1. consumerA fetches /svc/0..19 through the relay, which caches every (fresh) Data in its CS.
+# 2. At t=2.5s we KILL the producer.
+# 3. At t=3s a fresh consumerB joins and fetches the SAME /svc/0..19 — served entirely from the
+#    relay's cache. The origin is gone, yet the data is still reachable: disruption-tolerant,
+#    in-network caching, the property that separates content-centric networking from host-centric
+#    transport.
 #
-# What would flip this green: forwarders inserting forwarded Data into the CS (a forwarder-side fix
-# in ndn-engine), plus optionally a scenario CS knob to size/enable it per node.
+# (This only works because the producer stamps a FreshnessPeriod — a forwarder's default admission
+# policy, like NFD's, won't cache FreshnessPeriod=0 Data.)
+#
+# Run it:   ndn-lab check examples/checks/cache-survives-producer.toml
 
 duration_ms = 6000
-kernels = ["des"]
+kernels = ["des", "virtual"]
 
 [scenario.kernel]
 kind = "des"

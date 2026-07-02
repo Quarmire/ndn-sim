@@ -51,6 +51,14 @@ struct PendingRoute {
     nexthop_node: NodeId,
 }
 
+struct PendingStrategy {
+    node: NodeId,
+    prefix: Name,
+    /// NFD-style short strategy name (`"best-route"`, `"multicast"`, …), resolved via
+    /// [`ndn_strategy::registry::create_by_name`] at [`start`](Simulation::start).
+    strategy: String,
+}
+
 /// Builder for an initial fabric topology. Register nodes / links / routes, then
 /// [`start`](Self::start) instantiates everything on the [`SimKernel`] and returns a live
 /// [`RunningSimulation`].
@@ -67,6 +75,8 @@ pub struct Simulation {
     radio_nodes: Vec<(NodeId, crate::world::Position)>,
     /// Apps to spawn on each node once its engine is up (declarative producers/consumers).
     pending_apps: Vec<(NodeId, AppSpec)>,
+    /// Per-node/prefix strategy choices applied once every engine is up.
+    strategies: Vec<PendingStrategy>,
 }
 
 impl Default for Simulation {
@@ -87,6 +97,7 @@ impl Simulation {
             radio: None,
             radio_nodes: Vec::new(),
             pending_apps: Vec::new(),
+            strategies: Vec::new(),
         }
     }
 
@@ -206,6 +217,17 @@ impl Simulation {
         });
     }
 
+    /// Choose the forwarding `strategy` (NFD short name, e.g. `"multicast"` or `"best-route"`) for
+    /// `prefix` on `node`, applied at [`start`](Self::start). Multicast fans an Interest to every
+    /// eligible next-hop — inherently tolerant of a single dead upstream.
+    pub fn add_strategy(&mut self, node: NodeId, prefix: &str, strategy: &str) {
+        self.strategies.push(PendingStrategy {
+            node,
+            prefix: Name::from_str(prefix).expect("valid NDN name"),
+            strategy: strategy.to_string(),
+        });
+    }
+
     pub async fn start(self) -> Result<RunningSimulation> {
         let n = self.profiles.len();
         info!(
@@ -263,6 +285,16 @@ impl Simulation {
                 .engine
                 .fib()
                 .add_nexthop(&route.prefix, *face_id, 10);
+        }
+
+        for sc in &self.strategies {
+            let entry = nodes.get(&sc.node).ok_or_else(|| {
+                anyhow::anyhow!("strategy choice references non-existent node {}", sc.node)
+            })?;
+            let strategy = ndn_strategy::registry::create_by_name(sc.strategy.as_bytes()).ok_or_else(|| {
+                anyhow::anyhow!("unknown forwarding strategy {:?}", sc.strategy)
+            })?;
+            entry.engine.strategy_table().insert(&sc.prefix, strategy);
         }
 
         let epoch_ns = self.kernel.runtime().unix_nanos();
@@ -619,6 +651,23 @@ impl RunningSimulation {
             .clone();
         drop(guard);
         engine.fib().add_nexthop(prefix, face_id, 10);
+        Ok(())
+    }
+
+    /// Set the forwarding `strategy` (NFD short name) for `prefix` on a live `node`.
+    pub fn set_strategy(&self, node: NodeId, prefix: &Name, strategy: &str) -> Result<()> {
+        let engine = {
+            let guard = self.inner.lock().unwrap();
+            guard
+                .nodes
+                .get(&node)
+                .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?
+                .engine
+                .clone()
+        };
+        let strat = ndn_strategy::registry::create_by_name(strategy.as_bytes())
+            .ok_or_else(|| anyhow::anyhow!("unknown forwarding strategy {strategy:?}"))?;
+        engine.strategy_table().insert(prefix, strat);
         Ok(())
     }
 

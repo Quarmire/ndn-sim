@@ -19,7 +19,7 @@ fn radio_exchange() -> Vec<u8> {
             Simulation::new().kernel(k).with_radio_medium(Arc::new(FreeSpacePathLoss::default()), 7);
         let a = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let b = sim.add_radio_node(EngineConfig::default(), Position::xy(5.0, 0.0));
-        sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("air".into()) });
+        sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("air".into()) , freshness_ms: None });
         let fabric = sim.start().await.unwrap();
 
         // A reaches /svc over its radio face; the exchange broadcasts over the event queue.

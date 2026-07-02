@@ -36,6 +36,12 @@ pub enum AppSpec {
         prefix: String,
         #[serde(default)]
         content: Option<String>,
+        /// `FreshnessPeriod` (ms) stamped on served Data (default 4000). A positive freshness is
+        /// what makes forwarders admit the Data into their Content Store — NFD's default admission
+        /// policy (and ndn-rs's) rejects `FreshnessPeriod = 0`. Set `0` to opt a producer out of
+        /// on-path caching.
+        #[serde(default)]
+        freshness_ms: Option<u64>,
     },
     /// Fetch `prefix/<i>` for `i = 0..` — `count` times (`0` = until stopped), `interval_ms`
     /// between fetches. Counts successful fetches.
@@ -107,10 +113,13 @@ pub(crate) fn spawn_app(
         .map_err(|e| anyhow::anyhow!("invalid app prefix {:?}: {e}", spec.prefix()))?;
 
     match spec {
-        AppSpec::Producer { content, .. } => {
+        AppSpec::Producer { content, freshness_ms, .. } => {
             let producer = engine.register_producer(prefix, cancel.clone());
             let bytes = Bytes::from(content.clone().unwrap_or_else(|| "ndn-lab".to_string()));
             let served = Arc::clone(&successes);
+            // Real producers stamp a FreshnessPeriod; without one, forwarders won't cache the Data
+            // (DefaultAdmissionPolicy rejects freshness=0, as NFD does). Default 4 s.
+            let freshness = Duration::from_millis(freshness_ms.unwrap_or(4000));
             // rt::spawn rides the ambient runtime (virtual / discrete-event) when one is set.
             ndn_app::rt::spawn(async move {
                 let _ = producer
@@ -118,7 +127,13 @@ pub(crate) fn spawn_app(
                         let bytes = bytes.clone();
                         let served = Arc::clone(&served);
                         async move {
-                            if responder.respond((*interest.name).clone(), bytes).await.is_ok() {
+                            let wire = ndn_packet::encode::DataBuilder::new(
+                                (*interest.name).clone(),
+                                &bytes,
+                            )
+                            .freshness(freshness)
+                            .build();
+                            if responder.respond_bytes(wire).await.is_ok() {
                                 served.fetch_add(1, Ordering::Relaxed);
                             }
                         }

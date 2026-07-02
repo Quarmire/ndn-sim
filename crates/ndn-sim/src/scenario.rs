@@ -39,6 +39,25 @@ pub struct Scenario {
     pub links: Vec<ScenarioLink>,
     #[serde(default)]
     pub routes: Vec<RouteSpec>,
+    #[serde(default)]
+    pub strategies: Vec<StrategyChoiceSpec>,
+}
+
+/// Choose a forwarding strategy for a prefix on a node (like NFD's strategy-choice table). A
+/// `multicast` strategy fans each Interest to every eligible next-hop, so a fully disjoint backup
+/// path survives a dead upstream — the declarative failover knob.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StrategyChoiceSpec {
+    pub node: usize,
+    /// The namespace this choice governs. Defaults to `/` (node-wide).
+    #[serde(default = "default_strategy_prefix")]
+    pub prefix: String,
+    /// NFD short strategy name: `"best-route"` (default engine behavior) or `"multicast"`.
+    pub strategy: String,
+}
+
+fn default_strategy_prefix() -> String {
+    "/".to_string()
 }
 
 /// The recorded execution model (the caller still supplies the concrete kernel to
@@ -283,6 +302,11 @@ impl Scenario {
             self.check_node(r.node)?;
             self.check_node(r.nexthop)?;
             sim.add_route(NodeId(r.node), &r.prefix, NodeId(r.nexthop));
+        }
+
+        for sc in &self.strategies {
+            self.check_node(sc.node)?;
+            sim.add_strategy(NodeId(sc.node), &sc.prefix, &sc.strategy);
         }
 
         Ok(sim)

@@ -1,8 +1,4 @@
-# PROBE (currently FAILS — an open finding, not a passing check). See probes/README.md.
-#
-# Finding: the default best-route strategy does not fail over to an alternate next-hop mid-flow,
-# and the consumer app does not retransmit a timed-out segment. When the in-use relay dies, the
-# consumer stalls even though a fully disjoint second path exists.
+# A validation of MULTICAST FAILOVER: with a multicast strategy the consumer survives a dead relay.
 #
 # Topology (a diamond — two disjoint paths to the producer):
 #
@@ -12,17 +8,16 @@
 #        \         /
 #         relayB(2)
 #
-# The consumer has FIB next-hops via BOTH relays. One second in we kill relayA. A failover-capable
-# forwarder (multicast, or best-route with retransmit-on-timeout) would recover via relayB and the
-# consumer would still complete all 30 fetches. Today it does not — it completes only the ~9 it got
-# before the failure.
+# The consumer forwards /svc with the `multicast` strategy, which fans every Interest to BOTH
+# relays. One second in we kill relayA; because relayB is still flooded in parallel, the consumer
+# completes all 30 fetches without interruption. (Best-route, by contrast, forwards to one next-hop
+# and only fails over when the CONSUMER retransmits — see probes/README.md for that distinction.)
 #
-# What would flip this green: a per-prefix strategy knob in the scenario model (e.g. `strategy =
-# "multicast"` on a node/prefix) so the DUT can be configured with a failover-capable strategy —
-# the next axis-2 platform addition.
+# Run it:   ndn-lab check examples/checks/relay-failover.toml
+# Proven on both the DES and Virtual executors, with cross-executor counter agreement.
 
 duration_ms = 6000
-kernels = ["des"]
+kernels = ["des", "virtual"]
 
 [scenario.kernel]
 kind = "des"
@@ -82,6 +77,13 @@ node = 2
 prefix = "/svc"
 nexthop = 3
 
+# The consumer floods both relays for /svc — the declarative failover knob.
+[[scenario.strategies]]
+node = 0
+prefix = "/svc"
+strategy = "multicast"
+
+# Kill relayA one second in; relayB carries the flow.
 [[faults]]
 at_ms = 1000
 fault = { kind = "remove_node", node = 1 }

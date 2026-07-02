@@ -43,9 +43,9 @@ fn all_check_examples_pass() {
 #[test]
 fn all_probe_examples_currently_fail() {
     let dir = examples_dir("probes");
-    let specs = toml_specs(&dir);
-    assert!(!specs.is_empty(), "no probe examples found in {dir:?}");
-    for path in specs {
+    // An empty probes/ dir is a *good* state — no open findings. Only the specs that exist must
+    // still fail (a probe that starts passing should be promoted to checks/).
+    for path in toml_specs(&dir) {
         let spec = ValidationSpec::from_toml(&std::fs::read_to_string(&path).unwrap())
             .unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
         let report = run_validation(&spec).unwrap_or_else(|e| panic!("run {path:?}: {e}"));

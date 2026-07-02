@@ -1,0 +1,65 @@
+# The co-simulation bridge, end to end: a recorded flight replayed over a RADIO mesh and gated.
+#
+#   producer(0) ·······(radio)······· drone(1)
+#
+# `mobility_trace` replays a captured flight (the drone weaving within radio range of the producer)
+# as deterministic per-node motion; `radio_routes` broadcasts /svc over the drone's radio face. The
+# drone stays in range throughout, so it completes every fetch — a reproducible, gate-able check
+# built from a live capture.
+#
+# This is the replay leg of the ArduPilot SITL workflow:
+#   ndn-lab fly examples/fly/swarm.toml --record flight.trace.json   # live (needs SITL)
+#   # point a check's mobility_trace at flight.trace.json, then:
+#   ndn-lab check examples/checks/swarm-flight.toml                  # deterministic replay + gate
+#
+# Run it:   ndn-lab check examples/checks/swarm-flight.toml   (from the crate root)
+
+duration_ms = 7000
+kernels = ["des"]
+
+[scenario]
+mobility_trace = "examples/checks/swarm-flight.trace.json"
+
+[scenario.kernel]
+kind = "des"
+
+[scenario.radio]
+seed = 1
+[scenario.radio.propagation]
+kind = "range_threshold"
+range_m = 100.0
+
+[[scenario.nodes]]
+label = "producer"
+position = [0.0, 0.0, 0.0]
+radio = true
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/svc"
+content = "swarm"
+
+[[scenario.nodes]]
+label = "drone"
+position = [10.0, 0.0, 0.0]
+radio = true
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/svc"
+count = 20
+interval_ms = 200
+
+[[scenario.radio_routes]]
+node = 1
+prefix = "/svc"
+
+[[properties]]
+name = "the drone fetches all 20 segments while flying within radio range"
+probe = { kind = "app_successes", app = 1 }
+cmp = "ge"
+value = 20
+
+[[properties]]
+name = "no PIT state leaks"
+probe = { kind = "metric", field = "pit_depth", agg = "max" }
+cmp = "eq"
+value = 0

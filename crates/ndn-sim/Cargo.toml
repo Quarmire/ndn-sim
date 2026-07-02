@@ -45,10 +45,14 @@ async-trait = { workspace = true }
 rand        = "0.9"
 # CLI — only pulled in by the `bin` feature.
 clap        = { workspace = true, optional = true }
+# ArduPilot SITL co-sim — only pulled in by the `mavlink` feature (keeps the core build lean).
+mavlink     = { version = "0.13", optional = true, default-features = false, features = ["common", "udp", "std"] }
 
 [features]
 # The `ndn-lab` binary (run / serve / mcp / replay).
 bin = ["dep:clap", "tokio/rt-multi-thread", "tokio/signal"]
+# ArduPilot SITL (MAVLink) co-sim adapter + the `ndn-lab fly` command.
+mavlink = ["dep:mavlink"]
 
 [[bin]]
 name = "ndn-lab"

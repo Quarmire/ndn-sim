@@ -49,8 +49,19 @@ pub struct Scenario {
     pub links: Vec<ScenarioLink>,
     #[serde(default)]
     pub routes: Vec<RouteSpec>,
+    /// Broadcast routes over a radio face (`node` must be a `radio` node) — the declarative form of
+    /// routing over the shared medium. Wired routes use [`routes`](Scenario::routes) instead.
+    #[serde(default)]
+    pub radio_routes: Vec<RadioRouteSpec>,
     #[serde(default)]
     pub strategies: Vec<StrategyChoiceSpec>,
+}
+
+/// A broadcast FIB route over a node's radio face.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RadioRouteSpec {
+    pub node: usize,
+    pub prefix: String,
 }
 
 /// Choose a forwarding strategy for a prefix on a node (like NFD's strategy-choice table). A
@@ -312,6 +323,11 @@ impl Scenario {
             self.check_node(r.node)?;
             self.check_node(r.nexthop)?;
             sim.add_route(NodeId(r.node), &r.prefix, NodeId(r.nexthop));
+        }
+
+        for r in &self.radio_routes {
+            self.check_node(r.node)?;
+            sim.add_radio_route(NodeId(r.node), &r.prefix);
         }
 
         for sc in &self.strategies {

@@ -69,6 +69,34 @@ enum Command {
         #[arg(long)]
         record_baseline: Option<PathBuf>,
     },
+    /// Fly a live ArduPilot SITL (MAVLink) co-simulation: stream vehicle positions into the World on
+    /// the real-time governor, run NDN over the moving swarm, and record a MobilityTrace for
+    /// deterministic replay (`ndn-lab run`/`check` a scenario with `mobility_trace = "..."`).
+    #[cfg(feature = "mavlink")]
+    Fly {
+        scenario: PathBuf,
+        /// MAVLink endpoint to listen on (SITL streams telemetry to a GCS port).
+        #[arg(long, default_value = "udpin:0.0.0.0:14550")]
+        mavlink: String,
+        /// Write the recorded MobilityTrace JSON here.
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// The MAVLink system id that maps to node 0 (ArduPilot vehicles usually start at 1).
+        #[arg(long, default_value_t = 1)]
+        base_sysid: u8,
+        /// Stop after this many seconds (default: run until Ctrl-C).
+        #[arg(long)]
+        secs: Option<u64>,
+        /// ENU origin latitude (deg). Omit to adopt the first vehicle fix as the origin.
+        #[arg(long, requires = "ref_lon")]
+        ref_lat: Option<f64>,
+        /// ENU origin longitude (deg).
+        #[arg(long)]
+        ref_lon: Option<f64>,
+        /// ENU origin altitude (m MSL).
+        #[arg(long, default_value_t = 0.0)]
+        ref_alt: f64,
+    },
 }
 
 fn main() -> Result<()> {
@@ -82,6 +110,12 @@ fn main() -> Result<()> {
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
         Command::Check { spec, json, baseline, record_baseline } => {
             cmd_check(spec, json, baseline, record_baseline)
+        }
+        #[cfg(feature = "mavlink")]
+        Command::Fly { scenario, mavlink, record, base_sysid, secs, ref_lat, ref_lon, ref_alt } => {
+            runtime()?.block_on(cmd_fly(
+                scenario, mavlink, record, base_sysid, secs, ref_lat, ref_lon, ref_alt,
+            ))
         }
     }
 }
@@ -185,6 +219,72 @@ fn cmd_check(
     }
     if !report.passed {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "mavlink")]
+#[allow(clippy::too_many_arguments)]
+async fn cmd_fly(
+    path: PathBuf,
+    endpoint: String,
+    record: Option<PathBuf>,
+    base_sysid: u8,
+    secs: Option<u64>,
+    ref_lat: Option<f64>,
+    ref_lon: Option<f64>,
+    ref_alt: f64,
+) -> Result<()> {
+    use ndn_sim::RealTimeKernel;
+    use ndn_sim::mavlink::{GeoRef, MavlinkConfig, mavlink_source};
+
+    let scenario = read_scenario(&path)?;
+    // The real-time governor: real pace so a live autopilot feed lines up (clock mode B).
+    let fabric = Arc::new(build_fabric(Some(scenario), RealTimeKernel::new()).await?);
+    let reference = match (ref_lat, ref_lon) {
+        (Some(lat_deg), Some(lon_deg)) => Some(GeoRef { lat_deg, lon_deg, alt_m: ref_alt }),
+        _ => None,
+    };
+    let cfg = MavlinkConfig {
+        endpoint: endpoint.clone(),
+        reference,
+        base_sysid,
+        node_count: fabric.nodes(),
+    };
+    let (source, _reader) = mavlink_source(cfg)?;
+    eprintln!(
+        "ndn-lab: flying — MAVLink {endpoint}, {} node(s); {}",
+        fabric.nodes(),
+        match secs {
+            Some(s) => format!("stopping in {s}s"),
+            None => "Ctrl-C to stop".to_string(),
+        }
+    );
+
+    let cancel = CancellationToken::new();
+    let stopper = cancel.clone();
+    tokio::spawn(async move {
+        match secs {
+            Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
+            None => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+        stopper.cancel();
+    });
+
+    let trace = fabric
+        .drive_mobility(Box::new(source), Duration::from_millis(50), cancel)
+        .await;
+    fabric.shutdown().await;
+    eprintln!(
+        "ndn-lab: captured {} state(s) across {} node(s)",
+        trace.states.len(),
+        trace.into_models().len()
+    );
+    if let Some(rec) = record {
+        std::fs::write(&rec, trace.to_json()?)?;
+        eprintln!("ndn-lab: wrote trace → {}", rec.display());
     }
     Ok(())
 }

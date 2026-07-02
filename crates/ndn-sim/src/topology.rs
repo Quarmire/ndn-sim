@@ -79,6 +79,8 @@ pub struct Simulation {
     pending_apps: Vec<(NodeId, AppSpec)>,
     /// Per-node/prefix strategy choices applied once every engine is up.
     strategies: Vec<PendingStrategy>,
+    /// Broadcast routes over a node's radio face: `(node, prefix)`, applied once radio faces exist.
+    radio_routes: Vec<(NodeId, Name)>,
     /// Perturbs every face's loss/jitter RNG (and the radio erasure RNG). 0 = the default single
     /// realization; a validation seed sweep varies it to draw independent random realizations.
     seed: u64,
@@ -103,8 +105,15 @@ impl Simulation {
             radio_nodes: Vec::new(),
             pending_apps: Vec::new(),
             strategies: Vec::new(),
+            radio_routes: Vec::new(),
             seed: 0,
         }
+    }
+
+    /// Declare a broadcast route for `prefix` over `node`'s radio face (the declarative form of
+    /// [`RunningSimulation::route_over_radio`]). Applied at [`start`](Self::start).
+    pub fn add_radio_route(&mut self, node: NodeId, prefix: &str) {
+        self.radio_routes.push((node, Name::from_str(prefix).expect("valid NDN name")));
     }
 
     /// Set the world seed — perturbs every simulated face's loss/jitter RNG (and the radio erasure
@@ -358,6 +367,20 @@ impl Simulation {
             }
             bus
         });
+
+        // Radio FIB routes: broadcast `prefix` over the node's radio face (like route_over_radio,
+        // but declarative). Applied now that radio faces exist.
+        for (node, prefix) in &self.radio_routes {
+            let face = radio_faces.get(node).copied().ok_or_else(|| {
+                anyhow::anyhow!("radio route on node {node} which has no radio face")
+            })?;
+            nodes
+                .get(node)
+                .ok_or_else(|| anyhow::anyhow!("radio route references non-existent node {node}"))?
+                .engine
+                .fib()
+                .add_nexthop(prefix, face, 10);
+        }
 
         // Spawn declared apps now that every engine is up.
         let mut apps: HashMap<AppId, AppHandle> = HashMap::new();

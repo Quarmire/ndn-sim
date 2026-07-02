@@ -1,0 +1,58 @@
+# A LIVE ArduPilot SITL co-simulation topology (axis 3, 3b). Run it with `ndn-lab fly` — node
+# positions come from MAVLink telemetry (the `[kernel]` here is ignored; `fly` forces the real-time
+# governor). See README.md in this directory for the SITL setup.
+#
+# Node ↔ vehicle: base_sysid=1 ⇒ MAVLink system id 1 → node 0, sysid 2 → node 1, sysid 3 → node 2.
+#
+#   lead(0, sysid 1)  serves /swarm/*  ·······(radio)·······  follower drones fetch it
+#
+#   ndn-lab fly examples/fly/swarm.toml --mavlink udpin:0.0.0.0:14550 --record flight.trace.json
+
+[kernel]
+kind = "real_time"
+
+[radio]
+seed = 1
+[radio.propagation]
+kind = "free_space_path_loss"
+
+# node 0 — lead vehicle (sysid 1): serves the swarm feed.
+[[nodes]]
+label = "lead"
+position = [0.0, 0.0, 0.0]
+radio = true
+[[nodes.apps]]
+app = "producer"
+prefix = "/swarm"
+content = "lead-telemetry"
+freshness_ms = 1000
+
+# node 1 — follower (sysid 2): fetches the lead's feed.
+[[nodes]]
+label = "follower-a"
+position = [20.0, 0.0, 0.0]
+radio = true
+[[nodes.apps]]
+app = "consumer"
+prefix = "/swarm"
+interval_ms = 200
+lifetime_ms = 1000
+
+# node 2 — follower (sysid 3).
+[[nodes]]
+label = "follower-b"
+position = [0.0, 20.0, 0.0]
+radio = true
+[[nodes.apps]]
+app = "consumer"
+prefix = "/swarm"
+interval_ms = 200
+lifetime_ms = 1000
+
+# The followers reach /swarm by broadcasting over their radio face.
+[[radio_routes]]
+node = 1
+prefix = "/swarm"
+[[radio_routes]]
+node = 2
+prefix = "/swarm"

@@ -63,6 +63,8 @@ pub mod control_plane;
 pub mod des;
 pub mod kernel;
 pub mod link_model;
+#[cfg(feature = "mavlink")]
+pub mod mavlink;
 pub mod mcp;
 pub mod medium;
 pub mod otel_export;
@@ -100,8 +102,8 @@ pub use otel_export::OtlpExporter;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use replay::{RecordedCommand, Recording};
 pub use scenario::{
-    EnvSpec, KernelSpec, NodeSpec, PropSpec, RadioMediumSpec, RouteSpec, Scenario, ScenarioLink,
-    StrategyChoiceSpec,
+    EnvSpec, KernelSpec, NodeSpec, PropSpec, RadioMediumSpec, RadioRouteSpec, RouteSpec, Scenario,
+    ScenarioLink, StrategyChoiceSpec,
 };
 pub use scene::{
     RadioLink, SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,

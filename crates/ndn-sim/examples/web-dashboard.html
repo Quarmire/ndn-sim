@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>ndn-lab — live world view</title>
+<!--
+  A zero-dependency browser client for the ndn-lab control plane. Proves the whole
+  browser-visualization path end-to-end and is the template the Dioxus ndn-dashboard sim-mode
+  mirrors: connect a WebSocket to `ndn-lab serve`, poll the server-rendered scene SVG, and issue
+  JSON commands — no shared Rust types, no ndn-sim dependency.
+
+  Run:  ndn-lab serve examples/radio-mesh.toml
+  Then open this file in a browser (defaults to ws://127.0.0.1:6465).
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 1rem; }
+  #scene { border: 1px solid #ccc; width: 700px; height: 500px; }
+  button, input { font: inherit; }
+  #log { color: #666; white-space: pre-wrap; max-height: 8rem; overflow: auto; }
+</style>
+
+<h2>ndn-lab live world view</h2>
+<div>
+  <input id="url" size="28" value="ws://127.0.0.1:6465" />
+  <button onclick="connect()">Connect</button>
+  <button onclick="cmd({cmd:'spawn_node'})">Spawn node</button>
+  <button onclick="connectNodes()">Connect a↔b</button>
+  <button onclick="moveNode()">Move node…</button>
+  <span id="status">disconnected</span>
+</div>
+<div id="scene"></div>
+<div id="log"></div>
+
+<script>
+let ws = null;
+const pending = {};          // id -> resolve
+let nextId = 1;
+const log = (m) => (document.getElementById('log').textContent =
+  m + '\n' + document.getElementById('log').textContent);
+
+function connect() {
+  if (ws) ws.close();
+  ws = new WebSocket(document.getElementById('url').value);
+  ws.onopen = () => { document.getElementById('status').textContent = 'connected'; poll(); };
+  ws.onclose = () => (document.getElementById('status').textContent = 'disconnected');
+  ws.onmessage = (ev) => {
+    const resp = JSON.parse(ev.data);
+    if (resp.result === 'svg') document.getElementById('scene').innerHTML = resp.svg;
+    else log('<- ' + ev.data);
+  };
+}
+
+// Fire-and-forget request; the server replies with one JSON message per request.
+function send(req) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(req)); }
+function cmd(c) { send({ command: c }); }
+function query(q) { send({ query: q }); }
+
+function poll() {
+  query({ query: 'scene_svg', width: 700, height: 500 });
+  if (ws && ws.readyState === 1) setTimeout(poll, 500);
+}
+
+function connectNodes() {
+  const a = +prompt('node a', '0'), b = +prompt('node b', '1');
+  cmd({ cmd: 'connect', a, b, delay_ms: 5 });
+}
+function moveNode() {
+  const node = +prompt('node', '0'), x = +prompt('x (m)', '50'), y = +prompt('y (m)', '0');
+  cmd({ cmd: 'move_node', node, x, y });
+}
+
+connect();
+</script>

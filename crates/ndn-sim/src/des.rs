@@ -270,29 +270,38 @@ impl DesKernel {
         self.exec.get_or_init(|| Executor::new(self.epoch_base_ns)).clone()
     }
 
-    /// Run `f` to completion on the event queue, returning its output. The closure receives the
-    /// DES [`Runtime`]; it (and anything it spawns) must be `Send + 'static`, like `Runtime::spawn`.
+    /// Run `f` to completion on the event queue, returning its output. The closure receives this
+    /// kernel (pass it to [`Simulation::kernel`](crate::Simulation::kernel) to build a fabric on
+    /// the event queue); `f` and anything it spawns must be `Send + 'static`, like `Runtime::spawn`.
     pub fn run<F, Fut, T>(self: &Arc<Self>, f: F) -> T
     where
-        F: FnOnce(Arc<dyn Runtime>) -> Fut + Send + 'static,
+        F: FnOnce(Arc<dyn SimKernel>) -> Fut + Send + 'static,
         Fut: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
         let exec = self.executor();
         let rt: Arc<dyn Runtime> = Arc::new(DesRuntime { exec: Arc::clone(&exec) });
+        // Route ndn-app's rt::{sleep,timeout,spawn} through the event queue while we drive, so
+        // app-driven fabrics (consumers/producers) run on DES, not tokio.
+        let _ambient = ndn_app::rt::set_current_runtime(Arc::clone(&rt));
+        let me: Arc<dyn SimKernel> = self.clone();
         let out: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&out);
         exec.spawn(Box::pin(async move {
-            let v = f(rt).await;
+            let v = f(me).await;
             *slot.lock().unwrap() = Some(v);
         }));
         exec.drive_until(|| out.lock().unwrap().is_some());
         out.lock().unwrap().take().expect("DES main future did not complete (deadlock)")
     }
 
-    /// Open an event-granular stepping session (owns the event queue).
+    /// Open an event-granular stepping session (owns the event queue). Installs the DES runtime
+    /// as this thread's ambient runtime (for `ndn-app` fetch/serve) for the session's lifetime.
     pub fn session(self: &Arc<Self>) -> DesSession {
-        DesSession { exec: self.executor(), epoch_base_ns: self.epoch_base_ns }
+        let exec = self.executor();
+        let ambient =
+            ndn_app::rt::set_current_runtime(Arc::new(DesRuntime { exec: Arc::clone(&exec) }));
+        DesSession { exec, epoch_base_ns: self.epoch_base_ns, _ambient: ambient }
     }
 }
 
@@ -311,6 +320,8 @@ impl SimKernel for DesKernel {
 pub struct DesSession {
     exec: Arc<Executor>,
     epoch_base_ns: u64,
+    /// Keeps this thread's ambient runtime pointed at the DES executor for the session lifetime.
+    _ambient: ndn_app::rt::RuntimeGuard,
 }
 
 impl DesSession {
@@ -366,7 +377,8 @@ mod tests {
 
     #[test]
     fn runs_a_timed_channel_graph_to_completion() {
-        let out = DesKernel::new().run(|rt| async move {
+        let out = DesKernel::new().run(|k| async move {
+            let rt = k.runtime();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
             // A spawned task sleeps 1 s (virtual) then sends the clock time it woke at.
             let producer = Arc::clone(&rt);
@@ -387,7 +399,8 @@ mod tests {
         // Three tasks sleeping different amounts append to a log; the order is by wake time and
         // must be identical across runs (event-queue determinism, not scheduler luck).
         let run = || {
-            DesKernel::new().run(|rt| async move {
+            DesKernel::new().run(|k| async move {
+                let rt = k.runtime();
                 let log = Arc::new(Mutex::new(Vec::<u64>::new()));
                 for ms in [30u64, 10, 20] {
                     let rt = Arc::clone(&rt);

@@ -5,12 +5,13 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_sim::{DesKernel, FaceProfile, LinkConfig, SimLink};
+use ndn_sim::{DesKernel, FaceProfile, LinkConfig, SimKernel, SimLink};
 use ndn_transport::{FaceId, Transport};
 
 #[test]
 fn simlink_delivers_over_the_event_queue() {
-    let got = DesKernel::new().run(|rt| async move {
+    let got = DesKernel::new().run(|k: std::sync::Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
         // Real SimFace pair, its delivery timing riding the DES runtime.
         let (a, b) = SimLink::pair_profiled_on(
             FaceId(1),
@@ -33,7 +34,8 @@ fn simlink_delivers_over_the_event_queue() {
 #[test]
 fn reliable_stream_is_in_order_and_deterministic_on_des() {
     let run = || {
-        DesKernel::new().run(|rt| async move {
+        DesKernel::new().run(|k: std::sync::Arc<dyn SimKernel>| async move {
+            let rt = k.runtime();
             // TCP profile with jitter: reliable ⇒ no loss, in-order, even on the event queue.
             let (a, b) = SimLink::pair_profiled_on(
                 FaceId(1),

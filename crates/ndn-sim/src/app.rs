@@ -111,7 +111,8 @@ pub(crate) fn spawn_app(
             let producer = engine.register_producer(prefix, cancel.clone());
             let bytes = Bytes::from(content.clone().unwrap_or_else(|| "ndn-lab".to_string()));
             let served = Arc::clone(&successes);
-            tokio::spawn(async move {
+            // rt::spawn rides the ambient runtime (virtual / discrete-event) when one is set.
+            ndn_app::rt::spawn(async move {
                 let _ = producer
                     .serve(move |interest, responder| {
                         let bytes = bytes.clone();
@@ -137,7 +138,7 @@ pub(crate) fn spawn_app(
             };
             let fetched = Arc::clone(&successes);
             let cancel2 = cancel.clone();
-            tokio::spawn(async move {
+            ndn_app::rt::spawn(async move {
                 let mut i = 0u64;
                 while !cancel2.is_cancelled() && (count == 0 || i < count) {
                     if let Ok(name) = format!("{pfx}/{i}").parse::<Name>() {
@@ -148,9 +149,10 @@ pub(crate) fn spawn_app(
                     }
                     i += 1;
                     if !interval.is_zero() {
+                        // rt::sleep is ambient-runtime-aware (virtual under the DES kernel).
                         tokio::select! {
                             _ = cancel2.cancelled() => break,
-                            _ = tokio::time::sleep(interval) => {}
+                            _ = ndn_app::rt::sleep(interval) => {}
                         }
                     }
                 }

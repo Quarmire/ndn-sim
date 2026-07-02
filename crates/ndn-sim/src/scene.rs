@@ -70,12 +70,24 @@ impl SceneBounds {
     }
 }
 
+/// A radio reachability edge: `from` can hear `to` at `rssi_dbm` (from positions + propagation).
+/// This is what "links light up by RSSI" draws — distinct from wired [`SceneLink`]s.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RadioLink {
+    pub from: usize,
+    pub to: usize,
+    pub rssi_dbm: f64,
+}
+
 /// A renderable snapshot of the fabric — the `world_snapshot()` the GUI draws each frame.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SceneSnapshot {
     pub virtual_time_ns: u64,
     pub nodes: Vec<SceneNode>,
     pub links: Vec<SceneLink>,
+    /// Radio reachability edges (empty unless a radio medium is present).
+    #[serde(default)]
+    pub radio_links: Vec<RadioLink>,
     pub bounds: SceneBounds,
 }
 
@@ -140,7 +152,9 @@ pub fn project_scene(
     }
 
     let bounds = bounds_of(&nodes);
-    SceneSnapshot { virtual_time_ns, nodes, links, bounds }
+    // radio_links are filled by the fabric (it has the radio bus + positions); pure projection
+    // leaves them empty.
+    SceneSnapshot { virtual_time_ns, nodes, links, radio_links: Vec::new(), bounds }
 }
 
 fn bounds_of(nodes: &[SceneNode]) -> SceneBounds {

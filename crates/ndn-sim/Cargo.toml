@@ -28,6 +28,9 @@ ndn-app       = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 toml       = { workspace = true }
+# WebSocket control transport (browser / Dioxus dashboard clients).
+tokio-tungstenite = { workspace = true }
+futures    = { workspace = true }
 
 bytes       = { workspace = true }
 # `test-util` enables the paused single-threaded runtime the VirtualKernel drives;

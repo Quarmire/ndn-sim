@@ -51,5 +51,10 @@ async fn builder_attaches_radios_and_two_nodes_exchange_over_the_air() {
     assert!(link.rssi_dbm.unwrap() > -60, "metres apart ⇒ strong RSSI");
     assert!(link.ext_get("mcs").is_some(), "mcs surfaced as an ext signal");
 
+    // The scene exposes radio reachability edges (RSSI) — "links light up by RSSI".
+    let scene = fabric.scene_snapshot();
+    assert_eq!(scene.radio_links.len(), 1, "two in-range radios ⇒ one RSSI edge");
+    assert!(scene.radio_links[0].rssi_dbm > -60.0, "metres apart ⇒ strong RSSI");
+
     fabric.shutdown().await;
 }

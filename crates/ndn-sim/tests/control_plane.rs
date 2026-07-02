@@ -185,6 +185,38 @@ async fn tcp_rpc_server_handles_json_lines() {
     fabric.shutdown().await;
 }
 
+#[tokio::test]
+async fn ws_rpc_server_handles_json_and_renders_svg() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut sim = Simulation::new();
+    let _a = sim.add_node(EngineConfig::default());
+    let fabric = Arc::new(sim.start().await.unwrap());
+    let control = ControlPlane::new(Arc::clone(&fabric));
+    let addr = control.serve_ws("127.0.0.1:0", CancellationToken::new()).await.unwrap();
+
+    // A browser-style WebSocket client speaks the same JSON-RPC.
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}")).await.unwrap();
+
+    ws.send(Message::text(r#"{"command":{"cmd":"spawn_node"}}"#.to_string())).await.unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    assert!(reply.to_text().unwrap().contains(r#""result":"node""#));
+
+    // Server-rendered SVG — a client with no shared Rust types just displays this.
+    ws.send(Message::text(r#"{"query":{"query":"scene_svg","width":300,"height":300}}"#.to_string()))
+        .await
+        .unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    let resp: SimResponse = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+    match resp {
+        SimResponse::Svg { svg } => assert!(svg.starts_with("<svg") && svg.contains("<circle")),
+        other => panic!("expected svg, got {other:?}"),
+    }
+
+    fabric.shutdown().await;
+}
+
 /// Send a JSON control request over NDN (ApplicationParameters) and parse the JSON reply.
 async fn ask(consumer: &mut ndn_app::Consumer, json: &[u8]) -> SimResponse {
     let builder = InterestBuilder::new("/localhop/sim/control".parse::<Name>().unwrap())

@@ -126,6 +126,20 @@ impl RadioBus {
         &self.link_model
     }
 
+    /// The RSSI (dBm) a receiver at `rx` would hear from a transmitter at `tx`, or `None` if the
+    /// pair is below sensitivity (out of range). For the scene's radio reachability edges.
+    pub fn link_rssi(&self, tx: Position, rx: Position) -> Option<f64> {
+        let env = self.world.environment();
+        let d = self.propagation.deliver(&TxContext {
+            tx_pos: tx,
+            rx_pos: rx,
+            tx_power_dbm: self.tx_power_dbm,
+            environment: env.as_ref(),
+            frame_len: 0,
+        });
+        d.delivered.then_some(d.rssi_dbm)
+    }
+
     /// Attach `node` as a radio; returns the channel its surviving frames land on. **Unbounded**:
     /// loss is purely the link model's seeded erasure, never buffer pressure or consumer timing.
     pub fn attach(&self, node: NodeId) -> mpsc::UnboundedReceiver<RadioRx> {

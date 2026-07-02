@@ -514,7 +514,27 @@ impl RunningSimulation {
                 positions.insert(*id, crate::scene::ScenePoint { x: p.x, y: p.y });
             }
         }
-        crate::scene::project_scene(&topo, &metrics, &positions, now)
+        let mut scene = crate::scene::project_scene(&topo, &metrics, &positions, now);
+
+        // Radio reachability edges (RSSI) between radio nodes, for "links light up by RSSI".
+        if let Some(bus) = &self.radio_bus {
+            let mut radios: Vec<NodeId> = self.radio_faces.keys().copied().collect();
+            radios.sort_by_key(|n| n.0);
+            for (i, a) in radios.iter().enumerate() {
+                for b in &radios[i + 1..] {
+                    if let (Some(pa), Some(pb)) = (view.position(*a), view.position(*b))
+                        && let Some(rssi) = bus.link_rssi(pa, pb)
+                    {
+                        scene.radio_links.push(crate::scene::RadioLink {
+                            from: a.0,
+                            to: b.0,
+                            rssi_dbm: rssi,
+                        });
+                    }
+                }
+            }
+        }
+        scene
     }
 
     /// Spawn a periodic gauge emitter that snapshots every node into `log` once per `interval`

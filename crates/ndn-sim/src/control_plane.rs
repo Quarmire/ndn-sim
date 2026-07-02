@@ -120,6 +120,17 @@ pub enum SimQuery {
     Metrics,
     /// A renderable scene (positions + links + metric badges + bounds) — what a GUI draws.
     Scene,
+    /// A server-rendered SVG of the topology — a client with no shared Rust types just displays it.
+    SceneSvg {
+        #[serde(default = "default_svg_dim")]
+        width: u32,
+        #[serde(default = "default_svg_dim")]
+        height: u32,
+    },
+}
+
+fn default_svg_dim() -> u32 {
+    600
 }
 
 /// The request envelope decoded from a transport (`{"command": …}` or `{"query": …}`).
@@ -140,6 +151,7 @@ pub enum SimResponse {
     Topology(TopologySnapshot),
     Metrics(Vec<MetricsSample>),
     Scene(crate::scene::SceneSnapshot),
+    Svg { svg: String },
     Error { message: String },
 }
 
@@ -319,6 +331,10 @@ impl ControlPlane {
             SimQuery::Topology => SimResponse::Topology(self.fabric.topology()),
             SimQuery::Metrics => SimResponse::Metrics(self.fabric.snapshot_metrics()),
             SimQuery::Scene => SimResponse::Scene(self.fabric.scene_snapshot()),
+            SimQuery::SceneSvg { width, height } => {
+                let svg = crate::scene::render_topology_svg(&self.fabric.scene_snapshot(), width, height);
+                SimResponse::Svg { svg }
+            }
         }
     }
 
@@ -410,6 +426,64 @@ impl ControlPlane {
             write.write_all(reply.as_bytes()).await?;
             write.write_all(b"\n").await?;
             write.flush().await?;
+        }
+        Ok(())
+    }
+
+    /// Serve the control surface over **WebSocket** (one JSON [`handle_json`](Self::handle_json)
+    /// request/response per message) — the transport a browser / Dioxus (`ndn-dashboard`) client
+    /// uses, since wasm can't open raw TCP. Binds `addr`, spawns the accept loop, returns the
+    /// bound [`SocketAddr`]. Runs until `cancel`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn serve_ws(
+        self: &Arc<Self>,
+        addr: impl tokio::net::ToSocketAddrs,
+        cancel: CancellationToken,
+    ) -> std::io::Result<std::net::SocketAddr> {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let local = listener.local_addr()?;
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    accepted = listener.accept() => {
+                        let Ok((stream, _peer)) = accepted else { break };
+                        let me = Arc::clone(&me);
+                        tokio::spawn(async move {
+                            if let Err(e) = me.handle_ws_conn(stream).await {
+                                warn!(error = %e, "ndn-lab control WebSocket connection ended");
+                            }
+                        });
+                    }
+                }
+            }
+        });
+        Ok(local)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn handle_ws_conn(&self, stream: tokio::net::TcpStream) -> anyhow::Result<()> {
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let ws = tokio_tungstenite::accept_async(stream).await?;
+        let (mut write, mut read) = ws.split();
+        while let Some(msg) = read.next().await {
+            match msg? {
+                Message::Text(text) => {
+                    let reply = self.handle_json(&text).await;
+                    write.send(Message::text(reply)).await?;
+                }
+                Message::Binary(bytes) => {
+                    let req = String::from_utf8_lossy(&bytes);
+                    let reply = self.handle_json(&req).await;
+                    write.send(Message::text(reply)).await?;
+                }
+                Message::Close(_) => break,
+                Message::Ping(p) => write.send(Message::Pong(p)).await?,
+                _ => {}
+            }
         }
         Ok(())
     }

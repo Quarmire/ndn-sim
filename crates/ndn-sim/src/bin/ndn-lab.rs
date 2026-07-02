@@ -39,11 +39,15 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         secs: u64,
     },
-    /// Serve the control plane over TCP (newline-delimited JSON-RPC) + NDN-native control.
+    /// Serve the control plane over TCP + WebSocket (JSON-RPC) + NDN-native control.
     Serve {
         scenario: Option<PathBuf>,
+        /// TCP JSON-RPC bind address.
         #[arg(long, default_value = "127.0.0.1:6464")]
         addr: String,
+        /// WebSocket bind address (for browser / Dioxus dashboard clients).
+        #[arg(long, default_value = "127.0.0.1:6465")]
+        ws_addr: String,
     },
     /// Run the MCP server over stdio — point an MCP client (e.g. Claude) at this.
     Mcp { scenario: Option<PathBuf> },
@@ -55,7 +59,9 @@ fn main() -> Result<()> {
     init_tracing();
     match Cli::parse().command {
         Command::Run { scenario, secs } => cmd_run(scenario, secs),
-        Command::Serve { scenario, addr } => runtime()?.block_on(cmd_serve(scenario, addr)),
+        Command::Serve { scenario, addr, ws_addr } => {
+            runtime()?.block_on(cmd_serve(scenario, addr, ws_addr))
+        }
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
     }
@@ -121,13 +127,15 @@ fn cmd_run(path: PathBuf, secs: u64) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_serve(scenario: Option<PathBuf>, addr: String) -> Result<()> {
+async fn cmd_serve(scenario: Option<PathBuf>, addr: String, ws_addr: String) -> Result<()> {
     let scenario = scenario.as_ref().map(read_scenario).transpose()?;
     let fabric = Arc::new(build_fabric(scenario, Arc::new(WallClockKernel::new())).await?);
     let control = ControlPlane::new(Arc::clone(&fabric));
 
     let bound = control.serve_tcp(&addr, CancellationToken::new()).await?;
     eprintln!("ndn-lab: control plane (JSON-RPC) on tcp://{bound}");
+    let ws_bound = control.serve_ws(&ws_addr, CancellationToken::new()).await?;
+    eprintln!("ndn-lab: control plane (JSON-RPC) on ws://{ws_bound}");
 
     // Also expose NDN-native control on node 0, if the fabric has one.
     if let Some(engine) = fabric.engine_of(NodeId(0)) {

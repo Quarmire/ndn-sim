@@ -94,7 +94,7 @@ pub use scenario::{
     EnvSpec, KernelSpec, NodeSpec, PropSpec, RadioMediumSpec, RouteSpec, Scenario, ScenarioLink,
 };
 pub use scene::{
-    SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
+    RadioLink, SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
     render_topology_svg,
 };
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};

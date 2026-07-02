@@ -8,6 +8,7 @@ use std::time::Duration;
 use ndn_engine::builder::EngineConfig;
 use ndn_sim::{ControlPlane, RealTimeKernel, Simulation};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn telemetry_stream_delivers_live_frames() {
@@ -82,10 +83,8 @@ async fn otlp_span_export_reaches_the_collector() {
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .await;
-            if req.starts_with("POST /v1/traces") {
-                if let Some(tx) = tx.take() {
-                    let _ = tx.send(req);
-                }
+            if req.starts_with("POST /v1/traces") && let Some(tx) = tx.take() {
+                let _ = tx.send(req);
             }
         }
     });
@@ -104,6 +103,8 @@ async fn otlp_span_export_reaches_the_collector() {
         target: "fwd.pipeline".into(),
         name: "interest.forward".into(),
         message: String::new(),
+        span_id: Some(1),
+        parent_span_id: None,
     });
     control.set_span_log(Arc::clone(&log));
 
@@ -112,6 +113,36 @@ async fn otlp_span_export_reaches_the_collector() {
     assert!(req.contains("resourceSpans"), "OTLP trace document present");
     assert!(req.contains("interest.forward"), "carries the captured span");
 
+    cancel.cancel();
+    fabric.shutdown().await;
+}
+
+/// A WebSocket client receives live telemetry frames pushed by the control plane (axis 4c over WS).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_clients_receive_live_telemetry() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut sim = Simulation::new().kernel(RealTimeKernel::new());
+    sim.add_node(EngineConfig::default());
+    let fabric = Arc::new(sim.start().await.unwrap());
+    let control = ControlPlane::new(Arc::clone(&fabric));
+    let ws_addr = control.serve_ws("127.0.0.1:0", CancellationToken::new()).await.unwrap();
+    let cancel = control.spawn_telemetry(Duration::from_millis(40), None);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{ws_addr}")).await.unwrap();
+    let mut got = false;
+    for _ in 0..30 {
+        match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) if t.contains("\"telemetry\"") => {
+                got = true;
+                break;
+            }
+            Ok(Some(_)) => continue,
+            _ => continue,
+        }
+    }
+    assert!(got, "WS client received a live telemetry frame");
     cancel.cancel();
     fabric.shutdown().await;
 }

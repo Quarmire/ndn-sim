@@ -35,6 +35,14 @@ pub struct CapturedSpan {
     pub name: String,
     /// The event message (empty for span-opens).
     pub message: String,
+    /// The tracing span id (for `"span"` kind), so captured spans link into a causal tree. `None`
+    /// for `"event"` entries (events aren't spans).
+    #[serde(default)]
+    pub span_id: Option<u64>,
+    /// The id of the enclosing span, if any — the parent link. For a `"span"` this is its parent
+    /// span; for an `"event"` it's the span the event fired inside. `None` at the root.
+    #[serde(default)]
+    pub parent_span_id: Option<u64>,
 }
 
 /// A thread-safe, append-only log of captured engine spans/events.
@@ -117,10 +125,13 @@ where
     fn on_new_span(
         &self,
         attrs: &tracing::span::Attributes<'_>,
-        _id: &tracing::span::Id,
-        _ctx: Context<'_, S>,
+        id: &tracing::span::Id,
+        ctx: Context<'_, S>,
     ) {
         let md = attrs.metadata();
+        // The registry resolves the parent (explicit `parent:` or the contextual current span).
+        let parent_span_id =
+            ctx.span(id).and_then(|s| s.parent()).map(|p| p.id().into_u64());
         self.log.record(CapturedSpan {
             virtual_time_ns: self.clock.unix_nanos(),
             kind: "span",
@@ -128,6 +139,8 @@ where
             target: md.target().to_string(),
             name: md.name().to_string(),
             message: String::new(),
+            span_id: Some(id.into_u64()),
+            parent_span_id,
         });
     }
 
@@ -135,10 +148,9 @@ where
         let md = event.metadata();
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
-        let span_name = ctx
-            .event_span(event)
-            .map(|s| s.name().to_string())
-            .unwrap_or_default();
+        let enclosing = ctx.event_span(event);
+        let span_name = enclosing.as_ref().map(|s| s.name().to_string()).unwrap_or_default();
+        let parent_span_id = enclosing.as_ref().map(|s| s.id().into_u64());
         self.log.record(CapturedSpan {
             virtual_time_ns: self.clock.unix_nanos(),
             kind: "event",
@@ -146,6 +158,8 @@ where
             target: md.target().to_string(),
             name: span_name,
             message: visitor.message,
+            span_id: None,
+            parent_span_id,
         });
     }
 }
@@ -161,4 +175,39 @@ pub fn capture_engine_spans(
 ) -> tracing::subscriber::DefaultGuard {
     let subscriber = tracing_subscriber::registry().with(EngineSpanLayer::new(clock, log));
     tracing::subscriber::set_default(subscriber)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A nested span opened inside another captures the parent link, and an event inside the child
+    /// points at the child span — so the captured trace forms a tree, not a flat list.
+    #[test]
+    fn nested_spans_capture_parent_links() {
+        let log = SpanLog::new();
+        {
+            let _guard = capture_engine_spans(ndn_runtime::default_runtime(), Arc::clone(&log));
+            let outer = tracing::info_span!("outer");
+            let _o = outer.enter();
+            let inner = tracing::info_span!("inner");
+            let _i = inner.enter();
+            tracing::info!("hello from inner");
+        }
+
+        let entries = log.entries();
+        let outer = entries.iter().find(|e| e.name == "outer" && e.kind == "span").unwrap();
+        let inner = entries.iter().find(|e| e.name == "inner" && e.kind == "span").unwrap();
+        assert!(outer.parent_span_id.is_none(), "the outer span is a root");
+        assert_eq!(
+            inner.parent_span_id, outer.span_id,
+            "the inner span links to the outer as its parent"
+        );
+
+        let event = entries.iter().find(|e| e.kind == "event").unwrap();
+        assert_eq!(
+            event.parent_span_id, inner.span_id,
+            "the event points at the span it fired inside"
+        );
+    }
 }

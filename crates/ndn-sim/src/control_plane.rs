@@ -611,20 +611,39 @@ impl ControlPlane {
 
         let ws = tokio_tungstenite::accept_async(stream).await?;
         let (mut write, mut read) = ws.split();
-        while let Some(msg) = read.next().await {
-            match msg? {
-                Message::Text(text) => {
-                    let reply = self.handle_json(&text).await;
-                    write.send(Message::text(reply)).await?;
+        // Also push live telemetry frames to this client (axis 4c streaming), tagged so the client
+        // can tell a `{"telemetry": …}` push apart from a `{"result": …}` response.
+        let mut telemetry = self.subscribe_telemetry();
+        loop {
+            tokio::select! {
+                incoming = read.next() => {
+                    let Some(msg) = incoming else { break };
+                    match msg? {
+                        Message::Text(text) => {
+                            let reply = self.handle_json(&text).await;
+                            write.send(Message::text(reply)).await?;
+                        }
+                        Message::Binary(bytes) => {
+                            let req = String::from_utf8_lossy(&bytes);
+                            let reply = self.handle_json(&req).await;
+                            write.send(Message::text(reply)).await?;
+                        }
+                        Message::Close(_) => break,
+                        Message::Ping(p) => write.send(Message::Pong(p)).await?,
+                        _ => {}
+                    }
                 }
-                Message::Binary(bytes) => {
-                    let req = String::from_utf8_lossy(&bytes);
-                    let reply = self.handle_json(&req).await;
-                    write.send(Message::text(reply)).await?;
+                frame = telemetry.recv() => {
+                    match frame {
+                        Ok(f) => {
+                            let json = serde_json::json!({ "telemetry": f }).to_string();
+                            write.send(Message::text(json)).await?;
+                        }
+                        // Dropped frames on a slow client — keep going; the socket closing ends the loop.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Message::Close(_) => break,
-                Message::Ping(p) => write.send(Message::Pong(p)).await?,
-                _ => {}
             }
         }
         Ok(())

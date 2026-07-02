@@ -135,9 +135,10 @@ const NDNLAB_TRACE_ID: [u8; 16] =
     [0x6e, 0x64, 0x6e, 0x2d, 0x6c, 0x61, 0x62, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
 fn captured_span_to_json(s: &crate::span_capture::CapturedSpan, idx: usize) -> Value {
-    // Captured spans are point-in-time; give each a deterministic span id from its index.
-    let span_id = ((idx as u64) + 1).to_be_bytes();
-    json!({
+    // Prefer the real tracing span id (so parent links resolve in Jaeger); fall back to the index
+    // for events, which have no span id of their own.
+    let span_id = s.span_id.unwrap_or((idx as u64) + 1).to_be_bytes();
+    let mut span = json!({
         "traceId": hex(&NDNLAB_TRACE_ID),
         "spanId": hex(&span_id),
         "name": s.name,
@@ -149,7 +150,12 @@ fn captured_span_to_json(s: &crate::span_capture::CapturedSpan, idx: usize) -> V
             { "key": "level", "value": { "stringValue": s.level } },
             { "key": "message", "value": { "stringValue": s.message } },
         ]
-    })
+    });
+    // Link this span/event to its parent so the trace forms a tree rather than a flat list.
+    if let Some(parent) = s.parent_span_id {
+        span["parentSpanId"] = json!(hex(&parent.to_be_bytes()));
+    }
+    span
 }
 
 fn span_to_json(s: &Span) -> Value {
@@ -272,6 +278,8 @@ mod tests {
             target: "fwd.pit".into(),
             name: "pit.insert".into(),
             message: String::new(),
+            span_id: Some(7),
+            parent_span_id: Some(3),
         };
         let payload = exporter.captured_spans_payload(&[span]);
         let v: Value = serde_json::from_str(&payload).unwrap();
@@ -279,6 +287,9 @@ mod tests {
         assert_eq!(s["name"], "pit.insert");
         assert_eq!(s["startTimeUnixNano"], "1234");
         assert!(s["attributes"].as_array().unwrap().iter().any(|a| a["key"] == "target"));
+        // The real span id and its parent link are carried through to OTLP (span-id 7, parent 3).
+        assert_eq!(s["spanId"], "0000000000000007");
+        assert_eq!(s["parentSpanId"], "0000000000000003");
     }
 
     #[test]

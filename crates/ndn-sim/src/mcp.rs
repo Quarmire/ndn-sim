@@ -166,7 +166,7 @@ impl SimMcp {
             },
             {
                 "name": "cosim",
-                "description": "Command the external co-simulator (bidirectional co-sim): fly a vehicle. Requires a live --mavlink link. E.g. command={\"action\":\"goto\",\"node\":1,\"x\":100,\"y\":0,\"z\":0}; actions: arm/disarm/takeoff/goto/velocity/land.",
+                "description": "Command the external co-simulator (bidirectional co-sim): fly a vehicle. Requires a live --mavlink link. E.g. command={\"action\":\"goto\",\"node\":1,\"x\":100,\"y\":0,\"z\":0}; actions: arm/disarm/takeoff/goto/velocity/land/set_mode/return_to_launch.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "command": { "type": "object", "description": "a VehicleCommand: {action, node, ...}" } },

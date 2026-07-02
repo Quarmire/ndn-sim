@@ -27,6 +27,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -69,6 +71,10 @@ pub enum VehicleCommand {
     Velocity { node: usize, vx: f64, vy: f64, vz: f64 },
     /// Land at the current position.
     Land { node: usize },
+    /// Set the flight mode by its autopilot custom-mode number (e.g. ArduCopter GUIDED=4, RTL=6).
+    SetMode { node: usize, mode: u32 },
+    /// Return to the launch point.
+    ReturnToLaunch { node: usize },
 }
 
 impl VehicleCommand {
@@ -80,7 +86,9 @@ impl VehicleCommand {
             | VehicleCommand::Takeoff { node, .. }
             | VehicleCommand::Goto { node, .. }
             | VehicleCommand::Velocity { node, .. }
-            | VehicleCommand::Land { node } => *node,
+            | VehicleCommand::Land { node }
+            | VehicleCommand::SetMode { node, .. }
+            | VehicleCommand::ReturnToLaunch { node } => *node,
         }
     }
 }
@@ -139,6 +147,70 @@ impl MobilitySource for ChannelSource {
     fn is_done(&self) -> bool {
         self.closed
     }
+}
+
+/// A running JSON-feed reader — dropping it signals the thread to stop (it's not joined, because the
+/// blocking socket read must not hang the drop; the read timeout lets it observe `stop`).
+pub struct FeedReader {
+    stop: Arc<AtomicBool>,
+    pub handle: Option<JoinHandle<()>>,
+}
+
+impl FeedReader {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for FeedReader {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A **transport-agnostic** mobility feed: bind a UDP socket at `endpoint` (`host:port`); each
+/// datagram is a JSON [`NodeState`] (or a JSON array of them). Anything — a Gazebo or Bevy-headless
+/// bridge, a script, another process — pushes positions in this way, so ndn-lab consumes external
+/// simulators without depending on any of them. Wire the returned [`ChannelSource`] to
+/// [`drive_mobility`](crate::RunningSimulation::drive_mobility).
+pub fn udp_json_feed(endpoint: &str) -> Result<(ChannelSource, FeedReader)> {
+    let (tx, source) = ChannelSource::new();
+    let socket = std::net::UdpSocket::bind(endpoint)
+        .with_context(|| format!("bind JSON feed endpoint {endpoint:?}"))?;
+    // A read timeout so the reader loop periodically observes the stop flag.
+    socket.set_read_timeout(Some(Duration::from_millis(200))).ok();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+    let handle = std::thread::Builder::new()
+        .name("feed-reader".into())
+        .spawn(move || {
+            let mut buf = vec![0u8; 65536];
+            while !stop_thread.load(Ordering::Relaxed) {
+                let n = match socket.recv(&mut buf) {
+                    Ok(n) => n,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let bytes = &buf[..n];
+                // A single NodeState, or a JSON array of them.
+                let states: Vec<NodeState> = match serde_json::from_slice::<NodeState>(bytes) {
+                    Ok(one) => vec![one],
+                    Err(_) => serde_json::from_slice::<Vec<NodeState>>(bytes).unwrap_or_default(),
+                };
+                for s in states {
+                    if tx.send(s).is_err() {
+                        return; // the source was dropped — the run ended
+                    }
+                }
+            }
+        })
+        .context("spawn JSON feed reader thread")?;
+    Ok((source, FeedReader { stop, handle: Some(handle) }))
 }
 
 /// A [`MobilitySource`] that replays a fixed timeline — emits each state once logical time reaches
@@ -325,6 +397,26 @@ pub async fn drive_cosim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vehicle_commands_round_trip_and_target_the_right_node() {
+        for cmd in [
+            VehicleCommand::Arm { node: 2 },
+            VehicleCommand::Takeoff { node: 3, alt_m: 10.0 },
+            VehicleCommand::Goto { node: 1, x: 5.0, y: 6.0, z: 0.0 },
+            VehicleCommand::SetMode { node: 4, mode: 4 },
+            VehicleCommand::ReturnToLaunch { node: 5 },
+        ] {
+            let json = serde_json::to_string(&cmd).unwrap();
+            let back: VehicleCommand = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, cmd);
+            assert_eq!(back.node(), cmd.node());
+        }
+        // The serde tag is the snake_case action name.
+        assert!(serde_json::to_string(&VehicleCommand::SetMode { node: 0, mode: 6 })
+            .unwrap()
+            .contains("\"set_mode\""));
+    }
 
     #[test]
     fn sampled_mobility_interpolates_and_clamps() {

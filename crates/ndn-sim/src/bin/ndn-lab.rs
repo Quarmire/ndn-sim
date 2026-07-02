@@ -80,6 +80,10 @@ enum Command {
         /// Grafana / Jaeger / Prometheus-OTLP). Implies a 1 s telemetry tick if `--telemetry-ms` is 0.
         #[arg(long)]
         otlp: Option<String>,
+        /// Transport-agnostic mobility feed: bind a UDP socket at `host:port` and drive node
+        /// positions from JSON NodeStates (what a Gazebo / Bevy / any-sim bridge writes). Read-only.
+        #[arg(long)]
+        feed: Option<String>,
     },
     /// Run the MCP server over stdio — point an MCP client (e.g. Claude) at this.
     Mcp { scenario: Option<PathBuf> },
@@ -144,8 +148,9 @@ fn main() -> Result<()> {
             base_sysid,
             telemetry_ms,
             otlp,
+            feed,
         } => runtime()?.block_on(cmd_serve(
-            scenario, addr, ws_addr, mavlink, launch, base_sysid, telemetry_ms, otlp,
+            scenario, addr, ws_addr, mavlink, launch, base_sysid, telemetry_ms, otlp, feed,
         )),
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
@@ -359,10 +364,11 @@ async fn cmd_serve(
     base_sysid: u8,
     telemetry_ms: u64,
     otlp: Option<String>,
+    feed: Option<String>,
 ) -> Result<()> {
     let scenario = scenario.as_ref().map(read_scenario).transpose()?;
     // Live co-sim rides the real-time governor (clock mode B); plain control uses wall-clock.
-    let kernel: Arc<dyn SimKernel> = if mavlink.is_some() {
+    let kernel: Arc<dyn SimKernel> = if mavlink.is_some() || feed.is_some() {
         RealTimeKernel::new()
     } else {
         Arc::new(WallClockKernel::new())
@@ -434,6 +440,18 @@ async fn cmd_serve(
             let _ = (endpoint, launch, base_sysid);
             anyhow::bail!("--mavlink needs a build with `--features mavlink`");
         }
+    }
+
+    // A transport-agnostic JSON mobility feed (a Gazebo / Bevy / any-sim bridge writes to it).
+    if let Some(endpoint) = feed {
+        eprintln!("ndn-lab: JSON mobility feed on udp://{endpoint}");
+        let (source, reader) = ndn_sim::udp_json_feed(&endpoint)?;
+        let df = Arc::clone(&fabric);
+        let dc = drive_cancel.clone();
+        tokio::spawn(async move {
+            let _reader = reader; // keep the feed thread alive for the session
+            df.drive_mobility(Box::new(source), Duration::from_millis(50), dc).await;
+        });
     }
 
     eprintln!("ndn-lab: {} node(s) up — Ctrl-C to stop", fabric.nodes());

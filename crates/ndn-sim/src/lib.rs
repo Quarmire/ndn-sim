@@ -96,8 +96,8 @@ pub use control_plane::{
     TelemetryFrame,
 };
 pub use cosim::{
-    ChannelSource, CosimActuator, Lockstep, MobilitySource, MobilityTrace, NodeState,
-    SampledMobility, ScriptedSource, SteppableSource, VehicleCommand, drive_cosim,
+    ChannelSource, CosimActuator, FeedReader, Lockstep, MobilitySource, MobilityTrace, NodeState,
+    SampledMobility, ScriptedSource, SteppableSource, VehicleCommand, drive_cosim, udp_json_feed,
 };
 pub use des::{DesKernel, DesSession};
 pub use geometry::{Obstacle, ObstructedPropagation};

@@ -278,6 +278,15 @@ impl CosimActuator for MavlinkActuator {
             VehicleCommand::Land { node } => {
                 self.command_long(node, MavCmd::MAV_CMD_NAV_LAND, [0.0; 7])
             }
+            VehicleCommand::SetMode { node, mode } => self.command_long(
+                node,
+                MavCmd::MAV_CMD_DO_SET_MODE,
+                // base_mode = CUSTOM_MODE_ENABLED (1), custom_mode = the autopilot mode number.
+                [1.0, mode as f32, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ),
+            VehicleCommand::ReturnToLaunch { node } => {
+                self.command_long(node, MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH, [0.0; 7])
+            }
             // Guided-mode setpoints, ENU → NED (north = y_enu, east = x_enu, down = -z_enu).
             VehicleCommand::Goto { node, x, y, z } => setpoint_local_ned(
                 self.target(node),

@@ -364,6 +364,110 @@ pub struct ScheduledFault {
 }
 
 // ---------------------------------------------------------------------------
+// Baselines — regression gates against a recorded reference
+// ---------------------------------------------------------------------------
+
+/// How a candidate value must relate to its recorded baseline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// Candidate must be at least `baseline * (1 - tolerance)` — a throughput floor (the default).
+    #[default]
+    AtLeast,
+    /// Candidate must be at most `baseline * (1 + tolerance)` — an airtime/cost/latency ceiling.
+    AtMost,
+    /// Candidate must be within `±tolerance` of the baseline — a two-sided drift gate.
+    Within,
+}
+
+impl Direction {
+    fn holds(self, candidate: f64, baseline: f64, tolerance: f64) -> bool {
+        match self {
+            Direction::AtLeast => candidate >= baseline * (1.0 - tolerance),
+            Direction::AtMost => candidate <= baseline * (1.0 + tolerance),
+            Direction::Within => (candidate - baseline).abs() <= baseline.abs() * tolerance,
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            Direction::AtLeast => "≥",
+            Direction::AtMost => "≤",
+            Direction::Within => "±",
+        }
+    }
+}
+
+fn default_tolerance() -> f64 {
+    0.05
+}
+
+/// A regression gate: the mean of `probe` across the sweep must stay within `tolerance` of a
+/// recorded baseline, in the given `direction`. The baseline *value* lives in a separate recorded
+/// [`Baseline`] file (write it with `--record-baseline`); this only declares what to compare.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BaselineCheck {
+    pub name: String,
+    pub probe: Probe,
+    /// Fractional tolerance (0.05 = 5%). Default 0.05.
+    #[serde(default = "default_tolerance")]
+    pub tolerance: f64,
+    #[serde(default)]
+    pub direction: Direction,
+}
+
+/// A recorded set of baseline values (one per [`BaselineCheck`] name) — the reference a later run is
+/// gated against. Serialized to JSON, committed next to the spec.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Baseline {
+    /// Baseline-check name → recorded value (mean of the probe across the sweep at record time).
+    pub values: BTreeMap<String, f64>,
+}
+
+impl Baseline {
+    pub fn from_json(s: &str) -> Result<Self> {
+        serde_json::from_str(s).context("parse baseline JSON")
+    }
+    pub fn to_json(&self) -> Result<String> {
+        serde_json::to_string_pretty(self).context("serialize baseline JSON")
+    }
+}
+
+/// The verdict for one regression gate.
+#[derive(Clone, Debug, Serialize)]
+pub struct RegressionResult {
+    pub name: String,
+    pub direction: Direction,
+    pub tolerance: f64,
+    /// The recorded baseline value (`None` if the baseline file had no entry for this name).
+    pub baseline: Option<f64>,
+    /// The candidate value measured this run (`None` if the probe was never observable).
+    pub candidate: Option<f64>,
+    /// Signed percent change candidate-vs-baseline, for the human report.
+    pub delta_pct: Option<f64>,
+    pub passed: bool,
+}
+
+impl RegressionResult {
+    pub fn summary(&self) -> String {
+        let verdict = if self.passed { "PASS" } else { "FAIL" };
+        match (self.baseline, self.candidate) {
+            (Some(b), Some(c)) => {
+                let delta = self.delta_pct.unwrap_or(0.0);
+                format!(
+                    "{verdict}  {} ({c:.2} vs baseline {b:.2}, {delta:+.1}%; {} {:.0}%)",
+                    self.name,
+                    self.direction.symbol(),
+                    self.tolerance * 100.0,
+                )
+            }
+            (None, _) => format!("{verdict}  {} (no baseline recorded)", self.name),
+            (_, None) => format!("{verdict}  {} (candidate unobservable)", self.name),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The spec + reports
 // ---------------------------------------------------------------------------
 
@@ -411,6 +515,10 @@ pub struct ValidationSpec {
     /// statistical properties across realizations. A property's `hold_ratio` is measured over these.
     #[serde(default = "default_seeds")]
     pub seeds: Vec<u64>,
+    /// Regression gates — each records a probe's sweep-mean as a baseline and, when a baseline file
+    /// is supplied, fails if the candidate drifts beyond tolerance. Inert without a baseline file.
+    #[serde(default)]
+    pub baselines: Vec<BaselineCheck>,
 }
 
 fn default_seeds() -> Vec<u64> {
@@ -514,7 +622,13 @@ pub struct ValidationReport {
     /// Divergences behind a `cross_kernel_agree == Some(false)`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cross_kernel_divergences: Vec<String>,
-    /// The bottom line: every property held on every kernel *and* (if >1) the executors agreed.
+    /// The candidate baseline values measured this run (probe sweep-means) — write this out with
+    /// `--record-baseline`. Empty if the spec declares no `[[baselines]]`.
+    pub measured_baseline: Baseline,
+    /// Regression verdicts (empty unless a baseline was supplied to compare against).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regressions: Vec<RegressionResult>,
+    /// The bottom line: every property held on every kernel, the executors agreed, and no gate regressed.
     pub passed: bool,
 }
 
@@ -546,6 +660,12 @@ impl ValidationReport {
                 out.push_str(&format!("  diverge: {d}\n"));
             }
         }
+        if !self.regressions.is_empty() {
+            out.push_str("regression gates:\n");
+            for r in &self.regressions {
+                out.push_str(&format!("  {}\n", r.summary()));
+            }
+        }
         out.push_str(&format!(
             "OVERALL: {}\n",
             if self.passed { "PASS" } else { "FAIL" }
@@ -563,6 +683,17 @@ impl ValidationReport {
 ///
 /// Call from a plain (non-tokio) context — each kernel owns its own runtime.
 pub fn run_validation(spec: &ValidationSpec) -> Result<ValidationReport> {
+    run_core(spec, None)
+}
+
+/// As [`run_validation`], but gate the run against a recorded [`Baseline`]: each `[[baselines]]`
+/// check's candidate value is compared to the baseline within tolerance, and any regression fails
+/// the overall verdict.
+pub fn run_validation_against(spec: &ValidationSpec, baseline: &Baseline) -> Result<ValidationReport> {
+    run_core(spec, Some(baseline))
+}
+
+fn run_core(spec: &ValidationSpec, baseline: Option<&Baseline>) -> Result<ValidationReport> {
     let kernels = if spec.kernels.is_empty() {
         default_kernels()
     } else {
@@ -575,6 +706,8 @@ pub fn run_validation(spec: &ValidationSpec) -> Result<ValidationReport> {
     };
 
     let mut runs = Vec::new();
+    // Every observation across all (kernel, seed) — the population baselines are measured over.
+    let mut all_obs: Vec<Observation> = Vec::new();
     for ck in &kernels {
         // Sweep every seed on this kernel; aggregate each property over the realizations.
         let mut observations: Vec<Observation> = Vec::with_capacity(seeds.len());
@@ -587,6 +720,7 @@ pub fn run_validation(spec: &ValidationSpec) -> Result<ValidationReport> {
         let properties: Vec<PropertyResult> =
             spec.properties.iter().map(|p| p.evaluate(&observations)).collect();
         let passed = properties.iter().all(|p| p.passed);
+        all_obs.extend(observations.iter().cloned());
         runs.push(RunReport {
             kernel: ck.name().to_string(),
             seeds: seeds.clone(),
@@ -620,13 +754,57 @@ pub fn run_validation(spec: &ValidationSpec) -> Result<ValidationReport> {
         (None, Vec::new())
     };
 
-    let passed = runs.iter().all(|r| r.passed) && cross_kernel_agree.unwrap_or(true);
+    // Measure each baseline check's candidate value = mean of its probe across the whole sweep.
+    let mut measured_baseline = Baseline::default();
+    let mut regressions = Vec::new();
+    for bc in &spec.baselines {
+        let candidate = mean_probe(&bc.probe, &all_obs);
+        if let Some(c) = candidate {
+            measured_baseline.values.insert(bc.name.clone(), c);
+        }
+        if let Some(base) = baseline {
+            let recorded = base.values.get(&bc.name).copied();
+            let passed = match (recorded, candidate) {
+                (Some(b), Some(c)) => bc.direction.holds(c, b, bc.tolerance),
+                _ => false, // missing baseline or unobservable candidate ⇒ fail (safe default)
+            };
+            let delta_pct = match (recorded, candidate) {
+                (Some(b), Some(c)) if b != 0.0 => Some((c - b) / b * 100.0),
+                _ => None,
+            };
+            regressions.push(RegressionResult {
+                name: bc.name.clone(),
+                direction: bc.direction,
+                tolerance: bc.tolerance,
+                baseline: recorded,
+                candidate,
+                delta_pct,
+                passed,
+            });
+        }
+    }
+
+    let passed = runs.iter().all(|r| r.passed)
+        && cross_kernel_agree.unwrap_or(true)
+        && regressions.iter().all(|r| r.passed);
     Ok(ValidationReport {
         runs,
         cross_kernel_agree,
         cross_kernel_divergences,
+        measured_baseline,
+        regressions,
         passed,
     })
+}
+
+/// Mean of a probe over a set of observations (ignoring observations where it's unobservable).
+fn mean_probe(probe: &Probe, obs: &[Observation]) -> Option<f64> {
+    let vals: Vec<f64> = obs.iter().filter_map(|o| probe.eval(o)).collect();
+    if vals.is_empty() {
+        None
+    } else {
+        Some(vals.iter().sum::<f64>() / vals.len() as f64)
+    }
 }
 
 /// Zero out `virtual_time_ns` so counter-level comparison ignores scheduler timing differences.
@@ -862,6 +1040,27 @@ hold_ratio = 1.0
             run_validation(&lenient).unwrap().passed,
             "a 25%-of-seeds threshold above the mean should hold"
         );
+    }
+
+    #[test]
+    fn direction_tolerance_semantics() {
+        // at_least: within 5% below baseline is ok; further down is a regression.
+        assert!(Direction::AtLeast.holds(96.0, 100.0, 0.05));
+        assert!(!Direction::AtLeast.holds(94.0, 100.0, 0.05));
+        // at_most: up to 10% above is ok; more is a regression.
+        assert!(Direction::AtMost.holds(110.0, 100.0, 0.10));
+        assert!(!Direction::AtMost.holds(111.0, 100.0, 0.10));
+        // within: two-sided.
+        assert!(Direction::Within.holds(103.0, 100.0, 0.05));
+        assert!(!Direction::Within.holds(94.0, 100.0, 0.05));
+    }
+
+    #[test]
+    fn baseline_json_round_trips() {
+        let mut b = Baseline::default();
+        b.values.insert("throughput".into(), 42.5);
+        let again = Baseline::from_json(&b.to_json().unwrap()).unwrap();
+        assert_eq!(again.values.get("throughput"), Some(&42.5));
     }
 
     #[test]

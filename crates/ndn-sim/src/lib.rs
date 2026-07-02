@@ -117,8 +117,9 @@ pub use topology::{NodeId, RunningSimulation, Simulation};
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]
 pub use validate::{
-    Agg, CheckKernel, Cmp, Fault, MetricField, Observation, Probe, Property, PropertyResult,
-    RunReport, ScheduledFault, ValidationReport, ValidationSpec, run_validation,
+    Agg, Baseline, BaselineCheck, CheckKernel, Cmp, Direction, Fault, MetricField, Observation,
+    Probe, Property, PropertyResult, RegressionResult, RunReport, ScheduledFault, ValidationReport,
+    ValidationSpec, run_validation, run_validation_against,
 };
 pub use world::{
     Environment, FreeSpace, LinearMobility, MobilityModel, Position, StaticMobility,

@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand};
 use ndn_sim::{
     ControlPlane, DesKernel, KernelSpec, NodeId, Recording, RunningSimulation, Scenario, SimKernel,
     SimMcp, Simulation, ValidationSpec, VirtualKernel, WallClockKernel, run_validation,
+    run_validation_against,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -60,6 +61,13 @@ enum Command {
         /// Emit the full report as JSON instead of the human summary.
         #[arg(long)]
         json: bool,
+        /// Gate the run against a recorded baseline file (fails on a regression beyond tolerance).
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Run the spec and WRITE its measured baseline values to this file (then exit on the
+        /// property verdict). Use this to capture/refresh a baseline.
+        #[arg(long)]
+        record_baseline: Option<PathBuf>,
     },
 }
 
@@ -72,7 +80,9 @@ fn main() -> Result<()> {
         }
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
-        Command::Check { spec, json } => cmd_check(spec, json),
+        Command::Check { spec, json, baseline, record_baseline } => {
+            cmd_check(spec, json, baseline, record_baseline)
+        }
     }
 }
 
@@ -150,9 +160,24 @@ fn cmd_run(path: PathBuf, secs: u64) -> Result<()> {
     Ok(())
 }
 
-fn cmd_check(path: PathBuf, json: bool) -> Result<()> {
+fn cmd_check(
+    path: PathBuf,
+    json: bool,
+    baseline: Option<PathBuf>,
+    record_baseline: Option<PathBuf>,
+) -> Result<()> {
     let spec = ValidationSpec::from_toml(&std::fs::read_to_string(&path)?)?;
-    let report = run_validation(&spec)?;
+    let report = match &baseline {
+        Some(bpath) => {
+            let base = ndn_sim::Baseline::from_json(&std::fs::read_to_string(bpath)?)?;
+            run_validation_against(&spec, &base)?
+        }
+        None => run_validation(&spec)?,
+    };
+    if let Some(out) = &record_baseline {
+        std::fs::write(out, report.measured_baseline.to_json()?)?;
+        eprintln!("recorded baseline → {}", out.display());
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

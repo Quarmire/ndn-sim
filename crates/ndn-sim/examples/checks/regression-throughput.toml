@@ -1,0 +1,82 @@
+# A THROUGHPUT/AIRTIME regression gate against a committed baseline.
+#
+#   consumer(0) ── relay(1) ── producer(2)
+#
+# The consumer fetches 30 segments through the relay. Beyond the pass/fail properties, this spec
+# declares [[baselines]] — probes whose sweep-mean is recorded once (--record-baseline) and then
+# gated on every run (--baseline). It catches performance drift a boolean property would miss:
+#
+#   - delivered throughput must not DROP more than 5% vs baseline   (direction at_least)
+#   - network Interest airtime must not GROW more than 10% vs baseline (direction at_most; a
+#     forwarding change that duplicates Interests would trip this)
+#
+# Capture/refresh the baseline:
+#   ndn-lab check examples/checks/regression-throughput.toml \
+#       --record-baseline examples/checks/regression-throughput.baseline.json
+# Gate a run against it (CI):
+#   ndn-lab check examples/checks/regression-throughput.toml \
+#       --baseline examples/checks/regression-throughput.baseline.json
+
+duration_ms = 4000
+kernels = ["des", "virtual"]
+
+[scenario.kernel]
+kind = "des"
+
+[[scenario.nodes]]
+label = "consumer"
+[[scenario.nodes.apps]]
+app = "consumer"
+prefix = "/demo"
+count = 30
+interval_ms = 100
+
+[[scenario.nodes]]
+label = "relay"
+
+[[scenario.nodes]]
+label = "producer"
+[[scenario.nodes.apps]]
+app = "producer"
+prefix = "/demo"
+content = "throughput"
+
+[[scenario.links]]
+a = 0
+b = 1
+delay_ms = 2
+
+[[scenario.links]]
+a = 1
+b = 2
+delay_ms = 2
+
+[[scenario.routes]]
+node = 0
+prefix = "/demo"
+nexthop = 1
+
+[[scenario.routes]]
+node = 1
+prefix = "/demo"
+nexthop = 2
+
+# Boolean correctness (holds regardless of the baseline).
+[[properties]]
+name = "consumer completes all 30 segments"
+probe = { kind = "app_successes", app = 0 }
+cmp = "ge"
+value = 30
+
+# Regression gates (inert without a --baseline file).
+[[baselines]]
+name = "delivered_throughput"
+probe = { kind = "metric", field = "in_data", node = 0 }
+direction = "at_least"
+tolerance = 0.05
+
+[[baselines]]
+name = "interest_airtime"
+probe = { kind = "metric", field = "out_interests", agg = "sum" }
+direction = "at_most"
+tolerance = 0.10

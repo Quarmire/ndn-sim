@@ -16,7 +16,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::link_model::NOISE_FLOOR_DBM;
-use crate::medium::{Delivery, PropagationModel, TxContext};
+use crate::medium::{Delivery, DeliveryReason, PropagationModel, TxContext};
 use crate::world::Position;
 
 /// An axis-aligned box obstacle (a building / terrain block) that obstructs radio crossing it.
@@ -106,6 +106,7 @@ impl PropagationModel for ObstructedPropagation {
             d.rssi_dbm -= self.obstruction_loss_db * crossed as f64;
             if d.rssi_dbm < self.min_rssi_dbm {
                 d.delivered = false;
+                d.reason = DeliveryReason::Obstructed;
             }
         }
         d

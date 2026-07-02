@@ -576,6 +576,16 @@ impl RunningSimulation {
         self.radio_bus.clone()
     }
 
+    /// Start recording radio delivery decisions (axis 4 causal capture) and return the
+    /// [`RadioLog`](crate::analysis::RadioLog) — then [`explain_link`](crate::analysis::explain_link)
+    /// answers "why couldn't node A reach node B?". `None` if the fabric has no radio medium.
+    pub fn capture_radio(&self) -> Option<std::sync::Arc<crate::analysis::RadioLog>> {
+        let bus = self.radio_bus.as_ref()?;
+        let log = crate::analysis::RadioLog::new();
+        bus.set_radio_log(std::sync::Arc::clone(&log));
+        Some(log)
+    }
+
     /// The [`FaceId`] of `node`'s radio face (if it has one) — route over the radio with
     /// `engine.fib().add_nexthop(prefix, radio_face(node)?, cost)`.
     pub fn radio_face(&self, node: NodeId) -> Option<FaceId> {

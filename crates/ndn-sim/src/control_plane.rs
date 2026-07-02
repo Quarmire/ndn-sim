@@ -132,6 +132,12 @@ pub enum SimQuery {
         #[serde(default = "default_svg_dim")]
         height: u32,
     },
+    /// Causal analysis (axis 4): explain why node `from` could (not) reach node `to` over the radio,
+    /// from recorded delivery evidence. Requires radio capture (enabled by `serve`).
+    Explain {
+        from: usize,
+        to: usize,
+    },
 }
 
 fn default_svg_dim() -> u32 {
@@ -157,6 +163,7 @@ pub enum SimResponse {
     Metrics(Vec<MetricsSample>),
     Scene(crate::scene::SceneSnapshot),
     Svg { svg: String },
+    Explanation(crate::analysis::Explanation),
     Error { message: String },
 }
 
@@ -191,6 +198,8 @@ pub struct ControlPlane {
     /// The co-sim actuation back-channel (a MAVLink sender to ArduPilot, …) — when set, a
     /// [`SimCommand::Cosim`] flies the external swarm. `None` ⇒ observe-only.
     actuator: Mutex<Option<Arc<dyn crate::cosim::CosimActuator>>>,
+    /// Radio delivery capture (axis 4) — the evidence `SimQuery::Explain` reads. Enabled on demand.
+    radio_log: Mutex<Option<Arc<crate::analysis::RadioLog>>>,
 }
 
 impl ControlPlane {
@@ -209,7 +218,16 @@ impl ControlPlane {
             journal: Mutex::new(None),
             recording_scenario: Mutex::new(None),
             actuator: Mutex::new(None),
+            radio_log: Mutex::new(None),
         })
+    }
+
+    /// Start recording radio delivery decisions so [`SimQuery::Explain`] can answer causal "why"
+    /// queries. No-op if the fabric has no radio medium.
+    pub fn enable_radio_capture(&self) {
+        if let Some(log) = self.fabric.capture_radio() {
+            *self.radio_log.lock().unwrap() = Some(log);
+        }
     }
 
     /// Install the co-sim actuation back-channel — after this, a [`SimCommand::Cosim`] arriving on
@@ -362,6 +380,20 @@ impl ControlPlane {
             SimQuery::SceneSvg { width, height } => {
                 let svg = crate::scene::render_topology_svg(&self.fabric.scene_snapshot(), width, height);
                 SimResponse::Svg { svg }
+            }
+            SimQuery::Explain { from, to } => {
+                let log = self.radio_log.lock().unwrap().clone();
+                match log {
+                    Some(log) => SimResponse::Explanation(crate::analysis::explain_link(
+                        &log,
+                        NodeId(from),
+                        NodeId(to),
+                    )),
+                    None => SimResponse::Error {
+                        message: "radio capture not enabled (no radio medium, or start with `serve`)"
+                            .to_string(),
+                    },
+                }
             }
         }
     }

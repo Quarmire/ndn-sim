@@ -55,6 +55,7 @@
 
 #![allow(missing_docs)]
 
+pub mod analysis;
 pub mod app;
 pub mod bridge;
 pub mod control;
@@ -84,6 +85,7 @@ pub mod tracer;
 pub mod validate;
 pub mod world;
 
+pub use analysis::{Explanation, LinkVerdict, RadioDelivery, RadioLog, explain_link};
 pub use app::{AppHandle, AppId, AppSpec};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
@@ -113,8 +115,8 @@ pub use scene::{
 };
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use medium::{
-    CarrierSenseInterference, Delivery, FreeSpacePathLoss, InterferenceModel, NoInterference,
-    PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
+    CarrierSenseInterference, Delivery, DeliveryReason, FreeSpacePathLoss, InterferenceModel,
+    NoInterference, PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
 };
 pub use profile::NodeProfile;
 pub use sim_face::SimFace;

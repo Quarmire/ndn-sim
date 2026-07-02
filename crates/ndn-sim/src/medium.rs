@@ -55,12 +55,51 @@ impl TxContext<'_> {
     }
 }
 
+/// Why a frame did (or didn't) arrive — the causal evidence axis 4 records so a failure can be
+/// *explained* instead of vanishing into a `trace!` log.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
+    serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryReason {
+    /// The frame arrived.
+    #[default]
+    Delivered,
+    /// Beyond the model's hard range (range-threshold).
+    OutOfRange,
+    /// Received power below the receiver's sensitivity (free-space path loss).
+    Weak,
+    /// Line of sight blocked by an obstacle (geometry backend).
+    Obstructed,
+    /// Lost to a concurrent transmission (interference) — set by the [`RadioBus`](crate::RadioBus).
+    Collision,
+    /// Detectable but lost to per-frame erasure at that SNR — set by the [`RadioBus`](crate::RadioBus).
+    Erased,
+}
+
+impl DeliveryReason {
+    /// A human phrase for a causal explanation.
+    pub fn describe(self) -> &'static str {
+        match self {
+            DeliveryReason::Delivered => "delivered",
+            DeliveryReason::OutOfRange => "out of radio range",
+            DeliveryReason::Weak => "signal below receiver sensitivity",
+            DeliveryReason::Obstructed => "line of sight blocked by an obstacle",
+            DeliveryReason::Collision => "collided with a concurrent transmission",
+            DeliveryReason::Erased => "lost to per-frame erasure at low SNR",
+        }
+    }
+}
+
 /// The outcome of propagation for one `(tx, rx)` pair.
 #[derive(Clone, Copy, Debug)]
 pub struct Delivery {
     pub delivered: bool,
     pub rssi_dbm: f64,
     pub delay: Duration,
+    /// Why (the causal reason) — `Delivered` when `delivered`, else the propagation cause.
+    pub reason: DeliveryReason,
 }
 
 /// Decides, per `(tx, rx)` pair, whether a frame arrives and with what RSSI/delay.
@@ -96,6 +135,7 @@ impl PropagationModel for RangeThreshold {
             delivered,
             rssi_dbm: self.tx_power_dbm - 60.0 * frac,
             delay: ctx.propagation_delay(),
+            reason: if delivered { DeliveryReason::Delivered } else { DeliveryReason::OutOfRange },
         }
     }
     fn max_range_m(&self) -> f64 {
@@ -138,10 +178,12 @@ impl PropagationModel for FreeSpacePathLoss {
         let prx = self.tx_power_dbm
             - self.fspl_db(d)
             - ctx.environment.attenuation(ctx.tx_pos, ctx.rx_pos);
+        let delivered = prx >= self.rx_sensitivity_dbm;
         Delivery {
-            delivered: prx >= self.rx_sensitivity_dbm,
+            delivered,
             rssi_dbm: prx,
             delay: ctx.propagation_delay(),
+            reason: if delivered { DeliveryReason::Delivered } else { DeliveryReason::Weak },
         }
     }
 

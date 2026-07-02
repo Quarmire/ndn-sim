@@ -77,6 +77,8 @@ pub struct RadioBus {
     /// Per-instant world-snapshot cache `(now_ns, world_generation, view)` — rebuild the
     /// spatial index once per instant, not per transmit.
     view_cache: Mutex<Option<(u64, u64, Arc<crate::world::WorldView>)>>,
+    /// Optional causal capture (axis 4): every delivery decision, with its reason, for `explain`.
+    radio_log: Mutex<Option<Arc<crate::analysis::RadioLog>>>,
 }
 
 impl RadioBus {
@@ -143,7 +145,14 @@ impl RadioBus {
             receivers: Mutex::new(HashMap::new()),
             in_air: Mutex::new(Vec::new()),
             view_cache: Mutex::new(None),
+            radio_log: Mutex::new(None),
         })
+    }
+
+    /// Attach a [`RadioLog`](crate::analysis::RadioLog): from now on, every delivery decision is
+    /// recorded with its cause — the evidence [`explain_link`](crate::analysis::explain_link) reads.
+    pub fn set_radio_log(&self, log: Arc<crate::analysis::RadioLog>) {
+        *self.radio_log.lock().unwrap() = Some(log);
     }
 
     pub fn link_model(&self) -> &LinkModel {
@@ -250,9 +259,24 @@ impl RadioBus {
                 environment: env.as_ref(),
                 frame_len: frame.len(),
             };
+            let dist = tx_pos.distance(rx_pos);
+            let log_delivery = |delivered: bool, reason: crate::medium::DeliveryReason, rssi: f64| {
+                if let Some(log) = self.radio_log.lock().unwrap().as_ref() {
+                    log.record(crate::analysis::RadioDelivery {
+                        t_ns: now_ns,
+                        from: node,
+                        to: rx_node,
+                        delivered,
+                        reason,
+                        rssi_dbm: rssi,
+                        distance_m: dist,
+                    });
+                }
+            };
             let d = self.propagation.deliver(&ctx);
             if !d.delivered {
-                continue; // below receiver sensitivity — not even detectable
+                log_delivery(false, d.reason, d.rssi_dbm);
+                continue; // below receiver sensitivity / obstructed — not even detectable
             }
             // Collision: did this receiver also hear a concurrent (in-range) transmitter?
             let clashers: Vec<NodeId> = concurrent
@@ -262,6 +286,7 @@ impl RadioBus {
                 .collect();
             if self.interference.collides(rx_node, &clashers) {
                 out.push((rx_node, d.rssi_dbm, false));
+                log_delivery(false, crate::medium::DeliveryReason::Collision, d.rssi_dbm);
                 trace!(from = node.0, to = rx_node.0, "radio: frame lost to collision");
                 continue;
             }
@@ -270,6 +295,11 @@ impl RadioBus {
             let roll: f64 = self.rng.lock().unwrap().random();
             let survived = roll < p;
             out.push((rx_node, d.rssi_dbm, survived));
+            log_delivery(
+                survived,
+                if survived { crate::medium::DeliveryReason::Delivered } else { crate::medium::DeliveryReason::Erased },
+                d.rssi_dbm,
+            );
 
             if survived {
                 let rf = RadioRx { from: node, rssi_dbm: d.rssi_dbm, mcs_index, bytes: frame.clone() };

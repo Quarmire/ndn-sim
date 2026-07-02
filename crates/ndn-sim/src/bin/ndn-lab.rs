@@ -318,6 +318,8 @@ async fn cmd_serve(
     };
     let fabric = Arc::new(build_fabric(scenario, kernel).await?);
     let control = ControlPlane::new(Arc::clone(&fabric));
+    // Causal capture (axis 4): record radio delivery decisions so `explain` can answer "why".
+    control.enable_radio_capture();
 
     let bound = control.serve_tcp(&addr, CancellationToken::new()).await?;
     eprintln!("ndn-lab: control plane (JSON-RPC) on tcp://{bound}");
@@ -387,6 +389,7 @@ async fn cmd_mcp(scenario: Option<PathBuf>) -> Result<()> {
     let scenario = scenario.as_ref().map(read_scenario).transpose()?;
     let fabric = Arc::new(build_fabric(scenario, Arc::new(WallClockKernel::new())).await?);
     let control = ControlPlane::new(Arc::clone(&fabric));
+    control.enable_radio_capture(); // so `explain_link` has evidence
     eprintln!("ndn-lab: MCP server on stdio ({} node(s))", fabric.nodes());
     SimMcp::new(control).serve_stdio().await?;
     fabric.shutdown().await;

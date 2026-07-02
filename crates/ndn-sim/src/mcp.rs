@@ -174,6 +174,15 @@ impl SimMcp {
                 }
             },
             {
+                "name": "explain_link",
+                "description": "Causal 'why': explain why node `from` could (not) reach node `to` over the radio, from recorded delivery evidence (out-of-range / obstructed / weak / collision / erased) with distance + RSSI. The observability-that-explains surface.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "from": { "type": "integer" }, "to": { "type": "integer" } },
+                    "required": ["from", "to"]
+                }
+            },
+            {
                 "name": "why_did",
                 "description": "Explain recent fabric activity: the last N captured sim events (face up/down, control-plane changes) — the trace/explain surface.",
                 "inputSchema": {
@@ -190,6 +199,11 @@ impl SimMcp {
         match name {
             "describe_topology" => Ok(to_value(self.control.query(SimQuery::Topology))),
             "query_metrics" => Ok(to_value(self.control.query(SimQuery::Metrics))),
+            "explain_link" => {
+                let from = req_usize(args, "from")?;
+                let to = req_usize(args, "to")?;
+                Ok(to_value(self.control.query(SimQuery::Explain { from, to })))
+            }
             "capabilities" => Ok(capability_catalogue()),
             "node_state" => self.node_state(req_usize(args, "node")?),
             "why_did" => {

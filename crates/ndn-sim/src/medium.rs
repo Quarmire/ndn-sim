@@ -188,6 +188,8 @@ pub struct WirelessMedium {
     /// World epoch in nanoseconds — `transmit`'s `now_ns` is converted to seconds-since-epoch
     /// to query mobility. Matches the engine's `unix_nanos` clock.
     epoch_ns: u64,
+    /// Clock + executor seam for delayed delivery (runs on any kernel, never `tokio::time`).
+    runtime: Arc<dyn ndn_runtime::Runtime>,
     receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<ReceivedFrame>>>,
     /// Per-instant snapshot cache `(now_ns, world_generation, view)` — so a burst of transmits
     /// at the same virtual instant rebuilds the `SpatialGrid` once, not per packet (the
@@ -197,13 +199,25 @@ pub struct WirelessMedium {
 
 impl WirelessMedium {
     /// A medium over `world` using `propagation`, with the world epoch set to `epoch_ns`
-    /// (the kernel's `unix_nanos` at t=0). Defaults to no interference.
+    /// (the kernel's `unix_nanos` at t=0). Defaults to no interference + the Tokio runtime; use
+    /// [`new_on`](Self::new_on) to run delivery on a specific kernel.
     pub fn new(world: Arc<World>, propagation: Arc<dyn PropagationModel>, epoch_ns: u64) -> Self {
+        Self::new_on(world, propagation, epoch_ns, ndn_runtime::default_runtime())
+    }
+
+    /// [`new`](Self::new) on a specific [`Runtime`](ndn_runtime::Runtime).
+    pub fn new_on(
+        world: Arc<World>,
+        propagation: Arc<dyn PropagationModel>,
+        epoch_ns: u64,
+        runtime: Arc<dyn ndn_runtime::Runtime>,
+    ) -> Self {
         Self {
             world,
             propagation,
             interference: Arc::new(NoInterference),
             epoch_ns,
+            runtime,
             receivers: Mutex::new(HashMap::new()),
             view_cache: Mutex::new(None),
         }
@@ -287,10 +301,11 @@ impl WirelessMedium {
                 let _ = sender.send(rf);
             } else {
                 let delay = d.delay;
-                tokio::spawn(async move {
-                    tokio::time::sleep(delay).await;
+                let rt = Arc::clone(&self.runtime);
+                self.runtime.spawn(Box::pin(async move {
+                    rt.sleep(delay).await;
                     let _ = sender.send(rf);
-                });
+                }));
             }
         }
         delivered.sort_by_key(|(n, _)| n.0);

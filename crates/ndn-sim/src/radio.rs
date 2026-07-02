@@ -67,6 +67,9 @@ pub struct RadioBus {
     /// World epoch (ns) — `transmit`'s `now_ns` minus this gives seconds for mobility.
     epoch_ns: u64,
     tx_power_dbm: f64,
+    /// Clock + executor seam for delayed delivery — so a radio fabric runs on any kernel
+    /// (wall-clock, virtual, discrete-event), never `tokio::time` directly.
+    runtime: Arc<dyn Runtime>,
     rng: Mutex<StdRng>,
     receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<RadioRx>>>,
     /// Frames currently on the air `(sender, start_ns, end_ns)` — for collision detection.
@@ -85,7 +88,14 @@ impl RadioBus {
         epoch_ns: u64,
         seed: u64,
     ) -> Arc<Self> {
-        Self::build(world, propagation, epoch_ns, seed, Arc::new(crate::medium::NoInterference))
+        Self::build(
+            world,
+            propagation,
+            epoch_ns,
+            seed,
+            Arc::new(crate::medium::NoInterference),
+            ndn_runtime::default_runtime(),
+        )
     }
 
     /// Build a bus that models collisions with `interference` (e.g.
@@ -98,7 +108,19 @@ impl RadioBus {
         seed: u64,
         interference: Arc<dyn InterferenceModel>,
     ) -> Arc<Self> {
-        Self::build(world, propagation, epoch_ns, seed, interference)
+        Self::build(world, propagation, epoch_ns, seed, interference, ndn_runtime::default_runtime())
+    }
+
+    /// [`new`](Self::new) but on a specific [`Runtime`] — delivery timing rides it, so the radio
+    /// medium runs on whatever kernel drives the fabric (this is what the fabric uses).
+    pub fn new_on(
+        world: Arc<World>,
+        propagation: Arc<dyn PropagationModel>,
+        epoch_ns: u64,
+        seed: u64,
+        runtime: Arc<dyn Runtime>,
+    ) -> Arc<Self> {
+        Self::build(world, propagation, epoch_ns, seed, Arc::new(crate::medium::NoInterference), runtime)
     }
 
     fn build(
@@ -107,6 +129,7 @@ impl RadioBus {
         epoch_ns: u64,
         seed: u64,
         interference: Arc<dyn InterferenceModel>,
+        runtime: Arc<dyn Runtime>,
     ) -> Arc<Self> {
         Arc::new(Self {
             world,
@@ -115,6 +138,7 @@ impl RadioBus {
             interference,
             epoch_ns,
             tx_power_dbm: 20.0,
+            runtime,
             rng: Mutex::new(StdRng::seed_from_u64(seed)),
             receivers: Mutex::new(HashMap::new()),
             in_air: Mutex::new(Vec::new()),
@@ -253,10 +277,11 @@ impl RadioBus {
                     let _ = sender.send(rf);
                 } else {
                     let delay = d.delay;
-                    tokio::spawn(async move {
-                        tokio::time::sleep(delay).await;
+                    let rt = Arc::clone(&self.runtime);
+                    self.runtime.spawn(Box::pin(async move {
+                        rt.sleep(delay).await;
                         let _ = sender.send(rf);
-                    });
+                    }));
                 }
             } else {
                 trace!(from = node.0, to = rx_node.0, mcs = mcs_index, snr, "radio: frame erased");

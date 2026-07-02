@@ -273,8 +273,17 @@ impl Simulation {
         // Build the shared radio medium (if enabled) and attach a SimRadioFace to each radio
         // node — publishing LinkSignals into that node's own engine signal table.
         let mut radio_faces: HashMap<NodeId, FaceId> = HashMap::new();
+        let kernel_runtime = self.kernel.runtime();
         let radio_bus = self.radio.map(|(propagation, seed)| {
-            let bus = RadioBus::new(std::sync::Arc::clone(&world), propagation, epoch_ns, seed);
+            // Build the bus on the fabric's kernel runtime so radio delivery timing rides the same
+            // clock/executor as the engines (including the discrete-event kernel).
+            let bus = RadioBus::new_on(
+                std::sync::Arc::clone(&world),
+                propagation,
+                epoch_ns,
+                seed,
+                std::sync::Arc::clone(&kernel_runtime),
+            );
             for (id, _pos) in &self.radio_nodes {
                 let Some(entry) = nodes.get(id) else { continue };
                 let face_id = entry.engine.faces().alloc_id();

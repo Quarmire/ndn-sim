@@ -29,7 +29,9 @@ use crate::tracer::{EventKind, SimTracer};
 use crate::world::World;
 
 /// Opaque, stable handle to a node in the fabric (survives other nodes being removed).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(transparent)]
 pub struct NodeId(pub usize);
 
@@ -469,6 +471,39 @@ impl RunningSimulation {
     /// positions/mobility from here; it is live-mutable through `&self`.
     pub fn world(&self) -> std::sync::Arc<World> {
         std::sync::Arc::clone(&self.world)
+    }
+
+    /// Drive node motion live from a [`MobilitySource`](crate::MobilitySource) (co-simulation): each
+    /// pushed [`NodeState`](crate::NodeState) updates the World (and thus the radio) as it arrives,
+    /// and the whole stream is captured into the returned [`MobilityTrace`](crate::MobilityTrace).
+    /// `tick` is the poll granularity. Returns when the source is exhausted or `cancel` fires.
+    ///
+    /// On the [`RealTimeKernel`](crate::RealTimeKernel) governor this rides real time for a live feed
+    /// (SITL/Gazebo); on a virtual/DES kernel with a scripted source it is deterministic.
+    pub async fn drive_mobility(
+        &self,
+        source: Box<dyn crate::cosim::MobilitySource>,
+        tick: std::time::Duration,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> crate::cosim::MobilityTrace {
+        crate::cosim::drive_cosim(
+            self.world(),
+            self.epoch_ns,
+            self.kernel.runtime(),
+            source,
+            tick,
+            cancel,
+        )
+        .await
+    }
+
+    /// Install a recorded [`MobilityTrace`](crate::MobilityTrace) as deterministic per-node motion
+    /// (one [`SampledMobility`](crate::SampledMobility) each) — the replay leg: a live co-sim capture
+    /// becomes an ordinary, reproducible scenario the axis-2 validator can gate.
+    pub fn install_trace(&self, trace: &crate::cosim::MobilityTrace) {
+        for (node, model) in trace.into_models() {
+            self.world.set_mobility(node, model);
+        }
     }
 
     /// Spawn an app (producer/consumer) on `node` live; returns its [`AppId`].

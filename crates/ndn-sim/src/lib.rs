@@ -58,6 +58,7 @@
 pub mod app;
 pub mod bridge;
 pub mod control;
+pub mod cosim;
 pub mod control_plane;
 pub mod des;
 pub mod kernel;
@@ -84,6 +85,10 @@ pub use app::{AppHandle, AppId, AppSpec};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
+};
+pub use cosim::{
+    ChannelSource, MobilitySource, MobilityTrace, NodeState, SampledMobility, ScriptedSource,
+    drive_cosim,
 };
 pub use des::{DesKernel, DesSession};
 pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};

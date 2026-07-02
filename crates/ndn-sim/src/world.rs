@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 use crate::NodeId;
 
 /// A position in 3-D space, metres. Use `z = 0` for 2-D scenarios.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub x: f64,
     pub y: f64,

@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use ndn_engine::builder::EngineConfig;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,12 @@ pub struct Scenario {
     /// default realization; a validation seed sweep overrides it to draw independent realizations.
     #[serde(default)]
     pub seed: u64,
+    /// Path (relative to the working directory) to a recorded co-sim [`MobilityTrace`] JSON. When
+    /// set, each node named in the trace is driven by a deterministic `SampledMobility` replaying it
+    /// — the replay leg of co-simulation: a live capture (e.g. an ArduPilot flight) becomes a
+    /// reproducible, gate-able scenario.
+    #[serde(default)]
+    pub mobility_trace: Option<String>,
     #[serde(default)]
     pub environment: EnvSpec,
     #[serde(default)]
@@ -311,6 +317,15 @@ impl Scenario {
         for sc in &self.strategies {
             self.check_node(sc.node)?;
             sim.add_strategy(NodeId(sc.node), &sc.prefix, &sc.strategy);
+        }
+
+        if let Some(path) = &self.mobility_trace {
+            let json = std::fs::read_to_string(path)
+                .with_context(|| format!("read mobility trace {path:?}"))?;
+            let trace = crate::cosim::MobilityTrace::from_json(&json)?;
+            for (node, model) in trace.into_models() {
+                sim.set_node_mobility(node, model);
+            }
         }
 
         Ok(sim)

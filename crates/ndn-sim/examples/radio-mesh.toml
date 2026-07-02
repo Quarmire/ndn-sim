@@ -1,0 +1,20 @@
+# Two named-radio nodes on a shared free-space medium, placed 10 m apart.
+# Run it:   ndn-lab run examples/radio-mesh.toml
+# Positions drive pairwise RSSI → MCS → per-frame delivery; move nodes live over the control
+# plane (`move_node`) or watch the scene via `ndn-lab serve` + a client.
+
+[radio]
+seed = 1
+
+[radio.propagation]
+kind = "free_space_path_loss"
+
+[[nodes]]
+label = "alpha"
+position = [0.0, 0.0, 0.0]
+radio = true
+
+[[nodes]]
+label = "bravo"
+position = [10.0, 0.0, 0.0]
+radio = true

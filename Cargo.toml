@@ -43,6 +43,9 @@ bytes = { version = "1", default-features = false }
 # Declarative scenario files (ndn-lab run scenario.toml)
 toml = "0.8"
 
+# CLI for the `ndn-lab` binary
+clap = { version = "4", features = ["derive"] }
+
 # Embedded support
 heapless = "0.8"
 nb       = "1"

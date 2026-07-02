@@ -1,0 +1,44 @@
+# A 3-node line — consumer ── relay ── producer — with declarative apps.
+# Run it:   ndn-lab run examples/line.toml --secs 2
+# The consumer fetches /demo/0../demo/19 through the relay to the producer.
+
+[kernel]
+kind = "virtual"        # deterministic + faster-than-real (batch). Use wall_clock for real time.
+
+[[nodes]]
+label = "consumer"
+[[nodes.apps]]
+app = "consumer"
+prefix = "/demo"
+count = 20
+interval_ms = 50
+
+[[nodes]]
+label = "relay"
+
+[[nodes]]
+label = "producer"
+[[nodes.apps]]
+app = "producer"
+prefix = "/demo"
+content = "hello from ndn-lab"
+
+[[links]]
+a = 0
+b = 1
+delay_ms = 2
+
+[[links]]
+a = 1
+b = 2
+delay_ms = 2
+
+[[routes]]
+node = 0
+prefix = "/demo"
+nexthop = 1
+
+[[routes]]
+node = 1
+prefix = "/demo"
+nexthop = 2

@@ -40,6 +40,17 @@ tracing-subscriber = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
 rand        = "0.9"
+# CLI — only pulled in by the `bin` feature.
+clap        = { workspace = true, optional = true }
+
+[features]
+# The `ndn-lab` binary (run / serve / mcp / replay).
+bin = ["dep:clap", "tokio/rt-multi-thread", "tokio/signal"]
+
+[[bin]]
+name = "ndn-lab"
+path = "src/bin/ndn-lab.rs"
+required-features = ["bin"]
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["full"] }

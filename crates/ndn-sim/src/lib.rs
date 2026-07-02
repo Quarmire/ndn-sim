@@ -59,6 +59,7 @@ pub mod app;
 pub mod bridge;
 pub mod control;
 pub mod control_plane;
+pub mod des;
 pub mod kernel;
 pub mod link_model;
 pub mod mcp;
@@ -82,6 +83,7 @@ pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
 };
+pub use des::{DesKernel, DesSession};
 pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{StepSession, SteppableKernel, VirtualKernel};

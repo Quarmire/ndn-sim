@@ -33,6 +33,11 @@ ndn-engine    = { path = "../ndn-rs/crates/forwarding/ndn-engine" }
 ndn-observability = { path = "../ndn-rs/crates/platform/ndn-observability", default-features = false }
 ndn-app       = { path = "../ndn-rs/crates/app/ndn-app" }
 ndn-security  = { path = "../ndn-rs/crates/security/ndn-security" }
+# Named-time (dev-only): the convergence demo drives real Timekeepers + beacon
+# wire. ndn-time is in ndn-rs; the runtime + sources live in ndn-ext.
+ndn-time         = { path = "../ndn-rs/crates/core/ndn-time" }
+ndn-time-sources = { path = "../ndn-ext/crates/time/ndn-time-sources" }
+ndn-timekeeper   = { path = "../ndn-ext/crates/time/ndn-timekeeper" }
 
 # Core async runtime — individual crates enable only the features they need
 tokio      = { version = "1", default-features = false }

@@ -65,3 +65,7 @@ required-features = ["bin"]
 tokio      = { workspace = true, features = ["full"] }
 # Sign control Interests in the authenticated-control-over-NDN test.
 ndn-security = { workspace = true }
+# Named-time multi-node convergence demo (tests/named_time_convergence.rs).
+ndn-time         = { workspace = true }
+ndn-time-sources = { workspace = true }
+ndn-timekeeper   = { workspace = true }

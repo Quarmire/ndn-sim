@@ -186,20 +186,17 @@ fn raw_bidirectional_svsync_crosses_radio() {
     });
 }
 
-// OPEN (root-caused): the raw bidirectional bridge is proven by the two probes
-// above, but with *every* node publishing there are 0 SyncUpdates. Localized with
-// ndn-sim's face_stats/explain_route on a 2-node broadcast_segment repro: peer
-// sync Interests reach the radio face (in_int > 0) but the engine forwards *none*
-// to the local SvSync app face (app out_int = 0). Cause: ndn-sync sends every
-// sync Interest to the SAME name — `/<group>/v=2` with the state vector in
-// ApplicationParameters and no digest component (ndn-sync svs_sync.rs:419) — so
-// when a node both publishes and subscribes, its own outstanding sync Interest
-// PIT-aggregates every peer's same-named Interest instead of delivering it. It's
-// above the medium (broadcast_segment delivers all-hear-all) and not the dual-
-// app-face trap (explain_route: nexthops=2, warning=None). The fix is a
-// forwarding behaviour: a sync-aware multicast that delivers a matched sync
-// Interest to local sync faces (or per-node/per-SV sync Interest names upstream).
-#[ignore = "P2P mesh convergence: sync Interests PIT-aggregate on a publisher's own outstanding /<group>/v=2 entry (see note); needs a non-aggregating sync-multicast in the forwarder"]
+// Every node both publishes its own fix and subscribes to all peers, over one
+// bidirectional SvSync each, on a collision-free broadcast segment.
+//
+// This once hung at 0 SyncUpdates and was root-caused (with face_stats /
+// explain_route) NOT to the medium or SVS, but to the forwarder: ndn-sync's sync
+// Interests are correctly `/<group>/v=2/<ParametersSha256Digest>` (distinct per
+// state vector, spec-conformant), but ndn-engine's PIT was stripping the PSDC
+// from the key, so every node's own outstanding sync Interest PIT-aggregated its
+// peers' distinct ones. Fixed in ndn-engine: the PSDC is stripped only for
+// subscription-flavored (SubscriptionRequest) Interests; classical parameterized
+// Interests key on their full name, as the NDN spec and real NFD do.
 #[test]
 fn mesh_converges_with_bidirectional_svs_per_node() {
     const NODES: usize = 5; // node 0 = GNSS reference, 1..4 = oscillators
@@ -211,33 +208,18 @@ fn mesh_converges_with_bidirectional_svs_per_node() {
 
     let kernel = VirtualKernel::new();
     let (final_max, ingested) = kernel.run(|k| async move {
-        // ---- shared radio medium --------------------------------------------
-        // (ndn-sim's newer `broadcast_segment` — a collision-free geometry-free
-        // bus — is the better home here; switch to it once it lands, and use its
-        // explain_route/face_stats to chase the convergence issue this test is
-        // #[ignore]d for.)
-        let mut sim = Simulation::new()
-            .kernel(k.clone())
-            .with_radio_medium(Arc::new(ndn_sim::FreeSpacePathLoss::default()), 7);
+        // ---- one collision-free broadcast segment ---------------------------
+        let mut sim = Simulation::new().kernel(k.clone());
         let nodes: Vec<_> = (0..NODES)
-            .map(|i| {
-                sim.add_radio_node(
-                    EngineConfig::default(),
-                    ndn_sim::Position::xy(i as f64, 0.0),
-                )
-            })
+            .map(|_| sim.add_node(EngineConfig::default()))
             .collect();
+        sim.broadcast_segment(&nodes, "/time");
         for &n in &nodes {
+            sim.add_radio_route(n, "/n");
             sim.add_strategy(n, "/time", "multicast");
             sim.add_strategy(n, "/n", "multicast");
         }
         let fabric = sim.start().await.unwrap();
-        for &n in &nodes {
-            fabric
-                .route_over_radio(n, &"/time".parse().unwrap())
-                .unwrap();
-            fabric.route_over_radio(n, &"/n".parse().unwrap()).unwrap();
-        }
 
         // ---- one trust anchor per node, one shared validator ----------------
         let keychains: Vec<KeyChain> = (0..NODES)

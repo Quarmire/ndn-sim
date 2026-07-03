@@ -26,7 +26,10 @@ fn nodes(n: usize) -> Scenario {
     Scenario {
         kernel: KernelSpec::Des { epoch_ns: None },
         nodes: (0..n)
-            .map(|i| NodeSpec { label: Some(format!("n{i}")), ..Default::default() })
+            .map(|i| NodeSpec {
+                label: Some(format!("n{i}")),
+                ..Default::default()
+            })
             .collect(),
         ..Default::default()
     }
@@ -34,7 +37,12 @@ fn nodes(n: usize) -> Scenario {
 
 /// A 1 ms wired link between two node indices.
 fn link(a: usize, b: usize) -> ScenarioLink {
-    ScenarioLink { a, b, delay_ms: 1, ..Default::default() }
+    ScenarioLink {
+        a,
+        b,
+        delay_ms: 1,
+        ..Default::default()
+    }
 }
 
 /// A chain: `0 — 1 — 2 — … — (n-1)`. The canonical convergence topology.
@@ -162,7 +170,11 @@ pub fn add_routes_toward(scenario: &mut Scenario, prefix: &str, dest: usize) {
         }
     }
     for (node, nexthop) in next_hop {
-        scenario.routes.push(RouteSpec { node, prefix: prefix.to_string(), nexthop });
+        scenario.routes.push(RouteSpec {
+            node,
+            prefix: prefix.to_string(),
+            nexthop,
+        });
     }
     scenario.routes.sort_by_key(|r| (r.node, r.nexthop));
 }
@@ -275,7 +287,10 @@ mod tests {
         let a = random(30, 0.1, 42);
         let b = random(30, 0.1, 42);
         assert_eq!(a.links.len(), b.links.len(), "same seed → same graph");
-        assert!(is_connected(&a), "the connectivity fix-up guarantees reachability");
+        assert!(
+            is_connected(&a),
+            "the connectivity fix-up guarantees reachability"
+        );
         // A different seed gives a different graph (overwhelmingly likely at this size).
         let c = random(30, 0.1, 7);
         assert_ne!(a.links.len(), c.links.len());
@@ -289,7 +304,11 @@ mod tests {
         assert_eq!(s.routes.len(), 4);
         // On a line toward 0, node k's next hop is k-1.
         for r in &s.routes {
-            assert_eq!(r.nexthop, r.node - 1, "line routes point one hop toward the destination");
+            assert_eq!(
+                r.nexthop,
+                r.node - 1,
+                "line routes point one hop toward the destination"
+            );
             assert_eq!(r.prefix, "/demo");
         }
     }

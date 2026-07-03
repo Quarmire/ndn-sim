@@ -56,9 +56,14 @@ impl Stepper {
         let k: Arc<dyn crate::kernel::SimKernel> = kernel;
         // Build + start the fabric on the DES executor (block_on drives just the build to
         // completion; the engines' background tasks stay parked on timers for us to step).
-        let fabric = session.block_on(async move { anyhow::Ok(scenario.build(k)?.start().await?) })?;
+        let fabric =
+            session.block_on(async move { anyhow::Ok(scenario.build(k)?.start().await?) })?;
         let start_ns = session.now_ns();
-        Ok(Self { session, fabric, start_ns })
+        Ok(Self {
+            session,
+            fabric,
+            start_ns,
+        })
     }
 
     /// Advance to the **next scheduled event** and return the new virtual time (ns since epoch). If
@@ -70,14 +75,20 @@ impl Stepper {
     /// Advance `ms` milliseconds of virtual time (stepping through every event in the window).
     /// Returns the new virtual time (ns).
     pub fn run_for_ms(&self, ms: u64) -> u64 {
-        let target = self.session.now_ns().saturating_add(ms.saturating_mul(1_000_000));
+        let target = self
+            .session
+            .now_ns()
+            .saturating_add(ms.saturating_mul(1_000_000));
         self.session.run_until(target);
         self.session.now_ns()
     }
 
     /// Advance to `ms` milliseconds **since the session started**. Returns the new virtual time (ns).
     pub fn run_until_ms(&self, ms_from_start: u64) -> u64 {
-        self.session.run_until(self.start_ns.saturating_add(ms_from_start.saturating_mul(1_000_000)));
+        self.session.run_until(
+            self.start_ns
+                .saturating_add(ms_from_start.saturating_mul(1_000_000)),
+        );
         self.session.now_ns()
     }
 
@@ -132,8 +143,14 @@ mod tests {
         // Drive a second of virtual time; the consumer (app 1) should fetch from the producer.
         stepper.run_for_ms(1000);
         assert!(stepper.elapsed_ms() >= 1000, "the virtual clock advanced");
-        let fetched = stepper.fabric().app_successes(crate::app::AppId(1)).unwrap_or(0);
-        assert!(fetched >= 1, "the consumer fetched over the stepped session, got {fetched}");
+        let fetched = stepper
+            .fabric()
+            .app_successes(crate::app::AppId(1))
+            .unwrap_or(0);
+        assert!(
+            fetched >= 1,
+            "the consumer fetched over the stepped session, got {fetched}"
+        );
     }
 
     #[test]
@@ -149,7 +166,13 @@ mod tests {
         let run = || {
             let stepper = Stepper::build(DesKernel::new(), line_with_apps()).unwrap();
             stepper.run_for_ms(1500);
-            (stepper.elapsed_ms(), stepper.fabric().app_successes(crate::app::AppId(1)).unwrap_or(0))
+            (
+                stepper.elapsed_ms(),
+                stepper
+                    .fabric()
+                    .app_successes(crate::app::AppId(1))
+                    .unwrap_or(0),
+            )
         };
         assert_eq!(run(), run(), "a stepped DES session replays identically");
     }

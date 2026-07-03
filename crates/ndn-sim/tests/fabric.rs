@@ -32,7 +32,11 @@ async fn fabric_control_spawn_connect_route_remove_and_topology() {
     assert_eq!(fabric.nodes(), 2);
     let topo = fabric.topology();
     assert_eq!(topo.nodes.len(), 2);
-    assert_eq!(topo.links.len(), 2, "one symmetric link = two directed faces");
+    assert_eq!(
+        topo.links.len(),
+        2,
+        "one symmetric link = two directed faces"
+    );
 
     // Live-spawn a third node, connect + route it through the running fabric.
     let c = fabric
@@ -49,7 +53,10 @@ async fn fabric_control_spawn_connect_route_remove_and_topology() {
     let topo = fabric.topology();
     assert_eq!(topo.nodes.len(), 3);
     assert_eq!(topo.links.len(), 4);
-    assert!(topo.nodes.iter().any(|n| n.label == "edge"), "profile label kept");
+    assert!(
+        topo.nodes.iter().any(|n| n.label == "edge"),
+        "profile label kept"
+    );
 
     // Remove a node: it and its links drop.
     fabric.remove_node(c).await.expect("remove");
@@ -63,7 +70,9 @@ async fn fabric_control_spawn_connect_route_remove_and_topology() {
         "tracer must capture engine FaceUp events from links"
     );
     assert!(
-        events.iter().any(|e| e.kind == EventKind::Custom("node-spawn".into())),
+        events
+            .iter()
+            .any(|e| e.kind == EventKind::Custom("node-spawn".into())),
         "tracer must capture the live spawn"
     );
 

@@ -137,12 +137,26 @@ pub fn explain_link(log: &RadioLog, a: NodeId, b: NodeId) -> Explanation {
         ),
         (_, Some(cause), Some(r)) => format!(
             "node {} → node {}: {delivered}/{attempts} frames delivered; dominant cause = {} (at ~{:.0} m, RSSI ~{:.0} dBm)",
-            a.0, b.0, cause.describe(), r.distance_m, r.rssi_dbm
+            a.0,
+            b.0,
+            cause.describe(),
+            r.distance_m,
+            r.rssi_dbm
         ),
-        _ => format!("node {} → node {}: {delivered}/{attempts} frames delivered", a.0, b.0),
+        _ => format!(
+            "node {} → node {}: {delivered}/{attempts} frames delivered",
+            a.0, b.0
+        ),
     };
 
-    Explanation { question, verdict, dominant_cause, attempts, delivered, detail }
+    Explanation {
+        question,
+        verdict,
+        dominant_cause,
+        attempts,
+        delivered,
+        detail,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,8 +187,11 @@ impl RunCapture {
 
     /// Delivery rate on link `from → to` and its dominant failure cause (over recorded evidence).
     fn link_rate(&self, from: NodeId, to: NodeId) -> Option<(f64, Option<DeliveryReason>, usize)> {
-        let recs: Vec<&RadioDelivery> =
-            self.radio.iter().filter(|r| r.from == from && r.to == to).collect();
+        let recs: Vec<&RadioDelivery> = self
+            .radio
+            .iter()
+            .filter(|r| r.from == from && r.to == to)
+            .collect();
         if recs.is_empty() {
             return None;
         }
@@ -239,22 +256,36 @@ pub struct RunDiff {
 pub fn diff_runs(baseline: &RunCapture, candidate: &RunCapture, link_tolerance: f64) -> RunDiff {
     // App-success deltas.
     let mut app_deltas = Vec::new();
-    let apps: std::collections::BTreeSet<usize> =
-        baseline.app_successes.keys().chain(candidate.app_successes.keys()).copied().collect();
+    let apps: std::collections::BTreeSet<usize> = baseline
+        .app_successes
+        .keys()
+        .chain(candidate.app_successes.keys())
+        .copied()
+        .collect();
     for app in apps {
         let b = baseline.app_successes.get(&app).copied().unwrap_or(0);
         let c = candidate.app_successes.get(&app).copied().unwrap_or(0);
         if b != c {
-            app_deltas.push(AppDelta { app, baseline: b, candidate: c });
+            app_deltas.push(AppDelta {
+                app,
+                baseline: b,
+                candidate: c,
+            });
         }
     }
 
     // Radio link delivery-rate deltas (with the candidate's dominant cause).
     let mut link_deltas = Vec::new();
-    let links: std::collections::BTreeSet<(NodeId, NodeId)> =
-        baseline.links().union(&candidate.links()).copied().collect();
+    let links: std::collections::BTreeSet<(NodeId, NodeId)> = baseline
+        .links()
+        .union(&candidate.links())
+        .copied()
+        .collect();
     for (from, to) in links {
-        let br = baseline.link_rate(from, to).map(|(r, _, _)| r).unwrap_or(0.0);
+        let br = baseline
+            .link_rate(from, to)
+            .map(|(r, _, _)| r)
+            .unwrap_or(0.0);
         let (cr, cause) = candidate
             .link_rate(from, to)
             .map(|(r, cause, _)| (r, cause))
@@ -282,7 +313,13 @@ pub fn diff_runs(baseline: &RunCapture, candidate: &RunCapture, link_tolerance: 
     let identical = app_deltas.is_empty() && link_deltas.is_empty() && metric_deltas.is_empty();
     let summary = summarize(&app_deltas, &link_deltas, &metric_deltas, identical);
 
-    RunDiff { identical, app_deltas, link_deltas, metric_deltas, summary }
+    RunDiff {
+        identical,
+        app_deltas,
+        link_deltas,
+        metric_deltas,
+        summary,
+    }
 }
 
 /// A named counter accessor over a metrics sample.
@@ -309,7 +346,12 @@ fn diff_metrics(base: &[MetricsSample], cand: &[MetricsSample]) -> Vec<MetricDel
             let bv = bs.map(get).unwrap_or(0);
             let cv = cs.map(get).unwrap_or(0);
             if bv != cv {
-                out.push(MetricDelta { node, field, baseline: bv, candidate: cv });
+                out.push(MetricDelta {
+                    node,
+                    field,
+                    baseline: bv,
+                    candidate: cv,
+                });
             }
         }
     }
@@ -336,7 +378,10 @@ fn summarize(
         ));
     }
     for l in links {
-        let cause = l.candidate_cause.map(|c| format!(" — {}", c.describe())).unwrap_or_default();
+        let cause = l
+            .candidate_cause
+            .map(|c| format!(" — {}", c.describe()))
+            .unwrap_or_default();
         lines.push(format!(
             "radio {}→{}: delivery {:.0}% vs {:.0}%{}",
             l.from,

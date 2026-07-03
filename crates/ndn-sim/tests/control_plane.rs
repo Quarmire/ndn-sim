@@ -21,7 +21,11 @@ async fn in_process_commands_drive_the_fabric_and_emit_notifications() {
     let control = ControlPlane::new(Arc::clone(&fabric));
 
     // Spawn a third node via the declarative command.
-    let resp = control.execute(SimCommand::SpawnNode { label: Some("edge".into()) }).await;
+    let resp = control
+        .execute(SimCommand::SpawnNode {
+            label: Some("edge".into()),
+        })
+        .await;
     let SimResponse::Node { id } = resp else {
         panic!("expected Node, got {resp:?}");
     };
@@ -30,7 +34,11 @@ async fn in_process_commands_drive_the_fabric_and_emit_notifications() {
     // Connect + route are accepted.
     assert!(matches!(
         control
-            .execute(SimCommand::Connect { a: 0, b: 1, link: Default::default() })
+            .execute(SimCommand::Connect {
+                a: 0,
+                b: 1,
+                link: Default::default()
+            })
             .await,
         SimResponse::Ok
     ));
@@ -77,14 +85,24 @@ async fn json_rpc_codec_round_trips() {
     let fabric = Arc::new(sim.start().await.unwrap());
     let control = ControlPlane::new(Arc::clone(&fabric));
 
-    let reply = control.handle_json(r#"{"query":{"query":"topology"}}"#).await;
+    let reply = control
+        .handle_json(r#"{"query":{"query":"topology"}}"#)
+        .await;
     assert!(reply.contains(r#""result":"topology""#), "got {reply}");
 
-    let reply = control.handle_json(r#"{"command":{"cmd":"spawn_node"}}"#).await;
-    assert!(reply.contains(r#""result":"node""#) && reply.contains(r#""id":1"#), "got {reply}");
+    let reply = control
+        .handle_json(r#"{"command":{"cmd":"spawn_node"}}"#)
+        .await;
+    assert!(
+        reply.contains(r#""result":"node""#) && reply.contains(r#""id":1"#),
+        "got {reply}"
+    );
 
     let reply = control.handle_json("not json").await;
-    assert!(reply.contains(r#""result":"error""#), "bad input → error, got {reply}");
+    assert!(
+        reply.contains(r#""result":"error""#),
+        "bad input → error, got {reply}"
+    );
 
     fabric.shutdown().await;
 }
@@ -105,16 +123,24 @@ async fn ndn_native_control_serves_commands_and_queries() {
 
     // Query topology over the air → 1 node.
     let resp = ask(&mut consumer, br#"{"query":{"query":"topology"}}"#).await;
-    let SimResponse::Topology(topo) = resp else { panic!("expected topology, got {resp:?}") };
+    let SimResponse::Topology(topo) = resp else {
+        panic!("expected topology, got {resp:?}")
+    };
     assert_eq!(topo.nodes.len(), 1);
 
     // Spawn a node over the air.
-    let resp = ask(&mut consumer, br#"{"command":{"cmd":"spawn_node","label":"drone"}}"#).await;
+    let resp = ask(
+        &mut consumer,
+        br#"{"command":{"cmd":"spawn_node","label":"drone"}}"#,
+    )
+    .await;
     assert!(matches!(resp, SimResponse::Node { id: 1 }), "got {resp:?}");
 
     // Re-query: the spawn took effect.
     let resp = ask(&mut consumer, br#"{"query":{"query":"topology"}}"#).await;
-    let SimResponse::Topology(topo) = resp else { panic!("expected topology") };
+    let SimResponse::Topology(topo) = resp else {
+        panic!("expected topology")
+    };
     assert_eq!(topo.nodes.len(), 2, "spawn over NDN grew the fabric");
 
     fabric.shutdown().await;
@@ -130,7 +156,12 @@ async fn move_node_command_relocates_the_node_in_the_scene() {
     // Drag node 0 to (123, 456) live.
     assert!(matches!(
         control
-            .execute(SimCommand::MoveNode { node: 0, x: 123.0, y: 456.0, z: 0.0 })
+            .execute(SimCommand::MoveNode {
+                node: 0,
+                x: 123.0,
+                y: 456.0,
+                z: 0.0
+            })
             .await,
         SimResponse::Ok
     ));
@@ -167,7 +198,10 @@ async fn set_strategy_command_applies_over_the_control_plane() {
             strategy: "multicast".into(),
         })
         .await;
-    assert!(matches!(resp, SimResponse::Ok), "multicast strategy applied, got {resp:?}");
+    assert!(
+        matches!(resp, SimResponse::Ok),
+        "multicast strategy applied, got {resp:?}"
+    );
 
     // An unknown strategy name is a clean error, not a panic.
     let bad = control
@@ -177,7 +211,10 @@ async fn set_strategy_command_applies_over_the_control_plane() {
             strategy: "no-such-strategy".into(),
         })
         .await;
-    assert!(matches!(bad, SimResponse::Error { .. }), "unknown strategy → error, got {bad:?}");
+    assert!(
+        matches!(bad, SimResponse::Error { .. }),
+        "unknown strategy → error, got {bad:?}"
+    );
 
     fabric.shutdown().await;
 }
@@ -201,15 +238,26 @@ async fn tcp_rpc_server_handles_json_lines() {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
 
-    write.write_all(b"{\"command\":{\"cmd\":\"spawn_node\"}}\n").await.unwrap();
+    write
+        .write_all(b"{\"command\":{\"cmd\":\"spawn_node\"}}\n")
+        .await
+        .unwrap();
     let line = lines.next_line().await.unwrap().unwrap();
-    assert!(line.contains(r#""result":"node""#) && line.contains(r#""id":1"#), "got {line}");
+    assert!(
+        line.contains(r#""result":"node""#) && line.contains(r#""id":1"#),
+        "got {line}"
+    );
 
-    write.write_all(b"{\"query\":{\"query\":\"topology\"}}\n").await.unwrap();
+    write
+        .write_all(b"{\"query\":{\"query\":\"topology\"}}\n")
+        .await
+        .unwrap();
     let line = lines.next_line().await.unwrap().unwrap();
     assert!(line.contains(r#""result":"topology""#), "got {line}");
     let resp: SimResponse = serde_json::from_str(&line).unwrap();
-    let SimResponse::Topology(topo) = resp else { panic!("expected topology") };
+    let SimResponse::Topology(topo) = resp else {
+        panic!("expected topology")
+    };
     assert_eq!(topo.nodes.len(), 2, "the spawn over TCP took effect");
 
     fabric.shutdown().await;
@@ -224,19 +272,30 @@ async fn ws_rpc_server_handles_json_and_renders_svg() {
     let _a = sim.add_node(EngineConfig::default());
     let fabric = Arc::new(sim.start().await.unwrap());
     let control = ControlPlane::new(Arc::clone(&fabric));
-    let addr = control.serve_ws("127.0.0.1:0", CancellationToken::new()).await.unwrap();
+    let addr = control
+        .serve_ws("127.0.0.1:0", CancellationToken::new())
+        .await
+        .unwrap();
 
     // A browser-style WebSocket client speaks the same JSON-RPC.
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}")).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+        .await
+        .unwrap();
 
-    ws.send(Message::text(r#"{"command":{"cmd":"spawn_node"}}"#.to_string())).await.unwrap();
+    ws.send(Message::text(
+        r#"{"command":{"cmd":"spawn_node"}}"#.to_string(),
+    ))
+    .await
+    .unwrap();
     let reply = ws.next().await.unwrap().unwrap();
     assert!(reply.to_text().unwrap().contains(r#""result":"node""#));
 
     // Server-rendered SVG — a client with no shared Rust types just displays this.
-    ws.send(Message::text(r#"{"query":{"query":"scene_svg","width":300,"height":300}}"#.to_string()))
-        .await
-        .unwrap();
+    ws.send(Message::text(
+        r#"{"query":{"query":"scene_svg","width":300,"height":300}}"#.to_string(),
+    ))
+    .await
+    .unwrap();
     let reply = ws.next().await.unwrap().unwrap();
     let resp: SimResponse = serde_json::from_str(reply.to_text().unwrap()).unwrap();
     match resp {

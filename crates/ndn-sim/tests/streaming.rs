@@ -21,8 +21,14 @@ async fn telemetry_stream_delivers_live_frames() {
     let cancel = control.spawn_telemetry(Duration::from_millis(40), None);
 
     // Two consecutive frames arrive, each carrying the node's metrics, with non-decreasing time.
-    let f1 = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
-    let f2 = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+    let f1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let f2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(f1.metrics.len(), 1, "one node's metrics per frame");
     assert!(f2.t_ns >= f1.t_ns, "frame time is non-decreasing");
 
@@ -55,9 +61,19 @@ async fn otlp_export_reaches_a_collector() {
     let cancel = control.spawn_telemetry(Duration::from_millis(30), Some(addr.to_string()));
 
     // The collector receives an OTLP metrics POST.
-    let req = tokio::time::timeout(Duration::from_secs(3), rx).await.unwrap().unwrap();
-    assert!(req.starts_with("POST /v1/metrics"), "OTLP metrics POST, got: {}", &req[..req.len().min(60)]);
-    assert!(req.contains("resourceMetrics"), "carries an OTLP ResourceMetrics document");
+    let req = tokio::time::timeout(Duration::from_secs(3), rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        req.starts_with("POST /v1/metrics"),
+        "OTLP metrics POST, got: {}",
+        &req[..req.len().min(60)]
+    );
+    assert!(
+        req.contains("resourceMetrics"),
+        "carries an OTLP ResourceMetrics document"
+    );
     assert!(req.contains("ndn.pit.depth"), "carries the pit-depth gauge");
 
     cancel.cancel();
@@ -76,14 +92,18 @@ async fn otlp_span_export_reaches_the_collector() {
     tokio::spawn(async move {
         let mut tx = Some(tx);
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { break };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
             let mut buf = vec![0u8; 65536];
             let n = stream.read(&mut buf).await.unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..n]).into_owned();
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .await;
-            if req.starts_with("POST /v1/traces") && let Some(tx) = tx.take() {
+            if req.starts_with("POST /v1/traces")
+                && let Some(tx) = tx.take()
+            {
                 let _ = tx.send(req);
             }
         }
@@ -109,9 +129,15 @@ async fn otlp_span_export_reaches_the_collector() {
     control.set_span_log(Arc::clone(&log));
 
     let cancel = control.spawn_telemetry(Duration::from_millis(30), Some(addr.to_string()));
-    let req = tokio::time::timeout(Duration::from_secs(3), rx).await.unwrap().unwrap();
+    let req = tokio::time::timeout(Duration::from_secs(3), rx)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(req.contains("resourceSpans"), "OTLP trace document present");
-    assert!(req.contains("interest.forward"), "carries the captured span");
+    assert!(
+        req.contains("interest.forward"),
+        "carries the captured span"
+    );
 
     cancel.cancel();
     fabric.shutdown().await;
@@ -127,10 +153,15 @@ async fn ws_clients_receive_live_telemetry() {
     sim.add_node(EngineConfig::default());
     let fabric = Arc::new(sim.start().await.unwrap());
     let control = ControlPlane::new(Arc::clone(&fabric));
-    let ws_addr = control.serve_ws("127.0.0.1:0", CancellationToken::new()).await.unwrap();
+    let ws_addr = control
+        .serve_ws("127.0.0.1:0", CancellationToken::new())
+        .await
+        .unwrap();
     let cancel = control.spawn_telemetry(Duration::from_millis(40), None);
 
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{ws_addr}")).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{ws_addr}"))
+        .await
+        .unwrap();
     let mut got = false;
     for _ in 0..30 {
         match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {

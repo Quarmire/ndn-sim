@@ -15,18 +15,38 @@ use ndn_sim::{
 fn run() -> (u64, ndn_sim::Explanation) {
     DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
         // A wall between the producer and the drone's outbound path (range never limits: 200 m).
-        let wall = Obstacle::from_corners(Position::xyz(20.0, -20.0, 0.0), Position::xyz(25.0, 20.0, 30.0));
+        let wall = Obstacle::from_corners(
+            Position::xyz(20.0, -20.0, 0.0),
+            Position::xyz(25.0, 20.0, 30.0),
+        );
         let prop = ObstructedPropagation::new(
-            Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }),
+            Arc::new(RangeThreshold {
+                range_m: 200.0,
+                tx_power_dbm: 20.0,
+            }),
             vec![wall],
         );
-        let mut sim = Simulation::new().kernel(k).with_radio_medium(Arc::new(prop), 1);
+        let mut sim = Simulation::new()
+            .kernel(k)
+            .with_radio_medium(Arc::new(prop), 1);
         let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let drone = sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 0.0));
-        sim.add_app(prod, AppSpec::Producer { prefix: "/svc".into(), content: Some("x".into()), freshness_ms: None });
+        sim.add_app(
+            prod,
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("x".into()),
+                freshness_ms: None,
+            },
+        );
         sim.add_app(
             drone,
-            AppSpec::Consumer { prefix: "/svc".into(), count: 20, interval_ms: 300, lifetime_ms: Some(300) },
+            AppSpec::Consumer {
+                prefix: "/svc".into(),
+                count: 20,
+                interval_ms: 300,
+                lifetime_ms: Some(300),
+            },
         );
         sim.add_radio_route(drone, "/svc");
         let fabric = sim.start().await.unwrap();
@@ -34,9 +54,24 @@ fn run() -> (u64, ndn_sim::Explanation) {
         // Turn on causal capture, then fly the drone behind the wall and keep it there.
         let log = fabric.capture_radio().expect("radio medium present");
         let mut trace = MobilityTrace::default();
-        trace.record(NodeState { node: drone, t_secs: 0.0, position: Position::xy(10.0, 0.0), velocity: None });
-        trace.record(NodeState { node: drone, t_secs: 2.0, position: Position::xy(60.0, 0.0), velocity: None });
-        trace.record(NodeState { node: drone, t_secs: 12.0, position: Position::xy(60.0, 0.0), velocity: None });
+        trace.record(NodeState {
+            node: drone,
+            t_secs: 0.0,
+            position: Position::xy(10.0, 0.0),
+            velocity: None,
+        });
+        trace.record(NodeState {
+            node: drone,
+            t_secs: 2.0,
+            position: Position::xy(60.0, 0.0),
+            velocity: None,
+        });
+        trace.record(NodeState {
+            node: drone,
+            t_secs: 12.0,
+            position: Position::xy(60.0, 0.0),
+            velocity: None,
+        });
         fabric.install_trace(&trace);
 
         ndn_app::rt::sleep(Duration::from_secs(9)).await;
@@ -52,7 +87,10 @@ fn run() -> (u64, ndn_sim::Explanation) {
 fn explains_why_the_drone_lost_the_link() {
     let (successes, e) = run();
     // Axis 2: the building blocks delivery, so the drone does NOT complete all 20.
-    assert!(successes < 20, "the building should block some fetches, got {successes}/20");
+    assert!(
+        successes < 20,
+        "the building should block some fetches, got {successes}/20"
+    );
     // Axis 4: and we can say WHY, from the recorded evidence — not just that it failed.
     assert_eq!(
         e.dominant_cause,
@@ -65,7 +103,11 @@ fn explains_why_the_drone_lost_the_link() {
         "verdict {:?}",
         e.verdict
     );
-    assert!(e.detail.contains("line of sight"), "human explanation mentions LoS: {}", e.detail);
+    assert!(
+        e.detail.contains("line of sight"),
+        "human explanation mentions LoS: {}",
+        e.detail
+    );
 }
 
 #[test]
@@ -83,16 +125,39 @@ fn analysis_is_deterministic() {
 fn explain_query_answers_through_the_control_plane() {
     use ndn_sim::{ControlPlane, SimQuery, SimResponse};
     let (successes, verdict_ok) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
-        let wall = Obstacle::from_corners(Position::xyz(20.0, -20.0, 0.0), Position::xyz(25.0, 20.0, 30.0));
+        let wall = Obstacle::from_corners(
+            Position::xyz(20.0, -20.0, 0.0),
+            Position::xyz(25.0, 20.0, 30.0),
+        );
         let prop = ObstructedPropagation::new(
-            Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }),
+            Arc::new(RangeThreshold {
+                range_m: 200.0,
+                tx_power_dbm: 20.0,
+            }),
             vec![wall],
         );
-        let mut sim = Simulation::new().kernel(k).with_radio_medium(Arc::new(prop), 1);
+        let mut sim = Simulation::new()
+            .kernel(k)
+            .with_radio_medium(Arc::new(prop), 1);
         let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let drone = sim.add_radio_node(EngineConfig::default(), Position::xy(60.0, 0.0)); // already behind
-        sim.add_app(prod, AppSpec::Producer { prefix: "/svc".into(), content: Some("x".into()), freshness_ms: None });
-        sim.add_app(drone, AppSpec::Consumer { prefix: "/svc".into(), count: 10, interval_ms: 300, lifetime_ms: Some(300) });
+        sim.add_app(
+            prod,
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("x".into()),
+                freshness_ms: None,
+            },
+        );
+        sim.add_app(
+            drone,
+            AppSpec::Consumer {
+                prefix: "/svc".into(),
+                count: 10,
+                interval_ms: 300,
+                lifetime_ms: Some(300),
+            },
+        );
         sim.add_radio_route(drone, "/svc");
         let fabric = Arc::new(sim.start().await.unwrap());
         let control = ControlPlane::new(Arc::clone(&fabric));
@@ -108,31 +173,72 @@ fn explain_query_answers_through_the_control_plane() {
         (successes, verdict_ok)
     });
     assert_eq!(successes, 0, "fully behind the wall, nothing gets through");
-    assert!(verdict_ok, "the control-plane Explain query names obstruction as the cause");
+    assert!(
+        verdict_ok,
+        "the control-plane Explain query names obstruction as the cause"
+    );
 }
 
 /// Capture a run where the drone either stays clear of the wall or flies behind it.
 fn capture(behind: bool) -> ndn_sim::RunCapture {
     DesKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
-        let wall = Obstacle::from_corners(Position::xyz(20.0, -20.0, 0.0), Position::xyz(25.0, 20.0, 30.0));
+        let wall = Obstacle::from_corners(
+            Position::xyz(20.0, -20.0, 0.0),
+            Position::xyz(25.0, 20.0, 30.0),
+        );
         let prop = ObstructedPropagation::new(
-            Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }),
+            Arc::new(RangeThreshold {
+                range_m: 200.0,
+                tx_power_dbm: 20.0,
+            }),
             vec![wall],
         );
-        let mut sim = Simulation::new().kernel(k).with_radio_medium(Arc::new(prop), 1);
+        let mut sim = Simulation::new()
+            .kernel(k)
+            .with_radio_medium(Arc::new(prop), 1);
         let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let drone = sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 0.0));
-        sim.add_app(prod, AppSpec::Producer { prefix: "/svc".into(), content: Some("x".into()), freshness_ms: None });
-        sim.add_app(drone, AppSpec::Consumer { prefix: "/svc".into(), count: 15, interval_ms: 300, lifetime_ms: Some(300) });
+        sim.add_app(
+            prod,
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("x".into()),
+                freshness_ms: None,
+            },
+        );
+        sim.add_app(
+            drone,
+            AppSpec::Consumer {
+                prefix: "/svc".into(),
+                count: 15,
+                interval_ms: 300,
+                lifetime_ms: Some(300),
+            },
+        );
         sim.add_radio_route(drone, "/svc");
         let fabric = sim.start().await.unwrap();
         let log = fabric.capture_radio().unwrap();
         let mut trace = MobilityTrace::default();
-        trace.record(NodeState { node: drone, t_secs: 0.0, position: Position::xy(10.0, 0.0), velocity: None });
+        trace.record(NodeState {
+            node: drone,
+            t_secs: 0.0,
+            position: Position::xy(10.0, 0.0),
+            velocity: None,
+        });
         // "clear" flies up (x stays 10, never crosses the wall at x∈20..25); "behind" flies to x=60.
         let (x, y) = if behind { (60.0, 0.0) } else { (10.0, 60.0) };
-        trace.record(NodeState { node: drone, t_secs: 2.0, position: Position::xy(x, y), velocity: None });
-        trace.record(NodeState { node: drone, t_secs: 12.0, position: Position::xy(x, y), velocity: None });
+        trace.record(NodeState {
+            node: drone,
+            t_secs: 2.0,
+            position: Position::xy(x, y),
+            velocity: None,
+        });
+        trace.record(NodeState {
+            node: drone,
+            t_secs: 12.0,
+            position: Position::xy(x, y),
+            velocity: None,
+        });
         fabric.install_trace(&trace);
         ndn_app::rt::sleep(Duration::from_secs(6)).await;
         let cap = fabric.capture_run(Some(&log));
@@ -161,14 +267,21 @@ fn cross_run_diff_pinpoints_and_explains_the_regression() {
         .iter()
         .find(|l| l.from == 1 && l.to == 0)
         .expect("the drone→producer link should show a delta");
-    assert!(link.candidate_rate < link.baseline_rate, "delivery rate dropped: {link:?}");
+    assert!(
+        link.candidate_rate < link.baseline_rate,
+        "delivery rate dropped: {link:?}"
+    );
     assert_eq!(
         link.candidate_cause,
         Some(DeliveryReason::Obstructed),
         "the candidate's failures are explained as obstruction:\n{}",
         diff.summary
     );
-    assert!(diff.summary.contains("line of sight"), "summary explains why: {}", diff.summary);
+    assert!(
+        diff.summary.contains("line of sight"),
+        "summary explains why: {}",
+        diff.summary
+    );
 }
 
 #[test]
@@ -185,16 +298,39 @@ fn run_capture_json_round_trips() {
 fn control_plane_surfaces_radio_flow() {
     use ndn_sim::ControlPlane;
     let n = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
-        let wall = Obstacle::from_corners(Position::xyz(20.0, -20.0, 0.0), Position::xyz(25.0, 20.0, 30.0));
+        let wall = Obstacle::from_corners(
+            Position::xyz(20.0, -20.0, 0.0),
+            Position::xyz(25.0, 20.0, 30.0),
+        );
         let prop = ObstructedPropagation::new(
-            Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }),
+            Arc::new(RangeThreshold {
+                range_m: 200.0,
+                tx_power_dbm: 20.0,
+            }),
             vec![wall],
         );
-        let mut sim = Simulation::new().kernel(k).with_radio_medium(Arc::new(prop), 1);
+        let mut sim = Simulation::new()
+            .kernel(k)
+            .with_radio_medium(Arc::new(prop), 1);
         let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let drone = sim.add_radio_node(EngineConfig::default(), Position::xy(60.0, 0.0));
-        sim.add_app(prod, AppSpec::Producer { prefix: "/svc".into(), content: Some("x".into()), freshness_ms: None });
-        sim.add_app(drone, AppSpec::Consumer { prefix: "/svc".into(), count: 8, interval_ms: 300, lifetime_ms: Some(300) });
+        sim.add_app(
+            prod,
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("x".into()),
+                freshness_ms: None,
+            },
+        );
+        sim.add_app(
+            drone,
+            AppSpec::Consumer {
+                prefix: "/svc".into(),
+                count: 8,
+                interval_ms: 300,
+                lifetime_ms: Some(300),
+            },
+        );
         sim.add_radio_route(drone, "/svc");
         let fabric = Arc::new(sim.start().await.unwrap());
         let control = ControlPlane::new(Arc::clone(&fabric));

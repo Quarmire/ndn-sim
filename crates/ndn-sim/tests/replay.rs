@@ -10,11 +10,38 @@ use ndn_sim::{
 
 /// Drive a fixed live session through `control`, returning nothing (state is in the fabric).
 async fn drive(control: &ControlPlane) {
-    control.execute(SimCommand::SpawnNode { label: Some("a".into()) }).await; // id 0
-    control.execute(SimCommand::SpawnNode { label: Some("b".into()) }).await; // id 1
-    control.execute(SimCommand::Connect { a: 0, b: 1, link: LinkSpec::default() }).await;
-    control.execute(SimCommand::Route { node: 0, prefix: "/x".into(), nexthop: 1 }).await;
-    control.execute(SimCommand::MoveNode { node: 0, x: 5.0, y: 0.0, z: 0.0 }).await;
+    control
+        .execute(SimCommand::SpawnNode {
+            label: Some("a".into()),
+        })
+        .await; // id 0
+    control
+        .execute(SimCommand::SpawnNode {
+            label: Some("b".into()),
+        })
+        .await; // id 1
+    control
+        .execute(SimCommand::Connect {
+            a: 0,
+            b: 1,
+            link: LinkSpec::default(),
+        })
+        .await;
+    control
+        .execute(SimCommand::Route {
+            node: 0,
+            prefix: "/x".into(),
+            nexthop: 1,
+        })
+        .await;
+    control
+        .execute(SimCommand::MoveNode {
+            node: 0,
+            x: 5.0,
+            y: 0.0,
+            z: 0.0,
+        })
+        .await;
 }
 
 #[test]
@@ -29,7 +56,13 @@ fn record_then_replay_reproduces_the_session() {
         let rec = control.recording();
         assert_eq!(rec.len(), 5, "all five commands journaled");
         let topo = serde_json::to_string(&fabric.topology()).unwrap();
-        let x0 = fabric.scene_snapshot().nodes.iter().find(|n| n.id == 0).unwrap().x;
+        let x0 = fabric
+            .scene_snapshot()
+            .nodes
+            .iter()
+            .find(|n| n.id == 0)
+            .unwrap()
+            .x;
         fabric.shutdown().await;
         (rec.to_json().unwrap(), topo, x0)
     });
@@ -43,13 +76,22 @@ fn record_then_replay_reproduces_the_session() {
         recording.replay(&control, false).await.unwrap();
 
         let topo = serde_json::to_string(&fabric.topology()).unwrap();
-        let x0 = fabric.scene_snapshot().nodes.iter().find(|n| n.id == 0).unwrap().x;
+        let x0 = fabric
+            .scene_snapshot()
+            .nodes
+            .iter()
+            .find(|n| n.id == 0)
+            .unwrap()
+            .x;
         fabric.shutdown().await;
         (topo, x0)
     });
 
     // The replayed fabric matches the recorded one: same topology graph, same moved position.
-    assert_eq!(original_topo, replayed_topo, "replay reproduced the topology");
+    assert_eq!(
+        original_topo, replayed_topo,
+        "replay reproduced the topology"
+    );
     assert_eq!(replayed_x0, 5.0, "replay reproduced the live MoveNode");
 }
 
@@ -66,7 +108,10 @@ fn recording_round_trips_through_json() {
     });
     let rec = Recording::from_json(&json).unwrap();
     assert_eq!(rec.len(), 1);
-    assert!(matches!(rec.commands[0].command, SimCommand::SpawnNode { .. }));
+    assert!(matches!(
+        rec.commands[0].command,
+        SimCommand::SpawnNode { .. }
+    ));
     // Re-serialize → identical structure.
     assert_eq!(
         serde_json::to_value(&rec).unwrap(),

@@ -137,7 +137,11 @@ impl Transport for SimFace {
         };
 
         // Reliable streams add no reordering jitter; datagrams may reorder.
-        let jitter = if self.reliable { Duration::ZERO } else { self.jitter() };
+        let jitter = if self.reliable {
+            Duration::ZERO
+        } else {
+            self.jitter()
+        };
         let mut deliver_at = tx_start + self.config.delay + jitter;
 
         // Reliable: never deliver before the previous packet (in-order, HOL-style).
@@ -175,7 +179,11 @@ impl SimFace {
         if max.is_zero() {
             return Duration::ZERO;
         }
-        let nanos = self.rng.lock().unwrap().random_range(0..=max.as_nanos() as u64);
+        let nanos = self
+            .rng
+            .lock()
+            .unwrap()
+            .random_range(0..=max.as_nanos() as u64);
         Duration::from_nanos(nanos)
     }
 }

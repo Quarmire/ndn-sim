@@ -101,7 +101,10 @@ impl Executor {
     }
 
     fn task_waker(self: &Arc<Self>, id: usize) -> Waker {
-        Waker::from(Arc::new(TaskWaker { exec: Arc::clone(self), id }))
+        Waker::from(Arc::new(TaskWaker {
+            exec: Arc::clone(self),
+            id,
+        }))
     }
 
     /// Poll every ready task to quiescence (draining wakes produced along the way). Returns
@@ -208,7 +211,11 @@ impl ndn_runtime::Spawn for DesRuntime {
 impl ndn_runtime::Sleep for DesRuntime {
     fn sleep(&self, dur: Duration) -> BoxFuture {
         let deadline = self.exec.now_ns().saturating_add(dur.as_nanos() as u64);
-        Box::pin(DesSleep { exec: Arc::clone(&self.exec), deadline, registered: false })
+        Box::pin(DesSleep {
+            exec: Arc::clone(&self.exec),
+            deadline,
+            registered: false,
+        })
     }
 }
 impl ndn_runtime::Now for DesRuntime {
@@ -221,7 +228,10 @@ impl ndn_runtime::Now for DesRuntime {
 }
 impl DesRuntime {
     fn base_plus(&self, ns: u64) -> Instant {
-        self.exec.base.checked_add(Duration::from_nanos(ns)).unwrap_or(self.exec.base)
+        self.exec
+            .base
+            .checked_add(Duration::from_nanos(ns))
+            .unwrap_or(self.exec.base)
     }
 }
 impl Runtime for DesRuntime {}
@@ -243,7 +253,11 @@ impl Future for DesSleep {
         if !s.registered {
             let seq = g.seq;
             g.seq += 1;
-            g.timers.push(Reverse(TimerEntry { deadline: s.deadline, seq, waker: cx.waker().clone() }));
+            g.timers.push(Reverse(TimerEntry {
+                deadline: s.deadline,
+                seq,
+                waker: cx.waker().clone(),
+            }));
             s.registered = true;
         }
         Poll::Pending
@@ -259,15 +273,23 @@ pub struct DesKernel {
 
 impl DesKernel {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { epoch_base_ns: DEFAULT_EPOCH_NS, exec: OnceLock::new() })
+        Arc::new(Self {
+            epoch_base_ns: DEFAULT_EPOCH_NS,
+            exec: OnceLock::new(),
+        })
     }
 
     pub fn with_epoch_ns(epoch_base_ns: u64) -> Arc<Self> {
-        Arc::new(Self { epoch_base_ns, exec: OnceLock::new() })
+        Arc::new(Self {
+            epoch_base_ns,
+            exec: OnceLock::new(),
+        })
     }
 
     fn executor(&self) -> Arc<Executor> {
-        self.exec.get_or_init(|| Executor::new(self.epoch_base_ns)).clone()
+        self.exec
+            .get_or_init(|| Executor::new(self.epoch_base_ns))
+            .clone()
     }
 
     /// Run `f` to completion on the event queue, returning its output. The closure receives this
@@ -280,7 +302,9 @@ impl DesKernel {
         T: Send + 'static,
     {
         let exec = self.executor();
-        let rt: Arc<dyn Runtime> = Arc::new(DesRuntime { exec: Arc::clone(&exec) });
+        let rt: Arc<dyn Runtime> = Arc::new(DesRuntime {
+            exec: Arc::clone(&exec),
+        });
         // Route ndn-app's rt::{sleep,timeout,spawn} through the event queue while we drive, so
         // app-driven fabrics (consumers/producers) run on DES, not tokio.
         let _ambient = ndn_app::rt::set_current_runtime(Arc::clone(&rt));
@@ -292,22 +316,32 @@ impl DesKernel {
             *slot.lock().unwrap() = Some(v);
         }));
         exec.drive_until(|| out.lock().unwrap().is_some());
-        out.lock().unwrap().take().expect("DES main future did not complete (deadlock)")
+        out.lock()
+            .unwrap()
+            .take()
+            .expect("DES main future did not complete (deadlock)")
     }
 
     /// Open an event-granular stepping session (owns the event queue). Installs the DES runtime
     /// as this thread's ambient runtime (for `ndn-app` fetch/serve) for the session's lifetime.
     pub fn session(self: &Arc<Self>) -> DesSession {
         let exec = self.executor();
-        let ambient =
-            ndn_app::rt::set_current_runtime(Arc::new(DesRuntime { exec: Arc::clone(&exec) }));
-        DesSession { exec, epoch_base_ns: self.epoch_base_ns, _ambient: ambient }
+        let ambient = ndn_app::rt::set_current_runtime(Arc::new(DesRuntime {
+            exec: Arc::clone(&exec),
+        }));
+        DesSession {
+            exec,
+            epoch_base_ns: self.epoch_base_ns,
+            _ambient: ambient,
+        }
     }
 }
 
 impl SimKernel for DesKernel {
     fn runtime(&self) -> Arc<dyn Runtime> {
-        Arc::new(DesRuntime { exec: self.executor() })
+        Arc::new(DesRuntime {
+            exec: self.executor(),
+        })
     }
     fn name(&self) -> &'static str {
         "des"
@@ -327,7 +361,9 @@ pub struct DesSession {
 impl DesSession {
     /// The DES runtime to hand to code (e.g. `Simulation::kernel` once the engine is migrated).
     pub fn runtime(&self) -> Arc<dyn Runtime> {
-        Arc::new(DesRuntime { exec: Arc::clone(&self.exec) })
+        Arc::new(DesRuntime {
+            exec: Arc::clone(&self.exec),
+        })
     }
 
     /// Drive a future to completion (running any tasks/timers it needs), returning its output.
@@ -342,7 +378,10 @@ impl DesSession {
             *slot.lock().unwrap() = Some(fut.await);
         }));
         self.exec.drive_until(|| out.lock().unwrap().is_some());
-        out.lock().unwrap().take().expect("block_on future did not complete (deadlock)")
+        out.lock()
+            .unwrap()
+            .take()
+            .expect("block_on future did not complete (deadlock)")
     }
 
     /// Advance to the **next scheduled event**: run ready tasks, jump the clock to the next timer
@@ -390,7 +429,11 @@ mod tests {
             (woke_at, rt.unix_nanos())
         });
         // The receiver observed ~1 s of virtual time elapse on the event queue.
-        assert!(out.0 >= 1_700_000_001_000_000_000, "producer woke after 1 s virtual: {}", out.0);
+        assert!(
+            out.0 >= 1_700_000_001_000_000_000,
+            "producer woke after 1 s virtual: {}",
+            out.0
+        );
         assert!(out.1 >= out.0, "main observes the advanced clock");
     }
 
@@ -441,7 +484,11 @@ mod tests {
         // Each step advances to exactly the next event instant.
         let base = session.now_ns();
         session.step();
-        assert_eq!(*fired.lock().unwrap(), vec![1], "step 1 → only the t=1s event");
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![1],
+            "step 1 → only the t=1s event"
+        );
         assert_eq!(session.now_ns(), base + 1_000_000_000);
         session.step();
         assert_eq!(*fired.lock().unwrap(), vec![1, 2]);

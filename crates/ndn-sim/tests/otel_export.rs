@@ -47,7 +47,9 @@ async fn mock_collector() -> (std::net::SocketAddr, oneshot::Receiver<String>) {
         let body = header_end
             .map(|h| String::from_utf8_lossy(&buf[h..]).into_owned())
             .unwrap_or_default();
-        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        let _ = stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await;
         let _ = stream.flush().await;
         let _ = tx.send(body);
     });

@@ -29,7 +29,11 @@ pub struct Position {
 }
 
 impl Position {
-    pub const ORIGIN: Position = Position { x: 0.0, y: 0.0, z: 0.0 };
+    pub const ORIGIN: Position = Position {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 
     /// A 2-D position (`z = 0`).
     pub fn xy(x: f64, y: f64) -> Self {
@@ -231,7 +235,11 @@ impl World {
             .map(|(id, m)| (*id, m.position(t_secs)))
             .collect();
         let grid = SpatialGrid::build(&positions, self.grid_cell_m);
-        WorldView { positions, grid, t_secs }
+        WorldView {
+            positions,
+            grid,
+            t_secs,
+        }
     }
 }
 
@@ -326,7 +334,10 @@ mod tests {
 
     #[test]
     fn linear_mobility_is_deterministic_fn_of_time() {
-        let m = LinearMobility { start: Position::xy(0.0, 0.0), velocity: (1.0, 0.0, 0.0) };
+        let m = LinearMobility {
+            start: Position::xy(0.0, 0.0),
+            velocity: (1.0, 0.0, 0.0),
+        };
         assert_eq!(m.position(0.0), Position::xy(0.0, 0.0));
         assert_eq!(m.position(10.0), Position::xy(10.0, 0.0));
         // Pure function: same t ⇒ same position, every call.
@@ -341,9 +352,21 @@ mod tests {
                 (10.0, Position::xy(100.0, 0.0)),
             ],
         };
-        assert_eq!(m.position(-5.0), Position::xy(0.0, 0.0), "clamps before first");
-        assert_eq!(m.position(5.0), Position::xy(50.0, 0.0), "interpolates midpoint");
-        assert_eq!(m.position(99.0), Position::xy(100.0, 0.0), "clamps after last");
+        assert_eq!(
+            m.position(-5.0),
+            Position::xy(0.0, 0.0),
+            "clamps before first"
+        );
+        assert_eq!(
+            m.position(5.0),
+            Position::xy(50.0, 0.0),
+            "interpolates midpoint"
+        );
+        assert_eq!(
+            m.position(99.0),
+            Position::xy(100.0, 0.0),
+            "clamps after last"
+        );
     }
 
     #[test]
@@ -356,8 +379,15 @@ mod tests {
         let view = world.snapshot(0.0);
 
         let near = view.within_range(Position::ORIGIN, 10.0);
-        assert_eq!(near, vec![NodeId(0), NodeId(1), NodeId(3)], "sorted, range-filtered");
-        assert!(!near.contains(&NodeId(2)), "50 m node excluded at radius 10");
+        assert_eq!(
+            near,
+            vec![NodeId(0), NodeId(1), NodeId(3)],
+            "sorted, range-filtered"
+        );
+        assert!(
+            !near.contains(&NodeId(2)),
+            "50 m node excluded at radius 10"
+        );
     }
 
     #[test]
@@ -370,7 +400,13 @@ mod tests {
                 velocity: (10.0, 0.0, 0.0),
             }),
         );
-        assert_eq!(world.snapshot(0.0).position(NodeId(0)), Some(Position::xy(0.0, 0.0)));
-        assert_eq!(world.snapshot(5.0).position(NodeId(0)), Some(Position::xy(50.0, 0.0)));
+        assert_eq!(
+            world.snapshot(0.0).position(NodeId(0)),
+            Some(Position::xy(0.0, 0.0))
+        );
+        assert_eq!(
+            world.snapshot(5.0).position(NodeId(0)),
+            Some(Position::xy(50.0, 0.0))
+        );
     }
 }

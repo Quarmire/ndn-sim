@@ -31,18 +31,26 @@ async fn scenario(kernel: Arc<dyn SimKernel>) -> RunTrace {
     let a = sim.add_node(EngineConfig::default());
     let b = sim.add_node(EngineConfig::default());
     let c = sim.add_node(EngineConfig::default());
-    let link = LinkConfig { delay: Duration::from_millis(10), ..LinkConfig::default() };
+    let link = LinkConfig {
+        delay: Duration::from_millis(10),
+        ..LinkConfig::default()
+    };
     sim.link(a, b, link.clone());
     sim.link(c, b, link);
     sim.add_route(a, "/svc", b);
     sim.add_route(c, "/svc", b);
     let fabric = sim.start().await.unwrap();
 
-    let producer = fabric.engine_of(b).unwrap().register_producer("/svc", CancellationToken::new());
+    let producer = fabric
+        .engine_of(b)
+        .unwrap()
+        .register_producer("/svc", CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"ok")).await;
+                let _ = r
+                    .respond((*i.name).clone(), bytes::Bytes::from_static(b"ok"))
+                    .await;
             })
             .await;
     });
@@ -52,9 +60,17 @@ async fn scenario(kernel: Arc<dyn SimKernel>) -> RunTrace {
     fabric.spawn_gauge_emitter(Duration::from_secs(1), Arc::clone(&log), cancel.clone());
 
     // A and C fetch the same name at the same virtual instant — concurrent arrivals at B.
-    let mut ca = fabric.engine_of(a).unwrap().app_consumer(CancellationToken::new());
-    let mut cc = fabric.engine_of(c).unwrap().app_consumer(CancellationToken::new());
-    let mk = || InterestBuilder::new("/svc/x".parse::<Name>().unwrap()).lifetime(Duration::from_secs(20));
+    let mut ca = fabric
+        .engine_of(a)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
+    let mut cc = fabric
+        .engine_of(c)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
+    let mk = || {
+        InterestBuilder::new("/svc/x".parse::<Name>().unwrap()).lifetime(Duration::from_secs(20))
+    };
     let (ra, rc) = tokio::join!(ca.fetch_with(mk()), cc.fetch_with(mk()));
     ra.unwrap();
     rc.unwrap();
@@ -81,11 +97,18 @@ fn scenario_replays_byte_identical_under_virtual_time() {
 
     // Metric series identical (the determinism oracle)…
     let diff = compare_metrics(&first.0, &second.0);
-    assert!(diff.identical, "metric series diverged: {:?}", diff.divergences);
+    assert!(
+        diff.identical,
+        "metric series diverged: {:?}",
+        diff.divergences
+    );
 
     // …and the ordered tracer timeline identical (catches same-instant ordering drift that a
     // metrics-only compare would miss).
-    assert_eq!(first.1, second.1, "tracer event timeline diverged across runs");
+    assert_eq!(
+        first.1, second.1,
+        "tracer event timeline diverged across runs"
+    );
 
     // Sanity: the run actually did something (not vacuously identical).
     assert!(!first.0.is_empty(), "gauge emitter produced samples");

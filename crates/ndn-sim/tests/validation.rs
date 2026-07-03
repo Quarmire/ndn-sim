@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use ndn_sim::{Baseline, ValidationSpec, run_validation, run_validation_against};
 
 fn examples_dir(sub: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(sub)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join(sub)
 }
 
 fn toml_specs(dir: &Path) -> Vec<PathBuf> {
@@ -54,17 +56,31 @@ fn regression_gate_passes_baseline_and_catches_drift() {
 
     // The committed baseline must match the current behavior.
     let report = run_validation_against(&spec, &baseline).unwrap();
-    assert!(report.passed, "committed baseline should pass:\n{}", report.summary());
-    assert!(!report.regressions.is_empty(), "the spec declares [[baselines]]");
+    assert!(
+        report.passed,
+        "committed baseline should pass:\n{}",
+        report.summary()
+    );
+    assert!(
+        !report.regressions.is_empty(),
+        "the spec declares [[baselines]]"
+    );
     assert!(report.regressions.iter().all(|r| r.passed));
 
     // A baseline claiming much higher throughput must trip the gate.
     let mut tampered = baseline.clone();
     *tampered.values.get_mut("delivered_throughput").unwrap() = 100.0;
     let report = run_validation_against(&spec, &tampered).unwrap();
-    assert!(!report.passed, "a 100→30 throughput drop must fail the gate:\n{}", report.summary());
     assert!(
-        report.regressions.iter().any(|r| r.name == "delivered_throughput" && !r.passed),
+        !report.passed,
+        "a 100→30 throughput drop must fail the gate:\n{}",
+        report.summary()
+    );
+    assert!(
+        report
+            .regressions
+            .iter()
+            .any(|r| r.name == "delivered_throughput" && !r.passed),
         "the throughput gate should be the failing one"
     );
 }

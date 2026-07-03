@@ -68,7 +68,12 @@ pub enum VehicleCommand {
     /// Fly to an ENU position (metres, guided mode) — the operator's "go there and watch NDN react".
     Goto { node: usize, x: f64, y: f64, z: f64 },
     /// Command an ENU velocity (m/s, guided mode).
-    Velocity { node: usize, vx: f64, vy: f64, vz: f64 },
+    Velocity {
+        node: usize,
+        vx: f64,
+        vy: f64,
+        vz: f64,
+    },
     /// Land at the current position.
     Land { node: usize },
     /// Set the flight mode by its autopilot custom-mode number (e.g. ArduCopter GUIDED=4, RTL=6).
@@ -196,7 +201,9 @@ pub fn udp_json_feed(endpoint: &str) -> Result<(ChannelSource, FeedReader)> {
     let socket = std::net::UdpSocket::bind(endpoint)
         .with_context(|| format!("bind JSON feed endpoint {endpoint:?}"))?;
     // A read timeout so the reader loop periodically observes the stop flag.
-    socket.set_read_timeout(Some(Duration::from_millis(200))).ok();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .ok();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = Arc::clone(&stop);
     let handle = std::thread::Builder::new()
@@ -228,7 +235,13 @@ pub fn udp_json_feed(endpoint: &str) -> Result<(ChannelSource, FeedReader)> {
             }
         })
         .context("spawn JSON feed reader thread")?;
-    Ok((source, FeedReader { stop, handle: Some(handle) }))
+    Ok((
+        source,
+        FeedReader {
+            stop,
+            handle: Some(handle),
+        },
+    ))
 }
 
 /// A [`MobilitySource`] that replays a fixed timeline — emits each state once logical time reaches
@@ -287,7 +300,10 @@ pub struct Lockstep<S> {
 
 impl<S: SteppableSource> Lockstep<S> {
     pub fn new(source: S) -> Self {
-        Self { source, done: false }
+        Self {
+            source,
+            done: false,
+        }
     }
 }
 
@@ -326,7 +342,10 @@ impl MobilityTrace {
     pub fn into_models(&self) -> BTreeMap<NodeId, Arc<dyn MobilityModel>> {
         let mut per_node: BTreeMap<NodeId, Vec<(f64, Position)>> = BTreeMap::new();
         for s in &self.states {
-            per_node.entry(s.node).or_default().push((s.t_secs, s.position));
+            per_node
+                .entry(s.node)
+                .or_default()
+                .push((s.t_secs, s.position));
         }
         per_node
             .into_iter()
@@ -369,7 +388,11 @@ impl MobilityModel for SampledMobility {
                 let hi = samples.partition_point(|(t, _)| *t <= t_secs);
                 let (t0, p0) = samples[hi - 1];
                 let (t1, p1) = samples[hi];
-                let f = if t1 > t0 { (t_secs - t0) / (t1 - t0) } else { 0.0 };
+                let f = if t1 > t0 {
+                    (t_secs - t0) / (t1 - t0)
+                } else {
+                    0.0
+                };
                 Position::xyz(
                     p0.x + (p1.x - p0.x) * f,
                     p0.y + (p1.y - p0.y) * f,
@@ -420,8 +443,16 @@ mod tests {
     fn vehicle_commands_round_trip_and_target_the_right_node() {
         for cmd in [
             VehicleCommand::Arm { node: 2 },
-            VehicleCommand::Takeoff { node: 3, alt_m: 10.0 },
-            VehicleCommand::Goto { node: 1, x: 5.0, y: 6.0, z: 0.0 },
+            VehicleCommand::Takeoff {
+                node: 3,
+                alt_m: 10.0,
+            },
+            VehicleCommand::Goto {
+                node: 1,
+                x: 5.0,
+                y: 6.0,
+                z: 0.0,
+            },
             VehicleCommand::SetMode { node: 4, mode: 4 },
             VehicleCommand::ReturnToLaunch { node: 5 },
         ] {
@@ -431,9 +462,11 @@ mod tests {
             assert_eq!(back.node(), cmd.node());
         }
         // The serde tag is the snake_case action name.
-        assert!(serde_json::to_string(&VehicleCommand::SetMode { node: 0, mode: 6 })
-            .unwrap()
-            .contains("\"set_mode\""));
+        assert!(
+            serde_json::to_string(&VehicleCommand::SetMode { node: 0, mode: 6 })
+                .unwrap()
+                .contains("\"set_mode\"")
+        );
     }
 
     #[test]
@@ -450,8 +483,18 @@ mod tests {
     #[test]
     fn scripted_source_emits_on_schedule() {
         let mut s = ScriptedSource::new(vec![
-            NodeState { node: NodeId(0), t_secs: 1.0, position: Position::xy(0.0, 0.0), velocity: None },
-            NodeState { node: NodeId(0), t_secs: 2.0, position: Position::xy(1.0, 0.0), velocity: None },
+            NodeState {
+                node: NodeId(0),
+                t_secs: 1.0,
+                position: Position::xy(0.0, 0.0),
+                velocity: None,
+            },
+            NodeState {
+                node: NodeId(0),
+                t_secs: 2.0,
+                position: Position::xy(1.0, 0.0),
+                velocity: None,
+            },
         ]);
         assert!(s.poll(0.5).is_empty());
         assert_eq!(s.poll(1.5).len(), 1);
@@ -463,7 +506,12 @@ mod tests {
     #[test]
     fn trace_json_round_trips() {
         let mut t = MobilityTrace::default();
-        t.record(NodeState { node: NodeId(2), t_secs: 3.0, position: Position::xyz(1.0, 2.0, 3.0), velocity: Some([1.0, 0.0, 0.0]) });
+        t.record(NodeState {
+            node: NodeId(2),
+            t_secs: 3.0,
+            position: Position::xyz(1.0, 2.0, 3.0),
+            velocity: Some([1.0, 0.0, 0.0]),
+        });
         let again = MobilityTrace::from_json(&t.to_json().unwrap()).unwrap();
         assert_eq!(again.states, t.states);
         assert_eq!(again.into_models().len(), 1);

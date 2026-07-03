@@ -21,22 +21,48 @@ fn app_driven_exchange_runs_on_the_des_kernel() {
         let mut sim = Simulation::new().kernel(k);
         let a = sim.add_node(EngineConfig::default());
         let b = sim.add_node(EngineConfig::default());
-        sim.link(a, b, LinkConfig { delay: Duration::from_millis(5), ..LinkConfig::default() });
+        sim.link(
+            a,
+            b,
+            LinkConfig {
+                delay: Duration::from_millis(5),
+                ..LinkConfig::default()
+            },
+        );
         sim.add_route(a, "/svc", b);
-        sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("des".into()) , freshness_ms: None });
+        sim.add_app(
+            b,
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("des".into()),
+                freshness_ms: None,
+            },
+        );
         let fabric = sim.start().await.unwrap();
 
         // A's consumer fetches over the link — Interest and Data traverse the event queue.
-        let mut consumer = fabric.engine_of(a).unwrap().app_consumer(CancellationToken::new());
-        let builder =
-            InterestBuilder::new("/svc/0".parse::<Name>().unwrap()).lifetime(Duration::from_secs(10));
-        let data = consumer.fetch_with(builder).await.expect("fetch over the DES fabric");
-        let out = (data.content().map(|c| c.to_vec()).unwrap_or_default(), (*data.name).clone());
+        let mut consumer = fabric
+            .engine_of(a)
+            .unwrap()
+            .app_consumer(CancellationToken::new());
+        let builder = InterestBuilder::new("/svc/0".parse::<Name>().unwrap())
+            .lifetime(Duration::from_secs(10));
+        let data = consumer
+            .fetch_with(builder)
+            .await
+            .expect("fetch over the DES fabric");
+        let out = (
+            data.content().map(|c| c.to_vec()).unwrap_or_default(),
+            (*data.name).clone(),
+        );
         fabric.shutdown().await;
         out
     });
 
-    assert_eq!(content, b"des", "the producer's Data traversed the event queue to the consumer");
+    assert_eq!(
+        content, b"des",
+        "the producer's Data traversed the event queue to the consumer"
+    );
     assert_eq!(name, "/svc/0".parse::<Name>().unwrap());
 }
 
@@ -47,13 +73,32 @@ fn app_driven_fabric_replays_deterministically_on_des() {
             let mut sim = Simulation::new().kernel(k);
             let a = sim.add_node(EngineConfig::default());
             let b = sim.add_node(EngineConfig::default());
-            sim.link(a, b, LinkConfig { delay: Duration::from_millis(2), ..LinkConfig::default() });
+            sim.link(
+                a,
+                b,
+                LinkConfig {
+                    delay: Duration::from_millis(2),
+                    ..LinkConfig::default()
+                },
+            );
             sim.add_route(a, "/svc", b);
-            sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("ok".into()) , freshness_ms: None });
+            sim.add_app(
+                b,
+                AppSpec::Producer {
+                    prefix: "/svc".into(),
+                    content: Some("ok".into()),
+                    freshness_ms: None,
+                },
+            );
             // A declared consumer fetching /svc/0../svc/4 at 10 ms cadence — all on the event queue.
             sim.add_app(
                 a,
-                AppSpec::Consumer { prefix: "/svc".into(), count: 5, interval_ms: 10 , lifetime_ms: None },
+                AppSpec::Consumer {
+                    prefix: "/svc".into(),
+                    count: 5,
+                    interval_ms: 10,
+                    lifetime_ms: None,
+                },
             );
             let fabric = sim.start().await.unwrap();
 
@@ -66,6 +111,13 @@ fn app_driven_fabric_replays_deterministically_on_des() {
         })
     };
     let first = run();
-    assert_eq!(first, 5, "the consumer app fetched all 5 over the DES event queue");
-    assert_eq!(first, run(), "the whole app-driven fabric replays identically on the event queue");
+    assert_eq!(
+        first, 5,
+        "the consumer app fetched all 5 over the DES event queue"
+    );
+    assert_eq!(
+        first,
+        run(),
+        "the whole app-driven fabric replays identically on the event queue"
+    );
 }

@@ -18,9 +18,9 @@ use ndn_runtime::Runtime;
 use serde::Serialize;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
 
 /// One captured engine span-open or event, stamped with virtual time.
 #[derive(Clone, Debug, Serialize)]
@@ -130,8 +130,10 @@ where
     ) {
         let md = attrs.metadata();
         // The registry resolves the parent (explicit `parent:` or the contextual current span).
-        let parent_span_id =
-            ctx.span(id).and_then(|s| s.parent()).map(|p| p.id().into_u64());
+        let parent_span_id = ctx
+            .span(id)
+            .and_then(|s| s.parent())
+            .map(|p| p.id().into_u64());
         self.log.record(CapturedSpan {
             virtual_time_ns: self.clock.unix_nanos(),
             kind: "span",
@@ -149,7 +151,10 @@ where
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
         let enclosing = ctx.event_span(event);
-        let span_name = enclosing.as_ref().map(|s| s.name().to_string()).unwrap_or_default();
+        let span_name = enclosing
+            .as_ref()
+            .map(|s| s.name().to_string())
+            .unwrap_or_default();
         let parent_span_id = enclosing.as_ref().map(|s| s.id().into_u64());
         self.log.record(CapturedSpan {
             virtual_time_ns: self.clock.unix_nanos(),
@@ -196,8 +201,14 @@ mod tests {
         }
 
         let entries = log.entries();
-        let outer = entries.iter().find(|e| e.name == "outer" && e.kind == "span").unwrap();
-        let inner = entries.iter().find(|e| e.name == "inner" && e.kind == "span").unwrap();
+        let outer = entries
+            .iter()
+            .find(|e| e.name == "outer" && e.kind == "span")
+            .unwrap();
+        let inner = entries
+            .iter()
+            .find(|e| e.name == "inner" && e.kind == "span")
+            .unwrap();
         assert!(outer.parent_span_id.is_none(), "the outer span is a root");
         assert_eq!(
             inner.parent_span_id, outer.span_id,

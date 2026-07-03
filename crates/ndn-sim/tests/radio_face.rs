@@ -13,10 +13,10 @@ use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::encode::InterestBuilder;
 use ndn_signals_core::SignalView;
-use ndn_strategy::signals::SignalsTable;
 use ndn_sim::{
     FreeSpacePathLoss, NodeId, Position, RadioBus, RadioMcs, SimRadioFace, Simulation, World,
 };
+use ndn_strategy::signals::SignalsTable;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -32,12 +32,7 @@ async fn two_radios_exchange_signed_data_and_publish_link_signals() {
     let fabric = sim.start().await.unwrap();
 
     // One shared radio medium over the fabric's world.
-    let bus = RadioBus::new(
-        fabric.world(),
-        Arc::new(FreeSpacePathLoss::default()),
-        0,
-        7,
-    );
+    let bus = RadioBus::new(fabric.world(), Arc::new(FreeSpacePathLoss::default()), 0, 7);
 
     let eng_a = fabric.engine_of(a).unwrap();
     let eng_b = fabric.engine_of(b).unwrap();
@@ -56,7 +51,9 @@ async fn two_radios_exchange_signed_data_and_publish_link_signals() {
     eng_b.add_face(face_b, CancellationToken::new());
 
     // A reaches /app over its radio face; B serves it.
-    eng_a.fib().add_nexthop(&"/app".parse().unwrap(), face_a_id, 10);
+    eng_a
+        .fib()
+        .add_nexthop(&"/app".parse().unwrap(), face_a_id, 10);
 
     let producer = eng_b.register_producer("/app", CancellationToken::new());
     tokio::spawn(async move {
@@ -73,16 +70,33 @@ async fn two_radios_exchange_signed_data_and_publish_link_signals() {
     let mut consumer = eng_a.app_consumer(CancellationToken::new());
     let builder = InterestBuilder::new("/app/ping".parse::<ndn_packet::Name>().unwrap())
         .lifetime(Duration::from_secs(10));
-    let data = consumer.fetch_with(builder).await.expect("fetch over radio");
-    assert_eq!(data.content().map(|c| c.to_vec()).unwrap_or_default(), b"pong");
+    let data = consumer
+        .fetch_with(builder)
+        .await
+        .expect("fetch over radio");
+    assert_eq!(
+        data.content().map(|c| c.to_vec()).unwrap_or_default(),
+        b"pong"
+    );
 
     // A heard B's Data → its radio face published LinkSignals for that face.
     let link = signals_a
         .link(face_a_id)
         .expect("A's radio face published link signals on receive");
-    assert!(link.rssi_dbm.unwrap() > -60, "metres apart ⇒ strong RSSI, got {:?}", link.rssi_dbm);
-    assert_eq!(link.ext_get("mcs"), Some(7.0), "B transmitted at the fixed MCS7");
-    assert!(link.observed_tput_bps.unwrap() > 60_000_000, "MCS7 phy rate surfaced");
+    assert!(
+        link.rssi_dbm.unwrap() > -60,
+        "metres apart ⇒ strong RSSI, got {:?}",
+        link.rssi_dbm
+    );
+    assert_eq!(
+        link.ext_get("mcs"),
+        Some(7.0),
+        "B transmitted at the fixed MCS7"
+    );
+    assert!(
+        link.observed_tput_bps.unwrap() > 60_000_000,
+        "MCS7 phy rate surfaced"
+    );
 
     fabric.shutdown().await;
 }

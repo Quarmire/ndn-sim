@@ -148,7 +148,10 @@ pub fn compare_metrics(baseline: &[MetricsSample], candidate: &[MetricsSample]) 
     }
     let identical = divergences.is_empty();
     divergences.truncate(50);
-    MetricsDiff { identical, divergences }
+    MetricsDiff {
+        identical,
+        divergences,
+    }
 }
 
 /// A thread-safe, append-only series of [`MetricsSample`]s — the destination for the fabric's
@@ -335,7 +338,10 @@ mod tests {
     fn compare_metrics_detects_identity_and_divergence() {
         let a = vec![sample(0, 100, 5), sample(1, 100, 7)];
         let same = vec![sample(1, 100, 7), sample(0, 100, 5)]; // reordered, same content
-        assert!(compare_metrics(&a, &same).identical, "order-independent identity");
+        assert!(
+            compare_metrics(&a, &same).identical,
+            "order-independent identity"
+        );
 
         let diff = vec![sample(0, 100, 5), sample(1, 100, 9)]; // node 1 hits differ
         let d = compare_metrics(&a, &diff);
@@ -347,8 +353,10 @@ mod tests {
     fn span_and_trace_ids_are_deterministic() {
         let clock: Arc<dyn Runtime> = Arc::new(FixedClock(0));
         let make = || {
-            let publisher =
-                SpanPublisher::new(Name::from_str("/sim/obs").unwrap(), SpanRetention::default());
+            let publisher = SpanPublisher::new(
+                Name::from_str("/sim/obs").unwrap(),
+                SpanRetention::default(),
+            );
             let e = SimSpanEmitter::new(publisher, Arc::clone(&clock));
             let a = e.event_now("a", vec![]);
             let b = e.event_now("b", vec![]);

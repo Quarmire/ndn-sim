@@ -125,9 +125,7 @@ pub enum EnvSpec {
     #[default]
     FreeSpace,
     /// Constant excess attenuation everywhere (dB).
-    Uniform {
-        db: f64,
-    },
+    Uniform { db: f64 },
 }
 
 /// Shared radio medium config (nodes opt in via `NodeSpec.radio`).
@@ -200,12 +198,22 @@ impl Default for PropSpec {
 impl PropSpec {
     fn build(&self) -> Arc<dyn PropagationModel> {
         match *self {
-            PropSpec::FreeSpacePathLoss { tx_power_dbm, freq_hz, rx_sensitivity_dbm } => {
-                Arc::new(FreeSpacePathLoss { tx_power_dbm, freq_hz, rx_sensitivity_dbm })
-            }
-            PropSpec::RangeThreshold { range_m, tx_power_dbm } => {
-                Arc::new(RangeThreshold { range_m, tx_power_dbm })
-            }
+            PropSpec::FreeSpacePathLoss {
+                tx_power_dbm,
+                freq_hz,
+                rx_sensitivity_dbm,
+            } => Arc::new(FreeSpacePathLoss {
+                tx_power_dbm,
+                freq_hz,
+                rx_sensitivity_dbm,
+            }),
+            PropSpec::RangeThreshold {
+                range_m,
+                tx_power_dbm,
+            } => Arc::new(RangeThreshold {
+                range_m,
+                tx_power_dbm,
+            }),
         }
     }
 }
@@ -384,7 +392,10 @@ impl Scenario {
 
     fn check_node(&self, idx: usize) -> Result<()> {
         if idx >= self.nodes.len() {
-            bail!("scenario references node {idx} but only {} declared", self.nodes.len());
+            bail!(
+                "scenario references node {idx} but only {} declared",
+                self.nodes.len()
+            );
         }
         Ok(())
     }
@@ -443,7 +454,10 @@ label = "a"
         let scenario = Scenario::from_toml(src).unwrap();
         assert!(scenario.kernel.is_des());
         assert!(!scenario.kernel.is_virtual());
-        assert!(matches!(scenario.kernel, KernelSpec::Des { epoch_ns: Some(42) }));
+        assert!(matches!(
+            scenario.kernel,
+            KernelSpec::Des { epoch_ns: Some(42) }
+        ));
         // Re-serialize and re-parse → structurally identical.
         let again = Scenario::from_toml(&scenario.to_toml().unwrap()).unwrap();
         assert_eq!(scenario.to_json().unwrap(), again.to_json().unwrap());
@@ -452,7 +466,10 @@ label = "a"
     #[test]
     fn radio_node_without_medium_is_rejected() {
         let s = Scenario {
-            nodes: vec![NodeSpec { radio: true, ..Default::default() }],
+            nodes: vec![NodeSpec {
+                radio: true,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let k: Arc<dyn SimKernel> = Arc::new(crate::WallClockKernel::new());
@@ -463,7 +480,11 @@ label = "a"
     fn route_to_missing_node_is_rejected() {
         let s = Scenario {
             nodes: vec![NodeSpec::default()],
-            routes: vec![RouteSpec { node: 0, prefix: "/x".into(), nexthop: 9 }],
+            routes: vec![RouteSpec {
+                node: 0,
+                prefix: "/x".into(),
+                nexthop: 9,
+            }],
             ..Default::default()
         };
         let k: Arc<dyn SimKernel> = Arc::new(crate::WallClockKernel::new());

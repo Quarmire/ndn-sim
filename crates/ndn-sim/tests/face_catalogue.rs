@@ -9,8 +9,8 @@ use bytes::Bytes;
 use ndn_app::EngineAppExt;
 use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
-use ndn_transport::{FaceId, FaceKind, LinkType, Transport};
 use ndn_sim::{FaceProfile, LinkConfig, Scenario, SimLink, WallClockKernel};
+use ndn_transport::{FaceId, FaceKind, LinkType, Transport};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -53,7 +53,11 @@ async fn reliable_stream_never_drops_and_stays_in_order() {
     for _ in 0..10 {
         got.push(b.recv_bytes().await.unwrap()[0]);
     }
-    assert_eq!(got, (0..10).collect::<Vec<u8>>(), "reliable: all delivered, in order");
+    assert_eq!(
+        got,
+        (0..10).collect::<Vec<u8>>(),
+        "reliable: all delivered, in order"
+    );
 }
 
 #[tokio::test]
@@ -68,7 +72,9 @@ async fn datagram_drops_under_loss() {
     }
     // Datagram + 100% loss ⇒ nothing arrives.
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), b.recv_bytes()).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(100), b.recv_bytes())
+            .await
+            .is_err(),
         "datagram face drops under loss"
     );
 }
@@ -105,14 +111,26 @@ nexthop = 1
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"tcp")).await;
+                let _ = r
+                    .respond((*i.name).clone(), bytes::Bytes::from_static(b"tcp"))
+                    .await;
             })
             .await;
     });
-    let mut consumer = fabric.engine_of(ndn_sim::NodeId(0)).unwrap().app_consumer(CancellationToken::new());
-    let builder = InterestBuilder::new("/app/0".parse::<Name>().unwrap()).lifetime(Duration::from_secs(10));
-    let data = consumer.fetch_with(builder).await.expect("fetch over the TCP-typed link");
-    assert_eq!(data.content().map(|c| c.to_vec()).unwrap_or_default(), b"tcp");
+    let mut consumer = fabric
+        .engine_of(ndn_sim::NodeId(0))
+        .unwrap()
+        .app_consumer(CancellationToken::new());
+    let builder =
+        InterestBuilder::new("/app/0".parse::<Name>().unwrap()).lifetime(Duration::from_secs(10));
+    let data = consumer
+        .fetch_with(builder)
+        .await
+        .expect("fetch over the TCP-typed link");
+    assert_eq!(
+        data.content().map(|c| c.to_vec()).unwrap_or_default(),
+        b"tcp"
+    );
 
     fabric.shutdown().await;
 }

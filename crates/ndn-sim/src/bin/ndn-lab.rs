@@ -19,13 +19,17 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ndn_sim::{
     ControlPlane, DesKernel, KernelSpec, NodeId, RealTimeKernel, Recording, RunningSimulation,
-    Scenario, SimKernel, SimMcp, Simulation, Stepper, ValidationSpec, VirtualKernel, WallClockKernel,
-    run_validation, run_validation_against, topo,
+    Scenario, SimKernel, SimMcp, Simulation, Stepper, ValidationSpec, VirtualKernel,
+    WallClockKernel, run_validation, run_validation_against, topo,
 };
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
-#[command(name = "ndn-lab", version, about = "NDN network simulation / emulation hub")]
+#[command(
+    name = "ndn-lab",
+    version,
+    about = "NDN network simulation / emulation hub"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -183,7 +187,11 @@ enum Command {
 fn main() -> Result<()> {
     init_tracing();
     match Cli::parse().command {
-        Command::Run { scenario, secs, capture } => cmd_run(scenario, secs, capture),
+        Command::Run {
+            scenario,
+            secs,
+            capture,
+        } => cmd_run(scenario, secs, capture),
         Command::Diff { a, b, json } => cmd_diff(a, b, json),
         Command::Serve {
             scenario,
@@ -198,24 +206,54 @@ fn main() -> Result<()> {
             record,
             require_signed,
         } => runtime()?.block_on(cmd_serve(
-            scenario, addr, ws_addr, mavlink, launch, base_sysid, telemetry_ms, otlp, feed, record,
+            scenario,
+            addr,
+            ws_addr,
+            mavlink,
+            launch,
+            base_sysid,
+            telemetry_ms,
+            otlp,
+            feed,
+            record,
             require_signed,
         )),
         Command::Mcp { scenario } => runtime()?.block_on(cmd_mcp(scenario)),
         Command::Replay { recording } => runtime()?.block_on(cmd_replay(recording)),
         Command::Step { scenario } => cmd_step(scenario),
-        Command::Gen { shape, n, rows, cols, branching, depth, prob, seed, toward, out } => {
-            cmd_gen(shape, n, rows, cols, branching, depth, prob, seed, toward, out)
-        }
-        Command::Check { spec, json, baseline, record_baseline } => {
-            cmd_check(spec, json, baseline, record_baseline)
-        }
+        Command::Gen {
+            shape,
+            n,
+            rows,
+            cols,
+            branching,
+            depth,
+            prob,
+            seed,
+            toward,
+            out,
+        } => cmd_gen(
+            shape, n, rows, cols, branching, depth, prob, seed, toward, out,
+        ),
+        Command::Check {
+            spec,
+            json,
+            baseline,
+            record_baseline,
+        } => cmd_check(spec, json, baseline, record_baseline),
         #[cfg(feature = "mavlink")]
-        Command::Fly { scenario, mavlink, record, base_sysid, secs, ref_lat, ref_lon, ref_alt } => {
-            runtime()?.block_on(cmd_fly(
-                scenario, mavlink, record, base_sysid, secs, ref_lat, ref_lon, ref_alt,
-            ))
-        }
+        Command::Fly {
+            scenario,
+            mavlink,
+            record,
+            base_sysid,
+            secs,
+            ref_lat,
+            ref_lon,
+            ref_alt,
+        } => runtime()?.block_on(cmd_fly(
+            scenario, mavlink, record, base_sysid, secs, ref_lat, ref_lon, ref_alt,
+        )),
     }
 }
 
@@ -227,7 +265,10 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 fn init_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
-    let _ = fmt().with_writer(std::io::stderr).with_env_filter(filter).try_init();
+    let _ = fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .try_init();
 }
 
 fn read_scenario(path: &PathBuf) -> Result<Scenario> {
@@ -262,7 +303,11 @@ fn cmd_run(path: PathBuf, secs: u64, capture: Option<PathBuf>) -> Result<()> {
             let fabric = scenario.build(k)?.start().await?;
             let radio = fabric.capture_radio();
             ndn_app::rt::sleep(dur).await;
-            let out = (fabric.topology(), fabric.snapshot_metrics(), fabric.capture_run(radio.as_deref()));
+            let out = (
+                fabric.topology(),
+                fabric.snapshot_metrics(),
+                fabric.capture_run(radio.as_deref()),
+            );
             fabric.shutdown().await;
             anyhow::Ok(out)
         })?
@@ -271,7 +316,11 @@ fn cmd_run(path: PathBuf, secs: u64, capture: Option<PathBuf>) -> Result<()> {
             let fabric = scenario.build(k)?.start().await?;
             let radio = fabric.capture_radio();
             tokio::time::sleep(dur).await;
-            let out = (fabric.topology(), fabric.snapshot_metrics(), fabric.capture_run(radio.as_deref()));
+            let out = (
+                fabric.topology(),
+                fabric.snapshot_metrics(),
+                fabric.capture_run(radio.as_deref()),
+            );
             fabric.shutdown().await;
             anyhow::Ok(out)
         })?
@@ -280,7 +329,11 @@ fn cmd_run(path: PathBuf, secs: u64, capture: Option<PathBuf>) -> Result<()> {
             let fabric = build_fabric(Some(scenario), Arc::new(WallClockKernel::new())).await?;
             let radio = fabric.capture_radio();
             tokio::time::sleep(dur).await;
-            let out = (fabric.topology(), fabric.snapshot_metrics(), fabric.capture_run(radio.as_deref()));
+            let out = (
+                fabric.topology(),
+                fabric.snapshot_metrics(),
+                fabric.capture_run(radio.as_deref()),
+            );
             fabric.shutdown().await;
             anyhow::Ok(out)
         })?
@@ -360,7 +413,11 @@ async fn cmd_fly(
     // The real-time governor: real pace so a live autopilot feed lines up (clock mode B).
     let fabric = Arc::new(build_fabric(Some(scenario), RealTimeKernel::new()).await?);
     let reference = match (ref_lat, ref_lon) {
-        (Some(lat_deg), Some(lon_deg)) => Some(GeoRef { lat_deg, lon_deg, alt_m: ref_alt }),
+        (Some(lat_deg), Some(lon_deg)) => Some(GeoRef {
+            lat_deg,
+            lon_deg,
+            alt_m: ref_alt,
+        }),
         _ => None,
     };
     let cfg = MavlinkConfig {
@@ -437,7 +494,10 @@ async fn cmd_serve(
     if let Some(ref path) = require_signed {
         let kc = ndn_security::KeyChain::open_or_create(path, "/ndn-lab/control")
             .map_err(|e| anyhow::anyhow!("open control keychain {path:?}: {e}"))?;
-        eprintln!("ndn-lab: NDN control requires signed Interests (trust {})", kc.name());
+        eprintln!(
+            "ndn-lab: NDN control requires signed Interests (trust {})",
+            kc.name()
+        );
         control.require_signed_control(Arc::new(kc.validator()));
     }
 
@@ -487,20 +547,20 @@ async fn cmd_serve(
                 );
             }
             eprintln!("ndn-lab: live co-sim on MAVLink {endpoint} — Cosim commands fly the swarm");
-            let (source, reader, actuator) = ndn_sim::mavlink::mavlink_link(
-                ndn_sim::mavlink::MavlinkConfig {
+            let (source, reader, actuator) =
+                ndn_sim::mavlink::mavlink_link(ndn_sim::mavlink::MavlinkConfig {
                     endpoint,
                     reference: None,
                     base_sysid,
                     node_count: fabric.nodes(),
-                },
-            )?;
+                })?;
             control.set_actuator(std::sync::Arc::new(actuator));
             let df = Arc::clone(&fabric);
             let dc = drive_cancel.clone();
             tokio::spawn(async move {
                 let _reader = reader; // keep the reader thread alive for the session
-                df.drive_mobility(Box::new(source), Duration::from_millis(50), dc).await;
+                df.drive_mobility(Box::new(source), Duration::from_millis(50), dc)
+                    .await;
             });
         }
         #[cfg(not(feature = "mavlink"))]
@@ -518,7 +578,8 @@ async fn cmd_serve(
         let dc = drive_cancel.clone();
         tokio::spawn(async move {
             let _reader = reader; // keep the feed thread alive for the session
-            df.drive_mobility(Box::new(source), Duration::from_millis(50), dc).await;
+            df.drive_mobility(Box::new(source), Duration::from_millis(50), dc)
+                .await;
         });
     }
 
@@ -532,7 +593,10 @@ async fn cmd_serve(
     // Persist the session recording (if journaling was on) before tearing the fabric down.
     if let Some(path) = record {
         std::fs::write(&path, control.recording().to_json()?)?;
-        eprintln!("ndn-lab: recording written to {path:?} — replay with `ndn-lab replay {}`", path.display());
+        eprintln!(
+            "ndn-lab: recording written to {path:?} — replay with `ndn-lab replay {}`",
+            path.display()
+        );
     }
     fabric.shutdown().await;
     Ok(())
@@ -569,7 +633,9 @@ fn cmd_step(path: PathBuf) -> Result<()> {
 
     let scenario = read_scenario(&path)?;
     if !scenario.kernel.is_des() {
-        eprintln!("ndn-lab: interactive stepping forces the DES kernel (the scenario's kernel is ignored)");
+        eprintln!(
+            "ndn-lab: interactive stepping forces the DES kernel (the scenario's kernel is ignored)"
+        );
     }
     let stepper = Stepper::build(DesKernel::new(), scenario)?;
     println!(
@@ -609,10 +675,16 @@ fn cmd_step(path: PathBuf) -> Result<()> {
                 print_clock(&stepper);
             }
             "topo" | "t" => {
-                println!("{}", serde_json::to_string_pretty(&stepper.fabric().topology())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&stepper.fabric().topology())?
+                );
             }
             "metrics" | "m" => {
-                println!("{}", serde_json::to_string_pretty(&stepper.fabric().snapshot_metrics())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&stepper.fabric().snapshot_metrics())?
+                );
             }
             "where" | "w" => {
                 for node in &stepper.fabric().scene_snapshot().nodes {

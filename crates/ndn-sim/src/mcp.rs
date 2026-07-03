@@ -306,7 +306,10 @@ impl SimMcp {
                 self.run(SimCommand::SpawnNode { label }).await
             }
             "remove_node" => {
-                self.run(SimCommand::RemoveNode { node: req_usize(args, "node")? }).await
+                self.run(SimCommand::RemoveNode {
+                    node: req_usize(args, "node")?,
+                })
+                .await
             }
             "connect" => {
                 let link = serde_json::from_value(args.clone()).unwrap_or_default();
@@ -346,11 +349,17 @@ impl SimMcp {
                     .and_then(Value::as_str)
                     .ok_or("missing 'prefix'")?
                     .to_string();
-                let kind = args.get("kind").and_then(Value::as_str).unwrap_or("producer");
+                let kind = args
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("producer");
                 let app = match kind {
                     "producer" => crate::AppSpec::Producer {
                         prefix,
-                        content: args.get("content").and_then(Value::as_str).map(String::from),
+                        content: args
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .map(String::from),
                         freshness_ms: args.get("freshness_ms").and_then(Value::as_u64),
                     },
                     "consumer" => crate::AppSpec::Consumer {
@@ -363,7 +372,12 @@ impl SimMcp {
                 };
                 self.run(SimCommand::SpawnApp { node, app }).await
             }
-            "stop_app" => self.run(SimCommand::StopApp { app: req_usize(args, "app")? }).await,
+            "stop_app" => {
+                self.run(SimCommand::StopApp {
+                    app: req_usize(args, "app")?,
+                })
+                .await
+            }
             "cosim" => {
                 // Fly the external swarm: {"command": {"action": "goto", "node": 1, ...}}.
                 let command: crate::cosim::VehicleCommand =
@@ -374,17 +388,27 @@ impl SimMcp {
             "scene_svg" => {
                 let width = args.get("width").and_then(Value::as_u64).unwrap_or(600) as u32;
                 let height = args.get("height").and_then(Value::as_u64).unwrap_or(600) as u32;
-                Ok(to_value(self.control.query(SimQuery::SceneSvg { width, height })))
+                Ok(to_value(
+                    self.control.query(SimQuery::SceneSvg { width, height }),
+                ))
             }
             "set_strategy" => {
                 let prefix = req_str(args, "prefix")?;
                 let strategy = req_str(args, "strategy")?;
-                self.run(SimCommand::SetStrategy { node: req_usize(args, "node")?, prefix, strategy })
-                    .await
+                self.run(SimCommand::SetStrategy {
+                    node: req_usize(args, "node")?,
+                    prefix,
+                    strategy,
+                })
+                .await
             }
             "add_radio_route" => {
                 let prefix = req_str(args, "prefix")?;
-                self.run(SimCommand::RouteOverRadio { node: req_usize(args, "node")?, prefix }).await
+                self.run(SimCommand::RouteOverRadio {
+                    node: req_usize(args, "node")?,
+                    prefix,
+                })
+                .await
             }
             "start_recording" => {
                 self.control.start_recording();
@@ -398,17 +422,26 @@ impl SimMcp {
                     .map_err(|e| format!("bad validation spec: {e}"))?;
                 // `run_validation` drives its own kernel runtimes (block_on), so it must run off the
                 // async worker — otherwise it nests a runtime inside this one and panics.
-                let report = tokio::task::spawn_blocking(move || crate::validate::run_validation(&spec))
-                    .await
-                    .map_err(|e| format!("validation task panicked: {e}"))?
-                    .map_err(|e| format!("validation failed to run: {e}"))?;
+                let report =
+                    tokio::task::spawn_blocking(move || crate::validate::run_validation(&spec))
+                        .await
+                        .map_err(|e| format!("validation task panicked: {e}"))?
+                        .map_err(|e| format!("validation failed to run: {e}"))?;
                 Ok(to_value(report))
             }
             "generate_topology" => {
                 let shape = req_str(args, "shape")?;
-                let n = |d: usize| args.get("n").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(d);
+                let n = |d: usize| {
+                    args.get("n")
+                        .and_then(Value::as_u64)
+                        .map(|v| v as usize)
+                        .unwrap_or(d)
+                };
                 let usize_arg = |k: &str, d: usize| {
-                    args.get(k).and_then(Value::as_u64).map(|v| v as usize).unwrap_or(d)
+                    args.get(k)
+                        .and_then(Value::as_u64)
+                        .map(|v| v as usize)
+                        .unwrap_or(d)
                 };
                 let mut scenario = match shape.as_str() {
                     "line" => crate::topo::line(n(3)),
@@ -431,7 +464,9 @@ impl SimMcp {
                     let dest: usize = dest.parse().map_err(|_| "'toward' node index")?;
                     crate::topo::add_routes_toward(&mut scenario, prefix, dest);
                 }
-                let toml = scenario.to_toml().map_err(|e| format!("encode scenario: {e}"))?;
+                let toml = scenario
+                    .to_toml()
+                    .map_err(|e| format!("encode scenario: {e}"))?;
                 Ok(json!({
                     "toml": toml,
                     "nodes": scenario.nodes.len(),
@@ -633,7 +668,10 @@ mod tests {
         let v: Value = serde_json::from_str(&spawn).unwrap();
         assert_eq!(v["result"]["isError"], false);
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains(r#""result":"node""#) && text.contains(r#""id":1"#), "{text}");
+        assert!(
+            text.contains(r#""result":"node""#) && text.contains(r#""id":1"#),
+            "{text}"
+        );
 
         let topo = mcp
             .handle_rpc(
@@ -643,7 +681,11 @@ mod tests {
         let v: Value = serde_json::from_str(&topo).unwrap();
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
         let topo: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(topo["nodes"].as_array().unwrap().len(), 2, "spawn took effect");
+        assert_eq!(
+            topo["nodes"].as_array().unwrap().len(),
+            2,
+            "spawn took effect"
+        );
     }
 
     #[tokio::test]
@@ -655,7 +697,10 @@ mod tests {
             )
             .await;
         let v: Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(v["result"]["isError"], true, "removing a missing node is a tool error");
+        assert_eq!(
+            v["result"]["isError"], true,
+            "removing a missing node is a tool error"
+        );
     }
 
     #[tokio::test]
@@ -685,27 +730,63 @@ mod tests {
     async fn why_did_returns_recent_events() {
         let mcp = mcp_over_fabric().await;
         // Spawn a node so there is fabric activity to explain.
-        let _ = mcp.call_tool("spawn_node", &serde_json::json!({})).await.unwrap();
-        let v = mcp.call_tool("why_did", &serde_json::json!({ "limit": 10 })).await.unwrap();
-        assert!(v["events"].is_array(), "why_did returns a structured event list: {v}");
+        let _ = mcp
+            .call_tool("spawn_node", &serde_json::json!({}))
+            .await
+            .unwrap();
+        let v = mcp
+            .call_tool("why_did", &serde_json::json!({ "limit": 10 }))
+            .await
+            .unwrap();
+        assert!(
+            v["events"].is_array(),
+            "why_did returns a structured event list: {v}"
+        );
     }
 
     #[tokio::test]
     async fn capabilities_tool_lists_the_palette() {
         let mcp = mcp_over_fabric().await;
         let v = mcp.call_tool("capabilities", &Value::Null).await.unwrap();
-        assert!(v["propagation_models"].as_array().unwrap().iter().any(|m| m == "free_space_path_loss"));
-        assert!(v["kernels"].as_array().unwrap().iter().any(|k| k == "virtual"));
+        assert!(
+            v["propagation_models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m == "free_space_path_loss")
+        );
+        assert!(
+            v["kernels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|k| k == "virtual")
+        );
         // The refreshed catalogue advertises the newly-projected tools + drops the stale claim.
-        assert!(v["commands"].as_array().unwrap().iter().any(|c| c == "set_strategy"));
+        assert!(
+            v["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == "set_strategy")
+        );
         assert!(v["kernels"].as_array().unwrap().iter().any(|k| k == "des"));
-        assert!(v["tools"].as_array().unwrap().iter().any(|t| t == "run_validation"));
+        assert!(
+            v["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == "run_validation")
+        );
     }
 
     #[tokio::test]
     async fn scene_svg_tool_renders() {
         let mcp = mcp_over_fabric().await;
-        let v = mcp.call_tool("scene_svg", &json!({ "width": 320, "height": 240 })).await.unwrap();
+        let v = mcp
+            .call_tool("scene_svg", &json!({ "width": 320, "height": 240 }))
+            .await
+            .unwrap();
         let svg = v["svg"].as_str().expect("an svg string");
         assert!(svg.contains("<svg"), "returns a rendered SVG document");
     }
@@ -713,8 +794,14 @@ mod tests {
     #[tokio::test]
     async fn recording_tools_journal_a_session() {
         let mcp = mcp_over_fabric().await;
-        let _ = mcp.call_tool("start_recording", &Value::Null).await.unwrap();
-        let _ = mcp.call_tool("spawn_node", &json!({ "label": "edge" })).await.unwrap();
+        let _ = mcp
+            .call_tool("start_recording", &Value::Null)
+            .await
+            .unwrap();
+        let _ = mcp
+            .call_tool("spawn_node", &json!({ "label": "edge" }))
+            .await
+            .unwrap();
         let rec = mcp.call_tool("get_recording", &Value::Null).await.unwrap();
         let cmds = rec["commands"].as_array().expect("a command journal");
         assert!(!cmds.is_empty(), "the spawn was journaled: {rec}");
@@ -758,19 +845,31 @@ probe = { kind = "app_successes", app = 1 }
 cmp = "ge"
 value = 1
 "#;
-        let v = mcp.call_tool("run_validation", &json!({ "spec": spec })).await.unwrap();
-        assert_eq!(v["passed"], true, "the consumer fetched from the producer: {v}");
+        let v = mcp
+            .call_tool("run_validation", &json!({ "spec": spec }))
+            .await
+            .unwrap();
+        assert_eq!(
+            v["passed"], true,
+            "the consumer fetched from the producer: {v}"
+        );
     }
 
     #[tokio::test]
     async fn generate_topology_tool_emits_a_runnable_scenario() {
         let mcp = mcp_over_fabric().await;
         let v = mcp
-            .call_tool("generate_topology", &json!({ "shape": "grid", "rows": 3, "cols": 3, "toward": "/demo@0" }))
+            .call_tool(
+                "generate_topology",
+                &json!({ "shape": "grid", "rows": 3, "cols": 3, "toward": "/demo@0" }),
+            )
             .await
             .unwrap();
         assert_eq!(v["nodes"], 9);
-        assert_eq!(v["routes"], 8, "every non-destination node routes toward node 0");
+        assert_eq!(
+            v["routes"], 8,
+            "every non-destination node routes toward node 0"
+        );
         let toml = v["toml"].as_str().expect("scenario toml");
         // The emitted TOML round-trips back into a Scenario.
         let scenario = crate::Scenario::from_toml(toml).unwrap();

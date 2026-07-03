@@ -39,7 +39,9 @@ fn ndnd_bin() -> Option<String> {
         return std::path::Path::new(&p).exists().then_some(p);
     }
     let default = "/tmp/ndnd";
-    std::path::Path::new(default).exists().then(|| default.to_string())
+    std::path::Path::new(default)
+        .exists()
+        .then(|| default.to_string())
 }
 
 fn write_config(socket: &str) -> std::path::PathBuf {
@@ -115,7 +117,9 @@ tables:
 #[ignore = "needs a built ndnd binary (set NDND_BIN or build to /tmp/ndnd)"]
 async fn sim_node_interops_with_real_ndnd_over_udp() {
     let Some(ndnd) = ndnd_bin() else {
-        eprintln!("SKIP: ndnd binary not found (set NDND_BIN); build with `go build -o /tmp/ndnd ./cmd/ndnd`");
+        eprintln!(
+            "SKIP: ndnd binary not found (set NDND_BIN); build with `go build -o /tmp/ndnd ./cmd/ndnd`"
+        );
         return;
     };
     let socket = std::env::temp_dir().join("ndn-lab-interop.sock");
@@ -124,7 +128,10 @@ async fn sim_node_interops_with_real_ndnd_over_udp() {
     let config = write_config(&socket_str);
 
     // 1. Start a real ndnd forwarder (UDP :6363 + unix socket).
-    let fw = Command::new(&ndnd).args(["fw", "run", config.to_str().unwrap()]).spawn().unwrap();
+    let fw = Command::new(&ndnd)
+        .args(["fw", "run", config.to_str().unwrap()])
+        .spawn()
+        .unwrap();
     let mut reaper = Reaper(vec![fw]);
 
     // Wait for the forwarder's unix socket to appear.
@@ -134,7 +141,10 @@ async fn sim_node_interops_with_real_ndnd_over_udp() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(socket.exists(), "ndnd fw did not come up (no socket at {socket_str})");
+    assert!(
+        socket.exists(),
+        "ndnd fw did not come up (no socket at {socket_str})"
+    );
     tokio::time::sleep(Duration::from_millis(500)).await; // let the UDP listener bind
 
     // 2. Start a real ndnd ping server under /interop (registers via the unix socket).
@@ -152,13 +162,24 @@ async fn sim_node_interops_with_real_ndnd_over_udp() {
     let fabric = sim.start().await.unwrap();
 
     let face = fabric
-        .bridge_udp(node, "127.0.0.1:0".parse().unwrap(), "127.0.0.1:6363".parse().unwrap())
+        .bridge_udp(
+            node,
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:6363".parse().unwrap(),
+        )
         .await
         .unwrap();
-    fabric.engine_of(node).unwrap().fib().add_nexthop(&"/interop".parse::<Name>().unwrap(), face, 10);
+    fabric.engine_of(node).unwrap().fib().add_nexthop(
+        &"/interop".parse::<Name>().unwrap(),
+        face,
+        10,
+    );
 
     // 4. The sim node fetches a ping from the real ndnd pingserver.
-    let mut consumer = fabric.engine_of(node).unwrap().app_consumer(CancellationToken::new());
+    let mut consumer = fabric
+        .engine_of(node)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
     let interest = InterestBuilder::new("/interop/ping/0".parse::<Name>().unwrap())
         .must_be_fresh()
         .lifetime(Duration::from_secs(4));
@@ -169,5 +190,8 @@ async fn sim_node_interops_with_real_ndnd_over_udp() {
 
     let data = data.expect("sim node should fetch ndnd-produced Data over the UDP bridge");
     assert_eq!(*data.name, "/interop/ping/0".parse::<Name>().unwrap());
-    eprintln!("INTEROP OK: ndn-lab fetched {} from real ndnd over UDP", *data.name);
+    eprintln!(
+        "INTEROP OK: ndn-lab fetched {} from real ndnd over UDP",
+        *data.name
+    );
 }

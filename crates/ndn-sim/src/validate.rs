@@ -229,7 +229,9 @@ impl Property {
     /// Whether the property holds on one observation, plus the observed probe value.
     fn check(&self, obs: &Observation) -> (Option<f64>, bool) {
         let observed = self.probe.eval(obs);
-        let held = observed.map(|o| self.cmp.test(o, self.value)).unwrap_or(false);
+        let held = observed
+            .map(|o| self.cmp.test(o, self.value))
+            .unwrap_or(false);
         (observed, held)
     }
 
@@ -247,7 +249,11 @@ impl Property {
             }
         }
         let total = obs.len() as u64;
-        let ratio = if total == 0 { 0.0 } else { held as f64 / total as f64 };
+        let ratio = if total == 0 {
+            0.0
+        } else {
+            held as f64 / total as f64
+        };
         let (observed_min, observed_max, observed_mean) = if values.is_empty() {
             (None, None, None)
         } else {
@@ -319,7 +325,9 @@ impl Fault {
         match self {
             Fault::RemoveNode { node } => fabric.remove_node(NodeId(*node)).await,
             Fault::StopApp { app } => fabric.stop_app(AppId(*app)),
-            Fault::SpawnApp { node, app } => fabric.spawn_app(NodeId(*node), app.clone()).map(|_| ()),
+            Fault::SpawnApp { node, app } => {
+                fabric.spawn_app(NodeId(*node), app.clone()).map(|_| ())
+            }
             Fault::Connect {
                 a,
                 b,
@@ -593,7 +601,12 @@ impl PropertyResult {
                 self.hold_ratio * 100.0,
             )
         } else {
-            format!("{verdict}  {} ({obs} {} {})", self.name, self.cmp.symbol(), self.threshold)
+            format!(
+                "{verdict}  {} ({obs} {} {})",
+                self.name,
+                self.cmp.symbol(),
+                self.threshold
+            )
         }
     }
 }
@@ -689,7 +702,10 @@ pub fn run_validation(spec: &ValidationSpec) -> Result<ValidationReport> {
 /// As [`run_validation`], but gate the run against a recorded [`Baseline`]: each `[[baselines]]`
 /// check's candidate value is compared to the baseline within tolerance, and any regression fails
 /// the overall verdict.
-pub fn run_validation_against(spec: &ValidationSpec, baseline: &Baseline) -> Result<ValidationReport> {
+pub fn run_validation_against(
+    spec: &ValidationSpec,
+    baseline: &Baseline,
+) -> Result<ValidationReport> {
     run_core(spec, Some(baseline))
 }
 
@@ -717,8 +733,11 @@ fn run_core(spec: &ValidationSpec, baseline: Option<&Baseline>) -> Result<Valida
             seed_metrics.push((seed, obs.metrics.clone()));
             observations.push(obs);
         }
-        let properties: Vec<PropertyResult> =
-            spec.properties.iter().map(|p| p.evaluate(&observations)).collect();
+        let properties: Vec<PropertyResult> = spec
+            .properties
+            .iter()
+            .map(|p| p.evaluate(&observations))
+            .collect();
         let passed = properties.iter().all(|p| p.passed);
         all_obs.extend(observations.iter().cloned());
         runs.push(RunReport {
@@ -936,7 +955,11 @@ value = 0
         let report = run_validation(&spec).unwrap();
         assert!(report.passed, "expected PASS, got:\n{}", report.summary());
         assert_eq!(report.runs.len(), 2);
-        assert_eq!(report.cross_kernel_agree, Some(true), "DES and Virtual should agree on counters");
+        assert_eq!(
+            report.cross_kernel_agree,
+            Some(true),
+            "DES and Virtual should agree on counters"
+        );
     }
 
     #[test]
@@ -1031,7 +1054,10 @@ hold_ratio = 1.0
         let mut strict = ValidationSpec::from_toml(LOSSY).unwrap();
         strict.properties[0].value = mean + 1.0;
         strict.properties[0].hold_ratio = 1.0;
-        assert!(!run_validation(&strict).unwrap().passed, "invariant above the mean should fail");
+        assert!(
+            !run_validation(&strict).unwrap().passed,
+            "invariant above the mean should fail"
+        );
 
         let mut lenient = ValidationSpec::from_toml(LOSSY).unwrap();
         lenient.properties[0].value = mean + 1.0;

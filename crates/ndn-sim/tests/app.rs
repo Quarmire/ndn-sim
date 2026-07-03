@@ -27,8 +27,23 @@ async fn declared_apps_generate_traffic_then_stop() {
     sim.link(a, b, ndn_sim::LinkConfig::lan());
     sim.add_route(a, "/app", b);
     // Producer on B (id 0), consumer on A fetching /app/0../app/4 (id 1) — declared, not coded.
-    sim.add_app(b, AppSpec::Producer { prefix: "/app".into(), content: Some("hi".into()) , freshness_ms: None });
-    sim.add_app(a, AppSpec::Consumer { prefix: "/app".into(), count: 5, interval_ms: 0 , lifetime_ms: None });
+    sim.add_app(
+        b,
+        AppSpec::Producer {
+            prefix: "/app".into(),
+            content: Some("hi".into()),
+            freshness_ms: None,
+        },
+    );
+    sim.add_app(
+        a,
+        AppSpec::Consumer {
+            prefix: "/app".into(),
+            count: 5,
+            interval_ms: 0,
+            lifetime_ms: None,
+        },
+    );
     let fabric = sim.start().await.unwrap();
 
     let consumer = AppId(1);
@@ -37,7 +52,10 @@ async fn declared_apps_generate_traffic_then_stop() {
         "consumer app fetched all 5 (got {:?})",
         fabric.app_successes(consumer)
     );
-    assert!(fabric.app_successes(AppId(0)).unwrap() >= 5, "producer served the data");
+    assert!(
+        fabric.app_successes(AppId(0)).unwrap() >= 5,
+        "producer served the data"
+    );
 
     // Introspection lists both apps.
     assert_eq!(fabric.apps().len(), 2);
@@ -45,7 +63,10 @@ async fn declared_apps_generate_traffic_then_stop() {
     // Stop the producer; it's gone from the registry.
     fabric.stop_app(AppId(0)).unwrap();
     assert_eq!(fabric.app_successes(AppId(0)), None);
-    assert!(fabric.stop_app(AppId(99)).is_err(), "stopping a missing app errors");
+    assert!(
+        fabric.stop_app(AppId(99)).is_err(),
+        "stopping a missing app errors"
+    );
 
     fabric.shutdown().await;
 }

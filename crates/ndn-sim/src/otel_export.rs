@@ -25,7 +25,10 @@ pub struct OtlpExporter {
 impl OtlpExporter {
     /// Target the collector listening at `addr` (`host:port`, no scheme).
     pub fn new(addr: impl Into<String>) -> Self {
-        Self { addr: addr.into(), service_name: "ndn-lab".to_string() }
+        Self {
+            addr: addr.into(),
+            service_name: "ndn-lab".to_string(),
+        }
     }
 
     pub fn with_service_name(mut self, name: impl Into<String>) -> Self {
@@ -87,8 +90,11 @@ impl OtlpExporter {
     /// The OTLP/JSON `ResourceSpans` document for captured engine spans (the [`SpanLog`] entries),
     /// so the sim's own fwd.pipeline / fwd.pit / radio spans flow to Jaeger.
     pub fn captured_spans_payload(&self, spans: &[crate::span_capture::CapturedSpan]) -> String {
-        let span_json: Vec<Value> =
-            spans.iter().enumerate().map(|(i, s)| captured_span_to_json(s, i)).collect();
+        let span_json: Vec<Value> = spans
+            .iter()
+            .enumerate()
+            .map(|(i, s)| captured_span_to_json(s, i))
+            .collect();
         json!({
             "resourceSpans": [{
                 "resource": self.resource(),
@@ -104,7 +110,12 @@ impl OtlpExporter {
         &self,
         spans: &[crate::span_capture::CapturedSpan],
     ) -> std::io::Result<u16> {
-        http_post_json(&self.addr, "/v1/traces", &self.captured_spans_payload(spans)).await
+        http_post_json(
+            &self.addr,
+            "/v1/traces",
+            &self.captured_spans_payload(spans),
+        )
+        .await
     }
 
     /// POST metrics to `<addr>/v1/metrics`. Returns the collector's HTTP status code.
@@ -131,8 +142,9 @@ fn gauge(name: &str, samples: &[MetricsSample], f: impl Fn(&MetricsSample) -> Va
 }
 
 /// Fixed 16-byte trace id ("ndn-lab" ASCII, padded) so a run's captured spans share one trace.
-const NDNLAB_TRACE_ID: [u8; 16] =
-    [0x6e, 0x64, 0x6e, 0x2d, 0x6c, 0x61, 0x62, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+const NDNLAB_TRACE_ID: [u8; 16] = [
+    0x6e, 0x64, 0x6e, 0x2d, 0x6c, 0x61, 0x62, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+];
 
 fn captured_span_to_json(s: &crate::span_capture::CapturedSpan, idx: usize) -> Value {
     // Prefer the real tracing span id (so parent links resolve in Jaeger); fall back to the index
@@ -159,7 +171,11 @@ fn captured_span_to_json(s: &crate::span_capture::CapturedSpan, idx: usize) -> V
 }
 
 fn span_to_json(s: &Span) -> Value {
-    let attrs: Vec<Value> = s.attributes.iter().map(|a| attr_to_json(&a.key, &a.value)).collect();
+    let attrs: Vec<Value> = s
+        .attributes
+        .iter()
+        .map(|a| attr_to_json(&a.key, &a.value))
+        .collect();
     json!({
         "traceId": hex(&s.trace_id),
         "spanId": hex(&s.span_id),
@@ -286,7 +302,13 @@ mod tests {
         let s = &v["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
         assert_eq!(s["name"], "pit.insert");
         assert_eq!(s["startTimeUnixNano"], "1234");
-        assert!(s["attributes"].as_array().unwrap().iter().any(|a| a["key"] == "target"));
+        assert!(
+            s["attributes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["key"] == "target")
+        );
         // The real span id and its parent link are carried through to OTLP (span-id 7, parent 3).
         assert_eq!(s["spanId"], "0000000000000007");
         assert_eq!(s["parentSpanId"], "0000000000000003");
@@ -297,9 +319,14 @@ mod tests {
         let exporter = OtlpExporter::new("127.0.0.1:4318");
         let payload = exporter.metrics_payload(&[sample(0, 5_000), sample(1, 5_000)]);
         let v: Value = serde_json::from_str(&payload).unwrap();
-        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"].as_array().unwrap();
+        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+            .as_array()
+            .unwrap();
         assert!(metrics.iter().any(|m| m["name"] == "ndn.cs.hit_rate"));
-        let pit = metrics.iter().find(|m| m["name"] == "ndn.pit.depth").unwrap();
+        let pit = metrics
+            .iter()
+            .find(|m| m["name"] == "ndn.pit.depth")
+            .unwrap();
         let points = pit["gauge"]["dataPoints"].as_array().unwrap();
         assert_eq!(points.len(), 2, "one point per node");
         assert_eq!(points[0]["asDouble"], 3);

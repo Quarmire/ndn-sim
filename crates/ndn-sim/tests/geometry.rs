@@ -20,30 +20,62 @@ fn los_flight() -> (bool, bool, bool) {
     DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
         // A wall at x∈[20,25], y∈[-20,20], tall — well within radio range (200 m), so ONLY line of
         // sight decides delivery, never distance.
-        let wall = Obstacle::from_corners(Position::xyz(20.0, -20.0, 0.0), Position::xyz(25.0, 20.0, 30.0));
+        let wall = Obstacle::from_corners(
+            Position::xyz(20.0, -20.0, 0.0),
+            Position::xyz(25.0, 20.0, 30.0),
+        );
         let prop = ObstructedPropagation::new(
-            Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }),
+            Arc::new(RangeThreshold {
+                range_m: 200.0,
+                tx_power_dbm: 20.0,
+            }),
             vec![wall],
         );
-        let mut sim = Simulation::new().kernel(k).with_radio_medium(Arc::new(prop), 1);
+        let mut sim = Simulation::new()
+            .kernel(k)
+            .with_radio_medium(Arc::new(prop), 1);
         let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let cons = sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 0.0));
         sim.add_app(
             prod,
-            AppSpec::Producer { prefix: "/svc".into(), content: Some("los".into()), freshness_ms: None },
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("los".into()),
+                freshness_ms: None,
+            },
         );
         let fabric = sim.start().await.unwrap();
 
         // Flight: clear (10,0) → behind the wall (40,0) → clear again by climbing over in y (40,60):
         // the segment (0,0)→(40,60) misses the wall's y-span.
         let mut trace = MobilityTrace::default();
-        trace.record(NodeState { node: cons, t_secs: 0.0, position: Position::xy(10.0, 0.0), velocity: None });
-        trace.record(NodeState { node: cons, t_secs: 10.0, position: Position::xy(40.0, 0.0), velocity: None });
-        trace.record(NodeState { node: cons, t_secs: 20.0, position: Position::xy(40.0, 60.0), velocity: None });
+        trace.record(NodeState {
+            node: cons,
+            t_secs: 0.0,
+            position: Position::xy(10.0, 0.0),
+            velocity: None,
+        });
+        trace.record(NodeState {
+            node: cons,
+            t_secs: 10.0,
+            position: Position::xy(40.0, 0.0),
+            velocity: None,
+        });
+        trace.record(NodeState {
+            node: cons,
+            t_secs: 20.0,
+            position: Position::xy(40.0, 60.0),
+            velocity: None,
+        });
         fabric.install_trace(&trace);
 
-        fabric.route_over_radio(cons, &"/svc".parse::<Name>().unwrap()).unwrap();
-        let mut consumer = fabric.engine_of(cons).unwrap().app_consumer(CancellationToken::new());
+        fabric
+            .route_over_radio(cons, &"/svc".parse::<Name>().unwrap())
+            .unwrap();
+        let mut consumer = fabric
+            .engine_of(cons)
+            .unwrap()
+            .app_consumer(CancellationToken::new());
         let interest = |i: u64| {
             let name: Name = format!("/svc/{i}").parse().unwrap();
             InterestBuilder::new(name).lifetime(Duration::from_secs(3))
@@ -67,11 +99,18 @@ fn los_flight() -> (bool, bool, bool) {
 fn line_of_sight_drops_and_recovers_the_link_under_motion() {
     let (clear1, blocked, clear2) = los_flight();
     assert!(clear1, "clear line of sight: fetch succeeds");
-    assert!(!blocked, "behind the building: the link is blocked, fetch fails");
+    assert!(
+        !blocked,
+        "behind the building: the link is blocked, fetch fails"
+    );
     assert!(clear2, "flown clear of the building: the link recovers");
 }
 
 #[test]
 fn los_flight_is_deterministic() {
-    assert_eq!(los_flight(), los_flight(), "geometry-driven link changes replay identically on DES");
+    assert_eq!(
+        los_flight(),
+        los_flight(),
+        "geometry-driven link changes replay identically on DES"
+    );
 }

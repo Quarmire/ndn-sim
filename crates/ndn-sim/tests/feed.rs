@@ -52,8 +52,15 @@ async fn udp_json_feed_drives_the_world() {
         .await;
     let _ = sender.join();
 
-    assert!(!trace.states.is_empty(), "received JSON node states from the feed");
+    assert!(
+        !trace.states.is_empty(),
+        "received JSON node states from the feed"
+    );
     let pos = fabric.world().snapshot(2.0).position(node).unwrap();
-    assert!(pos.x > 20.0, "the feed drove the node along +x, got x={}", pos.x);
+    assert!(
+        pos.x > 20.0,
+        "the feed drove the node along +x, got x={}",
+        pos.x
+    );
     fabric.shutdown().await;
 }

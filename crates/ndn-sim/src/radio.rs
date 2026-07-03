@@ -110,7 +110,14 @@ impl RadioBus {
         seed: u64,
         interference: Arc<dyn InterferenceModel>,
     ) -> Arc<Self> {
-        Self::build(world, propagation, epoch_ns, seed, interference, ndn_runtime::default_runtime())
+        Self::build(
+            world,
+            propagation,
+            epoch_ns,
+            seed,
+            interference,
+            ndn_runtime::default_runtime(),
+        )
     }
 
     /// [`new`](Self::new) but on a specific [`Runtime`] — delivery timing rides it, so the radio
@@ -122,7 +129,14 @@ impl RadioBus {
         seed: u64,
         runtime: Arc<dyn Runtime>,
     ) -> Arc<Self> {
-        Self::build(world, propagation, epoch_ns, seed, Arc::new(crate::medium::NoInterference), runtime)
+        Self::build(
+            world,
+            propagation,
+            epoch_ns,
+            seed,
+            Arc::new(crate::medium::NoInterference),
+            runtime,
+        )
     }
 
     fn build(
@@ -227,7 +241,10 @@ impl RadioBus {
         // Collision model: the newcomer loses at any receiver that also hears a concurrent
         // in-range transmitter (hidden-terminal). Deterministic — no RNG.
         let rate = mcs_phy_rate_bps(mcs_index).max(1) as u64;
-        let airtime_ns = (frame.len() as u64).saturating_mul(8).saturating_mul(1_000_000_000) / rate;
+        let airtime_ns = (frame.len() as u64)
+            .saturating_mul(8)
+            .saturating_mul(1_000_000_000)
+            / rate;
         let end_ns = now_ns.saturating_add(airtime_ns);
         let concurrent: Vec<(NodeId, Position)> = {
             let mut in_air = self.in_air.lock().unwrap();
@@ -249,8 +266,12 @@ impl RadioBus {
             if rx_node == node {
                 continue; // half-duplex: a radio never hears itself
             }
-            let Some(rx_pos) = view.position(rx_node) else { continue };
-            let Some(sender) = receivers.get(&rx_node).cloned() else { continue };
+            let Some(rx_pos) = view.position(rx_node) else {
+                continue;
+            };
+            let Some(sender) = receivers.get(&rx_node).cloned() else {
+                continue;
+            };
 
             let ctx = TxContext {
                 tx_pos,
@@ -260,19 +281,20 @@ impl RadioBus {
                 frame_len: frame.len(),
             };
             let dist = tx_pos.distance(rx_pos);
-            let log_delivery = |delivered: bool, reason: crate::medium::DeliveryReason, rssi: f64| {
-                if let Some(log) = self.radio_log.lock().unwrap().as_ref() {
-                    log.record(crate::analysis::RadioDelivery {
-                        t_ns: now_ns,
-                        from: node,
-                        to: rx_node,
-                        delivered,
-                        reason,
-                        rssi_dbm: rssi,
-                        distance_m: dist,
-                    });
-                }
-            };
+            let log_delivery =
+                |delivered: bool, reason: crate::medium::DeliveryReason, rssi: f64| {
+                    if let Some(log) = self.radio_log.lock().unwrap().as_ref() {
+                        log.record(crate::analysis::RadioDelivery {
+                            t_ns: now_ns,
+                            from: node,
+                            to: rx_node,
+                            delivered,
+                            reason,
+                            rssi_dbm: rssi,
+                            distance_m: dist,
+                        });
+                    }
+                };
             let d = self.propagation.deliver(&ctx);
             if !d.delivered {
                 log_delivery(false, d.reason, d.rssi_dbm);
@@ -287,7 +309,11 @@ impl RadioBus {
             if self.interference.collides(rx_node, &clashers) {
                 out.push((rx_node, d.rssi_dbm, false));
                 log_delivery(false, crate::medium::DeliveryReason::Collision, d.rssi_dbm);
-                trace!(from = node.0, to = rx_node.0, "radio: frame lost to collision");
+                trace!(
+                    from = node.0,
+                    to = rx_node.0,
+                    "radio: frame lost to collision"
+                );
                 continue;
             }
             let snr = LinkModel::snr_db(d.rssi_dbm);
@@ -297,12 +323,21 @@ impl RadioBus {
             out.push((rx_node, d.rssi_dbm, survived));
             log_delivery(
                 survived,
-                if survived { crate::medium::DeliveryReason::Delivered } else { crate::medium::DeliveryReason::Erased },
+                if survived {
+                    crate::medium::DeliveryReason::Delivered
+                } else {
+                    crate::medium::DeliveryReason::Erased
+                },
                 d.rssi_dbm,
             );
 
             if survived {
-                let rf = RadioRx { from: node, rssi_dbm: d.rssi_dbm, mcs_index, bytes: frame.clone() };
+                let rf = RadioRx {
+                    from: node,
+                    rssi_dbm: d.rssi_dbm,
+                    mcs_index,
+                    bytes: frame.clone(),
+                };
                 if d.delay.is_zero() {
                     let _ = sender.send(rf);
                 } else {
@@ -314,7 +349,13 @@ impl RadioBus {
                     }));
                 }
             } else {
-                trace!(from = node.0, to = rx_node.0, mcs = mcs_index, snr, "radio: frame erased");
+                trace!(
+                    from = node.0,
+                    to = rx_node.0,
+                    mcs = mcs_index,
+                    snr,
+                    "radio: frame erased"
+                );
             }
         }
         out
@@ -324,7 +365,14 @@ impl RadioBus {
 /// Map a node id to a stable, locally-administered 48-bit address (for `FaceAddr::Ether`).
 fn node_addr(node: NodeId) -> [u8; 6] {
     let n = node.0 as u32;
-    [0x02, 0x4e, (n >> 24) as u8, (n >> 16) as u8, (n >> 8) as u8, n as u8]
+    [
+        0x02,
+        0x4e,
+        (n >> 24) as u8,
+        (n >> 16) as u8,
+        (n >> 8) as u8,
+        n as u8,
+    ]
 }
 
 /// A simulated named-radio face on a [`RadioBus`]. Implements [`Transport`] so it plugs into
@@ -455,7 +503,12 @@ mod tests {
         for (id, p) in positions {
             world.place(*id, *p);
         }
-        RadioBus::new(Arc::new(world), Arc::new(FreeSpacePathLoss::default()), 0, seed)
+        RadioBus::new(
+            Arc::new(world),
+            Arc::new(FreeSpacePathLoss::default()),
+            0,
+            seed,
+        )
     }
 
     #[tokio::test]
@@ -486,8 +539,14 @@ mod tests {
                 }
             }
         }
-        assert!(near > 190, "close, high-SNR link delivers nearly all: {near}/200");
-        assert!(far < near, "edge link at MCS7 delivers far fewer: {far} vs {near}");
+        assert!(
+            near > 190,
+            "close, high-SNR link delivers nearly all: {near}/200"
+        );
+        assert!(
+            far < near,
+            "edge link at MCS7 delivers far fewer: {far} vs {near}"
+        );
     }
 
     /// The erasure RNG is seeded ⇒ identical positions + seed replay the identical
@@ -513,7 +572,10 @@ mod tests {
         let b = run();
         assert_eq!(a, b, "same seed + positions ⇒ identical erasure pattern");
         let hits: usize = a.iter().flatten().filter(|ok| **ok).count();
-        assert!(hits > 0 && hits < 50, "a genuine mix, not all/none: {hits}/50");
+        assert!(
+            hits > 0 && hits < 50,
+            "a genuine mix, not all/none: {hits}/50"
+        );
     }
 
     #[tokio::test]
@@ -559,6 +621,9 @@ mod tests {
         let r1 = bus.transmit(NodeId(1), 7, Bytes::from_static(b"aaaaaaaa"), 0);
         let r2 = bus.transmit(NodeId(2), 7, Bytes::from_static(b"aaaaaaaa"), 0);
         assert!(r1.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok));
-        assert!(r2.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok), "no collision without a model");
+        assert!(
+            r2.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok),
+            "no collision without a model"
+        );
     }
 }

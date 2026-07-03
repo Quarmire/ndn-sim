@@ -84,7 +84,11 @@ pub fn decode_position(msg: &MavMessage, origin: Option<GeoRef>) -> Option<(Posi
                 origin,
             );
             // GLOBAL_POSITION_INT velocity is (vx=N, vy=E, vz=D) in cm/s.
-            let vel = [d.vy as f64 / 100.0, d.vx as f64 / 100.0, -(d.vz as f64) / 100.0];
+            let vel = [
+                d.vy as f64 / 100.0,
+                d.vx as f64 / 100.0,
+                -(d.vz as f64) / 100.0,
+            ];
             Some((pos, vel))
         }
         MavMessage::LOCAL_POSITION_NED(d) => {
@@ -178,7 +182,9 @@ fn spawn_reader(
                 if origin.is_none() {
                     origin = global_fix(&msg);
                 }
-                let Some(node) = default_node_of(&cfg, header.system_id) else { continue };
+                let Some(node) = default_node_of(&cfg, header.system_id) else {
+                    continue;
+                };
                 if let Some((position, vel)) = decode_position(&msg, origin) {
                     let state = NodeState {
                         node,
@@ -193,7 +199,10 @@ fn spawn_reader(
             }
         })
         .context("spawn MAVLink reader thread")?;
-    Ok(MavlinkReader { stop, handle: Some(handle) })
+    Ok(MavlinkReader {
+        stop,
+        handle: Some(handle),
+    })
 }
 
 /// Connect to `cfg.endpoint` and spawn a reader that pushes [`NodeState`]s into the returned
@@ -216,7 +225,10 @@ pub fn mavlink_link(cfg: MavlinkConfig) -> Result<(ChannelSource, MavlinkReader,
     let conn = mavlink_connect(&cfg.endpoint)?;
     let (tx, source) = ChannelSource::new();
     let reader = spawn_reader(Arc::clone(&conn), cfg.clone(), tx)?;
-    let actuator = MavlinkActuator { conn, base_sysid: cfg.base_sysid };
+    let actuator = MavlinkActuator {
+        conn,
+        base_sysid: cfg.base_sysid,
+    };
     Ok((source, reader, actuator))
 }
 
@@ -233,8 +245,14 @@ impl MavlinkActuator {
     }
 
     fn send(&self, msg: &MavMessage) -> Result<()> {
-        let header = mavlink::MavHeader { system_id: 255, component_id: 0, sequence: 0 };
-        self.conn.send(&header, msg).context("send MAVLink command")?;
+        let header = mavlink::MavHeader {
+            system_id: 255,
+            component_id: 0,
+            sequence: 0,
+        };
+        self.conn
+            .send(&header, msg)
+            .context("send MAVLink command")?;
         Ok(())
     }
 
@@ -264,12 +282,16 @@ impl CosimActuator for MavlinkActuator {
     fn command(&self, cmd: &VehicleCommand) -> Result<()> {
         use mavlink::common::MavCmd;
         let msg = match *cmd {
-            VehicleCommand::Arm { node } => {
-                self.command_long(node, MavCmd::MAV_CMD_COMPONENT_ARM_DISARM, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-            }
-            VehicleCommand::Disarm { node } => {
-                self.command_long(node, MavCmd::MAV_CMD_COMPONENT_ARM_DISARM, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-            }
+            VehicleCommand::Arm { node } => self.command_long(
+                node,
+                MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+                [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ),
+            VehicleCommand::Disarm { node } => self.command_long(
+                node,
+                MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ),
             VehicleCommand::Takeoff { node, alt_m } => self.command_long(
                 node,
                 MavCmd::MAV_CMD_NAV_TAKEOFF,
@@ -304,7 +326,11 @@ impl CosimActuator for MavlinkActuator {
 }
 
 /// Build a `SET_POSITION_TARGET_LOCAL_NED` for a position and/or velocity setpoint (NED frame).
-fn setpoint_local_ned(target: u8, pos_ned: Option<[f32; 3]>, vel_ned: Option<[f32; 3]>) -> MavMessage {
+fn setpoint_local_ned(
+    target: u8,
+    pos_ned: Option<[f32; 3]>,
+    vel_ned: Option<[f32; 3]>,
+) -> MavMessage {
     use mavlink::common::{MavFrame, PositionTargetTypemask, SET_POSITION_TARGET_LOCAL_NED_DATA};
     // type_mask bits set = IGNORE. Ignore accel + yaw always; ignore position or velocity per setpoint.
     let mut ignore = PositionTargetTypemask::POSITION_TARGET_TYPEMASK_AX_IGNORE
@@ -351,28 +377,44 @@ mod tests {
 
     #[test]
     fn enu_origin_maps_to_zero_and_east_north_are_right() {
-        let origin = GeoRef { lat_deg: 47.0, lon_deg: 8.0, alt_m: 500.0 };
+        let origin = GeoRef {
+            lat_deg: 47.0,
+            lon_deg: 8.0,
+            alt_m: 500.0,
+        };
         let at_origin = geo_to_enu(47.0, 8.0, 500.0, origin);
         assert!(at_origin.x.abs() < 1e-6 && at_origin.y.abs() < 1e-6 && at_origin.z.abs() < 1e-6);
         // 0.001° north ≈ 111 m; east is scaled by cos(lat).
         let north = geo_to_enu(47.001, 8.0, 500.0, origin);
-        assert!((north.y - 111.0).abs() < 2.0, "north ≈ 111 m, got {}", north.y);
+        assert!(
+            (north.y - 111.0).abs() < 2.0,
+            "north ≈ 111 m, got {}",
+            north.y
+        );
         assert!(north.x.abs() < 1e-3, "no east component");
         let east = geo_to_enu(47.0, 8.001, 500.0, origin);
-        assert!(east.x > 70.0 && east.x < 80.0, "east ≈ 111*cos(47°) ≈ 76 m, got {}", east.x);
+        assert!(
+            east.x > 70.0 && east.x < 80.0,
+            "east ≈ 111*cos(47°) ≈ 76 m, got {}",
+            east.x
+        );
         assert!(east.y.abs() < 1e-3, "no north component");
     }
 
     #[test]
     fn global_position_decodes_to_enu_relative_to_origin() {
-        let origin = GeoRef { lat_deg: 47.0, lon_deg: 8.0, alt_m: 500.0 };
+        let origin = GeoRef {
+            lat_deg: 47.0,
+            lon_deg: 8.0,
+            alt_m: 500.0,
+        };
         let msg = MavMessage::GLOBAL_POSITION_INT(GLOBAL_POSITION_INT_DATA {
             time_boot_ms: 0,
             lat: 470010000, // 47.001°
             lon: 80000000,  // 8.0°
             alt: 510000,    // 510 m
             relative_alt: 10000,
-            vx: 500,  // 5 m/s north
+            vx: 500, // 5 m/s north
             vy: 0,
             vz: 0,
             hdg: 0,
@@ -387,8 +429,8 @@ mod tests {
     fn local_ned_decodes_directly() {
         let msg = MavMessage::LOCAL_POSITION_NED(LOCAL_POSITION_NED_DATA {
             time_boot_ms: 0,
-            x: 10.0, // north
-            y: 20.0, // east
+            x: 10.0,  // north
+            y: 20.0,  // east
             z: -30.0, // down = -30 ⇒ 30 up
             vx: 1.0,
             vy: 2.0,

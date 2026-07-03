@@ -59,7 +59,11 @@ async fn mavlink_feed_drives_the_world_end_to_end() {
                 vz: 0,
                 hdg: 0,
             });
-            let header = mavlink::MavHeader { system_id: 1, component_id: 1, sequence: i as u8 };
+            let header = mavlink::MavHeader {
+                system_id: 1,
+                component_id: 1,
+                sequence: i as u8,
+            };
             let _ = conn.send(&header, &msg);
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -77,11 +81,22 @@ async fn mavlink_feed_drives_the_world_end_to_end() {
         .await;
     let _ = sender.join();
 
-    assert!(!trace.states.is_empty(), "received states from the MAVLink feed");
+    assert!(
+        !trace.states.is_empty(),
+        "received states from the MAVLink feed"
+    );
     let pos = fabric.world().snapshot(2.0).position(node).unwrap();
     // Origin adopted from the first fix (47.000°); later fixes march north → large +y (ENU north).
-    assert!(pos.y > 100.0, "the node moved north under the live feed, got y={}", pos.y);
-    assert!(pos.x.abs() < 5.0, "no east drift (constant longitude), got x={}", pos.x);
+    assert!(
+        pos.y > 100.0,
+        "the node moved north under the live feed, got y={}",
+        pos.y
+    );
+    assert!(
+        pos.x.abs() < 5.0,
+        "no east drift (constant longitude), got x={}",
+        pos.x
+    );
     fabric.shutdown().await;
 }
 
@@ -115,7 +130,8 @@ fn spawn_fake_sitl(port: u16) -> Arc<std::sync::atomic::AtomicBool> {
                     let east = d.y as f64;
                     let down = d.z as f64;
                     let lat = HOME_LAT + (north / EARTH_R).to_degrees();
-                    let lon = HOME_LON + (east / (EARTH_R * HOME_LAT.to_radians().cos())).to_degrees();
+                    let lon =
+                        HOME_LON + (east / (EARTH_R * HOME_LAT.to_radians().cos())).to_degrees();
                     let alt = HOME_ALT - down;
                     *rpos.lock().unwrap() = (lat, lon, alt);
                 }
@@ -136,7 +152,11 @@ fn spawn_fake_sitl(port: u16) -> Arc<std::sync::atomic::AtomicBool> {
                 vz: 0,
                 hdg: 0,
             });
-            let header = mavlink::MavHeader { system_id: 1, component_id: 1, sequence: 0 };
+            let header = mavlink::MavHeader {
+                system_id: 1,
+                component_id: 1,
+                sequence: 0,
+            };
             let _ = conn.send(&header, &msg);
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -174,18 +194,27 @@ async fn control_plane_commands_the_swarm_and_the_world_follows() {
     let dc = drive_cancel.clone();
     let df = Arc::clone(&fabric);
     let driver = tokio::spawn(async move {
-        df.drive_mobility(Box::new(source), Duration::from_millis(20), dc).await;
+        df.drive_mobility(Box::new(source), Duration::from_millis(20), dc)
+            .await;
     });
 
     // Let a few poses arrive (so the node exists at ~origin and ndn-lab has learned the peer).
     tokio::time::sleep(Duration::from_millis(400)).await;
     let before = fabric.world().snapshot(1.0).position(node).unwrap();
-    assert!(before.x.abs() < 5.0 && before.y.abs() < 5.0, "starts near origin, got {before:?}");
+    assert!(
+        before.x.abs() < 5.0 && before.y.abs() < 5.0,
+        "starts near origin, got {before:?}"
+    );
 
     // Command the vehicle to fly to ENU (120, 60, 0) — THROUGH the control plane (rides NDN too).
     let resp = control
         .execute(SimCommand::Cosim {
-            command: VehicleCommand::Goto { node: 0, x: 120.0, y: 60.0, z: 0.0 },
+            command: VehicleCommand::Goto {
+                node: 0,
+                x: 120.0,
+                y: 60.0,
+                z: 0.0,
+            },
         })
         .await;
     assert!(
@@ -196,8 +225,16 @@ async fn control_plane_commands_the_swarm_and_the_world_follows() {
     // The fake autopilot snaps there and streams the new pose back → the World follows.
     tokio::time::sleep(Duration::from_millis(600)).await;
     let after = fabric.world().snapshot(2.0).position(node).unwrap();
-    assert!((after.x - 120.0).abs() < 5.0, "east ≈ 120 m after the goto, got x={}", after.x);
-    assert!((after.y - 60.0).abs() < 5.0, "north ≈ 60 m after the goto, got y={}", after.y);
+    assert!(
+        (after.x - 120.0).abs() < 5.0,
+        "east ≈ 120 m after the goto, got x={}",
+        after.x
+    );
+    assert!(
+        (after.y - 60.0).abs() < 5.0,
+        "north ≈ 60 m after the goto, got y={}",
+        after.y
+    );
 
     drive_cancel.cancel();
     sitl_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -231,10 +268,24 @@ async fn cosim_command_rides_the_json_ndn_codec_to_the_actuator() {
     let json = r#"{"command":{"cmd":"cosim","command":{"action":"goto","node":0,"x":10.0,"y":20.0,"z":0.0}}}"#;
     let reply = control.handle_json(json).await;
     assert!(reply.contains("\"ok\""), "expected Ok, got {reply}");
-    assert_eq!(count.load(Ordering::Relaxed), 1, "the command reached the actuator via the codec");
+    assert_eq!(
+        count.load(Ordering::Relaxed),
+        1,
+        "the command reached the actuator via the codec"
+    );
 
     // Sanity: MoveNode of the fabric node still works alongside (single surface).
-    let _ = control.execute(SimCommand::MoveNode { node: 0, x: 1.0, y: 2.0, z: 0.0 }).await;
-    assert_eq!(fabric.world().snapshot(0.0).position(NodeId(0)).unwrap(), Position::xyz(1.0, 2.0, 0.0));
+    let _ = control
+        .execute(SimCommand::MoveNode {
+            node: 0,
+            x: 1.0,
+            y: 2.0,
+            z: 0.0,
+        })
+        .await;
+    assert_eq!(
+        fabric.world().snapshot(0.0).position(NodeId(0)).unwrap(),
+        Position::xyz(1.0, 2.0, 0.0)
+    );
     fabric.shutdown().await;
 }

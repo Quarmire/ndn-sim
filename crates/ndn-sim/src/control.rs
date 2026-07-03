@@ -72,11 +72,21 @@ pub(crate) struct TracerFaceSink {
 
 impl FaceLifecycleSink for TracerFaceSink {
     fn on_up(&self, face_id: FaceId) {
-        self.tracer
-            .record_now(self.node, Some(face_id.0 as u32), EventKind::FaceUp, "", None);
+        self.tracer.record_now(
+            self.node,
+            Some(face_id.0 as u32),
+            EventKind::FaceUp,
+            "",
+            None,
+        );
     }
     fn on_down(&self, face_id: FaceId) {
-        self.tracer
-            .record_now(self.node, Some(face_id.0 as u32), EventKind::FaceDown, "", None);
+        self.tracer.record_now(
+            self.node,
+            Some(face_id.0 as u32),
+            EventKind::FaceDown,
+            "",
+            None,
+        );
     }
 }

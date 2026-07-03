@@ -27,14 +27,20 @@ async fn fabric_carries_world_and_medium_fans_out_by_range() {
     let world = fabric.world();
     let medium = WirelessMedium::new(
         world,
-        Arc::new(RangeThreshold { range_m: 100.0, tx_power_dbm: 20.0 }),
+        Arc::new(RangeThreshold {
+            range_m: 100.0,
+            tx_power_dbm: 20.0,
+        }),
         0,
     );
     let mut near = medium.attach(NodeId(1));
     let mut far = medium.attach(NodeId(2));
 
     let hit = medium.transmit(NodeId(0), bytes::Bytes::from_static(b"beacon"), 0);
-    assert_eq!(hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![NodeId(1)]);
+    assert_eq!(
+        hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        vec![NodeId(1)]
+    );
 
     assert_eq!(
         tokio::time::timeout(Duration::from_millis(50), near.recv())
@@ -45,7 +51,9 @@ async fn fabric_carries_world_and_medium_fans_out_by_range() {
         &b"beacon"[..]
     );
     assert!(
-        tokio::time::timeout(Duration::from_millis(20), far.recv()).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(20), far.recv())
+            .await
+            .is_err(),
         "out-of-range node hears nothing"
     );
 
@@ -69,14 +77,24 @@ async fn waypoint_mover_comes_into_range() {
     );
     let medium = WirelessMedium::new(
         Arc::new(world),
-        Arc::new(RangeThreshold { range_m: 100.0, tx_power_dbm: 20.0 }),
+        Arc::new(RangeThreshold {
+            range_m: 100.0,
+            tx_power_dbm: 20.0,
+        }),
         0,
     );
     medium.attach(NodeId(1));
 
     // t=0s: at 300 m ⇒ silent.
-    assert!(medium.transmit(NodeId(0), bytes::Bytes::from_static(b"a"), 0).is_empty());
+    assert!(
+        medium
+            .transmit(NodeId(0), bytes::Bytes::from_static(b"a"), 0)
+            .is_empty()
+    );
     // t=8s: interpolated to 300·(1 − 0.8) = 60 m ⇒ in range.
     let hit = medium.transmit(NodeId(0), bytes::Bytes::from_static(b"b"), 8_000_000_000);
-    assert_eq!(hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![NodeId(1)]);
+    assert_eq!(
+        hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        vec![NodeId(1)]
+    );
 }

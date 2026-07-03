@@ -12,10 +12,32 @@ async fn build(session: &StepSession) -> RunningSimulation {
     let mut sim = ndn_sim::Simulation::new().kernel(session.kernel());
     let a = sim.add_node(EngineConfig::default());
     let b = sim.add_node(EngineConfig::default());
-    sim.link(a, b, LinkConfig { delay: Duration::from_millis(1), ..LinkConfig::default() });
+    sim.link(
+        a,
+        b,
+        LinkConfig {
+            delay: Duration::from_millis(1),
+            ..LinkConfig::default()
+        },
+    );
     sim.add_route(a, "/svc", b);
-    sim.add_app(b, AppSpec::Producer { prefix: "/svc".into(), content: Some("ok".into()) , freshness_ms: None }); // id 0
-    sim.add_app(a, AppSpec::Consumer { prefix: "/svc".into(), count: 0, interval_ms: 100 , lifetime_ms: None }); // id 1
+    sim.add_app(
+        b,
+        AppSpec::Producer {
+            prefix: "/svc".into(),
+            content: Some("ok".into()),
+            freshness_ms: None,
+        },
+    ); // id 0
+    sim.add_app(
+        a,
+        AppSpec::Consumer {
+            prefix: "/svc".into(),
+            count: 0,
+            interval_ms: 100,
+            lifetime_ms: None,
+        },
+    ); // id 1
     sim.start().await.unwrap()
 }
 
@@ -39,7 +61,11 @@ fn advances_in_controlled_steps_and_pauses() {
     // Pause: no advance ⇒ virtual time frozen even as real wall time passes.
     let paused = fabric.app_successes(consumer).unwrap();
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(fabric.app_successes(consumer).unwrap(), paused, "paused = frozen");
+    assert_eq!(
+        fabric.app_successes(consumer).unwrap(),
+        paused,
+        "paused = frozen"
+    );
 
     session.block_on(fabric.shutdown());
 }
@@ -55,7 +81,11 @@ fn stepping_is_deterministic() {
         session.block_on(fabric.shutdown());
         s
     };
-    assert_eq!(run(), run(), "same stepping replays the identical fetch count");
+    assert_eq!(
+        run(),
+        run(),
+        "same stepping replays the identical fetch count"
+    );
 }
 
 #[test]
@@ -65,7 +95,10 @@ fn run_until_reaches_the_target_time() {
     let start = session.now_ns();
     let target = start + 5_000_000_000; // +5 s
     session.run_until(target);
-    assert!(session.now_ns() >= target, "run_until advanced to the target virtual time");
+    assert!(
+        session.now_ns() >= target,
+        "run_until advanced to the target virtual time"
+    );
     // Idempotent: already past target ⇒ no-op.
     let after = session.now_ns();
     session.run_until(target);

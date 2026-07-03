@@ -63,6 +63,10 @@ fn reliable_stream_is_in_order_and_deterministic_on_des() {
     };
     let first = run();
     let second = run();
-    assert_eq!(first, (0..10).collect::<Vec<u8>>(), "reliable: all in order on the event queue");
+    assert_eq!(
+        first,
+        (0..10).collect::<Vec<u8>>(),
+        "reliable: all in order on the event queue"
+    );
     assert_eq!(first, second, "the event queue replays identically");
 }

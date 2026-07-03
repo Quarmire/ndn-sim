@@ -41,7 +41,10 @@ impl Default for LinkModel {
 
 impl LinkModel {
     pub fn new() -> Self {
-        Self { spread_db: 2.0, select_margin_db: 4.0 }
+        Self {
+            spread_db: 2.0,
+            select_margin_db: 4.0,
+        }
     }
 
     /// SNR (dB) for a received signal strength, against [`NOISE_FLOOR_DBM`].
@@ -82,7 +85,10 @@ mod tests {
         let mid = m.frame_delivery(3, 13.0); // at threshold ⇒ ~0.5
         let strong = m.frame_delivery(3, 25.0);
         assert!(weak < mid && mid < strong, "{weak} < {mid} < {strong}");
-        assert!((mid - 0.5).abs() < 0.05, "≈0.5 at the MCS3 threshold, got {mid}");
+        assert!(
+            (mid - 0.5).abs() < 0.05,
+            "≈0.5 at the MCS3 threshold, got {mid}"
+        );
         assert!(strong > 0.99 && weak < 0.05, "{strong} / {weak}");
     }
 
@@ -103,8 +109,14 @@ mod tests {
         assert_eq!(m.best_mcs(0.0), None, "below even MCS0+margin ⇒ unusable");
         let low = m.best_mcs(12.0).unwrap();
         let high = m.best_mcs(40.0).unwrap();
-        assert!(high > low, "stronger signal ⇒ more aggressive MCS ({low} → {high})");
-        assert_eq!(high, MAX_RELIABLE_MCS, "very high SNR reaches the reliable ceiling");
+        assert!(
+            high > low,
+            "stronger signal ⇒ more aggressive MCS ({low} → {high})"
+        );
+        assert_eq!(
+            high, MAX_RELIABLE_MCS,
+            "very high SNR reaches the reliable ceiling"
+        );
         // And the chosen rate is monotone in the choice.
         assert!(mcs_phy_rate_bps(high) > mcs_phy_rate_bps(low));
     }

@@ -9,8 +9,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::encode::InterestBuilder;
 use ndn_packet::Name;
+use ndn_packet::encode::InterestBuilder;
 use ndn_security::KeyChain;
 use ndn_sim::{ControlPlane, NodeId, SimResponse, Simulation};
 use tokio_util::sync::CancellationToken;
@@ -19,7 +19,10 @@ const CONTROL: &str = "/localhop/sim/control";
 
 /// Fetch a reply for a signed Interest (wire built by the KeyChain) and decode the `SimResponse`.
 async fn ask_signed(consumer: &mut ndn_app::Consumer, wire: Bytes) -> SimResponse {
-    let data = consumer.fetch_wire(wire, Duration::from_secs(5)).await.expect("control reply");
+    let data = consumer
+        .fetch_wire(wire, Duration::from_secs(5))
+        .await
+        .expect("control reply");
     let bytes = data.content().map(|c| c.to_vec()).unwrap_or_default();
     serde_json::from_slice::<SimResponse>(&bytes).expect("parse SimResponse")
 }
@@ -59,8 +62,14 @@ async fn signed_commands_are_required_over_ndn() {
 
     // 2. A read-only QUERY is open even unsigned (observability isn't gated).
     let resp = ask_unsigned(&mut consumer, br#"{"query":{"query":"topology"}}"#).await;
-    let SimResponse::Topology(topo) = resp else { panic!("expected topology, got {resp:?}") };
-    assert_eq!(topo.nodes.len(), 1, "the rejected command did not spawn a node");
+    let SimResponse::Topology(topo) = resp else {
+        panic!("expected topology, got {resp:?}")
+    };
+    assert_eq!(
+        topo.nodes.len(),
+        1,
+        "the rejected command did not spawn a node"
+    );
 
     // 3. A SIGNED mutating command by the trusted admin key is accepted.
     let signed = admin
@@ -71,12 +80,21 @@ async fn signed_commands_are_required_over_ndn() {
         )
         .expect("sign the control Interest");
     let resp = ask_signed(&mut consumer, signed).await;
-    assert!(matches!(resp, SimResponse::Node { id: 1 }), "signed command accepted, got {resp:?}");
+    assert!(
+        matches!(resp, SimResponse::Node { id: 1 }),
+        "signed command accepted, got {resp:?}"
+    );
 
     // 4. The signed command took effect: the fabric grew.
     let resp = ask_unsigned(&mut consumer, br#"{"query":{"query":"topology"}}"#).await;
-    let SimResponse::Topology(topo) = resp else { panic!("expected topology") };
-    assert_eq!(topo.nodes.len(), 2, "the authenticated spawn grew the fabric");
+    let SimResponse::Topology(topo) = resp else {
+        panic!("expected topology")
+    };
+    assert_eq!(
+        topo.nodes.len(),
+        2,
+        "the authenticated spawn grew the fabric"
+    );
 
     fabric.shutdown().await;
 }

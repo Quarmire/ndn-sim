@@ -44,16 +44,27 @@ async fn scenario_toml_builds_a_runnable_fabric() {
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"pong")).await;
+                let _ = r
+                    .respond((*i.name).clone(), bytes::Bytes::from_static(b"pong"))
+                    .await;
             })
             .await;
     });
 
-    let mut consumer = fabric.engine_of(NodeId(0)).unwrap().app_consumer(CancellationToken::new());
-    let builder =
-        InterestBuilder::new("/app/ping".parse::<Name>().unwrap()).lifetime(Duration::from_secs(10));
-    let data = consumer.fetch_with(builder).await.expect("fetch in scenario-built fabric");
-    assert_eq!(data.content().map(|c| c.to_vec()).unwrap_or_default(), b"pong");
+    let mut consumer = fabric
+        .engine_of(NodeId(0))
+        .unwrap()
+        .app_consumer(CancellationToken::new());
+    let builder = InterestBuilder::new("/app/ping".parse::<Name>().unwrap())
+        .lifetime(Duration::from_secs(10));
+    let data = consumer
+        .fetch_with(builder)
+        .await
+        .expect("fetch in scenario-built fabric");
+    assert_eq!(
+        data.content().map(|c| c.to_vec()).unwrap_or_default(),
+        b"pong"
+    );
 
     fabric.shutdown().await;
 }
@@ -86,7 +97,9 @@ radio = true
         .await
         .unwrap();
 
-    fabric.route_over_radio(NodeId(0), &"/svc".parse::<Name>().unwrap()).unwrap();
+    fabric
+        .route_over_radio(NodeId(0), &"/svc".parse::<Name>().unwrap())
+        .unwrap();
     let producer = fabric
         .engine_of(NodeId(1))
         .unwrap()
@@ -94,16 +107,27 @@ radio = true
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"air")).await;
+                let _ = r
+                    .respond((*i.name).clone(), bytes::Bytes::from_static(b"air"))
+                    .await;
             })
             .await;
     });
 
-    let mut consumer = fabric.engine_of(NodeId(0)).unwrap().app_consumer(CancellationToken::new());
+    let mut consumer = fabric
+        .engine_of(NodeId(0))
+        .unwrap()
+        .app_consumer(CancellationToken::new());
     let builder =
         InterestBuilder::new("/svc/x".parse::<Name>().unwrap()).lifetime(Duration::from_secs(10));
-    let data = consumer.fetch_with(builder).await.expect("fetch over radio scenario");
-    assert_eq!(data.content().map(|c| c.to_vec()).unwrap_or_default(), b"air");
+    let data = consumer
+        .fetch_with(builder)
+        .await
+        .expect("fetch over radio scenario");
+    assert_eq!(
+        data.content().map(|c| c.to_vec()).unwrap_or_default(),
+        b"air"
+    );
 
     fabric.shutdown().await;
 }
@@ -124,15 +148,22 @@ fn scenario_runs_under_the_virtual_kernel() {
             tokio::spawn(async move {
                 let _ = producer
                     .serve(|i, r| async move {
-                        let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"pong")).await;
+                        let _ = r
+                            .respond((*i.name).clone(), bytes::Bytes::from_static(b"pong"))
+                            .await;
                     })
                     .await;
             });
-            let mut consumer =
-                fabric.engine_of(NodeId(0)).unwrap().app_consumer(CancellationToken::new());
+            let mut consumer = fabric
+                .engine_of(NodeId(0))
+                .unwrap()
+                .app_consumer(CancellationToken::new());
             let builder = InterestBuilder::new("/app/ping".parse::<Name>().unwrap())
                 .lifetime(Duration::from_secs(20));
-            let data = consumer.fetch_with(builder).await.expect("fetch under virtual kernel");
+            let data = consumer
+                .fetch_with(builder)
+                .await
+                .expect("fetch under virtual kernel");
             let out = data.content().map(|c| c.to_vec()).unwrap_or_default();
             fabric.shutdown().await;
             out

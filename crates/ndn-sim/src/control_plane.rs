@@ -114,9 +114,7 @@ pub enum SimCommand {
         app: crate::app::AppSpec,
     },
     /// Stop a running app by id.
-    StopApp {
-        app: usize,
-    },
+    StopApp { app: usize },
     /// Command the external co-simulator (bidirectional co-sim) — arm/takeoff/goto/velocity a
     /// vehicle. Requires a live actuator (a `--mavlink` link); observe-only otherwise.
     Cosim {
@@ -132,10 +130,7 @@ pub enum SimCommand {
     },
     /// Install a broadcast route on a node's radio face — the prefix is offered to every neighbour
     /// over the shared medium (the wireless equivalent of a FIB nexthop).
-    RouteOverRadio {
-        node: usize,
-        prefix: String,
-    },
+    RouteOverRadio { node: usize, prefix: String },
 }
 
 /// A read-only introspection query.
@@ -157,10 +152,7 @@ pub enum SimQuery {
     },
     /// Causal analysis (axis 4): explain why node `from` could (not) reach node `to` over the radio,
     /// from recorded delivery evidence. Requires radio capture (enabled by `serve`).
-    Explain {
-        from: usize,
-        to: usize,
-    },
+    Explain { from: usize, to: usize },
 }
 
 fn default_svg_dim() -> u32 {
@@ -194,11 +186,28 @@ pub enum SimResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SimNotification {
-    NodeSpawned { node: usize, label: String },
-    NodeRemoved { node: usize },
-    LinkAdded { a: usize, b: usize },
-    RouteAdded { node: usize, prefix: String, nexthop: usize },
-    NodeMoved { node: usize, x: f64, y: f64, z: f64 },
+    NodeSpawned {
+        node: usize,
+        label: String,
+    },
+    NodeRemoved {
+        node: usize,
+    },
+    LinkAdded {
+        a: usize,
+        b: usize,
+    },
+    RouteAdded {
+        node: usize,
+        prefix: String,
+        nexthop: usize,
+    },
+    NodeMoved {
+        node: usize,
+        x: f64,
+        y: f64,
+        z: f64,
+    },
 }
 
 impl NotificationEvent for SimNotification {
@@ -398,58 +407,94 @@ impl ControlPlane {
     pub async fn execute(&self, cmd: SimCommand) -> SimResponse {
         // Journal the command (with its virtual timestamp) if recording is on.
         if let Some(journal) = self.journal.lock().unwrap().as_mut() {
-            journal.push(crate::replay::RecordedCommand { at_ns: self.now_ns(), command: cmd.clone() });
+            journal.push(crate::replay::RecordedCommand {
+                at_ns: self.now_ns(),
+                command: cmd.clone(),
+            });
         }
         match cmd {
             SimCommand::SpawnNode { label } => {
                 let label = label.unwrap_or_else(|| "node".to_string());
-                match self.fabric.spawn_node(NodeProfile::new(label.clone())).await {
+                match self
+                    .fabric
+                    .spawn_node(NodeProfile::new(label.clone()))
+                    .await
+                {
                     Ok(id) => {
                         self.notifications
                             .publish(SimNotification::NodeSpawned { node: id.0, label });
                         SimResponse::Node { id: id.0 }
                     }
-                    Err(e) => SimResponse::Error { message: e.to_string() },
+                    Err(e) => SimResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
-            SimCommand::RemoveNode { node } => {
-                match self.fabric.remove_node(NodeId(node)).await {
-                    Ok(()) => {
-                        self.notifications.publish(SimNotification::NodeRemoved { node });
-                        SimResponse::Ok
-                    }
-                    Err(e) => SimResponse::Error { message: e.to_string() },
+            SimCommand::RemoveNode { node } => match self.fabric.remove_node(NodeId(node)).await {
+                Ok(()) => {
+                    self.notifications
+                        .publish(SimNotification::NodeRemoved { node });
+                    SimResponse::Ok
                 }
-            }
+                Err(e) => SimResponse::Error {
+                    message: e.to_string(),
+                },
+            },
             SimCommand::Connect { a, b, link } => {
                 match self.fabric.connect(NodeId(a), NodeId(b), link.into()) {
                     Ok(()) => {
-                        self.notifications.publish(SimNotification::LinkAdded { a, b });
+                        self.notifications
+                            .publish(SimNotification::LinkAdded { a, b });
                         SimResponse::Ok
                     }
-                    Err(e) => SimResponse::Error { message: e.to_string() },
+                    Err(e) => SimResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
-            SimCommand::Route { node, prefix, nexthop } => {
+            SimCommand::Route {
+                node,
+                prefix,
+                nexthop,
+            } => {
                 let name: Name = match prefix.parse() {
                     Ok(n) => n,
-                    Err(e) => return SimResponse::Error { message: format!("bad prefix: {e}") },
+                    Err(e) => {
+                        return SimResponse::Error {
+                            message: format!("bad prefix: {e}"),
+                        };
+                    }
                 };
                 match self.fabric.route(NodeId(node), &name, NodeId(nexthop)) {
                     Ok(()) => {
-                        self.notifications
-                            .publish(SimNotification::RouteAdded { node, prefix, nexthop });
+                        self.notifications.publish(SimNotification::RouteAdded {
+                            node,
+                            prefix,
+                            nexthop,
+                        });
                         SimResponse::Ok
                     }
-                    Err(e) => SimResponse::Error { message: e.to_string() },
+                    Err(e) => SimResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
             SimCommand::MoveNode { node, x, y, z } => {
-                self.fabric.move_node(NodeId(node), crate::world::Position::xyz(x, y, z));
-                self.notifications.publish(SimNotification::NodeMoved { node, x, y, z });
+                self.fabric
+                    .move_node(NodeId(node), crate::world::Position::xyz(x, y, z));
+                self.notifications
+                    .publish(SimNotification::NodeMoved { node, x, y, z });
                 SimResponse::Ok
             }
-            SimCommand::SetLinearMobility { node, x, y, z, vx, vy, vz } => {
+            SimCommand::SetLinearMobility {
+                node,
+                x,
+                y,
+                z,
+                vx,
+                vy,
+                vz,
+            } => {
                 self.fabric.set_mobility(
                     NodeId(node),
                     std::sync::Arc::new(crate::world::LinearMobility {
@@ -457,23 +502,30 @@ impl ControlPlane {
                         velocity: (vx, vy, vz),
                     }),
                 );
-                self.notifications.publish(SimNotification::NodeMoved { node, x, y, z });
+                self.notifications
+                    .publish(SimNotification::NodeMoved { node, x, y, z });
                 SimResponse::Ok
             }
             SimCommand::SpawnApp { node, app } => match self.fabric.spawn_app(NodeId(node), app) {
                 Ok(id) => SimResponse::App { id: id.0 },
-                Err(e) => SimResponse::Error { message: e.to_string() },
+                Err(e) => SimResponse::Error {
+                    message: e.to_string(),
+                },
             },
             SimCommand::StopApp { app } => match self.fabric.stop_app(crate::app::AppId(app)) {
                 Ok(()) => SimResponse::Ok,
-                Err(e) => SimResponse::Error { message: e.to_string() },
+                Err(e) => SimResponse::Error {
+                    message: e.to_string(),
+                },
             },
             SimCommand::Cosim { command } => {
                 let actuator = self.actuator.lock().unwrap().clone();
                 match actuator {
                     Some(a) => match a.command(&command) {
                         Ok(()) => SimResponse::Ok,
-                        Err(e) => SimResponse::Error { message: e.to_string() },
+                        Err(e) => SimResponse::Error {
+                            message: e.to_string(),
+                        },
                     },
                     None => SimResponse::Error {
                         message: "no co-sim actuator configured (run with a live --mavlink link)"
@@ -481,24 +533,40 @@ impl ControlPlane {
                     },
                 }
             }
-            SimCommand::SetStrategy { node, prefix, strategy } => {
+            SimCommand::SetStrategy {
+                node,
+                prefix,
+                strategy,
+            } => {
                 let name: Name = match prefix.parse() {
                     Ok(n) => n,
-                    Err(e) => return SimResponse::Error { message: format!("bad prefix: {e}") },
+                    Err(e) => {
+                        return SimResponse::Error {
+                            message: format!("bad prefix: {e}"),
+                        };
+                    }
                 };
                 match self.fabric.set_strategy(NodeId(node), &name, &strategy) {
                     Ok(()) => SimResponse::Ok,
-                    Err(e) => SimResponse::Error { message: e.to_string() },
+                    Err(e) => SimResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
             SimCommand::RouteOverRadio { node, prefix } => {
                 let name: Name = match prefix.parse() {
                     Ok(n) => n,
-                    Err(e) => return SimResponse::Error { message: format!("bad prefix: {e}") },
+                    Err(e) => {
+                        return SimResponse::Error {
+                            message: format!("bad prefix: {e}"),
+                        };
+                    }
                 };
                 match self.fabric.route_over_radio(NodeId(node), &name) {
                     Ok(()) => SimResponse::Ok,
-                    Err(e) => SimResponse::Error { message: e.to_string() },
+                    Err(e) => SimResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
         }
@@ -511,7 +579,8 @@ impl ControlPlane {
             SimQuery::Metrics => SimResponse::Metrics(self.fabric.snapshot_metrics()),
             SimQuery::Scene => SimResponse::Scene(self.fabric.scene_snapshot()),
             SimQuery::SceneSvg { width, height } => {
-                let svg = crate::scene::render_topology_svg(&self.fabric.scene_snapshot(), width, height);
+                let svg =
+                    crate::scene::render_topology_svg(&self.fabric.scene_snapshot(), width, height);
                 SimResponse::Svg { svg }
             }
             SimQuery::Explain { from, to } => {
@@ -523,8 +592,9 @@ impl ControlPlane {
                         NodeId(to),
                     )),
                     None => SimResponse::Error {
-                        message: "radio capture not enabled (no radio medium, or start with `serve`)"
-                            .to_string(),
+                        message:
+                            "radio capture not enabled (no radio medium, or start with `serve`)"
+                                .to_string(),
                     },
                 }
             }
@@ -537,11 +607,12 @@ impl ControlPlane {
         let response = match serde_json::from_str::<SimRequest>(request) {
             Ok(SimRequest::Command(c)) => self.execute(c).await,
             Ok(SimRequest::Query(q)) => self.query(q),
-            Err(e) => SimResponse::Error { message: format!("bad request: {e}") },
+            Err(e) => SimResponse::Error {
+                message: format!("bad request: {e}"),
+            },
         };
-        serde_json::to_string(&response).unwrap_or_else(|e| {
-            format!(r#"{{"result":"error","message":"encode: {e}"}}"#)
-        })
+        serde_json::to_string(&response)
+            .unwrap_or_else(|e| format!(r#"{{"result":"error","message":"encode: {e}"}}"#))
     }
 
     /// Dispatch an NDN-native control request, enforcing the [`require_signed_control`] gate: if a
@@ -553,8 +624,10 @@ impl ControlPlane {
         let validator = self.control_validator.lock().unwrap().clone();
         if let Some(validator) = validator {
             // Only mutating commands need authorization; read-only queries stay open.
-            let is_command =
-                matches!(serde_json::from_str::<SimRequest>(request), Ok(SimRequest::Command(_)));
+            let is_command = matches!(
+                serde_json::from_str::<SimRequest>(request),
+                Ok(SimRequest::Command(_))
+            );
             if is_command {
                 use ndn_security::InterestValidationOutcome as O;
                 match validator.validate_interest(interest).await {
@@ -749,7 +822,10 @@ mod tests {
         .unwrap();
         if let SimRequest::Command(SimCommand::Connect { a, b, link }) = connect {
             assert_eq!((a, b), (0, 1));
-            assert_eq!(LinkConfig::from(link).delay, std::time::Duration::from_millis(5));
+            assert_eq!(
+                LinkConfig::from(link).delay,
+                std::time::Duration::from_millis(5)
+            );
         } else {
             panic!("expected connect");
         }
@@ -760,7 +836,10 @@ mod tests {
 
     #[test]
     fn notification_encodes_as_json() {
-        let n = SimNotification::NodeSpawned { node: 3, label: "drone".into() };
+        let n = SimNotification::NodeSpawned {
+            node: 3,
+            label: "drone".into(),
+        };
         let bytes = n.encode();
         let s = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(s.contains("node_spawned") && s.contains("drone"));

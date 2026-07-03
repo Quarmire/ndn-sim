@@ -21,7 +21,10 @@ async fn external_forwarder_fetches_from_a_simulated_node_over_udp() {
     let fabric = sim.start().await.unwrap();
 
     // An external forwarder (not part of the fabric) — as if NFD/NDNts on another host.
-    let (external, ext_handle) = EngineBuilder::new(EngineConfig::default()).build().await.unwrap();
+    let (external, ext_handle) = EngineBuilder::new(EngineConfig::default())
+        .build()
+        .await
+        .unwrap();
 
     // Pre-bind both UDP sockets so each can target the other's ephemeral port.
     let sock_fabric = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -40,14 +43,21 @@ async fn external_forwarder_fetches_from_a_simulated_node_over_udp() {
         UdpFace::from_socket(ext_face, sock_ext, addr_fabric),
         CancellationToken::new(),
     );
-    external.fib().add_nexthop(&"/ext".parse::<Name>().unwrap(), ext_face, 10);
+    external
+        .fib()
+        .add_nexthop(&"/ext".parse::<Name>().unwrap(), ext_face, 10);
 
     // The simulated node serves /ext.
-    let producer = fabric.engine_of(node).unwrap().register_producer("/ext", CancellationToken::new());
+    let producer = fabric
+        .engine_of(node)
+        .unwrap()
+        .register_producer("/ext", CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"world")).await;
+                let _ = r
+                    .respond((*i.name).clone(), bytes::Bytes::from_static(b"world"))
+                    .await;
             })
             .await;
     });
@@ -56,8 +66,14 @@ async fn external_forwarder_fetches_from_a_simulated_node_over_udp() {
     let mut consumer = external.app_consumer(CancellationToken::new());
     let builder = InterestBuilder::new("/ext/hello".parse::<Name>().unwrap())
         .lifetime(Duration::from_secs(10));
-    let data = consumer.fetch_with(builder).await.expect("fetch over the UDP bridge");
-    assert_eq!(data.content().map(|c| c.to_vec()).unwrap_or_default(), b"world");
+    let data = consumer
+        .fetch_with(builder)
+        .await
+        .expect("fetch over the UDP bridge");
+    assert_eq!(
+        data.content().map(|c| c.to_vec()).unwrap_or_default(),
+        b"world"
+    );
 
     ext_handle.shutdown().await;
     fabric.shutdown().await;
@@ -78,7 +94,11 @@ async fn bridge_udp_listener_requires_a_fixed_port() {
     // A non-existent node is rejected too.
     assert!(
         fabric
-            .bridge_udp_listener(NodeId(999), "127.0.0.1:6363".parse().unwrap(), CancellationToken::new())
+            .bridge_udp_listener(
+                NodeId(999),
+                "127.0.0.1:6363".parse().unwrap(),
+                CancellationToken::new()
+            )
             .is_err()
     );
     fabric.shutdown().await;

@@ -58,7 +58,10 @@ fn scene_animates_mobility_under_virtual_time() {
         let world = World::new();
         world.set_mobility(
             NodeId(0),
-            Arc::new(LinearMobility { start: Position::xy(0.0, 0.0), velocity: (10.0, 0.0, 0.0) }),
+            Arc::new(LinearMobility {
+                start: Position::xy(0.0, 0.0),
+                velocity: (10.0, 0.0, 0.0),
+            }),
         );
         let mut sim = Simulation::new().kernel(k).world(world);
         let _n = sim.add_node(EngineConfig::default());

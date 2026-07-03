@@ -81,7 +81,12 @@ impl ObstructedPropagation {
     /// Wrap `base` so `obstacles` obstruct it. Default: 200 dB/obstacle (a hard blocker) and a
     /// noise-floor RSSI cutoff.
     pub fn new(base: Arc<dyn PropagationModel>, obstacles: Vec<Obstacle>) -> Self {
-        Self { base, obstacles, obstruction_loss_db: 200.0, min_rssi_dbm: NOISE_FLOOR_DBM }
+        Self {
+            base,
+            obstacles,
+            obstruction_loss_db: 200.0,
+            min_rssi_dbm: NOISE_FLOOR_DBM,
+        }
     }
 
     /// Set the per-obstacle attenuation (dB). A small value (e.g. 10) models partial obstruction.
@@ -100,8 +105,11 @@ impl ObstructedPropagation {
 impl PropagationModel for ObstructedPropagation {
     fn deliver(&self, ctx: &TxContext) -> Delivery {
         let mut d = self.base.deliver(ctx);
-        let crossed =
-            self.obstacles.iter().filter(|o| o.blocks(ctx.tx_pos, ctx.rx_pos)).count();
+        let crossed = self
+            .obstacles
+            .iter()
+            .filter(|o| o.blocks(ctx.tx_pos, ctx.rx_pos))
+            .count();
         if crossed > 0 {
             d.rssi_dbm -= self.obstruction_loss_db * crossed as f64;
             if d.rssi_dbm < self.min_rssi_dbm {
@@ -141,7 +149,10 @@ mod tests {
 
     #[test]
     fn obstruction_blocks_delivery_that_the_base_would_allow() {
-        let base = Arc::new(RangeThreshold { range_m: 100.0, tx_power_dbm: 20.0 });
+        let base = Arc::new(RangeThreshold {
+            range_m: 100.0,
+            tx_power_dbm: 20.0,
+        });
         let obstructed = ObstructedPropagation::new(base.clone(), vec![box_10()]);
         let env = crate::world::FreeSpace;
         let ctx = |rx: Position| TxContext {
@@ -161,9 +172,11 @@ mod tests {
 
     #[test]
     fn partial_loss_attenuates_without_blocking() {
-        let base = Arc::new(RangeThreshold { range_m: 100.0, tx_power_dbm: 20.0 });
-        let obstructed =
-            ObstructedPropagation::new(base, vec![box_10()]).with_loss_db(10.0);
+        let base = Arc::new(RangeThreshold {
+            range_m: 100.0,
+            tx_power_dbm: 20.0,
+        });
+        let obstructed = ObstructedPropagation::new(base, vec![box_10()]).with_loss_db(10.0);
         let env = crate::world::FreeSpace;
         let d = obstructed.deliver(&TxContext {
             tx_pos: Position::xy(0.0, 0.0),

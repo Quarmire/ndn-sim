@@ -38,7 +38,12 @@ impl SteppableSource for AccelSource {
             self.pos.y + self.vel[1] * dt,
             self.pos.z + self.vel[2] * dt,
         );
-        vec![NodeState { node: self.node, t_secs, position: self.pos, velocity: Some(self.vel) }]
+        vec![NodeState {
+            node: self.node,
+            t_secs,
+            position: self.pos,
+            velocity: Some(self.vel),
+        }]
     }
     fn is_done(&self, t_secs: f64) -> bool {
         t_secs >= self.until
@@ -50,18 +55,36 @@ impl SteppableSource for AccelSource {
 #[test]
 fn live_source_drives_the_world_and_records_a_trace() {
     let (final_pos, recorded) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
-        let mut sim = Simulation::new()
-            .kernel(k)
-            .with_radio_medium(Arc::new(RangeThreshold { range_m: 50.0, tx_power_dbm: 20.0 }), 1);
+        let mut sim = Simulation::new().kernel(k).with_radio_medium(
+            Arc::new(RangeThreshold {
+                range_m: 50.0,
+                tx_power_dbm: 20.0,
+            }),
+            1,
+        );
         let a = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let fabric = sim.start().await.unwrap();
 
         let source = ScriptedSource::new(vec![
-            NodeState { node: a, t_secs: 1.0, position: Position::xy(100.0, 0.0), velocity: None },
-            NodeState { node: a, t_secs: 2.0, position: Position::xy(200.0, 0.0), velocity: None },
+            NodeState {
+                node: a,
+                t_secs: 1.0,
+                position: Position::xy(100.0, 0.0),
+                velocity: None,
+            },
+            NodeState {
+                node: a,
+                t_secs: 2.0,
+                position: Position::xy(200.0, 0.0),
+                velocity: None,
+            },
         ]);
         let trace = fabric
-            .drive_mobility(Box::new(source), Duration::from_millis(100), CancellationToken::new())
+            .drive_mobility(
+                Box::new(source),
+                Duration::from_millis(100),
+                CancellationToken::new(),
+            )
             .await;
 
         let pos = fabric.world().snapshot(5.0).position(a).unwrap();
@@ -70,43 +93,76 @@ fn live_source_drives_the_world_and_records_a_trace() {
     });
 
     assert_eq!(recorded, 2, "both scripted states were applied + recorded");
-    assert_eq!(final_pos, Position::xy(200.0, 0.0), "the world tracked the live source");
+    assert_eq!(
+        final_pos,
+        Position::xy(200.0, 0.0),
+        "the world tracked the live source"
+    );
 }
 
 /// Replay a recorded flight (consumer flies out of radio range mid-run) and fetch before and after.
 /// Returns `(near_ok, far_ok)`.
 fn replay_flight() -> (bool, bool) {
     DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
-        let mut sim = Simulation::new()
-            .kernel(k)
-            .with_radio_medium(Arc::new(RangeThreshold { range_m: 50.0, tx_power_dbm: 20.0 }), 1);
+        let mut sim = Simulation::new().kernel(k).with_radio_medium(
+            Arc::new(RangeThreshold {
+                range_m: 50.0,
+                tx_power_dbm: 20.0,
+            }),
+            1,
+        );
         let prod = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
         let cons = sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 0.0));
         sim.add_app(
             prod,
-            AppSpec::Producer { prefix: "/svc".into(), content: Some("hi".into()), freshness_ms: None },
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("hi".into()),
+                freshness_ms: None,
+            },
         );
         let fabric = sim.start().await.unwrap();
 
         // A recorded flight: the consumer starts in range (10 m) and flies to 200 m (out of range).
         let mut trace = MobilityTrace::default();
-        trace.record(NodeState { node: cons, t_secs: 0.0, position: Position::xy(10.0, 0.0), velocity: None });
-        trace.record(NodeState { node: cons, t_secs: 30.0, position: Position::xy(200.0, 0.0), velocity: None });
+        trace.record(NodeState {
+            node: cons,
+            t_secs: 0.0,
+            position: Position::xy(10.0, 0.0),
+            velocity: None,
+        });
+        trace.record(NodeState {
+            node: cons,
+            t_secs: 30.0,
+            position: Position::xy(200.0, 0.0),
+            velocity: None,
+        });
         fabric.install_trace(&trace);
 
-        fabric.route_over_radio(cons, &"/svc".parse::<Name>().unwrap()).unwrap();
-        let mut consumer = fabric.engine_of(cons).unwrap().app_consumer(CancellationToken::new());
+        fabric
+            .route_over_radio(cons, &"/svc".parse::<Name>().unwrap())
+            .unwrap();
+        let mut consumer = fabric
+            .engine_of(cons)
+            .unwrap()
+            .app_consumer(CancellationToken::new());
 
         // In range at t≈0 → the producer hears the Interest and answers.
         let near = consumer
-            .fetch_with(InterestBuilder::new("/svc/0".parse::<Name>().unwrap()).lifetime(Duration::from_secs(4)))
+            .fetch_with(
+                InterestBuilder::new("/svc/0".parse::<Name>().unwrap())
+                    .lifetime(Duration::from_secs(4)),
+            )
             .await
             .is_ok();
 
         // Fly out of range (advance virtual time past the last trace sample).
         ndn_app::rt::sleep(Duration::from_secs(35)).await;
         let far = consumer
-            .fetch_with(InterestBuilder::new("/svc/1".parse::<Name>().unwrap()).lifetime(Duration::from_secs(4)))
+            .fetch_with(
+                InterestBuilder::new("/svc/1".parse::<Name>().unwrap())
+                    .lifetime(Duration::from_secs(4)),
+            )
             .await
             .is_ok();
 
@@ -118,13 +174,20 @@ fn replay_flight() -> (bool, bool) {
 #[test]
 fn replayed_trace_drives_radio_forwarding() {
     let (near, far) = replay_flight();
-    assert!(near, "in range at the start of the flight, the fetch succeeds");
+    assert!(
+        near,
+        "in range at the start of the flight, the fetch succeeds"
+    );
     assert!(!far, "out of range after the flight, the fetch fails");
 }
 
 #[test]
 fn replayed_trace_is_deterministic() {
-    assert_eq!(replay_flight(), replay_flight(), "a recorded flight replays identically on DES");
+    assert_eq!(
+        replay_flight(),
+        replay_flight(),
+        "a recorded flight replays identically on DES"
+    );
 }
 
 /// A LOCKSTEP stepped physics source (mode C) drives the World deterministically — the sim owns the
@@ -134,10 +197,17 @@ fn replayed_trace_is_deterministic() {
 fn lockstep_stepped_source_drives_the_world_deterministically() {
     let run = || {
         DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
-            let mut sim = Simulation::new()
-                .kernel(k)
-                .with_radio_medium(Arc::new(RangeThreshold { range_m: 50.0, tx_power_dbm: 20.0 }), 1);
-            let n = sim.add_radio_node(ndn_engine::builder::EngineConfig::default(), Position::ORIGIN);
+            let mut sim = Simulation::new().kernel(k).with_radio_medium(
+                Arc::new(RangeThreshold {
+                    range_m: 50.0,
+                    tx_power_dbm: 20.0,
+                }),
+                1,
+            );
+            let n = sim.add_radio_node(
+                ndn_engine::builder::EngineConfig::default(),
+                Position::ORIGIN,
+            );
             let fabric = sim.start().await.unwrap();
             let source = Lockstep::new(AccelSource {
                 node: n,
@@ -148,7 +218,11 @@ fn lockstep_stepped_source_drives_the_world_deterministically() {
                 until: 5.0,
             });
             let trace = fabric
-                .drive_mobility(Box::new(source), Duration::from_millis(100), CancellationToken::new())
+                .drive_mobility(
+                    Box::new(source),
+                    Duration::from_millis(100),
+                    CancellationToken::new(),
+                )
                 .await;
             let pos = fabric.world().snapshot(6.0).position(n).unwrap();
             fabric.shutdown().await;
@@ -157,9 +231,16 @@ fn lockstep_stepped_source_drives_the_world_deterministically() {
     };
     let (x, states) = run();
     // Under a=2 m/s² for ~5 s the node accelerates well past 20 m along +x (Euler-approx).
-    assert!(x > 20.0, "stepped physics advanced the node along +x, got x={x}");
+    assert!(
+        x > 20.0,
+        "stepped physics advanced the node along +x, got x={x}"
+    );
     assert!(states > 10, "the stepped run recorded a trace");
-    assert_eq!(run(), (x, states), "the lockstep run is deterministic on DES");
+    assert_eq!(
+        run(),
+        (x, states),
+        "the lockstep run is deterministic on DES"
+    );
 }
 
 /// A `Scenario` can reference a recorded trace file declaratively; `build` installs it as
@@ -170,8 +251,18 @@ fn scenario_mobility_trace_installs_replay() {
 
     // Write a trace where node 0 flies (0,0) → (100,0) over 10 s.
     let mut trace = MobilityTrace::default();
-    trace.record(NodeState { node: ndn_sim::NodeId(0), t_secs: 0.0, position: Position::xy(0.0, 0.0), velocity: None });
-    trace.record(NodeState { node: ndn_sim::NodeId(0), t_secs: 10.0, position: Position::xy(100.0, 0.0), velocity: None });
+    trace.record(NodeState {
+        node: ndn_sim::NodeId(0),
+        t_secs: 0.0,
+        position: Position::xy(0.0, 0.0),
+        velocity: None,
+    });
+    trace.record(NodeState {
+        node: ndn_sim::NodeId(0),
+        t_secs: 10.0,
+        position: Position::xy(100.0, 0.0),
+        velocity: None,
+    });
     let path = std::env::temp_dir().join("ndn-lab-test-trace.json");
     std::fs::write(&path, trace.to_json().unwrap()).unwrap();
 
@@ -190,12 +281,20 @@ label = "b"
     let scenario = Scenario::from_toml(&toml).unwrap();
     let pos = DesKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
         let fabric = scenario.build(k).unwrap().start().await.unwrap();
-        let p = fabric.world().snapshot(5.0).position(ndn_sim::NodeId(0)).unwrap();
+        let p = fabric
+            .world()
+            .snapshot(5.0)
+            .position(ndn_sim::NodeId(0))
+            .unwrap();
         fabric.shutdown().await;
         p
     });
     // Midpoint of the flight at t=5 s.
-    assert_eq!(pos, Position::xy(50.0, 0.0), "the declarative trace drives the node's position");
+    assert_eq!(
+        pos,
+        Position::xy(50.0, 0.0),
+        "the declarative trace drives the node's position"
+    );
 }
 
 /// The world-state history sampler captures a run's trajectory (positions over time) — the archive
@@ -203,15 +302,32 @@ label = "b"
 #[test]
 fn position_sampler_archives_the_trajectory() {
     let (samples, moved) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
-        let mut sim = Simulation::new()
-            .kernel(k)
-            .with_radio_medium(Arc::new(RangeThreshold { range_m: 200.0, tx_power_dbm: 20.0 }), 1);
-        let node = sim.add_radio_node(ndn_engine::builder::EngineConfig::default(), Position::xy(0.0, 0.0));
+        let mut sim = Simulation::new().kernel(k).with_radio_medium(
+            Arc::new(RangeThreshold {
+                range_m: 200.0,
+                tx_power_dbm: 20.0,
+            }),
+            1,
+        );
+        let node = sim.add_radio_node(
+            ndn_engine::builder::EngineConfig::default(),
+            Position::xy(0.0, 0.0),
+        );
         let fabric = sim.start().await.unwrap();
         // Fly the node from origin to (100,0).
         let mut trace = MobilityTrace::default();
-        trace.record(NodeState { node, t_secs: 0.0, position: Position::xy(0.0, 0.0), velocity: None });
-        trace.record(NodeState { node, t_secs: 4.0, position: Position::xy(100.0, 0.0), velocity: None });
+        trace.record(NodeState {
+            node,
+            t_secs: 0.0,
+            position: Position::xy(0.0, 0.0),
+            velocity: None,
+        });
+        trace.record(NodeState {
+            node,
+            t_secs: 4.0,
+            position: Position::xy(100.0, 0.0),
+            velocity: None,
+        });
         fabric.install_trace(&trace);
 
         let cancel = CancellationToken::new();
@@ -227,6 +343,12 @@ fn position_sampler_archives_the_trajectory() {
         fabric.shutdown().await;
         (samples, delta)
     });
-    assert!(samples > 5, "the sampler recorded a trajectory, got {samples} samples");
-    assert!(moved > 50.0, "the archived trajectory shows the node moving along +x, moved {moved}");
+    assert!(
+        samples > 5,
+        "the sampler recorded a trajectory, got {samples} samples"
+    );
+    assert!(
+        moved > 50.0,
+        "the archived trajectory shows the node moving along +x, moved {moved}"
+    );
 }

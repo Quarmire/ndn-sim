@@ -117,7 +117,11 @@ pub(crate) fn spawn_app(
         .map_err(|e| anyhow::anyhow!("invalid app prefix {:?}: {e}", spec.prefix()))?;
 
     match spec {
-        AppSpec::Producer { content, freshness_ms, .. } => {
+        AppSpec::Producer {
+            content,
+            freshness_ms,
+            ..
+        } => {
             let producer = engine.register_producer(prefix, cancel.clone());
             let bytes = Bytes::from(content.clone().unwrap_or_else(|| "ndn-lab".to_string()));
             let served = Arc::clone(&successes);
@@ -144,9 +148,20 @@ pub(crate) fn spawn_app(
                     })
                     .await;
             });
-            Ok(AppHandle { id, node, kind: "producer", cancel, successes })
+            Ok(AppHandle {
+                id,
+                node,
+                kind: "producer",
+                cancel,
+                successes,
+            })
         }
-        AppSpec::Consumer { prefix: pfx, count, interval_ms, lifetime_ms } => {
+        AppSpec::Consumer {
+            prefix: pfx,
+            count,
+            interval_ms,
+            lifetime_ms,
+        } => {
             let mut consumer = engine.app_consumer(cancel.clone());
             let pfx = pfx.clone();
             let count = *count;
@@ -177,7 +192,13 @@ pub(crate) fn spawn_app(
                     }
                 }
             });
-            Ok(AppHandle { id, node, kind: "consumer", cancel, successes })
+            Ok(AppHandle {
+                id,
+                node,
+                kind: "consumer",
+                cancel,
+                successes,
+            })
         }
     }
 }

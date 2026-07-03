@@ -100,7 +100,13 @@ pub fn circle_layout(node_ids: &[usize], radius: f64) -> HashMap<usize, ScenePoi
         .enumerate()
         .map(|(i, id)| {
             let theta = std::f64::consts::TAU * (i as f64) / (n as f64);
-            (*id, ScenePoint { x: radius * theta.cos(), y: radius * theta.sin() })
+            (
+                *id,
+                ScenePoint {
+                    x: radius * theta.cos(),
+                    y: radius * theta.sin(),
+                },
+            )
         })
         .collect()
 }
@@ -119,7 +125,10 @@ pub fn project_scene(
         .nodes
         .iter()
         .map(|n| {
-            let p = positions.get(&n.id.0).copied().unwrap_or(ScenePoint { x: 0.0, y: 0.0 });
+            let p = positions
+                .get(&n.id.0)
+                .copied()
+                .unwrap_or(ScenePoint { x: 0.0, y: 0.0 });
             let m = metric_of(n.id.0);
             SceneNode {
                 id: n.id.0,
@@ -147,19 +156,34 @@ pub fn project_scene(
                 }
                 _ => None,
             };
-            links.push(SceneLink { from: a, to: b, distance_m });
+            links.push(SceneLink {
+                from: a,
+                to: b,
+                distance_m,
+            });
         }
     }
 
     let bounds = bounds_of(&nodes);
     // radio_links are filled by the fabric (it has the radio bus + positions); pure projection
     // leaves them empty.
-    SceneSnapshot { virtual_time_ns, nodes, links, radio_links: Vec::new(), bounds }
+    SceneSnapshot {
+        virtual_time_ns,
+        nodes,
+        links,
+        radio_links: Vec::new(),
+        bounds,
+    }
 }
 
 fn bounds_of(nodes: &[SceneNode]) -> SceneBounds {
     if nodes.is_empty() {
-        return SceneBounds { min_x: -1.0, min_y: -1.0, max_x: 1.0, max_y: 1.0 };
+        return SceneBounds {
+            min_x: -1.0,
+            min_y: -1.0,
+            max_x: 1.0,
+            max_y: 1.0,
+        };
     }
     let mut b = SceneBounds {
         min_x: f64::INFINITY,
@@ -203,8 +227,7 @@ pub fn render_topology_svg(scene: &SceneSnapshot, width: u32, height: u32) -> St
     let stroke = unit.max(f64::MIN_POSITIVE);
     let r = (unit * 3.0).max(f64::MIN_POSITIVE);
 
-    let pos: HashMap<usize, (f64, f64)> =
-        scene.nodes.iter().map(|n| (n.id, (n.x, n.y))).collect();
+    let pos: HashMap<usize, (f64, f64)> = scene.nodes.iter().map(|n| (n.id, (n.x, n.y))).collect();
     for l in &scene.links {
         if let (Some(&(x1, y1)), Some(&(x2, y2))) = (pos.get(&l.from), pos.get(&l.to)) {
             let _ = write!(
@@ -291,19 +314,33 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::{LinkInfo, NodeInfo, TopologySnapshot};
     use crate::NodeId;
+    use crate::control::{LinkInfo, NodeInfo, TopologySnapshot};
 
     fn topo() -> TopologySnapshot {
         TopologySnapshot {
             nodes: vec![
-                NodeInfo { id: NodeId(0), label: "a".into() },
-                NodeInfo { id: NodeId(1), label: "b".into() },
+                NodeInfo {
+                    id: NodeId(0),
+                    label: "a".into(),
+                },
+                NodeInfo {
+                    id: NodeId(1),
+                    label: "b".into(),
+                },
             ],
             // directed both ways → one undirected edge
             links: vec![
-                LinkInfo { from: NodeId(0), to: NodeId(1), face: 1 },
-                LinkInfo { from: NodeId(1), to: NodeId(0), face: 2 },
+                LinkInfo {
+                    from: NodeId(0),
+                    to: NodeId(1),
+                    face: 1,
+                },
+                LinkInfo {
+                    from: NodeId(1),
+                    to: NodeId(0),
+                    face: 2,
+                },
             ],
         }
     }
@@ -339,7 +376,10 @@ mod tests {
         assert!(svg.starts_with("<svg") && svg.ends_with("</svg>"));
         assert_eq!(svg.matches("<circle").count(), 2, "one circle per node");
         assert_eq!(svg.matches("<line").count(), 1, "one line per edge");
-        assert!(svg.contains(">a</text>") && svg.contains(">b</text>"), "node labels");
+        assert!(
+            svg.contains(">a</text>") && svg.contains(">b</text>"),
+            "node labels"
+        );
     }
 
     #[test]

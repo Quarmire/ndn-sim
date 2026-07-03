@@ -186,12 +186,20 @@ fn raw_bidirectional_svsync_crosses_radio() {
     });
 }
 
-// OPEN (tracked): the raw bidirectional bridge is proven by the two probes
-// above, but with *every* node publishing, no SyncUpdate propagates on a shared
-// segment (single-publisher works; all-publishing yields 0 ingests) — an SVS
-// behaviour above the medium. To debug: switch to `broadcast_segment` and use
-// ndn-sim's `explain_route`/`face_stats`. Ignored so it doesn't land red.
-#[ignore = "P2P mesh convergence open: all-publishing yields 0 SyncUpdates (bridge itself is proven by the probes above)"]
+// OPEN (root-caused): the raw bidirectional bridge is proven by the two probes
+// above, but with *every* node publishing there are 0 SyncUpdates. Localized with
+// ndn-sim's face_stats/explain_route on a 2-node broadcast_segment repro: peer
+// sync Interests reach the radio face (in_int > 0) but the engine forwards *none*
+// to the local SvSync app face (app out_int = 0). Cause: ndn-sync sends every
+// sync Interest to the SAME name — `/<group>/v=2` with the state vector in
+// ApplicationParameters and no digest component (ndn-sync svs_sync.rs:419) — so
+// when a node both publishes and subscribes, its own outstanding sync Interest
+// PIT-aggregates every peer's same-named Interest instead of delivering it. It's
+// above the medium (broadcast_segment delivers all-hear-all) and not the dual-
+// app-face trap (explain_route: nexthops=2, warning=None). The fix is a
+// forwarding behaviour: a sync-aware multicast that delivers a matched sync
+// Interest to local sync faces (or per-node/per-SV sync Interest names upstream).
+#[ignore = "P2P mesh convergence: sync Interests PIT-aggregate on a publisher's own outstanding /<group>/v=2 entry (see note); needs a non-aggregating sync-multicast in the forwarder"]
 #[test]
 fn mesh_converges_with_bidirectional_svs_per_node() {
     const NODES: usize = 5; // node 0 = GNSS reference, 1..4 = oscillators

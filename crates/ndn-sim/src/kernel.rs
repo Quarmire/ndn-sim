@@ -87,7 +87,10 @@ impl RealTimeKernel {
 
     /// A governor whose logical clock starts at `epoch_base_ns`.
     pub fn with_epoch_ns(epoch_base_ns: u64) -> Arc<Self> {
-        Arc::new(Self { epoch_base_ns, runtime: std::sync::OnceLock::new() })
+        Arc::new(Self {
+            epoch_base_ns,
+            runtime: std::sync::OnceLock::new(),
+        })
     }
 }
 
@@ -203,7 +206,34 @@ impl VirtualKernel {
     /// the fabric) to completion on it. Virtual time auto-advances whenever all tasks are
     /// idle, so the closure returns as fast as the CPU allows. The kernel handed to `f` is
     /// this one — pass it to `Simulation::kernel`.
+    ///
+    /// Guarded by a default [`DEFAULT_RUN_CEILING`] of virtual time: a workload that never finishes
+    /// (a convergence predicate that never holds) **panics with a clear message** instead of hanging
+    /// forever. Use [`run_capped`](Self::run_capped) for a custom budget and a `Result` instead.
     pub fn run<F, Fut, T>(self: &Arc<Self>, f: F) -> T
+    where
+        F: FnOnce(Arc<dyn SimKernel>) -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        self.run_capped(DEFAULT_RUN_CEILING, f).unwrap_or_else(|e| {
+            panic!(
+                "VirtualKernel::run exceeded the {}s virtual-time ceiling — a convergence \
+                 predicate that never holds? Use run_capped() for a custom budget, or fix the \
+                 workload so it terminates.",
+                e.cap.as_secs()
+            )
+        })
+    }
+
+    /// Like [`run`](Self::run) but bail with [`VirtualTimeExceeded`] once `max_virtual` of virtual
+    /// time elapses before `f` finishes — turning a never-converging run into a clean failure with
+    /// no output-less hang. Put your convergence loop inside `f` (`while !converged { sleep(dt).await
+    /// }`); if it never converges, the sleeping advances virtual time until the cap fires.
+    pub fn run_capped<F, Fut, T>(
+        self: &Arc<Self>,
+        max_virtual: std::time::Duration,
+        f: F,
+    ) -> Result<T, VirtualTimeExceeded>
     where
         F: FnOnce(Arc<dyn SimKernel>) -> Fut,
         Fut: std::future::Future<Output = T>,
@@ -216,10 +246,38 @@ impl VirtualKernel {
         let me = Arc::clone(self);
         rt.block_on(async move {
             me.ensure_runtime(); // initialize the virtual clock inside the runtime context
-            f(me.clone() as Arc<dyn SimKernel>).await
+            let fut = f(me.clone() as Arc<dyn SimKernel>);
+            tokio::pin!(fut);
+            tokio::select! {
+                r = &mut fut => Ok(r),
+                _ = tokio::time::sleep(max_virtual) => Err(VirtualTimeExceeded { cap: max_virtual }),
+            }
         })
     }
 }
+
+/// The default virtual-time budget [`VirtualKernel::run`] allows before it declares a hang (1 hour
+/// of *virtual* time — near-instant in wall-clock, but far beyond any real convergence run).
+pub const DEFAULT_RUN_CEILING: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// A [`VirtualKernel::run_capped`] run that didn't finish within its virtual-time budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualTimeExceeded {
+    /// The budget that was exceeded.
+    pub cap: std::time::Duration,
+}
+
+impl std::fmt::Display for VirtualTimeExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "virtual-time budget of {:?} exceeded before the run finished",
+            self.cap
+        )
+    }
+}
+
+impl std::error::Error for VirtualTimeExceeded {}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl SimKernel for VirtualKernel {
@@ -299,11 +357,17 @@ pub struct SteppableKernel {
 #[cfg(not(target_arch = "wasm32"))]
 impl SteppableKernel {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { epoch_base_ns: DEFAULT_VIRTUAL_EPOCH_NS, runtime: std::sync::OnceLock::new() })
+        Arc::new(Self {
+            epoch_base_ns: DEFAULT_VIRTUAL_EPOCH_NS,
+            runtime: std::sync::OnceLock::new(),
+        })
     }
 
     pub fn with_epoch_ns(epoch_base_ns: u64) -> Arc<Self> {
-        Arc::new(Self { epoch_base_ns, runtime: std::sync::OnceLock::new() })
+        Arc::new(Self {
+            epoch_base_ns,
+            runtime: std::sync::OnceLock::new(),
+        })
     }
 
     fn ensure_runtime(&self) -> Arc<dyn Runtime> {
@@ -377,7 +441,8 @@ impl StepSession {
     /// sleep fires at now+`step` — so all background tasks within the window run, and time stops
     /// exactly at the target (nothing past `step` fires). Between calls nothing is polled = paused.
     pub fn advance(&self, step: std::time::Duration) {
-        self.rt.block_on(async move { tokio::time::sleep(step).await });
+        self.rt
+            .block_on(async move { tokio::time::sleep(step).await });
     }
 
     /// Alias for [`advance`](Self::advance) — run the sim forward by `d`.
@@ -397,6 +462,7 @@ impl StepSession {
     /// (the paused clock is only valid there).
     pub fn now_ns(&self) -> u64 {
         let kernel = Arc::clone(&self.kernel);
-        self.rt.block_on(async move { kernel.runtime().unix_nanos() })
+        self.rt
+            .block_on(async move { kernel.runtime().unix_nanos() })
     }
 }

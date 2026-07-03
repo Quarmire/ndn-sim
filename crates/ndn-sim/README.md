@@ -49,11 +49,28 @@ build/inspect (`spawn_node` / `connect` / `route` / `move_node` / `spawn_app` / 
 (`explain_link` / `why_did`), actuate (`cosim`), record (`start_recording` / `get_recording`), and
 validate (`run_validation`) — a model composes, inspects, drives, and gates a scenario directly.
 
+## Building on it — debugging & ergonomics
+
+- `fabric.explain_route(node, name)` — where an Interest goes and *why it might not arrive*: the
+  matched FIB prefix, the strategy, each next-hop classified (link/radio/local-app), and a warning
+  for the classic silent trap (two local app faces on one prefix under best-route → only one
+  receives). The same trap is also flagged at start-time.
+- `fabric.face_stats(node)` — per-face in/out/drops counters, classified, readable in a test
+  (`recvs=0` → "12 Interests in, 0 Data out on the link toward node 3").
+- `fabric.clock()` — a cheap `Clone` handle you capture in a task and read `.now_ns()`, instead of
+  threading `Arc<dyn SimKernel>`.
+- `sim.broadcast_segment(&[nodes], "/prefix")` — a collision-free all-hear-all bus for sync/discovery,
+  with no geometry to reason about (a `PerfectPropagation` medium + no interference).
+- `Strategy::Multicast` — typed, typo-proof; accepted anywhere a strategy name is (`add_strategy`,
+  `set_strategy`) alongside the `"multicast"` string.
+- `VirtualKernel::run_capped(max_virtual, f)` — a never-converging run becomes a clean timeout, not an
+  output-less hang; plain `run` now carries a default virtual-time ceiling.
+
 ## What's inside
 
 | Piece | What |
 |-------|------|
-| **Kernels** | `DesKernel` (from-scratch deterministic event queue; event-granular single-step), `VirtualKernel` (tokio paused clock; deterministic, faster-than-real), `WallClockKernel` (real time), `RealTimeKernel` (governor: real pace + logical clock, hosts real devices), `SteppableKernel` (pause / step / run-until) |
+| **Kernels** | `DesKernel` (from-scratch deterministic event queue; event-granular single-step), `VirtualKernel` (tokio paused clock; deterministic, faster-than-real, `run_capped` budget), `WallClockKernel` (real time), `RealTimeKernel` (governor: real pace + logical clock, hosts real devices), `SteppableKernel` (pause / step / run-until) |
 | **World** | `Position` + `MobilityModel` (static/linear/waypoint) + `Environment`, `WorldView` snapshots over a uniform spatial grid |
 | **Medium / radio** | `WirelessMedium` (propagation + range) and `RadioBus` + `SimRadioFace` — the named-radio face with RSSI→MCS→per-frame delivery (`LinkModel`) + carrier-sense collisions |
 | **Faces** | per-type behavioral catalogue (`FaceProfile`: udp/tcp/quic/ws/ethernet/multicast/shm/serial/ble/nan) — the engine sees each type's `FaceKind`/MTU/loss/ordering |

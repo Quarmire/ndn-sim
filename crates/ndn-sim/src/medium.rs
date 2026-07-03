@@ -58,8 +58,17 @@ impl TxContext<'_> {
 /// Why a frame did (or didn't) arrive — the causal evidence axis 4 records so a failure can be
 /// *explained* instead of vanishing into a `trace!` log.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash,
-    serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryReason {
@@ -121,7 +130,47 @@ pub struct RangeThreshold {
 
 impl Default for RangeThreshold {
     fn default() -> Self {
-        Self { range_m: 100.0, tx_power_dbm: 20.0 }
+        Self {
+            range_m: 100.0,
+            tx_power_dbm: 20.0,
+        }
+    }
+}
+
+/// A perfect broadcast medium: every receiver hears every send at full strength, no attenuation, no
+/// distance dependence (up to a generous `max_range_m` that only bounds the spatial query). Paired
+/// with the default no-interference bus, this is a **collision-free all-hear-all segment** — the
+/// natural home for sync/discovery protocols, with no geometry to reason about. See
+/// [`Simulation::broadcast_segment`](crate::Simulation::broadcast_segment) for the one-call sugar.
+#[derive(Clone, Copy, Debug)]
+pub struct PerfectPropagation {
+    /// The constant RSSI reported to receivers (telemetry only; delivery is unconditional).
+    pub rssi_dbm: f64,
+    /// Bounds the spatial-index query (keep members within this of each other). Delivery itself is
+    /// distance-independent; this only stops `transmit` scanning an unbounded grid.
+    pub max_range_m: f64,
+}
+
+impl Default for PerfectPropagation {
+    fn default() -> Self {
+        Self {
+            rssi_dbm: -30.0,
+            max_range_m: 1000.0,
+        }
+    }
+}
+
+impl PropagationModel for PerfectPropagation {
+    fn deliver(&self, ctx: &TxContext) -> Delivery {
+        Delivery {
+            delivered: true,
+            rssi_dbm: self.rssi_dbm,
+            delay: ctx.propagation_delay(),
+            reason: DeliveryReason::Delivered,
+        }
+    }
+    fn max_range_m(&self) -> f64 {
+        self.max_range_m
     }
 }
 
@@ -135,7 +184,11 @@ impl PropagationModel for RangeThreshold {
             delivered,
             rssi_dbm: self.tx_power_dbm - 60.0 * frac,
             delay: ctx.propagation_delay(),
-            reason: if delivered { DeliveryReason::Delivered } else { DeliveryReason::OutOfRange },
+            reason: if delivered {
+                DeliveryReason::Delivered
+            } else {
+                DeliveryReason::OutOfRange
+            },
         }
     }
     fn max_range_m(&self) -> f64 {
@@ -155,7 +208,11 @@ pub struct FreeSpacePathLoss {
 impl Default for FreeSpacePathLoss {
     fn default() -> Self {
         // 20 dBm (100 mW), 2.4 GHz, −85 dBm sensitivity ⇒ ~hundreds of m free-space.
-        Self { tx_power_dbm: 20.0, freq_hz: 2.4e9, rx_sensitivity_dbm: -85.0 }
+        Self {
+            tx_power_dbm: 20.0,
+            freq_hz: 2.4e9,
+            rx_sensitivity_dbm: -85.0,
+        }
     }
 }
 
@@ -183,13 +240,18 @@ impl PropagationModel for FreeSpacePathLoss {
             delivered,
             rssi_dbm: prx,
             delay: ctx.propagation_delay(),
-            reason: if delivered { DeliveryReason::Delivered } else { DeliveryReason::Weak },
+            reason: if delivered {
+                DeliveryReason::Delivered
+            } else {
+                DeliveryReason::Weak
+            },
         }
     }
 
     fn max_range_m(&self) -> f64 {
         // Solve Ptx − sens = 20·log10(d) + 20·log10(f) + K (env-free, the widest case).
-        let lhs = self.tx_power_dbm - self.rx_sensitivity_dbm
+        let lhs = self.tx_power_dbm
+            - self.rx_sensitivity_dbm
             - 20.0 * self.freq_hz.log10()
             - Self::FSPL_K;
         10f64.powf(lhs / 20.0)
@@ -322,8 +384,12 @@ impl WirelessMedium {
             if rx_node == node {
                 continue; // a radio does not hear itself
             }
-            let Some(rx_pos) = view.position(rx_node) else { continue };
-            let Some(sender) = receivers.get(&rx_node).cloned() else { continue };
+            let Some(rx_pos) = view.position(rx_node) else {
+                continue;
+            };
+            let Some(sender) = receivers.get(&rx_node).cloned() else {
+                continue;
+            };
 
             let ctx = TxContext {
                 tx_pos,
@@ -338,7 +404,11 @@ impl WirelessMedium {
             }
             delivered.push((rx_node, d.rssi_dbm));
 
-            let rf = ReceivedFrame { from: node, rssi_dbm: d.rssi_dbm, bytes: frame.clone() };
+            let rf = ReceivedFrame {
+                from: node,
+                rssi_dbm: d.rssi_dbm,
+                bytes: frame.clone(),
+            };
             if d.delay.is_zero() {
                 let _ = sender.send(rf);
             } else {
@@ -360,7 +430,10 @@ mod tests {
     use super::*;
     use crate::world::{LinearMobility, World};
 
-    fn medium_with(positions: &[(NodeId, Position)], prop: Arc<dyn PropagationModel>) -> WirelessMedium {
+    fn medium_with(
+        positions: &[(NodeId, Position)],
+        prop: Arc<dyn PropagationModel>,
+    ) -> WirelessMedium {
         let world = World::new();
         for (id, p) in positions {
             world.place(*id, *p);
@@ -373,22 +446,35 @@ mod tests {
         let medium = medium_with(
             &[
                 (NodeId(0), Position::xy(0.0, 0.0)),
-                (NodeId(1), Position::xy(50.0, 0.0)),  // in range
+                (NodeId(1), Position::xy(50.0, 0.0)), // in range
                 (NodeId(2), Position::xy(500.0, 0.0)), // out of range
             ],
-            Arc::new(RangeThreshold { range_m: 100.0, tx_power_dbm: 20.0 }),
+            Arc::new(RangeThreshold {
+                range_m: 100.0,
+                tx_power_dbm: 20.0,
+            }),
         );
         let mut r1 = medium.attach(NodeId(1));
         let mut r2 = medium.attach(NodeId(2));
 
         let hit = medium.transmit(NodeId(0), Bytes::from_static(b"hi"), 0);
-        assert_eq!(hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![NodeId(1)]);
+        assert_eq!(
+            hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec![NodeId(1)]
+        );
 
         // Node 1 hears it; node 2 (out of range) gets nothing.
-        let got = tokio::time::timeout(Duration::from_millis(50), r1.recv()).await.unwrap().unwrap();
+        let got = tokio::time::timeout(Duration::from_millis(50), r1.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got.bytes, &b"hi"[..]);
         assert_eq!(got.from, NodeId(0));
-        assert!(tokio::time::timeout(Duration::from_millis(20), r2.recv()).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), r2.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -411,8 +497,14 @@ mod tests {
         let hit = medium.transmit(NodeId(0), Bytes::from_static(b"x"), 0);
         let rssi: HashMap<NodeId, f64> = hit.iter().copied().collect();
         assert!(rssi.contains_key(&NodeId(1)) && rssi.contains_key(&NodeId(2)));
-        assert!(!rssi.contains_key(&NodeId(3)), "node past max range is unreachable");
-        assert!(rssi[&NodeId(1)] > rssi[&NodeId(2)], "closer node has stronger RSSI");
+        assert!(
+            !rssi.contains_key(&NodeId(3)),
+            "node past max range is unreachable"
+        );
+        assert!(
+            rssi[&NodeId(1)] > rssi[&NodeId(2)],
+            "closer node has stronger RSSI"
+        );
     }
 
     /// The medium is deterministic by construction: identical positions ⇒ identical fan-out
@@ -442,20 +534,33 @@ mod tests {
         // Node 1 starts 500 m away, approaches at 100 m/s along −x.
         world.set_mobility(
             NodeId(1),
-            Arc::new(LinearMobility { start: Position::xy(500.0, 0.0), velocity: (-100.0, 0.0, 0.0) }),
+            Arc::new(LinearMobility {
+                start: Position::xy(500.0, 0.0),
+                velocity: (-100.0, 0.0, 0.0),
+            }),
         );
         let medium = WirelessMedium::new(
             Arc::new(world),
-            Arc::new(RangeThreshold { range_m: 100.0, tx_power_dbm: 20.0 }),
+            Arc::new(RangeThreshold {
+                range_m: 100.0,
+                tx_power_dbm: 20.0,
+            }),
             0,
         );
         medium.attach(NodeId(1));
 
         // t = 0 s: 500 m away ⇒ out of range.
-        assert!(medium.transmit(NodeId(0), Bytes::from_static(b"a"), 0).is_empty());
+        assert!(
+            medium
+                .transmit(NodeId(0), Bytes::from_static(b"a"), 0)
+                .is_empty()
+        );
         // t = 4.5 s: 500 − 450 = 50 m ⇒ in range.
         let now = 4_500_000_000u64;
         let hit = medium.transmit(NodeId(0), Bytes::from_static(b"b"), now);
-        assert_eq!(hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(), vec![NodeId(1)]);
+        assert_eq!(
+            hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec![NodeId(1)]
+        );
     }
 }

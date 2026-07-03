@@ -24,9 +24,10 @@
 pub use ndn_engine::builder::EngineConfig;
 
 // Builder + live fabric + control surface.
-pub use crate::{Fabric, FabricControl, NodeId, RunningSimulation, Simulation};
-pub use crate::{LinkConfig, NodeProfile};
 pub use crate::{AppHandle, AppId, AppSpec};
+pub use crate::{Clock, Fabric, FabricControl, NodeId, RunningSimulation, Simulation, Strategy};
+pub use crate::{FaceKind, FaceStats, RouteExplanation};
+pub use crate::{LinkConfig, NodeProfile};
 
 // Kernels — the execution + time engine.
 pub use crate::{DesKernel, RealTimeKernel, SimKernel, WallClockKernel};
@@ -34,18 +35,22 @@ pub use crate::{DesKernel, RealTimeKernel, SimKernel, WallClockKernel};
 pub use crate::{SteppableKernel, VirtualKernel};
 
 // Declarative artifacts: whole-sim scenarios (+ the `topo` generators) + validation specs.
-pub use crate::{Scenario, ScenarioLink, Stepper, topo};
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::{Property, ValidationReport, ValidationSpec, run_validation, run_validation_against};
+pub use crate::{
+    Property, ValidationReport, ValidationSpec, run_validation, run_validation_against,
+};
+pub use crate::{Scenario, ScenarioLink, Stepper, topo};
 
 // The control plane + its command/query vocabulary (drives every transport: in-proc/NDN/RPC/MCP).
-pub use crate::{ControlPlane, SimCommand, SimQuery, SimRequest, SimResponse};
 pub use crate::SimMcp;
+pub use crate::{ControlPlane, SimCommand, SimQuery, SimRequest, SimResponse};
 
 // World, radio, and co-simulation.
+pub use crate::{
+    CosimActuator, MobilitySource, MobilityTrace, NodeState, VehicleCommand, udp_json_feed,
+};
 pub use crate::{Environment, MobilityModel, Position, World};
 pub use crate::{PropagationModel, RadioBus, SimRadioFace, WirelessMedium};
-pub use crate::{CosimActuator, MobilitySource, MobilityTrace, NodeState, VehicleCommand, udp_json_feed};
 
 // Analysis + observability (the "why").
 pub use crate::{Explanation, RunCapture, SimTracer, diff_runs, explain_link};

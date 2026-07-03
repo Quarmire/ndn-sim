@@ -113,7 +113,8 @@ impl Simulation {
     /// Declare a broadcast route for `prefix` over `node`'s radio face (the declarative form of
     /// [`RunningSimulation::route_over_radio`]). Applied at [`start`](Self::start).
     pub fn add_radio_route(&mut self, node: NodeId, prefix: &str) {
-        self.radio_routes.push((node, Name::from_str(prefix).expect("valid NDN name")));
+        self.radio_routes
+            .push((node, Name::from_str(prefix).expect("valid NDN name")));
     }
 
     /// Set the world seed — perturbs every simulated face's loss/jitter RNG (and the radio erasure
@@ -145,7 +146,11 @@ impl Simulation {
 
     /// Add a node placed at `position` that will get a radio face on the shared medium (see
     /// [`with_radio_medium`](Self::with_radio_medium)). Ensures a world exists and places it.
-    pub fn add_radio_node(&mut self, config: EngineConfig, position: crate::world::Position) -> NodeId {
+    pub fn add_radio_node(
+        &mut self,
+        config: EngineConfig,
+        position: crate::world::Position,
+    ) -> NodeId {
         let id = self.add_node(config);
         let world = self
             .world
@@ -153,6 +158,46 @@ impl Simulation {
         world.place(id, position);
         self.radio_nodes.push((id, position));
         id
+    }
+
+    /// Put existing nodes on a **collision-free broadcast segment**: a shared multi-access bus
+    /// where every member hears every other member's sends, with *no geometry to reason about* — the
+    /// natural home for sync/discovery (an SVS `/time` group, a neighbour-discovery beacon). Each
+    /// member gets a radio face on a [`PerfectPropagation`](crate::medium::PerfectPropagation) medium
+    /// (everyone in range, no attenuation) over the default no-interference bus (no collisions), and
+    /// — unless `prefix` is empty — a broadcast route for `prefix` so Interests fan to the whole
+    /// segment. The members are clustered geometry-free; don't mix this with a geometric radio in the
+    /// same sim (the fabric has one shared medium).
+    ///
+    /// ```no_run
+    /// # use ndn_sim::Simulation; use ndn_engine::builder::EngineConfig;
+    /// # let mut sim = Simulation::new();
+    /// let a = sim.add_node(EngineConfig::default());
+    /// let b = sim.add_node(EngineConfig::default());
+    /// let c = sim.add_node(EngineConfig::default());
+    /// sim.broadcast_segment(&[a, b, c], "/time");   // all three hear each other on /time
+    /// ```
+    pub fn broadcast_segment(&mut self, members: &[NodeId], prefix: &str) {
+        if self.radio.is_none() {
+            self.radio = Some((
+                std::sync::Arc::new(crate::medium::PerfectPropagation::default()),
+                self.seed,
+            ));
+        }
+        let world = std::sync::Arc::clone(
+            self.world
+                .get_or_insert_with(|| std::sync::Arc::new(World::new())),
+        );
+        for (i, &member) in members.iter().enumerate() {
+            // Cluster them tightly (1 m apart) — well within PerfectPropagation's range, and cheap
+            // for the spatial index. Geometry is irrelevant on a perfect bus.
+            let pos = crate::world::Position::xy(i as f64, 0.0);
+            world.place(member, pos);
+            self.radio_nodes.push((member, pos));
+            if !prefix.is_empty() {
+                self.add_radio_route(member, prefix);
+            }
+        }
     }
 
     /// Run on a specific [`SimKernel`] (default: [`WallClockKernel`]). This is the one knob
@@ -180,7 +225,8 @@ impl Simulation {
     /// Ensure the builder has a world, returning a handle to it.
     fn ensure_world(&mut self) -> std::sync::Arc<World> {
         std::sync::Arc::clone(
-            self.world.get_or_insert_with(|| std::sync::Arc::new(World::new())),
+            self.world
+                .get_or_insert_with(|| std::sync::Arc::new(World::new())),
         )
     }
 
@@ -221,7 +267,11 @@ impl Simulation {
 
     /// Connect two nodes with a symmetric in-proc wired link.
     pub fn link(&mut self, a: NodeId, b: NodeId, config: LinkConfig) {
-        self.links.push(PendingLink { a, b, profile: FaceProfile::internal().with_link(config) });
+        self.links.push(PendingLink {
+            a,
+            b,
+            profile: FaceProfile::internal().with_link(config),
+        });
     }
 
     /// Connect two nodes with a typed link from the per-face catalogue (UDP/TCP/QUIC/BLE/…) — the
@@ -240,14 +290,16 @@ impl Simulation {
         });
     }
 
-    /// Choose the forwarding `strategy` (NFD short name, e.g. `"multicast"` or `"best-route"`) for
-    /// `prefix` on `node`, applied at [`start`](Self::start). Multicast fans an Interest to every
-    /// eligible next-hop — inherently tolerant of a single dead upstream.
-    pub fn add_strategy(&mut self, node: NodeId, prefix: &str, strategy: &str) {
+    /// Choose the forwarding `strategy` for `prefix` on `node`, applied at [`start`](Self::start).
+    /// Accepts a typed [`Strategy`] (`Strategy::Multicast`) or an NFD short name (`"multicast"` /
+    /// `"best-route"`). Multicast fans an Interest to every eligible next-hop — inherently tolerant
+    /// of a single dead upstream, and the fix for the multi-local-app-face trap (see
+    /// [`RunningSimulation::explain_route`]).
+    pub fn add_strategy(&mut self, node: NodeId, prefix: &str, strategy: impl AsRef<str>) {
         self.strategies.push(PendingStrategy {
             node,
             prefix: Name::from_str(prefix).expect("valid NDN name"),
-            strategy: strategy.to_string(),
+            strategy: strategy.as_ref().to_string(),
         });
     }
 
@@ -304,14 +356,16 @@ impl Simulation {
         }
 
         for route in &self.routes {
-            let face_id = links.get(&(route.node, route.nexthop_node)).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no link between {} and {} for route {}",
-                    route.node,
-                    route.nexthop_node,
-                    route.prefix
-                )
-            })?;
+            let face_id = links
+                .get(&(route.node, route.nexthop_node))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no link between {} and {} for route {}",
+                        route.node,
+                        route.nexthop_node,
+                        route.prefix
+                    )
+                })?;
             nodes[&route.node]
                 .engine
                 .fib()
@@ -322,16 +376,17 @@ impl Simulation {
             let entry = nodes.get(&sc.node).ok_or_else(|| {
                 anyhow::anyhow!("strategy choice references non-existent node {}", sc.node)
             })?;
-            let strategy = ndn_strategy::registry::create_by_name(sc.strategy.as_bytes()).ok_or_else(|| {
-                anyhow::anyhow!("unknown forwarding strategy {:?}", sc.strategy)
-            })?;
+            let strategy = ndn_strategy::registry::create_by_name(sc.strategy.as_bytes())
+                .ok_or_else(|| anyhow::anyhow!("unknown forwarding strategy {:?}", sc.strategy))?;
             entry.engine.strategy_table().insert(&sc.prefix, strategy);
         }
 
         let epoch_ns = self.kernel.runtime().unix_nanos();
         // A fabric always has a world (empty by default) so live-world commands and scene
         // snapshots work whether or not the scenario declared one.
-        let world = self.world.unwrap_or_else(|| std::sync::Arc::new(World::new()));
+        let world = self
+            .world
+            .unwrap_or_else(|| std::sync::Arc::new(World::new()));
 
         // Build the shared radio medium (if enabled) and attach a SimRadioFace to each radio
         // node — publishing LinkSignals into that node's own engine signal table.
@@ -391,9 +446,17 @@ impl Simulation {
             let id = AppId(i);
             let handle = crate::app::spawn_app(&entry.engine, id, *node, spec)?;
             apps.insert(id, handle);
-            info!(node = node.0, app = id.0, kind = spec.kind(), "ndn-lab: app spawned");
+            info!(
+                node = node.0,
+                app = id.0,
+                kind = spec.kind(),
+                "ndn-lab: app spawned"
+            );
         }
         let next_app = self.pending_apps.len();
+
+        // Diagnose the silent multi-local-app-face trap now that apps have registered their prefixes.
+        warn_multi_app_faces(&nodes, &links, &radio_faces);
 
         Ok(RunningSimulation {
             kernel: self.kernel,
@@ -455,6 +518,183 @@ fn wire_link(
     info!(node_a = a.0, face_a = %id_a, node_b = b.0, face_b = %id_b, "ndn-lab: link created");
 }
 
+/// The NFD short strategy name (`multicast`, `best-route`) from a full strategy Name
+/// (`/localhost/nfd/strategy/<name>/<version>`).
+fn short_strategy_name(name: &Name) -> String {
+    let s = name.to_string();
+    if let Some(idx) = s.find("/strategy/") {
+        let rest = &s[idx + "/strategy/".len()..];
+        let short = rest.split('/').next().unwrap_or(rest);
+        if !short.is_empty() {
+            return short.to_string();
+        }
+    }
+    s
+}
+
+/// Warn (once, at start) about the silent multi-local-app-face trap: a prefix served by ≥2 local
+/// app faces under a non-multicast strategy — the forwarder delivers each Interest to only one.
+fn warn_multi_app_faces(
+    nodes: &HashMap<NodeId, NodeEntry>,
+    links: &HashMap<(NodeId, NodeId), FaceId>,
+    radio_faces: &HashMap<NodeId, FaceId>,
+) {
+    for (node, entry) in nodes {
+        let link_faces: std::collections::HashSet<FaceId> = links
+            .iter()
+            .filter(|((from, _), _)| from == node)
+            .map(|(_, face)| *face)
+            .collect();
+        let radio = radio_faces.get(node).copied();
+        for (prefix, fib_entry) in entry.engine.fib().dump() {
+            let app_faces = fib_entry
+                .nexthops
+                .iter()
+                .filter(|nh| Some(nh.face_id) != radio && !link_faces.contains(&nh.face_id))
+                .count();
+            if app_faces < 2 {
+                continue;
+            }
+            let strategy = entry
+                .engine
+                .strategy_table()
+                .lpm(&prefix)
+                .map(|s| short_strategy_name(s.name()))
+                .unwrap_or_else(|| "best-route".to_string());
+            if !strategy.contains("multicast") {
+                tracing::warn!(
+                    node = node.0,
+                    %prefix,
+                    app_faces,
+                    strategy = %strategy,
+                    "ndn-lab: {app_faces} local app faces serve {prefix} under '{strategy}' — the \
+                     forwarder delivers each Interest to only ONE. Use the multicast strategy to \
+                     fan to all (fabric.explain_route(node, name) to inspect)."
+                );
+            }
+        }
+    }
+}
+
+/// A cheap, cloneable handle to the fabric's virtual clock — capture it in a spawned task instead
+/// of cloning `Arc<dyn SimKernel>` and calling `k.runtime().unix_nanos()` everywhere.
+/// [`RunningSimulation::clock`] hands one out.
+#[derive(Clone)]
+pub struct Clock {
+    rt: std::sync::Arc<dyn ndn_runtime::Runtime>,
+}
+
+impl Clock {
+    /// Virtual time now, in nanoseconds since the epoch (advances with the kernel's clock).
+    pub fn now_ns(&self) -> u64 {
+        self.rt.unix_nanos()
+    }
+
+    /// Virtual time now as a monotonic `Instant` (advances with the kernel's clock).
+    pub fn now(&self) -> ndn_runtime::Instant {
+        self.rt.now()
+    }
+}
+
+impl std::fmt::Debug for Clock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Clock")
+            .field("now_ns", &self.now_ns())
+            .finish()
+    }
+}
+
+/// A typed forwarding strategy — the discoverable, typo-proof alternative to the stringly-typed
+/// NFD short name. Both `Strategy::Multicast` and `"multicast"` are accepted anywhere a strategy is
+/// taken (the argument is `impl AsRef<str>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Strategy {
+    /// Single best next-hop; fails over to another only on a consumer retransmission (NFD default).
+    BestRoute,
+    /// Fan every Interest to *all* eligible next-hops — the failover / all-local-faces knob. Use
+    /// this when a prefix is served by more than one local app face (a Publisher **and** a
+    /// Subscriber on `/time`), or when a disjoint backup path must survive a dead upstream.
+    Multicast,
+}
+
+impl Strategy {
+    /// The NFD short name the engine's strategy registry resolves.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Strategy::BestRoute => "best-route",
+            Strategy::Multicast => "multicast",
+        }
+    }
+}
+
+impl AsRef<str> for Strategy {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for Strategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How a FIB next-hop leaves the node — the classification [`RunningSimulation::explain_route`] and
+/// [`RunningSimulation::face_stats`] attach so `recvs=0` becomes legible.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FaceKind {
+    /// A wired link toward another fabric node.
+    Link { toward: usize },
+    /// This node's radio face on the shared medium.
+    Radio,
+    /// A local application face (a producer/consumer/Publisher/Subscriber on this node).
+    App,
+}
+
+/// One next-hop in a [`RouteExplanation`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RouteNexthop {
+    pub face: String,
+    pub cost: u32,
+    #[serde(flatten)]
+    pub kind: FaceKind,
+}
+
+/// The answer to "where does an Interest for this name go, and why might it not arrive?" — the
+/// longest-matching FIB prefix, the strategy that will pick among the next-hops, each next-hop
+/// classified (link / radio / local app), and a `warning` for the classic silent trap: two local
+/// app faces on one prefix under `best-route`, where only one ever receives.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RouteExplanation {
+    pub node: usize,
+    pub name: String,
+    /// The longest FIB prefix matching `name`, or `None` if there is no route (→ Interests drop).
+    pub matched_prefix: Option<String>,
+    /// The strategy governing this name (`"best-route"` when none is set explicitly).
+    pub strategy: String,
+    pub nexthops: Vec<RouteNexthop>,
+    /// A human-readable caution when the route is a silent trap (e.g. multi-app-face under best-route).
+    pub warning: Option<String>,
+}
+
+/// Per-face packet counters (readable in a test) — turn `recvs=0` into "12 Interests in, 0 Data out
+/// on the link toward node 3". Counts come straight from the engine's face counters; `satisfied` /
+/// `nacked` breakdowns aren't tracked at the face level, so only the raw in/out/drops are reported.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FaceStats {
+    pub face: String,
+    #[serde(flatten)]
+    pub kind: FaceKind,
+    pub in_interests: u64,
+    pub out_interests: u64,
+    pub in_data: u64,
+    pub out_data: u64,
+    pub in_bytes: u64,
+    pub out_bytes: u64,
+    pub out_drops: u64,
+}
+
 /// A running fabric: live `ForwarderEngine`s on the kernel, with a control API and event
 /// tracer. Implements [`FabricControl`](crate::FabricControl).
 pub struct RunningSimulation {
@@ -487,6 +727,15 @@ impl RunningSimulation {
     /// The shared event tracer (engine face events + control-plane events).
     pub fn tracer(&self) -> std::sync::Arc<SimTracer> {
         std::sync::Arc::clone(&self.tracer)
+    }
+
+    /// A cheap, cloneable handle to the fabric's virtual clock — capture it in a spawned task
+    /// (`let clock = fabric.clock();`) and read `clock.now_ns()` instead of threading
+    /// `Arc<dyn SimKernel>` through and calling `k.runtime().unix_nanos()`.
+    pub fn clock(&self) -> Clock {
+        Clock {
+            rt: self.kernel.runtime(),
+        }
     }
 
     /// The fabric's spatial [`World`] (empty unless declared via [`Simulation::world`]).
@@ -781,7 +1030,12 @@ impl RunningSimulation {
 
     /// The node's engine handle (a cheap `Arc` clone), or `None` if no such node.
     pub fn engine_of(&self, node: NodeId) -> Option<ForwarderEngine> {
-        self.inner.lock().unwrap().nodes.get(&node).map(|e| e.engine.clone())
+        self.inner
+            .lock()
+            .unwrap()
+            .nodes
+            .get(&node)
+            .map(|e| e.engine.clone())
     }
 
     /// Number of live nodes.
@@ -792,7 +1046,12 @@ impl RunningSimulation {
     /// A cancellation token tied to `node`'s lifetime — bridge faces use it so they shut down
     /// with the node. `None` if no such node.
     pub(crate) fn node_cancel(&self, node: NodeId) -> Option<tokio_util::sync::CancellationToken> {
-        self.inner.lock().unwrap().nodes.get(&node).map(|e| e.handle.cancel_token())
+        self.inner
+            .lock()
+            .unwrap()
+            .nodes
+            .get(&node)
+            .map(|e| e.handle.cancel_token())
     }
 
     /// The FaceId of `from`'s face toward `to`, if linked.
@@ -818,8 +1077,15 @@ impl RunningSimulation {
         Ok(())
     }
 
-    /// Set the forwarding `strategy` (NFD short name) for `prefix` on a live `node`.
-    pub fn set_strategy(&self, node: NodeId, prefix: &Name, strategy: &str) -> Result<()> {
+    /// Set the forwarding `strategy` for `prefix` on a live `node`. Accepts a typed
+    /// [`Strategy`] or an NFD short name (`"best-route"` / `"multicast"`).
+    pub fn set_strategy(
+        &self,
+        node: NodeId,
+        prefix: &Name,
+        strategy: impl AsRef<str>,
+    ) -> Result<()> {
+        let strategy = strategy.as_ref();
         let engine = {
             let guard = self.inner.lock().unwrap();
             guard
@@ -833,6 +1099,139 @@ impl RunningSimulation {
             .ok_or_else(|| anyhow::anyhow!("unknown forwarding strategy {strategy:?}"))?;
         engine.strategy_table().insert(prefix, strat);
         Ok(())
+    }
+
+    /// Explain where an Interest for `name` goes from `node` — the matched FIB prefix, the strategy,
+    /// each next-hop classified (link toward a node / this node's radio / a local app face), and a
+    /// `warning` for the silent trap that costs the most debugging time: two local app faces on one
+    /// prefix under `best-route`, where the forwarder delivers each Interest to only **one** of them.
+    pub fn explain_route(&self, node: NodeId, name: &Name) -> Result<RouteExplanation> {
+        let (engine, link_faces) = {
+            let guard = self.inner.lock().unwrap();
+            let engine = guard
+                .nodes
+                .get(&node)
+                .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?
+                .engine
+                .clone();
+            // Faces of this node that are wired links, mapped to the node they point at.
+            let link_faces: HashMap<FaceId, NodeId> = guard
+                .links
+                .iter()
+                .filter(|((from, _), _)| *from == node)
+                .map(|((_, to), face)| (*face, *to))
+                .collect();
+            (engine, link_faces)
+        };
+        let radio_face = self.radio_faces.get(&node).copied();
+        let classify = |face: FaceId| -> FaceKind {
+            if Some(face) == radio_face {
+                FaceKind::Radio
+            } else if let Some(to) = link_faces.get(&face) {
+                FaceKind::Link { toward: to.0 }
+            } else {
+                FaceKind::App
+            }
+        };
+
+        // Longest FIB prefix matching `name` (and its classified next-hops).
+        let mut matched_prefix: Option<Name> = None;
+        let mut nexthops: Vec<RouteNexthop> = Vec::new();
+        for (prefix, entry) in engine.fib().dump() {
+            if name.has_prefix(&prefix)
+                && matched_prefix
+                    .as_ref()
+                    .is_none_or(|p| prefix.len() > p.len())
+            {
+                nexthops = entry
+                    .nexthops
+                    .iter()
+                    .map(|nh| RouteNexthop {
+                        face: nh.face_id.to_string(),
+                        cost: nh.cost,
+                        kind: classify(nh.face_id),
+                    })
+                    .collect();
+                matched_prefix = Some(prefix);
+            }
+        }
+        let strategy = engine
+            .strategy_table()
+            .lpm(name)
+            .map(|s| short_strategy_name(s.name()))
+            .unwrap_or_else(|| "best-route".to_string());
+
+        let app_faces = nexthops.iter().filter(|n| n.kind == FaceKind::App).count();
+        let warning = if matched_prefix.is_none() {
+            Some(format!(
+                "no FIB route for {name} at {node} — Interests will drop (no-route)"
+            ))
+        } else if app_faces >= 2 && !strategy.contains("multicast") {
+            Some(format!(
+                "{app_faces} local app faces serve this prefix under '{strategy}' — the forwarder \
+                 delivers each Interest to only ONE of them. Use the multicast strategy to fan to all."
+            ))
+        } else {
+            None
+        };
+
+        Ok(RouteExplanation {
+            node: node.0,
+            name: name.to_string(),
+            matched_prefix: matched_prefix.map(|p| p.to_string()),
+            strategy,
+            nexthops,
+            warning,
+        })
+    }
+
+    /// Per-face packet counters for a `node` (in/out interests + data + bytes + drops), each face
+    /// classified. Reach for this when "why didn't it arrive?" — `recvs=0` becomes "12 Interests in,
+    /// 0 Data out on the link toward node 3". Readable directly in a test.
+    pub fn face_stats(&self, node: NodeId) -> Result<Vec<FaceStats>> {
+        let (engine, link_faces) = {
+            let guard = self.inner.lock().unwrap();
+            let engine = guard
+                .nodes
+                .get(&node)
+                .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?
+                .engine
+                .clone();
+            let link_faces: HashMap<FaceId, NodeId> = guard
+                .links
+                .iter()
+                .filter(|((from, _), _)| *from == node)
+                .map(|((_, to), face)| (*face, *to))
+                .collect();
+            (engine, link_faces)
+        };
+        let radio_face = self.radio_faces.get(&node).copied();
+
+        let mut out = Vec::new();
+        for e in engine.face_states().iter() {
+            let face = *e.key();
+            let c = &e.value().counters;
+            let kind = if Some(face) == radio_face {
+                FaceKind::Radio
+            } else if let Some(to) = link_faces.get(&face) {
+                FaceKind::Link { toward: to.0 }
+            } else {
+                FaceKind::App
+            };
+            out.push(FaceStats {
+                face: face.to_string(),
+                kind,
+                in_interests: c.in_interests.load(Ordering::Relaxed),
+                out_interests: c.out_interests.load(Ordering::Relaxed),
+                in_data: c.in_data.load(Ordering::Relaxed),
+                out_data: c.out_data.load(Ordering::Relaxed),
+                in_bytes: c.in_bytes.load(Ordering::Relaxed),
+                out_bytes: c.out_bytes.load(Ordering::Relaxed),
+                out_drops: c.out_drops.load(Ordering::Relaxed),
+            });
+        }
+        out.sort_by(|a, b| a.face.cmp(&b.face));
+        Ok(out)
     }
 
     /// Connect two live nodes with a symmetric in-proc wired link.
@@ -849,7 +1248,13 @@ impl RunningSimulation {
         let FabricInner { nodes, links } = &mut *guard;
         wire_link(nodes, links, a, b, &profile, self.channel_buffer, self.seed);
         drop(guard);
-        self.tracer.record_now(a.0, None, EventKind::Custom("link".into()), b.to_string(), None);
+        self.tracer.record_now(
+            a.0,
+            None,
+            EventKind::Custom("link".into()),
+            b.to_string(),
+            None,
+        );
         Ok(())
     }
 
@@ -873,7 +1278,8 @@ impl RunningSimulation {
                 label: profile.label,
             },
         );
-        self.tracer.record_now(id.0, None, EventKind::Custom("node-spawn".into()), "", None);
+        self.tracer
+            .record_now(id.0, None, EventKind::Custom("node-spawn".into()), "", None);
         info!(node = id.0, "ndn-lab: node spawned");
         Ok(id)
     }
@@ -882,13 +1288,21 @@ impl RunningSimulation {
     pub async fn remove_node(&self, node: NodeId) -> Result<()> {
         let entry = {
             let mut guard = self.inner.lock().unwrap();
-            guard.links.retain(|(from, to), _| *from != node && *to != node);
+            guard
+                .links
+                .retain(|(from, to), _| *from != node && *to != node);
             guard.nodes.remove(&node)
         };
         let Some(entry) = entry else {
             bail!("no such node {node}");
         };
-        self.tracer.record_now(node.0, None, EventKind::Custom("node-remove".into()), "", None);
+        self.tracer.record_now(
+            node.0,
+            None,
+            EventKind::Custom("node-remove".into()),
+            "",
+            None,
+        );
         entry.handle.shutdown().await;
         info!(node = node.0, "ndn-lab: node removed");
         Ok(())

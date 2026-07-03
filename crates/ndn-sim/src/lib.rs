@@ -95,8 +95,8 @@ pub mod analysis;
 pub mod app;
 pub mod bridge;
 pub mod control;
-pub mod cosim;
 pub mod control_plane;
+pub mod cosim;
 pub mod des;
 pub mod geometry;
 pub mod kernel;
@@ -112,9 +112,9 @@ pub mod radio;
 pub mod replay;
 pub mod scenario;
 pub mod scene;
-pub mod span_capture;
 pub mod sim_face;
 pub mod sim_link;
+pub mod span_capture;
 pub mod stepper;
 pub mod telemetry;
 pub mod topo;
@@ -125,8 +125,8 @@ pub mod validate;
 pub mod world;
 
 pub use analysis::{
-    AppDelta, Explanation, LinkDelta, LinkVerdict, MetricDelta, RadioDelivery, RadioLog, RunCapture,
-    RunDiff, diff_runs, explain_link,
+    AppDelta, Explanation, LinkDelta, LinkVerdict, MetricDelta, RadioDelivery, RadioLog,
+    RunCapture, RunDiff, diff_runs, explain_link,
 };
 pub use app::{AppHandle, AppId, AppSpec};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
@@ -140,12 +140,20 @@ pub use cosim::{
 };
 pub use des::{DesKernel, DesSession};
 pub use geometry::{Obstacle, ObstructedPropagation};
-pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 #[cfg(not(target_arch = "wasm32"))]
-pub use kernel::{StepSession, SteppableKernel, VirtualKernel};
+pub use kernel::{
+    DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,
+};
+pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use mcp::SimMcp;
+pub use medium::{
+    CarrierSenseInterference, Delivery, DeliveryReason, FreeSpacePathLoss, InterferenceModel,
+    NoInterference, PerfectPropagation, PropagationModel, RangeThreshold, ReceivedFrame, TxContext,
+    WirelessMedium,
+};
 pub use otel_export::OtlpExporter;
+pub use profile::NodeProfile;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use replay::{RecordedCommand, Recording};
 pub use scenario::{
@@ -156,19 +164,17 @@ pub use scene::{
     RadioLink, SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
     render_topology_svg,
 };
-pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
-pub use stepper::Stepper;
-pub use medium::{
-    CarrierSenseInterference, Delivery, DeliveryReason, FreeSpacePathLoss, InterferenceModel,
-    NoInterference, PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
-};
-pub use profile::NodeProfile;
 pub use sim_face::SimFace;
 pub use sim_link::{FaceProfile, LinkConfig, SimLink};
+pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
+pub use stepper::Stepper;
 pub use telemetry::{
     MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter, compare_metrics, sample_engine,
 };
-pub use topology::{NodeId, RunningSimulation, Simulation};
+pub use topology::{
+    Clock, FaceKind, FaceStats, NodeId, RouteExplanation, RouteNexthop, RunningSimulation,
+    Simulation, Strategy,
+};
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]
 pub use validate::{

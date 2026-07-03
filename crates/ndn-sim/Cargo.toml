@@ -69,3 +69,4 @@ ndn-security = { workspace = true }
 ndn-time         = { workspace = true }
 ndn-time-sources = { workspace = true }
 ndn-timekeeper   = { workspace = true }
+ndn-sync         = { workspace = true }

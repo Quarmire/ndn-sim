@@ -806,6 +806,12 @@ impl RunningSimulation {
         self.apps.lock().unwrap().get(&app).map(|h| h.successes())
     }
 
+    /// The full protocol-neutral [`FlowStats`](crate::FlowStats) for an app — RTT, loss, and goodput,
+    /// not just the success count. The benchmark readout (and the shape the IP flow apps share).
+    pub fn flow_stats(&self, app: AppId) -> Option<crate::app::FlowStats> {
+        self.apps.lock().unwrap().get(&app).map(|h| h.stats())
+    }
+
     /// `(id, node, kind)` for every live app.
     pub fn apps(&self) -> Vec<(AppId, NodeId, &'static str)> {
         let mut v: Vec<_> = self

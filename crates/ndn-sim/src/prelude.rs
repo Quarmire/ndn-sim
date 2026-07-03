@@ -24,7 +24,7 @@
 pub use ndn_engine::builder::EngineConfig;
 
 // Builder + live fabric + control surface.
-pub use crate::{AppHandle, AppId, AppSpec};
+pub use crate::{AppHandle, AppId, AppSpec, FlowStats, TrafficPattern};
 pub use crate::{Clock, Fabric, FabricControl, NodeId, RunningSimulation, Simulation, Strategy};
 pub use crate::{FaceKind, FaceStats, RouteExplanation};
 pub use crate::{LinkConfig, NodeProfile};

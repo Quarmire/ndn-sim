@@ -128,7 +128,7 @@ pub use analysis::{
     AppDelta, Explanation, LinkDelta, LinkVerdict, MetricDelta, RadioDelivery, RadioLog,
     RunCapture, RunDiff, diff_runs, explain_link,
 };
-pub use app::{AppHandle, AppId, AppSpec};
+pub use app::{AppHandle, AppId, AppSpec, FlowStats, TrafficPattern};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
@@ -178,9 +178,9 @@ pub use topology::{
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]
 pub use validate::{
-    Agg, Baseline, BaselineCheck, CheckKernel, Cmp, Direction, Fault, MetricField, Observation,
-    Probe, Property, PropertyResult, RegressionResult, RunReport, ScheduledFault, ValidationReport,
-    ValidationSpec, run_validation, run_validation_against,
+    Agg, Baseline, BaselineCheck, CheckKernel, Cmp, Direction, Fault, FlowField, MetricField,
+    Observation, Probe, Property, PropertyResult, RegressionResult, RunReport, ScheduledFault,
+    ValidationReport, ValidationSpec, run_validation, run_validation_against,
 };
 pub use world::{
     Environment, FreeSpace, LinearMobility, MobilityModel, Position, StaticMobility,

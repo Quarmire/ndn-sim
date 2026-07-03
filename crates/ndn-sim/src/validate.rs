@@ -131,6 +131,42 @@ pub enum Probe {
         #[serde(default)]
         agg: Agg,
     },
+    /// A [`FlowField`] of the app at scenario spawn-index `app` — RTT / loss / goodput. The
+    /// benchmark gate: assert "mean RTT < X ms" or "goodput > Y bps" over a workload.
+    Flow { app: usize, field: FlowField },
+}
+
+/// A field of an app's [`FlowStats`](crate::app::FlowStats), for a [`Probe::Flow`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowField {
+    Sent,
+    Received,
+    Lost,
+    Bytes,
+    /// Fraction of requests that timed out, in `[0,1]`.
+    LossRate,
+    /// Mean round-trip time, milliseconds.
+    MeanRttMs,
+    /// Max round-trip time, milliseconds.
+    MaxRttMs,
+    /// Goodput, bits/sec, over the receive window.
+    ThroughputBps,
+}
+
+impl FlowField {
+    fn read(self, s: &crate::app::FlowStats) -> f64 {
+        match self {
+            FlowField::Sent => s.sent as f64,
+            FlowField::Received => s.received as f64,
+            FlowField::Lost => s.lost as f64,
+            FlowField::Bytes => s.bytes as f64,
+            FlowField::LossRate => s.loss_rate(),
+            FlowField::MeanRttMs => s.mean_rtt_ms(),
+            FlowField::MaxRttMs => s.max_rtt_ms(),
+            FlowField::ThroughputBps => s.throughput_bps(),
+        }
+    }
 }
 
 impl Probe {
@@ -139,6 +175,7 @@ impl Probe {
     pub fn eval(&self, obs: &Observation) -> Option<f64> {
         match self {
             Probe::AppSuccesses { app } => obs.app_successes.get(app).map(|&n| n as f64),
+            Probe::Flow { app, field } => obs.flow_stats.get(app).map(|s| field.read(s)),
             Probe::Metric { field, node, agg } => match node {
                 Some(idx) => obs
                     .metrics
@@ -558,6 +595,8 @@ pub struct Observation {
     pub metrics: Vec<MetricsSample>,
     /// Successful-fetch counts by app spawn-index.
     pub app_successes: BTreeMap<usize, u64>,
+    /// Full flow metrics (RTT / loss / goodput) by app spawn-index — the benchmark readout.
+    pub flow_stats: BTreeMap<usize, crate::app::FlowStats>,
 }
 
 /// The verdict for one [`Property`], aggregated across a kernel's seed sweep.
@@ -868,15 +907,20 @@ fn run_once(spec: &ValidationSpec, kernel: CheckKernel, seed: u64) -> Result<Obs
         // Capture the terminal state.
         let metrics = fabric.snapshot_metrics();
         let mut app_successes = BTreeMap::new();
+        let mut flow_stats = BTreeMap::new();
         for (id, _node, _kind) in fabric.apps() {
             if let Some(n) = fabric.app_successes(id) {
                 app_successes.insert(id.0, n);
+            }
+            if let Some(s) = fabric.flow_stats(id) {
+                flow_stats.insert(id.0, s);
             }
         }
         fabric.shutdown().await;
         anyhow::Ok(Observation {
             metrics,
             app_successes,
+            flow_stats,
         })
     };
 
@@ -1094,6 +1138,7 @@ hold_ratio = 1.0
         let obs = Observation {
             metrics: vec![],
             app_successes: BTreeMap::new(),
+            ..Default::default()
         };
         // Empty metrics ⇒ unobservable aggregate.
         assert_eq!(

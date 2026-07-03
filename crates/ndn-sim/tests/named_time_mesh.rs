@@ -10,8 +10,9 @@
 //! bidirectional [`ndn_sync::SvSync`]** (with a `MemoryStore`, so it serves its
 //! own publications and fetches peers') bridged by hand to a raw engine
 //! [`Connection`](ndn_app) — a single app face, which also routes cleanly under
-//! best-route. All nodes sit on one shared radio medium (an all-hear-all
-//! segment, SVS's natural home). Beacons are Ed25519-signed and trust-anchor
+//! best-route. The convergence test puts all nodes on one collision-free
+//! `broadcast_segment` (an all-hear-all bus, SVS's natural home); the probes use
+//! a link and a geometric radio. Beacons are Ed25519-signed and trust-anchor
 //! validated end to end; the ensemble converges to the GNSS reference.
 
 use std::sync::Arc;
@@ -130,10 +131,6 @@ fn raw_bidirectional_svsync_crosses_a_link() {
             .await
             .expect("B timed out on a raw SvSync update")
             .expect("update");
-        eprintln!(
-            "DBG raw update: from={} seq={}..{}",
-            update.publisher, update.low_seq, update.high_seq
-        );
         let payload = svsb
             .fetch(&update.name, update.high_seq)
             .await

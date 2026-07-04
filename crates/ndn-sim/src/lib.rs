@@ -141,7 +141,7 @@ pub use cosim::{
 };
 pub use des::{DesKernel, DesSession};
 pub use geometry::{Obstacle, ObstructedPropagation};
-pub use ip::{IpNode, IpNodeStats, IpPacket, Ipv4, RunningIpNode, ip_link};
+pub use ip::{IpNetwork, IpNode, IpNodeStats, IpPacket, Ipv4, RunningIpNode, ip_link};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{
     DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,

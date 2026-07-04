@@ -88,3 +88,41 @@ fn ip_no_route_drops_and_is_deterministic() {
     assert!(dropped >= 5, "the relay dropped the unroutable packets: {dropped}");
     assert_eq!(run(), (received, lost, dropped), "IP forwarding replays identically on DES");
 }
+
+/// An IpNetwork auto-installs shortest-path routes (BFS) — a 5-node line pings end-to-end with no
+/// hand-wired routing. RTT ≈ 8·link-delay (4 hops each way).
+#[test]
+fn ip_network_auto_routes_a_line() {
+    use ndn_sim::IpNetwork;
+    let (recv, rtt_ms) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+        let net = IpNetwork::from_links(rt, 5, &[(0, 1), (1, 2), (2, 3), (3, 4)], &prof);
+        let stats = net
+            .node(0)
+            .ping(net.addr(4), 8, 32, Duration::from_millis(2), Duration::from_secs(1))
+            .await;
+        (stats.received, stats.mean_rtt_ms())
+    });
+    assert!(recv >= 7, "auto-routed line delivered end-to-end: {recv}");
+    assert!((5.0..25.0).contains(&rtt_ms), "RTT ≈ 8 ms over 4 hops, got {rtt_ms}");
+}
+
+/// `run_flow` drives the IP plane with the SAME TrafficPattern the NDN plane uses; and an IpNetwork
+/// builds straight from a `Scenario`'s graph (the same-topology bridge for NDN-vs-IP).
+#[test]
+fn ip_run_flow_over_scenario_graph() {
+    use ndn_sim::{IpNetwork, TrafficPattern, topo};
+    let recv = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+        let scenario = topo::line(4); // 4-node line as a Scenario
+        let net = IpNetwork::from_scenario(rt, &scenario, &prof);
+        let stats = net
+            .node(0)
+            .run_flow(net.addr(3), TrafficPattern::Cbr { interval_ms: 5 }, 10, 16, Duration::from_secs(1))
+            .await;
+        stats.received
+    });
+    assert!(recv >= 9, "run_flow over a scenario-built IP network delivered: {recv}");
+}

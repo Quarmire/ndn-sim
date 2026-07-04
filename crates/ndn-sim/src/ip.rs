@@ -11,6 +11,7 @@
 //! and [`ping`](RunningIpNode::ping) measuring round-trip [`FlowStats`]. Routing generation, an
 //! NDN-vs-IP diff harness, and richer transports layer on top.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -110,6 +111,8 @@ pub struct IpNodeStats {
     pub delivered: u64,
     pub dropped_no_route: u64,
     pub dropped_ttl: u64,
+    /// Total bytes this node put on the wire (the IP-side "bytes on the wire" for a cost comparison).
+    pub tx_bytes: u64,
 }
 
 struct Inner {
@@ -121,6 +124,7 @@ struct Inner {
     delivered: AtomicU64,
     dropped_no_route: AtomicU64,
     dropped_ttl: AtomicU64,
+    tx_bytes: AtomicU64,
     /// Replies delivered to a local pinger: `(seq, recv_ns, payload_len)`.
     reply_tx: mpsc::UnboundedSender<(u32, u64, usize)>,
 }
@@ -138,7 +142,9 @@ impl Inner {
     }
     async fn send_on(&self, via: usize, pkt: &IpPacket) {
         if let Some(face) = self.faces.get(via) {
-            let _ = face.send_bytes(pkt.encode()).await;
+            let wire = pkt.encode();
+            self.tx_bytes.fetch_add(wire.len() as u64, Ordering::Relaxed);
+            let _ = face.send_bytes(wire).await;
         }
     }
     async fn handle(self: &Arc<Self>, pkt: IpPacket) {
@@ -215,6 +221,7 @@ impl IpNode {
             delivered: AtomicU64::new(0),
             dropped_no_route: AtomicU64::new(0),
             dropped_ttl: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
             reply_tx,
         });
         for i in 0..inner.faces.len() {
@@ -244,19 +251,20 @@ impl RunningIpNode {
         self.inner.addr
     }
 
-    /// Forwarding counters (forwarded / delivered / dropped).
+    /// Forwarding counters (forwarded / delivered / dropped / tx_bytes).
     pub fn stats(&self) -> IpNodeStats {
         IpNodeStats {
             forwarded: self.inner.forwarded.load(Ordering::Relaxed),
             delivered: self.inner.delivered.load(Ordering::Relaxed),
             dropped_no_route: self.inner.dropped_no_route.load(Ordering::Relaxed),
             dropped_ttl: self.inner.dropped_ttl.load(Ordering::Relaxed),
+            tx_bytes: self.inner.tx_bytes.load(Ordering::Relaxed),
         }
     }
 
     /// Sequentially ping `dst` `count` times (a `payload_len`-byte request each), waiting up to
-    /// `lifetime` for each echo and pausing `interval` between them — returning the round-trip
-    /// [`FlowStats`] (RTT, loss, goodput), the same shape the NDN apps report.
+    /// `lifetime` for each echo and pausing a constant `interval` between them — returning the
+    /// round-trip [`FlowStats`] (RTT, loss, goodput), the same shape the NDN apps report.
     pub async fn ping(
         &self,
         dst: Ipv4,
@@ -264,6 +272,39 @@ impl RunningIpNode {
         payload_len: usize,
         interval: Duration,
         lifetime: Duration,
+    ) -> FlowStats {
+        self.flow_loop(dst, count, payload_len, lifetime, |_| interval).await
+    }
+
+    /// Like [`ping`](Self::ping) but with inter-request delays from a [`TrafficPattern`] (CBR /
+    /// Poisson / bursty) — the **same workload shape** that drives the NDN [`TrafficSource`], so a
+    /// benchmark applies an identical pattern to both planes and compares the resulting `FlowStats`.
+    ///
+    /// [`TrafficSource`]: crate::AppSpec::TrafficSource
+    pub async fn run_flow(
+        &self,
+        dst: Ipv4,
+        pattern: crate::TrafficPattern,
+        count: u32,
+        payload_len: usize,
+        lifetime: Duration,
+    ) -> FlowStats {
+        let mut rng = crate::app::SplitMix64::new(0x51_4E44_4E00u64 ^ u64::from(dst.0));
+        self.flow_loop(dst, count, payload_len, lifetime, move |i| {
+            pattern.next_delay(u64::from(i), &mut rng)
+        })
+        .await
+    }
+
+    /// The shared measured-ping loop: express a request, time the round trip into [`FlowStats`],
+    /// then wait `delay(seq)` before the next. Sequential (one outstanding), like `ping -c`.
+    async fn flow_loop(
+        &self,
+        dst: Ipv4,
+        count: u32,
+        payload_len: usize,
+        lifetime: Duration,
+        mut delay: impl FnMut(u32) -> Duration,
     ) -> FlowStats {
         let mut rx = self.reply_rx.lock().await;
         let payload = Bytes::from(vec![0u8; payload_len]);
@@ -302,8 +343,9 @@ impl RunningIpNode {
                 }
                 _ = ndn_app::rt::sleep(lifetime) => { lost += 1; }
             }
-            if !interval.is_zero() {
-                ndn_app::rt::sleep(interval).await;
+            let wait = delay(seq);
+            if !wait.is_zero() {
+                ndn_app::rt::sleep(wait).await;
             }
         }
 
@@ -319,6 +361,106 @@ impl RunningIpNode {
             last_recv_ns: last_recv,
         }
     }
+}
+
+/// A ready-to-run IP network built from a topology: `n` nodes addressed `10.0.0.{i+1}`, links wired
+/// with a shared `profile`, and shortest-path `/32` routes auto-installed by BFS from each node —
+/// the IP analogue of [`topo::add_routes_toward`](crate::topo::add_routes_toward). Started on build.
+pub struct IpNetwork {
+    nodes: Vec<RunningIpNode>,
+    addrs: Vec<Ipv4>,
+}
+
+impl IpNetwork {
+    /// Build + start from an explicit undirected link list over `n` nodes (`n <= 254`).
+    pub fn from_links(
+        runtime: Arc<dyn Runtime>,
+        n: usize,
+        links: &[(usize, usize)],
+        profile: &FaceProfile,
+    ) -> Self {
+        let addrs: Vec<Ipv4> = (0..n).map(|i| Ipv4::new(10, 0, 0, (i + 1) as u8)).collect();
+        let mut builders: Vec<IpNode> =
+            addrs.iter().map(|&a| IpNode::new(a, Arc::clone(&runtime))).collect();
+
+        // Wire links, tracking adjacency and each node's (neighbour → face index) map.
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut face_to: Vec<HashMap<usize, usize>> = vec![HashMap::new(); n];
+        for (link_id, &(a, b)) in links.iter().enumerate() {
+            let (fa, fb) = ip_link(Arc::clone(&runtime), profile, 256, link_id as u64);
+            face_to[a].insert(b, builders[a].attach(fa));
+            face_to[b].insert(a, builders[b].attach(fb));
+            adj[a].push(b);
+            adj[b].push(a);
+        }
+
+        // Shortest-path /32 routes: BFS from each source gives the first-hop neighbour to every dst.
+        for s in 0..n {
+            let first_hop = bfs_first_hops(&adj, s, n);
+            for (d, hop) in first_hop.iter().enumerate() {
+                if let Some(nh) = hop {
+                    builders[s].route(addrs[d], 32, face_to[s][nh]);
+                }
+            }
+        }
+
+        let nodes = builders.into_iter().map(IpNode::start).collect();
+        IpNetwork { nodes, addrs }
+    }
+
+    /// Build + start from a [`Scenario`](crate::Scenario)'s node + link graph (NDN routes / radio are
+    /// ignored — IP routes itself), so the *same topology* drives both the NDN and IP planes.
+    pub fn from_scenario(
+        runtime: Arc<dyn Runtime>,
+        scenario: &crate::Scenario,
+        profile: &FaceProfile,
+    ) -> Self {
+        let links: Vec<(usize, usize)> = scenario.links.iter().map(|l| (l.a, l.b)).collect();
+        Self::from_links(runtime, scenario.nodes.len(), &links, profile)
+    }
+
+    pub fn node(&self, i: usize) -> &RunningIpNode {
+        &self.nodes[i]
+    }
+    pub fn addr(&self, i: usize) -> Ipv4 {
+        self.addrs[i]
+    }
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+    /// Total bytes put on the wire across all nodes — the IP "bytes on the wire" for a cost comparison.
+    pub fn total_tx_bytes(&self) -> u64 {
+        self.nodes.iter().map(|n| n.stats().tx_bytes).sum()
+    }
+}
+
+/// BFS from `src`: `first_hop[d]` = the neighbour of `src` on a shortest path to `d`
+/// (`None` for `src` itself and for unreachable nodes).
+fn bfs_first_hops(adj: &[Vec<usize>], src: usize, n: usize) -> Vec<Option<usize>> {
+    let mut first = vec![None; n];
+    let mut seen = vec![false; n];
+    seen[src] = true;
+    let mut q = VecDeque::new();
+    for &nb in &adj[src] {
+        if !seen[nb] {
+            seen[nb] = true;
+            first[nb] = Some(nb);
+            q.push_back(nb);
+        }
+    }
+    while let Some(u) = q.pop_front() {
+        for &v in &adj[u] {
+            if !seen[v] {
+                seen[v] = true;
+                first[v] = first[u];
+                q.push_back(v);
+            }
+        }
+    }
+    first
 }
 
 /// A byte-channel link between two IP nodes — the same emulated SimLink the NDN plane rides (delay,

@@ -157,7 +157,7 @@ fn default_burst_interval() -> u64 {
 
 impl TrafficPattern {
     /// The wait before request number `i` (0-based), advancing `rng` for the Poisson case.
-    fn next_delay(&self, i: u64, rng: &mut SplitMix64) -> Duration {
+    pub(crate) fn next_delay(&self, i: u64, rng: &mut SplitMix64) -> Duration {
         match *self {
             TrafficPattern::Cbr { interval_ms } => Duration::from_millis(interval_ms),
             TrafficPattern::Poisson { mean_interval_ms, .. } => {
@@ -183,7 +183,7 @@ pub(crate) struct SplitMix64 {
     state: u64,
 }
 impl SplitMix64 {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self { state: seed }
     }
     fn next_u64(&mut self) -> u64 {

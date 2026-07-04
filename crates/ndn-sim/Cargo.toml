@@ -27,6 +27,13 @@ ndn-app       = { workspace = true }
 # Signed-Interest verification for authenticated control-over-NDN (mutating commands).
 ndn-security  = { workspace = true }
 
+# The Keel: ndn-lab is the first real consumer of the manifest/render-contract
+# calculus. Zero-dep spec crates + the tool-tier `explain` renderer, pulled by
+# path from the sibling ndn-rs workspace (they carry no transitive deps).
+ndn-manifest        = { path = "../../../ndn-rs/crates/core/ndn-manifest" }
+ndn-render-contract = { path = "../../../ndn-rs/crates/core/ndn-render-contract" }
+ndn-bench           = { path = "../../../ndn-rs/crates/tools/ndn-bench" }
+
 serde      = { workspace = true }
 serde_json = { workspace = true }
 toml       = { workspace = true }

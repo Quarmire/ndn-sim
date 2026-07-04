@@ -147,6 +147,7 @@ pub mod scenario;
 pub mod scene;
 pub mod sim_face;
 pub mod sim_link;
+pub mod keel;
 pub mod span_capture;
 pub mod stepper;
 pub mod telemetry;
@@ -221,6 +222,9 @@ pub use sim_face::SimFace;
 pub use sim_link::{FaceProfile, LinkConfig, SimLink};
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use stepper::Stepper;
+pub use keel::{KeelView, Rendered};
+// Re-exported for the KeelView surface (best_lens floor; Rendered verdict).
+pub use ndn_render_contract::{Floor, Verdict};
 pub use telemetry::{
     FabricGauges, IpMetricsSample, MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter,
     compare_metrics, sample_engine,

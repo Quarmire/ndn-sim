@@ -188,7 +188,8 @@ pub use topology::{
     Simulation, Strategy,
 };
 pub use wifi::{
-    FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, broadcast_airtime, frame_airtime,
+    AccessCategory, FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, WifiMode, broadcast_airtime,
+    frame_airtime,
 };
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]

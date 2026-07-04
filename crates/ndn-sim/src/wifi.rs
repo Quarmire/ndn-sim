@@ -37,9 +37,83 @@ const SIFS_US: f64 = 16.0;
 const DIFS_US: f64 = 34.0;
 const HT_PREAMBLE_US: f64 = 36.0;
 const ACK_US: f64 = 44.0;
+/// A Block-ACK (acknowledges a whole A-MPDU) is a little larger than a normal ACK.
+const BLOCK_ACK_US: f64 = 68.0;
 const CW_MIN: f64 = 15.0;
 /// MAC header + FCS carried with every data frame.
 const MAC_OVERHEAD_BYTES: usize = 34;
+/// The A-MPDU sub-frame delimiter prepended to each aggregated MPDU.
+const MPDU_DELIMITER_BYTES: usize = 4;
+/// Managed multicast/broadcast (and beacons) go out at a **basic (legacy) rate** — MCS 0 here —
+/// with no ACK and no rate adaptation, per 802.11's group-addressed-frame rules.
+const BASIC_RATE_MCS: u8 = 0;
+/// A beacon management frame's size and the standard ~102.4 ms beacon interval.
+const BEACON_BYTES: usize = 128;
+const BEACON_INTERVAL_US: f64 = 102_400.0;
+
+/// The radio operating mode — the crux of the named-data-radio vs normal-Wi-Fi comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiMode {
+    /// Raw monitor-mode injection: every frame is a broadcast at a radiotap-chosen rate, with **no
+    /// MAC** — no ACK, no retransmission, no rate adaptation, and **no beacons**. Named-data radio.
+    Monitor,
+    /// Normal Wi-Fi (IBSS / AP / mesh): unicast gets CSMA-CA + ACK + retransmission + rate adaptation
+    /// (and A-MPDU aggregation); **multicast/broadcast goes at the basic rate with no ACK**; and the
+    /// mode emits periodic **beacons**.
+    Managed,
+}
+
+impl WifiMode {
+    /// Airtime per second spent on beacons (0 for monitor; a basic-rate beacon each interval for
+    /// managed modes — IBSS/AP/mesh all beacon).
+    pub fn beacon_airtime_per_sec(self) -> Duration {
+        match self {
+            WifiMode::Monitor => Duration::ZERO,
+            WifiMode::Managed => {
+                let per_beacon = broadcast_airtime(BEACON_BYTES, BASIC_RATE_MCS).as_nanos() as f64;
+                let beacons_per_sec = 1e6 / BEACON_INTERVAL_US;
+                Duration::from_nanos((per_beacon * beacons_per_sec) as u64)
+            }
+        }
+    }
+}
+
+/// EDCA access categories — QoS contention parameters (higher priority ⇒ shorter AIFS + smaller
+/// contention window ⇒ less airtime waiting). Values are the 802.11 defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AccessCategory {
+    Background,
+    #[default]
+    BestEffort,
+    Video,
+    Voice,
+}
+
+impl AccessCategory {
+    /// AIFS number (slots after SIFS before contention) — lower is higher priority.
+    fn aifsn(self) -> f64 {
+        match self {
+            AccessCategory::Background => 7.0,
+            AccessCategory::BestEffort => 3.0,
+            AccessCategory::Video => 2.0,
+            AccessCategory::Voice => 2.0,
+        }
+    }
+    /// Minimum contention window.
+    fn cw_min(self) -> f64 {
+        match self {
+            AccessCategory::Background | AccessCategory::BestEffort => 15.0,
+            AccessCategory::Video => 7.0,
+            AccessCategory::Voice => 3.0,
+        }
+    }
+    fn aifs_us(self) -> f64 {
+        SIFS_US + self.aifsn() * SLOT_US
+    }
+    fn backoff_us(self) -> f64 {
+        self.cw_min() / 2.0 * SLOT_US
+    }
+}
 
 fn us(x: f64) -> Duration {
     Duration::from_nanos((x * 1_000.0).max(0.0) as u64)
@@ -61,9 +135,24 @@ pub fn broadcast_airtime(bytes: usize, mcs: u8) -> Duration {
     us(DIFS_US + avg_backoff_us()) + frame_airtime(bytes, mcs)
 }
 
-/// Airtime one unicast attempt occupies: contention + frame + SIFS + ACK.
-fn unicast_attempt_airtime(bytes: usize, mcs: u8) -> Duration {
-    us(DIFS_US + avg_backoff_us() + SIFS_US + ACK_US) + frame_airtime(bytes, mcs)
+/// Airtime of one A-MPDU on the air: one HT preamble amortised over `n_agg` sub-frames (each with a
+/// delimiter + MAC framing). Aggregation is the big managed-mode throughput lever for bulk.
+fn ampdu_airtime(subframe_bytes: usize, n_agg: u32, mcs: u8) -> Duration {
+    let rate = mcs_phy_rate_bps(mcs).max(1) as f64;
+    let per_sub_bits = ((subframe_bytes + MAC_OVERHEAD_BYTES + MPDU_DELIMITER_BYTES) * 8) as f64;
+    us(HT_PREAMBLE_US + n_agg.max(1) as f64 * per_sub_bits / rate * 1e6)
+}
+
+/// Airtime one managed unicast attempt occupies: EDCA contention (per access category) + the
+/// (possibly aggregated) frame + SIFS + ACK (or Block-ACK for an A-MPDU).
+fn managed_unicast_attempt_airtime(
+    bytes: usize,
+    n_agg: u32,
+    mcs: u8,
+    ac: AccessCategory,
+) -> Duration {
+    let ack = if n_agg > 1 { BLOCK_ACK_US } else { ACK_US };
+    us(ac.aifs_us() + ac.backoff_us() + SIFS_US + ack) + ampdu_airtime(bytes, n_agg, mcs)
 }
 
 /// The outcome of a modelled transmission.
@@ -154,7 +243,8 @@ impl Wifi {
     }
 
     /// **Monitor / injection** transmit: one broadcast at `mcs`, no ACK, no retry. Delivered iff the
-    /// PHY decodes it at the receiver's `snr_db`. This is the named-data-radio transmission.
+    /// PHY decodes it at the receiver's `snr_db`. This is the named-data-radio transmission —
+    /// multicast-native (one airtime reaches every in-range receiver) at a rate you choose.
     pub fn monitor_tx(&self, snr_db: f64, bytes: usize, mcs: u8, rng: &mut StdRng) -> TxOutcome {
         let p = self.link.frame_delivery(mcs, snr_db);
         TxOutcome {
@@ -165,15 +255,19 @@ impl Wifi {
         }
     }
 
-    /// **Managed unicast** transmit to `peer`: CSMA-CA + ACK + retransmit up to `retry_limit` times,
-    /// with the MCS chosen (and learned) by `rc`. Airtime accumulates every attempt.
-    pub fn unicast_tx(
+    /// **Managed unicast** transmit to `peer`: EDCA CSMA-CA + ACK (Block-ACK when aggregating) +
+    /// retransmit up to `retry_limit` times, MCS chosen (and learned) by `rc`. `n_agg` sub-frames
+    /// aggregate into one A-MPDU (1 = no aggregation). Airtime accumulates every attempt.
+    #[allow(clippy::too_many_arguments)]
+    pub fn managed_unicast_tx(
         &self,
         peer: usize,
         snr_db: f64,
         bytes: usize,
         rc: &mut dyn RateControl,
         retry_limit: u32,
+        n_agg: u32,
+        ac: AccessCategory,
         rng: &mut StdRng,
     ) -> TxOutcome {
         let mut airtime = Duration::ZERO;
@@ -184,7 +278,7 @@ impl Wifi {
             let mcs = rc.select(peer, snr_db, &self.link);
             last_mcs = mcs;
             attempts += 1;
-            airtime += unicast_attempt_airtime(bytes, mcs);
+            airtime += managed_unicast_attempt_airtime(bytes, n_agg, mcs, ac);
             let ok = rng.random::<f64>() < self.link.frame_delivery(mcs, snr_db);
             rc.feedback(peer, mcs, ok);
             if ok {
@@ -193,6 +287,20 @@ impl Wifi {
             }
         }
         TxOutcome { delivered, attempts, airtime, mcs: last_mcs }
+    }
+
+    /// **Managed multicast / broadcast**: a single group-addressed frame at the **basic (legacy)
+    /// rate**, no ACK, no retry, no rate adaptation (802.11's group-frame rule). Contrast monitor
+    /// mode, which multicasts at whatever (high) rate you inject — so managed multicast is robust but
+    /// slow, and cannot use the aggregation/rate-control that managed *unicast* enjoys.
+    pub fn managed_multicast_tx(&self, snr_db: f64, bytes: usize, rng: &mut StdRng) -> TxOutcome {
+        let p = self.link.frame_delivery(BASIC_RATE_MCS, snr_db);
+        TxOutcome {
+            delivered: rng.random::<f64>() < p,
+            attempts: 1,
+            airtime: broadcast_airtime(bytes, BASIC_RATE_MCS),
+            mcs: BASIC_RATE_MCS,
+        }
     }
 }
 
@@ -217,18 +325,60 @@ mod tests {
             if wifi.monitor_tx(snr, 200, 2, &mut r1).delivered {
                 mono += 1;
             }
-            if wifi.unicast_tx(0, snr, 200, &mut rc, 4, &mut r2).delivered {
+            if wifi
+                .managed_unicast_tx(0, snr, 200, &mut rc, 4, 1, AccessCategory::BestEffort, &mut r2)
+                .delivered
+            {
                 uni += 1;
             }
         }
         assert!(uni > mono + 300, "ACK+retry raises delivery (uni {uni} vs mono {mono})");
     }
 
+    /// Managed multicast is pinned to the basic (legacy) rate — robust but the slowest airtime — while
+    /// monitor mode can multicast at a high MCS, so named-data radio's multicast is much cheaper.
+    #[test]
+    fn managed_multicast_uses_the_basic_rate() {
+        let wifi = Wifi::new();
+        let mut r = rng();
+        let out = wifi.managed_multicast_tx(30.0, 500, &mut r);
+        assert_eq!(out.mcs, 0, "group frames go at the basic rate");
+        // The same multicast injected at a high MCS in monitor mode occupies far less airtime.
+        let monitor_fast = broadcast_airtime(500, MAX_RELIABLE_MCS);
+        assert!(out.airtime > monitor_fast * 2, "basic-rate multicast ≫ high-rate monitor airtime");
+    }
+
+    /// Managed modes spend airtime on beacons; monitor mode does not.
+    #[test]
+    fn only_managed_mode_beacons() {
+        assert_eq!(WifiMode::Monitor.beacon_airtime_per_sec(), Duration::ZERO);
+        assert!(WifiMode::Managed.beacon_airtime_per_sec() > Duration::ZERO, "managed beacons cost airtime");
+    }
+
+    /// A-MPDU aggregation amortises the PHY preamble across sub-frames, so airtime-per-frame drops as
+    /// the aggregate grows — the managed-mode throughput lever for bulk.
+    #[test]
+    fn aggregation_amortizes_the_preamble() {
+        let per_frame_1 = managed_unicast_attempt_airtime(1500, 1, 7, AccessCategory::BestEffort);
+        let agg = managed_unicast_attempt_airtime(1500, 16, 7, AccessCategory::BestEffort);
+        let per_frame_16 = agg / 16;
+        assert!(per_frame_16 < per_frame_1, "16-frame A-MPDU is cheaper per frame ({per_frame_16:?} < {per_frame_1:?})");
+    }
+
+    /// EDCA prioritises: a Voice frame contends less (shorter AIFS + CW) than a Background frame.
+    #[test]
+    fn edca_voice_beats_background() {
+        let voice = managed_unicast_attempt_airtime(200, 1, 4, AccessCategory::Voice);
+        let background = managed_unicast_attempt_airtime(200, 1, 4, AccessCategory::Background);
+        assert!(voice < background, "voice AC waits less than background ({voice:?} < {background:?})");
+    }
+
     /// …but a successful unicast costs more airtime than a monitor broadcast (ACK + contention).
     #[test]
     fn unicast_costs_more_airtime_than_monitor() {
         assert!(
-            unicast_attempt_airtime(200, 4) > broadcast_airtime(200, 4),
+            managed_unicast_attempt_airtime(200, 1, 4, AccessCategory::BestEffort)
+                > broadcast_airtime(200, 4),
             "unicast attempt (frame+SIFS+ACK) > broadcast (frame only)"
         );
     }
@@ -253,7 +403,9 @@ mod tests {
         let mcs = 4;
         let one_broadcast = broadcast_airtime(bytes, mcs);
         let n = 5;
-        let n_unicasts: Duration = (0..n).map(|_| unicast_attempt_airtime(bytes, mcs)).sum();
+        let n_unicasts: Duration = (0..n)
+            .map(|_| managed_unicast_attempt_airtime(bytes, 1, mcs, AccessCategory::BestEffort))
+            .sum();
         assert!(
             n_unicasts > one_broadcast * 4,
             "delivering to {n} peers: {n} unicasts ({n_unicasts:?}) ≫ one broadcast ({one_broadcast:?})"

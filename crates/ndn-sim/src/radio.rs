@@ -79,6 +79,12 @@ pub struct RadioBus {
     view_cache: Mutex<Option<(u64, u64, Arc<crate::world::WorldView>)>>,
     /// Optional causal capture (axis 4): every delivery decision, with its reason, for `explain`.
     radio_log: Mutex<Option<Arc<crate::analysis::RadioLog>>>,
+    /// The MAC discipline the airtime accounting assumes: `Monitor` (named-data radio) charges one
+    /// broadcast per frame; `Managed` charges a unicast per in-range receiver (normal Wi-Fi loses
+    /// NDN's multicast efficiency). Default `Monitor`.
+    mac_mode: Mutex<crate::wifi::WifiMode>,
+    /// Total airtime consumed on the medium (ns) — the cost NDN-over-monitor vs NDN-over-managed differ on.
+    airtime_ns: std::sync::atomic::AtomicU64,
 }
 
 impl RadioBus {
@@ -160,7 +166,20 @@ impl RadioBus {
             in_air: Mutex::new(Vec::new()),
             view_cache: Mutex::new(None),
             radio_log: Mutex::new(None),
+            mac_mode: Mutex::new(crate::wifi::WifiMode::Monitor),
+            airtime_ns: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Set the MAC discipline for airtime accounting (`Monitor` = named-data radio, one broadcast per
+    /// frame; `Managed` = normal Wi-Fi, a unicast per in-range receiver).
+    pub fn set_mac_mode(&self, mode: crate::wifi::WifiMode) {
+        *self.mac_mode.lock().unwrap() = mode;
+    }
+
+    /// Total airtime consumed on the medium so far.
+    pub fn total_airtime(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.airtime_ns.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Attach a [`RadioLog`](crate::analysis::RadioLog): from now on, every delivery decision is
@@ -358,6 +377,22 @@ impl RadioBus {
                 );
             }
         }
+
+        // Airtime cost under the MAC discipline: monitor charges one broadcast (reaches all in-range
+        // in a single transmission — NDN's multicast advantage); managed charges a unicast per
+        // in-range receiver (normal Wi-Fi replaces the broadcast with N unicasts).
+        let cost = match *self.mac_mode.lock().unwrap() {
+            crate::wifi::WifiMode::Monitor => crate::wifi::broadcast_airtime(frame.len(), mcs_index),
+            crate::wifi::WifiMode::Managed => {
+                let n = out.len().max(1) as u32;
+                crate::wifi::unicast_airtime(frame.len(), mcs_index) * n
+            }
+        };
+        self.airtime_ns.fetch_add(
+            cost.as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         out
     }
 }

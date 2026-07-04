@@ -188,6 +188,12 @@ fn ampdu_airtime(subframe_bytes: usize, n_agg: u32, mcs: u8) -> Duration {
     us(HT_PREAMBLE_US + n_agg.max(1) as f64 * per_sub_bits / rate * 1e6)
 }
 
+/// Airtime one managed unicast (best-effort, no aggregation) occupies — frame + SIFS + ACK +
+/// contention. The per-neighbour cost when a broadcast is replaced by unicasts.
+pub fn unicast_airtime(bytes: usize, mcs: u8) -> Duration {
+    managed_unicast_attempt_airtime(bytes, 1, mcs, AccessCategory::BestEffort)
+}
+
 /// Airtime one managed unicast attempt occupies: EDCA contention (per access category) + the
 /// (possibly aggregated) frame + SIFS + ACK (or Block-ACK for an A-MPDU).
 fn managed_unicast_attempt_airtime(

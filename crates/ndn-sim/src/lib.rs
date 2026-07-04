@@ -109,6 +109,7 @@ pub mod mavlink;
 pub mod mcp;
 pub mod medium;
 pub mod otel_export;
+pub mod phy;
 pub mod prelude;
 pub mod profile;
 pub mod radio;
@@ -165,6 +166,13 @@ pub use medium::{
     WirelessMedium,
 };
 pub use otel_export::OtlpExporter;
+// NB: `phy::FreeSpace` (a PropagationBackend) is intentionally not re-exported at the crate root —
+// it would collide with `world::FreeSpace` (an Environment). Reach it via `ndn_sim::phy::FreeSpace`.
+pub use phy::{
+    Antenna, AntennaPlacement, Channel, DefaultInterference, Dipole, Directional,
+    InterferenceBackend, Isotropic, LogDistance, PropagationBackend, Radio, RadioEnvironment,
+    RadioPlatform,
+};
 pub use profile::NodeProfile;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use replay::{RecordedCommand, Recording};

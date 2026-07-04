@@ -111,6 +111,7 @@ pub mod prelude;
 pub mod profile;
 pub mod radio;
 pub mod replay;
+pub mod routing;
 pub mod scenario;
 pub mod scene;
 pub mod sim_face;
@@ -142,6 +143,10 @@ pub use cosim::{
 pub use des::{DesKernel, DesSession};
 pub use geometry::{Obstacle, ObstructedPropagation};
 pub use ip::{IpNetwork, IpNode, IpNodeStats, IpPacket, Ipv4, RunningIpNode, ip_link};
+pub use routing::{
+    DistanceVector, GreedyGeographic, NetworkKind, RoutingAlgorithm, RoutingCategory, ShortestPath,
+    TopologyView,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{
     DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,

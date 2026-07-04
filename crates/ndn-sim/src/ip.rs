@@ -11,7 +11,7 @@
 //! and [`ping`](RunningIpNode::ping) measuring round-trip [`FlowStats`]. Routing generation, an
 //! NDN-vs-IP diff harness, and richer transports layer on top.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -372,34 +372,50 @@ pub struct IpNetwork {
 }
 
 impl IpNetwork {
-    /// Build + start from an explicit undirected link list over `n` nodes (`n <= 254`).
+    /// Build + start from an explicit undirected link list over `n` nodes (`n <= 254`), routed by the
+    /// default [`ShortestPath`](crate::routing::ShortestPath) (link-state / OSPF-class).
     pub fn from_links(
         runtime: Arc<dyn Runtime>,
         n: usize,
         links: &[(usize, usize)],
         profile: &FaceProfile,
     ) -> Self {
+        Self::from_links_with(runtime, n, links, None, profile, &crate::routing::ShortestPath)
+    }
+
+    /// Build + start with an explicit [`RoutingAlgorithm`](crate::routing::RoutingAlgorithm) —
+    /// shortest-path, distance-vector, geographic (GPSR), … per the deployment (infrastructure /
+    /// MANET / VANET / FANET). `positions` (if given) enable position-based algorithms.
+    pub fn from_links_with(
+        runtime: Arc<dyn Runtime>,
+        n: usize,
+        links: &[(usize, usize)],
+        positions: Option<Vec<crate::world::Position>>,
+        profile: &FaceProfile,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) -> Self {
         let addrs: Vec<Ipv4> = (0..n).map(|i| Ipv4::new(10, 0, 0, (i + 1) as u8)).collect();
         let mut builders: Vec<IpNode> =
             addrs.iter().map(|&a| IpNode::new(a, Arc::clone(&runtime))).collect();
 
-        // Wire links, tracking adjacency and each node's (neighbour → face index) map.
-        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Wire links, tracking each node's (neighbour → face index) map.
         let mut face_to: Vec<HashMap<usize, usize>> = vec![HashMap::new(); n];
         for (link_id, &(a, b)) in links.iter().enumerate() {
             let (fa, fb) = ip_link(Arc::clone(&runtime), profile, 256, link_id as u64);
             face_to[a].insert(b, builders[a].attach(fa));
             face_to[b].insert(a, builders[b].attach(fb));
-            adj[a].push(b);
-            adj[b].push(a);
         }
 
-        // Shortest-path /32 routes: BFS from each source gives the first-hop neighbour to every dst.
-        for s in 0..n {
-            let first_hop = bfs_first_hops(&adj, s, n);
-            for (d, hop) in first_hop.iter().enumerate() {
-                if let Some(nh) = hop {
-                    builders[s].route(addrs[d], 32, face_to[s][nh]);
+        // Compute routing tables with the chosen algorithm, install as /32 routes toward each dest.
+        let mut view = crate::routing::TopologyView::from_links(n, links);
+        if let Some(p) = positions {
+            view = view.with_positions(p);
+        }
+        let tables = algo.compute(&view);
+        for (u, table) in tables.iter().enumerate() {
+            for entry in table {
+                if let Some(&via) = face_to[u].get(&entry.next_hop) {
+                    builders[u].route(addrs[entry.dest], 32, via);
                 }
             }
         }
@@ -410,13 +426,34 @@ impl IpNetwork {
 
     /// Build + start from a [`Scenario`](crate::Scenario)'s node + link graph (NDN routes / radio are
     /// ignored — IP routes itself), so the *same topology* drives both the NDN and IP planes.
+    /// Routed by the default [`ShortestPath`](crate::routing::ShortestPath).
     pub fn from_scenario(
         runtime: Arc<dyn Runtime>,
         scenario: &crate::Scenario,
         profile: &FaceProfile,
     ) -> Self {
+        Self::from_scenario_with(runtime, scenario, profile, &crate::routing::ShortestPath)
+    }
+
+    /// Like [`from_scenario`](Self::from_scenario) but with an explicit routing algorithm; node
+    /// positions from the scenario are passed through, so geographic protocols (GPSR) can route.
+    pub fn from_scenario_with(
+        runtime: Arc<dyn Runtime>,
+        scenario: &crate::Scenario,
+        profile: &FaceProfile,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) -> Self {
         let links: Vec<(usize, usize)> = scenario.links.iter().map(|l| (l.a, l.b)).collect();
-        Self::from_links(runtime, scenario.nodes.len(), &links, profile)
+        let positions: Vec<crate::world::Position> = scenario
+            .nodes
+            .iter()
+            .map(|n| {
+                n.position
+                    .map(|[x, y, z]| crate::world::Position::xyz(x, y, z))
+                    .unwrap_or(crate::world::Position::ORIGIN)
+            })
+            .collect();
+        Self::from_links_with(runtime, scenario.nodes.len(), &links, Some(positions), profile, algo)
     }
 
     pub fn node(&self, i: usize) -> &RunningIpNode {
@@ -435,32 +472,6 @@ impl IpNetwork {
     pub fn total_tx_bytes(&self) -> u64 {
         self.nodes.iter().map(|n| n.stats().tx_bytes).sum()
     }
-}
-
-/// BFS from `src`: `first_hop[d]` = the neighbour of `src` on a shortest path to `d`
-/// (`None` for `src` itself and for unreachable nodes).
-fn bfs_first_hops(adj: &[Vec<usize>], src: usize, n: usize) -> Vec<Option<usize>> {
-    let mut first = vec![None; n];
-    let mut seen = vec![false; n];
-    seen[src] = true;
-    let mut q = VecDeque::new();
-    for &nb in &adj[src] {
-        if !seen[nb] {
-            seen[nb] = true;
-            first[nb] = Some(nb);
-            q.push_back(nb);
-        }
-    }
-    while let Some(u) = q.pop_front() {
-        for &v in &adj[u] {
-            if !seen[v] {
-                seen[v] = true;
-                first[v] = first[u];
-                q.push_back(v);
-            }
-        }
-    }
-    first
 }
 
 /// A byte-channel link between two IP nodes — the same emulated SimLink the NDN plane rides (delay,

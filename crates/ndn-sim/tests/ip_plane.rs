@@ -126,3 +126,59 @@ fn ip_run_flow_over_scenario_graph() {
     });
     assert!(recv >= 9, "run_flow over a scenario-built IP network delivered: {recv}");
 }
+
+/// Distance-vector routing (RIP/DSDV-class) picks the shortest path — a square with a diagonal
+/// routes 0→2 over the 1-hop diagonal (RTT ≈ 2 ms), not the 2-hop rim.
+#[test]
+fn distance_vector_routes_over_the_shortcut() {
+    use ndn_sim::{DistanceVector, IpNetwork};
+    let (recv, rtt) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+        let net = IpNetwork::from_links_with(
+            rt,
+            4,
+            &[(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)],
+            None,
+            &prof,
+            &DistanceVector::default(),
+        );
+        let stats = net
+            .node(0)
+            .ping(net.addr(2), 6, 16, Duration::from_millis(2), Duration::from_secs(1))
+            .await;
+        (stats.received, stats.mean_rtt_ms())
+    });
+    assert!(recv >= 5, "distance-vector delivered: {recv}");
+    assert!(rtt < 3.5, "DV took the 1-hop diagonal (≈2 ms), got {rtt} ms");
+}
+
+/// GPSR greedy geographic routing delivers along a line purely by node position (VANET/FANET-class).
+#[test]
+fn geographic_routing_delivers_by_position() {
+    use ndn_sim::{GreedyGeographic, IpNetwork, Position};
+    let recv = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+        let positions = vec![
+            Position::xy(0.0, 0.0),
+            Position::xy(10.0, 0.0),
+            Position::xy(20.0, 0.0),
+            Position::xy(30.0, 0.0),
+        ];
+        let net = IpNetwork::from_links_with(
+            rt,
+            4,
+            &[(0, 1), (1, 2), (2, 3)],
+            Some(positions),
+            &prof,
+            &GreedyGeographic,
+        );
+        let stats = net
+            .node(0)
+            .ping(net.addr(3), 6, 16, Duration::from_millis(2), Duration::from_secs(1))
+            .await;
+        stats.received
+    });
+    assert!(recv >= 5, "GPSR greedy delivered along the line by position: {recv}");
+}

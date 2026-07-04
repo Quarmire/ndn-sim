@@ -6,14 +6,23 @@
 //! and don't line up with sim events. Both pieces here take their clock from the Runtime, so a
 //! scenario's metrics and spans replay bit-for-bit.
 //!
-//! Two pieces, both reusing what exists rather than adding an OpenTelemetry dependency:
+//! Three sample families, all reusing what exists rather than adding an OpenTelemetry dependency,
+//! and all flowing to the same [`OtlpExporter`](crate::otel_export::OtlpExporter):
 //! - [`MetricsSample`] + [`MetricsLog`] + the fabric's gauge emitter snapshot a node's live
 //!   engine counters (CS hit-rate, PIT depth, per-face throughput/drops) on a Runtime-driven
 //!   cadence — the pull-only NFD datasets turned into a virtual-time series.
+//! - [`IpMetricsSample`] does the same for the IP forwarding plane (forwarded / delivered / drops
+//!   / tx bytes), and [`FabricGauges`] covers the medium/network-wide scalars (shared-radio
+//!   airtime, AP handoffs, association overhead) — so IP-over-radio metrics export like the engine's
+//!   rather than living only behind ad-hoc accessors.
 //! - [`SimSpanEmitter`] builds [`ndn_observability::Span`]s (the workspace's hand-rolled OTLP
 //!   span, the same schema production emits) with virtual `start`/`end` timestamps and serves
 //!   them over NDN via [`SpanPublisher`]. The existing `NdnObservabilityLayer` can't be
 //!   clock-injected, so the sim constructs spans directly — same wire, virtual clock.
+//!
+//! **Telemetry checklist for a new subsystem** (keep the story consistent): if it holds runtime
+//! state a user would want to compare across runs, add it to a `*MetricsSample`/`FabricGauges`
+//! snapshot *and* an `OtlpExporter` gauge — don't leave it reachable only through a bespoke accessor.
 //!
 //! Deferred (greenfield, not in ndn-rs): forwarding OTLP-over-NDN to a real collector
 //! ("ndn-otel-bridge" does not exist) and OTLP *metric* protobufs. The reproducibility
@@ -103,6 +112,34 @@ pub fn sample_engine(node: NodeId, engine: &ForwarderEngine) -> MetricsSample {
         cs_bytes: cs.current_bytes() as u64,
         pit_depth: engine.pit().len() as u64,
     }
+}
+
+/// A point-in-time snapshot of one **IP node**'s forwarding counters, stamped with virtual time —
+/// the IP-plane analogue of [`MetricsSample`], so IP metrics ride the same [`MetricsLog`] +
+/// [`OtlpExporter`](crate::otel_export::OtlpExporter) path as the NDN engine's.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IpMetricsSample {
+    pub node: NodeId,
+    pub virtual_time_ns: u64,
+    pub forwarded: u64,
+    pub delivered: u64,
+    pub dropped_no_route: u64,
+    pub dropped_ttl: u64,
+    pub tx_bytes: u64,
+}
+
+/// Medium/network-wide gauges that aren't per-node: the shared-radio airtime and the AP-mode
+/// roaming cost. One snapshot for a whole `RadioBus` / `IpNetwork` at a virtual instant, so these —
+/// previously only reachable via ad-hoc accessors — also flow to the OTLP exporter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FabricGauges {
+    pub virtual_time_ns: u64,
+    /// Total airtime consumed on the shared radio medium (ns) — `RadioBus::total_airtime`.
+    pub radio_airtime_ns: u64,
+    /// (Re)associations across all stations — `IpNetwork::handoff_count` (AP-mode roaming).
+    pub handoffs: u64,
+    /// Accumulated association-handshake time (ns) — `IpNetwork::association_overhead`.
+    pub association_overhead_ns: u64,
 }
 
 /// The result of comparing two metric series (two runs) — for determinism checks and A/B

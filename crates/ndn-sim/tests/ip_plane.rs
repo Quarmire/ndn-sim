@@ -210,6 +210,49 @@ fn reactive_routing_delivers_and_costs_less_for_one_flow() {
     );
 }
 
+/// Telemetry consistency: IP-plane forwarding counters + the AP-mode handoff cost flow through the
+/// SAME sample → OTLP-payload path as the NDN engine's metrics (no more hand-called accessors only).
+#[test]
+fn ip_metrics_and_handoffs_reach_the_otlp_exporter() {
+    use ndn_sim::{OtlpExporter, Position, RadioLinkConfig, ShortestPath, Wifi, WifiMode, WifiOperatingMode};
+    let (ip_payload, gauges_payload) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        use ndn_sim::IpNetwork;
+        let rt = k.runtime();
+        let wifi = Wifi::new();
+        let cfg = RadioLinkConfig::new(50.0, WifiMode::Managed).operating(WifiOperatingMode::Ap { ap: 0 });
+        let net = IpNetwork::from_positions_wifi(
+            rt,
+            vec![Position::xy(0.0, 0.0), Position::xy(15.0, 0.0), Position::xy(30.0, 0.0)],
+            &wifi,
+            &cfg,
+            &ShortestPath,
+        );
+        // Drive a flow so forwarding counters move, then roam a station to force a re-association.
+        let _ = net.node(1).ping(net.addr(2), 5, 64, Duration::from_millis(1), Duration::from_millis(300)).await;
+        net.reconnect_wifi(&[Position::xy(0.0, 0.0), Position::xy(100.0, 0.0), Position::xy(30.0, 0.0)], &wifi, &cfg, &ShortestPath);
+        net.reconnect_wifi(&[Position::xy(0.0, 0.0), Position::xy(15.0, 0.0), Position::xy(30.0, 0.0)], &wifi, &cfg, &ShortestPath);
+
+        let exporter = OtlpExporter::new("127.0.0.1:4318");
+        let ip = exporter.ip_metrics_payload(&net.metrics_snapshot());
+        let g = exporter.fabric_gauges_payload(&net.fabric_gauges(Duration::ZERO));
+        (ip, g)
+    });
+
+    // The IP AP relayed station→station traffic ⇒ a non-zero forwarded gauge is in the OTLP doc.
+    let ip: serde_json::Value = serde_json::from_str(&ip_payload).unwrap();
+    let metrics = ip["resourceMetrics"][0]["scopeMetrics"][0]["metrics"].as_array().unwrap();
+    let fwd = metrics.iter().find(|m| m["name"] == "ndn.ip.forwarded").unwrap();
+    let ap_fwd = fwd["gauge"]["dataPoints"].as_array().unwrap().iter().find(|p| p["attributes"][0]["value"]["intValue"] == "0").unwrap();
+    assert_ne!(ap_fwd["asDouble"], 0, "the AP node's forwarded count is exported");
+
+    // The roaming handoffs surface as a fabric gauge.
+    let g: serde_json::Value = serde_json::from_str(&gauges_payload).unwrap();
+    let gm = g["resourceMetrics"][0]["scopeMetrics"][0]["metrics"].as_array().unwrap();
+    let ho = gm.iter().find(|m| m["name"] == "ndn.wifi.handoffs").unwrap();
+    let hv = ho["gauge"]["dataPoints"][0]["asDouble"].as_f64().unwrap();
+    assert!(hv >= 2.0, "handoffs (initial join + roam-back) exported as a gauge: {hv}");
+}
+
 /// IP runs over LoRa: a multi-km link that only a high spreading factor can close delivers a flow,
 /// and its per-packet latency is dominated by LoRa's very long airtime (unlike Wi-Fi).
 #[test]

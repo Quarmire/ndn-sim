@@ -713,6 +713,41 @@ impl IpNetwork {
         Duration::from_nanos(self.assoc_overhead_ns.load(std::sync::atomic::Ordering::Relaxed))
     }
 
+    /// A per-node [`IpMetricsSample`](crate::telemetry::IpMetricsSample) snapshot at the current
+    /// virtual time — the IP-plane feed for the same telemetry log + OTLP exporter the NDN engine
+    /// uses. Sample on a cadence to build a virtual-time series.
+    pub fn metrics_snapshot(&self) -> Vec<crate::telemetry::IpMetricsSample> {
+        let now = self.runtime.unix_nanos();
+        self.nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let s = node.stats();
+                crate::telemetry::IpMetricsSample {
+                    node: crate::NodeId(i),
+                    virtual_time_ns: now,
+                    forwarded: s.forwarded,
+                    delivered: s.delivered,
+                    dropped_no_route: s.dropped_no_route,
+                    dropped_ttl: s.dropped_ttl,
+                    tx_bytes: s.tx_bytes,
+                }
+            })
+            .collect()
+    }
+
+    /// The medium/network-wide [`FabricGauges`](crate::telemetry::FabricGauges) at the current
+    /// virtual time: this network's roaming cost, plus `radio_airtime_ns` if the caller supplies the
+    /// shared `RadioBus` total (IP-over-radio) — `0` otherwise.
+    pub fn fabric_gauges(&self, radio_airtime: Duration) -> crate::telemetry::FabricGauges {
+        crate::telemetry::FabricGauges {
+            virtual_time_ns: self.runtime.unix_nanos(),
+            radio_airtime_ns: radio_airtime.as_nanos() as u64,
+            handoffs: self.handoff_count(),
+            association_overhead_ns: self.assoc_overhead_ns.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
     /// Build a **mobile** IP network: `positions.len()` nodes fully meshed with potential links, but
     /// only links within `range` are initially up (unit-disk-graph connectivity). Drive it with
     /// [`reconnect`](Self::reconnect) as nodes move. `algo` routes over the in-range topology (a

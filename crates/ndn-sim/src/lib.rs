@@ -195,7 +195,8 @@ pub use sim_link::{FaceProfile, LinkConfig, SimLink};
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use stepper::Stepper;
 pub use telemetry::{
-    MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter, compare_metrics, sample_engine,
+    FabricGauges, IpMetricsSample, MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter,
+    compare_metrics, sample_engine,
 };
 pub use topology::{
     Clock, FaceKind, FaceStats, NodeId, RouteExplanation, RouteNexthop, RunningSimulation,

@@ -14,7 +14,7 @@
 use ndn_observability::{AttrValue, Span, SpanKind};
 use serde_json::{Value, json};
 
-use crate::telemetry::MetricsSample;
+use crate::telemetry::{FabricGauges, IpMetricsSample, MetricsSample};
 
 /// Exports OTLP/JSON to an OTLP/HTTP collector at `host:port` (e.g. the default `127.0.0.1:4318`).
 pub struct OtlpExporter {
@@ -71,6 +71,54 @@ impl OtlpExporter {
             }]
         })
         .to_string()
+    }
+
+    /// The OTLP/JSON `ResourceMetrics` document for IP-plane per-node samples (forwarded / delivered
+    /// / drops / tx bytes) — the IP analogue of [`metrics_payload`](Self::metrics_payload).
+    pub fn ip_metrics_payload(&self, samples: &[IpMetricsSample]) -> String {
+        let metrics = json!([
+            ip_gauge("ndn.ip.forwarded", samples, |s| json!(s.forwarded)),
+            ip_gauge("ndn.ip.delivered", samples, |s| json!(s.delivered)),
+            ip_gauge("ndn.ip.drops.no_route", samples, |s| json!(s.dropped_no_route)),
+            ip_gauge("ndn.ip.drops.ttl", samples, |s| json!(s.dropped_ttl)),
+            ip_gauge("ndn.ip.tx_bytes", samples, |s| json!(s.tx_bytes)),
+        ]);
+        self.metrics_doc(metrics)
+    }
+
+    /// The OTLP/JSON `ResourceMetrics` document for the medium/network-wide gauges (shared-radio
+    /// airtime, handoffs, association overhead) — the scalars that previously had no export path.
+    pub fn fabric_gauges_payload(&self, g: &FabricGauges) -> String {
+        let t = g.virtual_time_ns;
+        let metrics = json!([
+            scalar_gauge("ndn.radio.airtime_us", t, g.radio_airtime_ns as f64 / 1000.0),
+            scalar_gauge("ndn.wifi.handoffs", t, g.handoffs as f64),
+            scalar_gauge("ndn.wifi.assoc_overhead_us", t, g.association_overhead_ns as f64 / 1000.0),
+        ]);
+        self.metrics_doc(metrics)
+    }
+
+    /// Wrap a `metrics` array in the OTLP `ResourceMetrics` envelope.
+    fn metrics_doc(&self, metrics: Value) -> String {
+        json!({
+            "resourceMetrics": [{
+                "resource": self.resource(),
+                "scopeMetrics": [{ "scope": { "name": "ndn-lab" }, "metrics": metrics }]
+            }]
+        })
+        .to_string()
+    }
+
+    /// POST IP-plane metrics to `<addr>/v1/metrics`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn export_ip_metrics(&self, samples: &[IpMetricsSample]) -> std::io::Result<u16> {
+        http_post_json(&self.addr, "/v1/metrics", &self.ip_metrics_payload(samples)).await
+    }
+
+    /// POST the medium/network-wide gauges to `<addr>/v1/metrics`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn export_fabric_gauges(&self, g: &FabricGauges) -> std::io::Result<u16> {
+        http_post_json(&self.addr, "/v1/metrics", &self.fabric_gauges_payload(g)).await
     }
 
     fn resource(&self) -> Value {
@@ -139,6 +187,30 @@ fn gauge(name: &str, samples: &[MetricsSample], f: impl Fn(&MetricsSample) -> Va
         })
         .collect();
     json!({ "name": name, "gauge": { "dataPoints": points } })
+}
+
+fn ip_gauge(name: &str, samples: &[IpMetricsSample], f: impl Fn(&IpMetricsSample) -> Value) -> Value {
+    let points: Vec<Value> = samples
+        .iter()
+        .map(|s| {
+            json!({
+                "timeUnixNano": s.virtual_time_ns.to_string(),
+                "asDouble": f(s),
+                "attributes": [
+                    { "key": "node", "value": { "intValue": s.node.0.to_string() } }
+                ]
+            })
+        })
+        .collect();
+    json!({ "name": name, "gauge": { "dataPoints": points } })
+}
+
+/// A single (non-per-node) gauge data point at virtual time `t`.
+fn scalar_gauge(name: &str, t: u64, value: f64) -> Value {
+    json!({
+        "name": name,
+        "gauge": { "dataPoints": [ { "timeUnixNano": t.to_string(), "asDouble": value } ] }
+    })
 }
 
 /// Fixed 16-byte trace id ("ndn-lab" ASCII, padded) so a run's captured spans share one trace.
@@ -312,6 +384,45 @@ mod tests {
         // The real span id and its parent link are carried through to OTLP (span-id 7, parent 3).
         assert_eq!(s["spanId"], "0000000000000007");
         assert_eq!(s["parentSpanId"], "0000000000000003");
+    }
+
+    #[test]
+    fn ip_metrics_payload_carries_per_node_gauges() {
+        let exporter = OtlpExporter::new("127.0.0.1:4318");
+        let s = |node, fwd, tx| IpMetricsSample {
+            node: crate::NodeId(node),
+            virtual_time_ns: 7_000,
+            forwarded: fwd,
+            delivered: 3,
+            dropped_no_route: 0,
+            dropped_ttl: 0,
+            tx_bytes: tx,
+        };
+        let payload = exporter.ip_metrics_payload(&[s(0, 10, 640), s(1, 4, 256)]);
+        let v: Value = serde_json::from_str(&payload).unwrap();
+        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"].as_array().unwrap();
+        let fwd = metrics.iter().find(|m| m["name"] == "ndn.ip.forwarded").unwrap();
+        let points = fwd["gauge"]["dataPoints"].as_array().unwrap();
+        assert_eq!(points.len(), 2, "one point per IP node");
+        assert_eq!(points[0]["asDouble"], 10);
+        assert!(metrics.iter().any(|m| m["name"] == "ndn.ip.tx_bytes"));
+    }
+
+    #[test]
+    fn fabric_gauges_payload_exports_radio_and_handoff_scalars() {
+        let exporter = OtlpExporter::new("127.0.0.1:4318");
+        let g = FabricGauges {
+            virtual_time_ns: 9_000,
+            radio_airtime_ns: 2_000_000, // 2 ms
+            handoffs: 3,
+            association_overhead_ns: 360_000_000,
+        };
+        let v: Value = serde_json::from_str(&exporter.fabric_gauges_payload(&g)).unwrap();
+        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"].as_array().unwrap();
+        let air = metrics.iter().find(|m| m["name"] == "ndn.radio.airtime_us").unwrap();
+        assert_eq!(air["gauge"]["dataPoints"][0]["asDouble"], 2000.0, "2 ms → 2000 µs");
+        let ho = metrics.iter().find(|m| m["name"] == "ndn.wifi.handoffs").unwrap();
+        assert_eq!(ho["gauge"]["dataPoints"][0]["asDouble"], 3.0);
     }
 
     #[test]

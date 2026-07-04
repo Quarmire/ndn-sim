@@ -29,7 +29,7 @@
 //! - **GPSR** — Greedy Perimeter Stateless Routing: greedy geographic forwarding to the neighbour
 //!   closest to the destination, with perimeter (face) routing around voids (Karp & Kung, MobiCom
 //!   2000). The natural fit for ndn-lab because the [`World`](crate::World) already holds positions
-//!   and mobility. Greedy mode = [`GreedyGeographic`]; perimeter mode is *roadmap*.
+//!   and mobility. Greedy-only = [`GreedyGeographic`]; greedy + perimeter (face) recovery = [`Gpsr`].
 //! - FANETs commonly adapt MANET protocols (OLSR/AODV/DSDV) plus geographic routing with 3-D /
 //!   predictive extensions (Bekmezci, Sahingoz & Temel, "Flying Ad-Hoc Networks (FANETs): A survey",
 //!   *Ad Hoc Networks* 11(3), 2013; Oubbati et al., UAV-routing surveys).
@@ -355,6 +355,78 @@ impl RoutingAlgorithm for GreedyGeographic {
     }
 }
 
+/// **GPSR** — Greedy Perimeter Stateless Routing (Karp & Kung, 2000): greedy geographic forwarding
+/// with **perimeter (face) recovery** around voids. Where [`GreedyGeographic`] gives up at a local
+/// minimum (no neighbour closer to the destination), GPSR routes *around* the void by the right-hand
+/// rule — at the stall it forwards to the first neighbour counter-clockwise from the line toward the
+/// destination, and resumes greedy as soon as a neighbour makes progress again.
+///
+/// This models perimeter **entry** recovery (the single-hop right-hand rule); full face traversal
+/// keeps per-packet state (the point where perimeter mode began, plus the arrival edge) and a
+/// planarized graph — a heavier, stateful variant left as a refinement. Even so, GPSR here delivers
+/// across concave voids that defeat pure greedy.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Gpsr;
+
+/// Right-hand-rule perimeter hop at `u` toward `d`: the neighbour at the smallest positive
+/// counter-clockwise angle from the `u`→`d` direction (the first edge swept CCW off that line).
+fn perimeter_hop(view: &TopologyView, pos: &[Position], u: usize, d: usize) -> Option<usize> {
+    let refa = (pos[d].y - pos[u].y).atan2(pos[d].x - pos[u].x);
+    view.adj[u]
+        .iter()
+        .map(|&(v, _)| {
+            let a = (pos[v].y - pos[u].y).atan2(pos[v].x - pos[u].x);
+            let mut off = a - refa;
+            while off <= f64::EPSILON {
+                off += std::f64::consts::TAU;
+            }
+            (v, off)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(v, _)| v)
+}
+
+impl RoutingAlgorithm for Gpsr {
+    fn name(&self) -> &'static str {
+        "gpsr"
+    }
+    fn category(&self) -> RoutingCategory {
+        RoutingCategory::Geographic
+    }
+    fn compute(&self, view: &TopologyView) -> Vec<Vec<RouteEntry>> {
+        let Some(pos) = &view.positions else {
+            return vec![Vec::new(); view.n];
+        };
+        (0..view.n)
+            .map(|u| {
+                (0..view.n)
+                    .filter(|&d| d != u)
+                    .filter_map(|d| {
+                        let my_dist = pos[u].distance(pos[d]);
+                        // Greedy: the neighbour strictly closer to d (nearest wins).
+                        let greedy = view.adj[u]
+                            .iter()
+                            .map(|&(v, _)| (v, pos[v].distance(pos[d])))
+                            .filter(|&(_, vd)| vd < my_dist)
+                            .min_by(|a, b| a.1.total_cmp(&b.1));
+                        let (next_hop, metric) = match greedy {
+                            Some((v, vd)) => (v, vd as u32),
+                            // Local minimum ⇒ perimeter recovery around the void.
+                            None => (perimeter_hop(view, pos, u, d)?, my_dist as u32),
+                        };
+                        Some(RouteEntry { dest: d, next_hop, metric })
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+    /// Same position-beacon cost as greedy geographic (perimeter recovery adds no periodic traffic —
+    /// it reuses the neighbour positions HELLO already carries).
+    fn control_overhead(&self, view: &TopologyView, _active_flows: usize) -> u64 {
+        view.n as u64 * 16
+    }
+}
+
 /// **AODV** — Ad-hoc On-demand Distance Vector (RFC 3561). *Reactive*: a node floods a Route Request
 /// (RREQ) only when it needs a route to a destination it isn't already tracking; the destination (or
 /// an intermediate node with a fresh-enough route) unicasts a Route Reply (RREP) back along the
@@ -640,6 +712,42 @@ mod tests {
         let ls = ShortestPath.control_overhead(&view, 1);
         let ol = Olsr.control_overhead(&view, 1);
         assert!(ol * 2 < ls, "OLSR MPR flooding ≪ pure link-state ({ol} vs {ls})");
+    }
+
+    /// A concave void: source 0 sits at a local minimum — both its neighbours are *farther* from the
+    /// destination than it is — so pure greedy gives up, but GPSR's perimeter (right-hand-rule)
+    /// recovery forwards around the void and a route exists.
+    #[test]
+    fn gpsr_perimeter_routes_around_a_void_that_defeats_greedy() {
+        // 0 (src) at origin, dest 4 straight up; 0's neighbours 1,2 are both below it (farther from
+        // 4). The way out is 0→1→3→4 around the void.
+        let view = TopologyView::from_links(5, &[(0, 1), (0, 2), (1, 3), (3, 4)]).with_positions(vec![
+            Position::xy(0.0, 0.0),   // 0 src
+            Position::xy(-1.0, -1.0), // 1
+            Position::xy(1.0, -1.0),  // 2 (dead-end stub)
+            Position::xy(-1.0, 10.0), // 3
+            Position::xy(0.0, 10.0),  // 4 dst
+        ]);
+
+        // Pure greedy: node 0 is a local minimum ⇒ no route to 4.
+        let greedy = GreedyGeographic.compute(&view);
+        assert!(
+            greedy[0].iter().all(|r| r.dest != 4),
+            "greedy stalls at the void: 0 has no route to 4"
+        );
+
+        // GPSR: perimeter recovery gives 0 a next hop, and the table chains through to the dest.
+        let gpsr = Gpsr.compute(&view);
+        let hop = gpsr[0].iter().find(|r| r.dest == 4).expect("gpsr recovers a route to 4");
+        assert_eq!(hop.next_hop, 1, "right-hand rule enters the perimeter via neighbour 1");
+        // Follow the installed table 0→…→4 to confirm it actually reaches the destination.
+        let mut at = 0usize;
+        let mut hops = 0;
+        while at != 4 && hops < 10 {
+            at = gpsr[at].iter().find(|r| r.dest == 4).expect("each hop has a next hop").next_hop;
+            hops += 1;
+        }
+        assert_eq!(at, 4, "GPSR's table routes 0→4 around the void in {hops} hops");
     }
 
     #[test]

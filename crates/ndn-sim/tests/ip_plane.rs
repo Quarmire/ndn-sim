@@ -210,6 +210,35 @@ fn reactive_routing_delivers_and_costs_less_for_one_flow() {
     );
 }
 
+/// GPSR perimeter recovery delivers across a concave void that pure greedy geographic drops: source 0
+/// is a local minimum (both neighbours farther from the dest), so `GreedyGeographic` never routes it,
+/// but `Gpsr` routes around the void via the right-hand rule.
+#[test]
+fn gpsr_delivers_across_a_void_that_greedy_drops() {
+    use ndn_sim::{Gpsr, GreedyGeographic, IpNetwork, Position};
+    let (greedy_recv, gpsr_recv) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+        let links = [(0, 1), (0, 2), (1, 3), (3, 4)];
+        let positions = vec![
+            Position::xy(0.0, 0.0),
+            Position::xy(-1.0, -1.0),
+            Position::xy(1.0, -1.0),
+            Position::xy(-1.0, 10.0),
+            Position::xy(0.0, 10.0),
+        ];
+        // Greedy-only: 0 stalls at the void ⇒ no delivery to node 4.
+        let g = IpNetwork::from_links_with(Arc::clone(&rt), 5, &links, Some(positions.clone()), &prof, &GreedyGeographic);
+        let greedy = g.node(0).ping(g.addr(4), 4, 32, Duration::from_millis(2), Duration::from_millis(300)).await.received;
+        // GPSR: perimeter recovery routes around the void.
+        let net = IpNetwork::from_links_with(rt, 5, &links, Some(positions), &prof, &Gpsr);
+        let gpsr = net.node(0).ping(net.addr(4), 4, 32, Duration::from_millis(2), Duration::from_secs(1)).await.received;
+        (greedy, gpsr)
+    });
+    assert_eq!(greedy_recv, 0, "pure greedy geographic drops at the void");
+    assert!(gpsr_recv >= 3, "GPSR perimeter recovery delivers around the void: {gpsr_recv}");
+}
+
 /// Adaptive routing: a diamond has two disjoint paths 0→3. Shortest-path routes via node 1; cutting
 /// the 1–3 link drops the flow (stale route), and reroute_with recomputes over the surviving
 /// topology so delivery resumes via node 2. The core of routing that reacts to topology change.

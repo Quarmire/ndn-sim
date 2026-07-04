@@ -36,13 +36,14 @@
 
 use std::collections::BTreeMap;
 
-use ndn_bench::explain;
 use ndn_manifest::model::{
     Clause, Contract, Document, EdgeForm, Intent, Manifest, ManifestEntry, Subject, Term, Value,
-    Via, Vocabulary,
+    Vocabulary,
 };
 use ndn_manifest::{term_hash, FrozenDag, hash::Hash};
-use ndn_render_contract::{r#match, Budget, Floor, Match, TrustFrontier, Verdict};
+use ndn_render_contract::{
+    contract_via, r#match, Budget, Floor, Match, TrustFrontier, Verdict, Via,
+};
 
 use crate::telemetry::FabricGauges;
 
@@ -311,7 +312,7 @@ impl KeelView {
             .matches
             .iter()
             .filter(|m| matches!(m.verdict, Verdict::Express | Verdict::Approximate(_)))
-            .filter(|m| self.via_of(m).is_some())
+            .filter(|m| contract_via(&self.dag, m).is_some())
             .collect();
         out.sort_by_key(|m| (m.verdict.rank(), m.verdict.loss_len()));
         out
@@ -326,15 +327,16 @@ impl KeelView {
     /// `Via::Native` id to the [`Renderers`] registry, and attach the
     /// human-auditable verdict trace.
     pub fn render(&self, m: &Match, samples: &[FabricGauges]) -> Option<Rendered> {
-        // Only native-via renderers are in this registry; a Wasm-via lens would
-        // need the (not-yet-built) WASM render host.
-        let Via::Native(id) = self.via_of(m)? else { return None };
+        // `contract_via` (F54) owns the walk back to the emitting clause,
+        // including path-final-hop disambiguation. Only native-via renderers are
+        // in this registry; a Wasm-via lens needs the (unbuilt) WASM host.
+        let Via::Native(id) = contract_via(&self.dag, m)? else { return None };
         let renderer = self.renderers.get(id)?;
         Some(Rendered {
             intent: m.intent.clone(),
             verdict: m.verdict.clone(),
             body: renderer(samples),
-            trace: explain::trace(&self.dag, m),
+            trace: ndn_explain::trace(&self.dag, m),
         })
     }
 
@@ -347,20 +349,237 @@ impl KeelView {
                 Floor::Approximate => true,
             })
     }
+}
 
-    /// The clause `via` for a match — found by locating the offering clause in
-    /// the contract by intent name.
-    fn via_of(&self, m: &Match) -> Option<&Via> {
-        let Document::Contract(c) = &self.dag.get(&m.contract)?.doc else { return None };
-        c.clauses.iter().find_map(|cl| match cl {
-            Clause::Express { intent, via, .. } | Clause::Approximate { intent, via, .. }
-                if intent.name == m.intent =>
-            {
-                via.as_ref()
-            }
-            _ => None,
+// ═════════════════════════════════════════════════════════════════════════════
+// The topology slice — a NESTED producer, by hand (F54 ordering ruling).
+//
+// FabricGauges is flat u64s; a SceneSnapshot is nested: lists of records, an
+// optional field, mixed primitives. Building it by hand is the evidence the
+// `#[derive(Manifest)]` must be designed against. The pain points, marked ⚑
+// below, are the report.
+// ═════════════════════════════════════════════════════════════════════════════
+
+use ndn_manifest::model::{Cardinality, Decimal, Field, PrimitiveKind, TypeExpr};
+
+use crate::scene::SceneSnapshot;
+
+const VIA_TOPOLOGY: &str = "ndn-lab/topology-svg";
+/// The topology-map render intent.
+pub const INTENT_TOPOLOGY_MAP: &str = "topology.map";
+
+/// ⚑ Pain #1: **`f64` has no clean canonical decimal.** The wire wants a
+/// canonical `Decimal` (no exponent, no trailing zeros); `f64` can format to
+/// `1e-7`/`NaN`/`inf`, none canonical. A derive can't mechanically map `f64` —
+/// it needs a precision policy. Here: fixed 4 dp, then normalize, `0` on refusal.
+fn dec(v: f64) -> Value {
+    let canon = Decimal::normalize(&format!("{v:.4}"))
+        .or_else(|| Decimal::from_canonical("0"))
+        .expect("0 is canonical");
+    Value::Decimal(canon)
+}
+
+fn field(label: &str, ty: TypeExpr, card: Cardinality) -> Field {
+    Field { label: label.into(), doc: Some(label.into()), ty, cardinality: card, attrs: Vec::new() }
+}
+
+/// A term carrying a type (a manifest field term: `nodes : list-of(...)`).
+fn typed_term(label: &str, doc: &str, ty: TypeExpr) -> Term {
+    Term { label: label.into(), doc: Some(doc.into()), ty: Some(ty), attrs: Vec::new() }
+}
+
+/// The record shape of one `SceneNode` — nine positional fields (R11: order IS
+/// identity). ⚑ Pain #2: the derive must emit this `TypeExpr::Record` from the
+/// struct's fields, and the manifest's `Value::Record` must be built in the
+/// EXACT same order — two sites that must never drift.
+fn scene_node_record() -> TypeExpr {
+    use PrimitiveKind::*;
+    TypeExpr::Record(vec![
+        field("id", TypeExpr::Primitive(Integer), Cardinality::One),
+        field("label", TypeExpr::Primitive(Text), Cardinality::One),
+        field("x", TypeExpr::Primitive(Decimal), Cardinality::One),
+        field("y", TypeExpr::Primitive(Decimal), Cardinality::One),
+        field("faces", TypeExpr::Primitive(Integer), Cardinality::One),
+        field("pit-depth", TypeExpr::Primitive(Integer), Cardinality::One),
+        field("cs-hit-rate", TypeExpr::Primitive(Decimal), Cardinality::One),
+        field("in-interests", TypeExpr::Primitive(Integer), Cardinality::One),
+        field("out-data", TypeExpr::Primitive(Integer), Cardinality::One),
+    ])
+}
+
+/// The record shape of one `SceneLink`. ⚑ Pain #3: **`Option<T>` inside a
+/// positional record.** There is no null `Value`, and omitting a field would
+/// shift positions — so an optional field is modelled as a 0-or-1 `list-of`
+/// (empty = None). That's a real design choice a derive must make for every
+/// `Option<_>`, and it's not mechanical.
+fn scene_link_record() -> TypeExpr {
+    use PrimitiveKind::*;
+    TypeExpr::Record(vec![
+        field("from", TypeExpr::Primitive(Integer), Cardinality::One),
+        field("to", TypeExpr::Primitive(Integer), Cardinality::One),
+        field("distance", TypeExpr::ListOf(Box::new(TypeExpr::Primitive(Decimal))), Cardinality::One),
+    ])
+}
+
+fn node_term() -> Term {
+    Term { label: "scene-node".into(), doc: Some("A node in a scene snapshot.".into()), ty: Some(scene_node_record()), attrs: Vec::new() }
+}
+fn link_term() -> Term {
+    Term { label: "scene-link".into(), doc: Some("An edge in a scene snapshot.".into()), ty: Some(scene_link_record()), attrs: Vec::new() }
+}
+
+/// `SceneSnapshot` → a nested [`Manifest`]. ⚑ Pain #4: the whole body is
+/// hand-woven `Value::List`/`Value::Record` in field order — verbose, and every
+/// primitive cast (`usize`→`Integer`, `f64`→`Decimal`) is a decision. This is
+/// the exact code a derive would generate; that it's this mechanical *except*
+/// for `dec()` and the `Option` encoding is the argument for the macro.
+fn scene_manifest(scene: &SceneSnapshot, ty: Hash, f_time: Hash, f_nodes: Hash, f_links: Hash) -> Manifest {
+    let nodes = scene
+        .nodes
+        .iter()
+        .map(|n| {
+            Value::Record(vec![
+                Value::Integer(n.id as u64),
+                Value::Text(n.label.clone()),
+                dec(n.x),
+                dec(n.y),
+                Value::Integer(n.faces),
+                Value::Integer(n.pit_depth),
+                dec(n.cs_hit_rate),
+                Value::Integer(n.in_interests),
+                Value::Integer(n.out_data),
+            ])
+        })
+        .collect();
+    let links = scene
+        .links
+        .iter()
+        .map(|l| {
+            let distance = match l.distance_m {
+                Some(d) => Value::List(vec![dec(d)]),
+                None => Value::List(Vec::new()), // ⚑ Pain #3 again: None = empty list
+            };
+            Value::Record(vec![Value::Integer(l.from as u64), Value::Integer(l.to as u64), distance])
+        })
+        .collect();
+    Manifest {
+        ty,
+        label: Some("scene".into()),
+        describes: Subject::Name("ndn-lab/run/scene".into()),
+        entries: vec![
+            ManifestEntry { field: f_time, value: Value::Integer(scene.virtual_time_ns) },
+            ManifestEntry { field: f_nodes, value: Value::List(nodes) },
+            ManifestEntry { field: f_links, value: Value::List(links) },
+        ],
+        edges: Vec::new(),
+    }
+}
+
+/// A resolved topology lens over a scene snapshot — the nested-manifest twin of
+/// [`KeelView`], kept separate because its renderer consumes a `SceneSnapshot`,
+/// not a gauge stream (unifying the two registries is a decision for *after* the
+/// derive is designed against both, not before).
+pub struct SceneView {
+    dag: FrozenDag,
+    matches: Vec<Match>,
+    /// The encoded manifest bytes — proof the nested Values canonically encode.
+    manifest_bytes: Vec<u8>,
+    render: fn(&SceneSnapshot) -> String,
+}
+
+impl SceneView {
+    /// Assemble the scene DAG (vocabulary with the two record terms + the scene
+    /// manifest + the topology contract) and resolve the lens once.
+    pub fn for_scene(scene: &SceneSnapshot) -> Self {
+        use PrimitiveKind::Integer;
+        // ⚑ Pain #5: nested type refs are hash-only (C5). The `nodes`/`links`
+        // field terms are typed `list-of(term-of(scene-node))`, so the record
+        // term must be hashed FIRST and threaded into the field term's type — a
+        // strict emit order the derive must honour for every nested struct.
+        let node_h = term_hash(&node_term()).unwrap();
+        let link_h = term_hash(&link_term()).unwrap();
+        let ty = term_hash(&term("scene", "A network scene snapshot.")).unwrap();
+        let map = term_hash(&term("topology-map", "A renderable network map.")).unwrap();
+
+        let vtime = typed_term("virtual-time", "Snapshot time (ns).", TypeExpr::Primitive(Integer));
+        let nodes = typed_term("nodes", "The scene's nodes.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(node_h))));
+        let links = typed_term("links", "The scene's edges.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(link_h))));
+        let (f_time, f_nodes, f_links) =
+            (term_hash(&vtime).unwrap(), term_hash(&nodes).unwrap(), term_hash(&links).unwrap());
+
+        let mut dag = FrozenDag::new();
+        let fp = ndn_manifest::kernel::fixed_point();
+        dag.insert_bytes(&fp.im0_bytes).expect("IM₀");
+        let t0 = dag.insert_bytes(&fp.t0_bytes).expect("T₀");
+
+        let vocab = dag
+            .insert_document(&Document::Vocabulary(Vocabulary {
+                label: "ndn-lab-scene".into(),
+                doc: Some("Scene snapshot terms: nested nodes + links, and their renderable map.".into()),
+                imports: Vec::new(),
+                terms: vec![
+                    term("scene", "A network scene snapshot."),
+                    term("topology-map", "A renderable network map."),
+                    node_term(),
+                    link_term(),
+                    vtime,
+                    nodes,
+                    links,
+                ],
+                edges: vec![EdgeForm::NarrowerThan { narrower: ty, broader: map }],
+                supersedes: None,
+            }))
+            .expect("scene vocab encodes");
+
+        let manifest = scene_manifest(scene, ty, f_time, f_nodes, f_links);
+        let manifest_bytes = ndn_manifest::canon::encode_document(&Document::Manifest(manifest.clone()))
+            .expect("nested manifest encodes canonically");
+        dag.insert_document(&Document::Manifest(manifest)).expect("manifest inserts");
+
+        let topo = dag
+            .insert_document(&Document::Contract(Contract {
+                label: "topology-svg".into(),
+                doc: Some("The scene as an SVG network map.".into()),
+                imports: vec![vocab],
+                binds: vec![Subject::Name("ndn-lab/".into())],
+                clauses: vec![Clause::Express {
+                    intent: Intent { name: INTENT_TOPOLOGY_MAP.into(), attrs: Vec::new() },
+                    target: map,
+                    via: Some(Via::Native(VIA_TOPOLOGY.into())),
+                    attrs: Vec::new(),
+                }],
+            }))
+            .expect("topology contract encodes");
+
+        let frontier = TrustFrontier::from_vocabularies([vocab]);
+        let matches = r#match(&dag, &[topo, t0], &frontier, Budget::generous()).expect("budget");
+        SceneView { dag, matches, manifest_bytes, render: render_topology_lens }
+    }
+
+    /// The resolved topology lens, if the matcher admitted it.
+    pub fn topology_lens(&self) -> Option<&Match> {
+        self.matches.iter().find(|m| m.intent == INTENT_TOPOLOGY_MAP)
+    }
+
+    /// Render a scene through the resolved lens (native dispatch + explain trace).
+    pub fn render(&self, m: &Match, scene: &SceneSnapshot) -> Option<Rendered> {
+        let Via::Native(_) = contract_via(&self.dag, m)? else { return None };
+        Some(Rendered {
+            intent: m.intent.clone(),
+            verdict: m.verdict.clone(),
+            body: (self.render)(scene),
+            trace: ndn_explain::trace(&self.dag, m),
         })
     }
+
+    /// The canonically-encoded nested manifest bytes (round-trip proof).
+    pub fn manifest_bytes(&self) -> &[u8] {
+        &self.manifest_bytes
+    }
+}
+
+fn render_topology_lens(scene: &SceneSnapshot) -> String {
+    crate::scene::render_topology_svg(scene, 480, 320)
 }
 
 #[cfg(test)]
@@ -390,7 +609,7 @@ mod tests {
         // lossy maps-to, whose loss term the trace names.
         let otlp = view.lens_for(INTENT_OTLP_GAUGE).expect("otlp offered");
         assert!(matches!(otlp.verdict, Verdict::Approximate(_)), "otlp is lossy: {:?}", otlp.verdict);
-        let trace = explain::trace(&view.dag, otlp);
+        let trace = ndn_explain::trace(&view.dag, otlp);
         assert!(trace.contains("otel-attribute-flattening"), "loss named in the trace: {trace}");
     }
 
@@ -442,5 +661,47 @@ mod tests {
         let view = KeelView::for_fabric_gauges(true);
         let best = view.best_lens(Floor::Approximate).expect("a lens at or above the floor");
         assert_eq!(best.intent, INTENT_SERIES_WINDOW, "Express beats Approximate in F46 order");
+    }
+
+    // ── the nested topology slice ────────────────────────────────────────────
+
+    fn scene() -> SceneSnapshot {
+        use crate::scene::{SceneBounds, SceneLink, SceneNode};
+        SceneSnapshot {
+            virtual_time_ns: 5_000_000,
+            nodes: vec![
+                SceneNode { id: 0, label: "consumer".into(), x: 0.0, y: 0.0, faces: 1, pit_depth: 2, cs_hit_rate: 0.5, in_interests: 3, out_data: 1 },
+                SceneNode { id: 1, label: "producer".into(), x: 10.0, y: 5.0, faces: 2, pit_depth: 0, cs_hit_rate: 0.0, in_interests: 1, out_data: 3 },
+            ],
+            links: vec![
+                SceneLink { from: 0, to: 1, distance_m: Some(11.18) }, // Some ⇒ 1-element list
+                SceneLink { from: 1, to: 0, distance_m: None },        // None ⇒ empty list
+            ],
+            radio_links: Vec::new(),
+            bounds: SceneBounds { min_x: 0.0, min_y: 0.0, max_x: 10.0, max_y: 5.0 },
+        }
+    }
+
+    #[test]
+    fn nested_scene_manifest_expresses_topology_and_renders_svg() {
+        let s = scene();
+        let view = SceneView::for_scene(&s);
+        let m = view.topology_lens().expect("topology.map offered");
+        assert_eq!(m.verdict, Verdict::Express, "scene narrows to topology-map losslessly");
+        let r = view.render(m, &s).expect("renders");
+        assert!(r.body.contains("<svg") && r.body.contains("</svg>"), "real topology SVG");
+    }
+
+    #[test]
+    fn nested_manifest_encodes_canonically_and_round_trips() {
+        // The lists-of-records + optional-as-list encode to canonical bytes and
+        // decode∘encode is byte identity — the discipline the flat gauge skipped.
+        let s = scene();
+        let view = SceneView::for_scene(&s);
+        let bytes = view.manifest_bytes();
+        assert!(!bytes.is_empty(), "nested manifest encoded");
+        let decoded = ndn_manifest::canon::decode_document(bytes).expect("decodes");
+        let reencoded = ndn_manifest::canon::encode_decoded(&decoded).expect("re-encodes");
+        assert_eq!(bytes, reencoded.as_slice(), "decode ∘ encode is byte identity (R13)");
     }
 }

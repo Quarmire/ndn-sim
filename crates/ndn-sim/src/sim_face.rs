@@ -5,6 +5,7 @@
 //! reliable-stream semantics (no loss, in-order) — so a scenario can express "this is UDP" vs
 //! "this is TCP/QUIC" and the forwarder behaves accordingly.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,6 +17,58 @@ use tokio::sync::mpsc;
 use tracing::trace;
 
 use crate::sim_link::{FaceProfile, LinkConfig};
+
+/// Live, mutable per-face fault knobs — shared (via `Arc`) with the fabric so a runtime
+/// [`Fault`](crate::Fault) can cut a link (partition), or inject loss / extra delay (degrade),
+/// *without* rebuilding the link. A face at rest ([`reset`](LinkState::reset)) behaves exactly as
+/// its [`FaceProfile`](crate::FaceProfile) dictates.
+#[derive(Debug)]
+pub struct LinkState {
+    /// When set, the face silently drops every frame — a down link / partition edge.
+    down: AtomicBool,
+    /// Loss-rate override, as the bits of an `f64`; a NaN sentinel means "use the profile's rate".
+    loss_override_bits: AtomicU64,
+    /// Extra delay (ns) added to every frame — congestion / degradation.
+    extra_delay_ns: AtomicU64,
+}
+
+impl LinkState {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            down: AtomicBool::new(false),
+            loss_override_bits: AtomicU64::new(f64::NAN.to_bits()),
+            extra_delay_ns: AtomicU64::new(0),
+        })
+    }
+    /// Cut / restore the link (drop everything when `true`).
+    pub fn set_down(&self, down: bool) {
+        self.down.store(down, Ordering::Relaxed);
+    }
+    /// Override the loss rate (`None` restores the profile's).
+    pub fn set_loss(&self, rate: Option<f64>) {
+        self.loss_override_bits.store(rate.unwrap_or(f64::NAN).to_bits(), Ordering::Relaxed);
+    }
+    /// Add extra per-frame delay (congestion).
+    pub fn set_extra_delay(&self, extra: Duration) {
+        self.extra_delay_ns.store(extra.as_nanos() as u64, Ordering::Relaxed);
+    }
+    /// Restore the link to its profile defaults (up, no override, no extra delay).
+    pub fn reset(&self) {
+        self.set_down(false);
+        self.set_loss(None);
+        self.set_extra_delay(Duration::ZERO);
+    }
+    fn is_down(&self) -> bool {
+        self.down.load(Ordering::Relaxed)
+    }
+    fn loss_override(&self) -> Option<f64> {
+        let b = f64::from_bits(self.loss_override_bits.load(Ordering::Relaxed));
+        if b.is_nan() { None } else { Some(b) }
+    }
+    fn extra_delay(&self) -> Duration {
+        Duration::from_nanos(self.extra_delay_ns.load(Ordering::Relaxed))
+    }
+}
 
 /// SplitMix64 finalizer — spreads adjacent face ids into well-separated RNG seeds so two
 /// faces' loss/jitter streams are independent.
@@ -49,6 +102,8 @@ pub struct SimFace {
     runtime: Arc<dyn Runtime>,
     /// **Seeded** PRNG for loss/jitter rolls — reproducible (never `thread_rng`).
     rng: Mutex<StdRng>,
+    /// Live fault knobs (down / loss-override / extra-delay), shared with the fabric.
+    state: Arc<LinkState>,
 }
 
 impl SimFace {
@@ -78,7 +133,14 @@ impl SimFace {
             last_delivery: Mutex::new(now),
             runtime,
             rng: Mutex::new(StdRng::seed_from_u64(face_seed)),
+            state: LinkState::new(),
         }
+    }
+
+    /// The live fault knobs for this face — the fabric holds a clone so a runtime `Fault` can cut
+    /// or degrade the link.
+    pub(crate) fn link_state(&self) -> Arc<LinkState> {
+        Arc::clone(&self.state)
     }
 }
 
@@ -108,10 +170,17 @@ impl Transport for SimFace {
     }
 
     async fn send_bytes(&self, pkt: Bytes) -> Result<(), FaceError> {
-        // Datagram loss (reliable streams never drop).
-        if !self.reliable && self.config.loss_rate > 0.0 {
+        // A partitioned / downed link drops everything (a runtime Fault::Partition or a down link).
+        if self.state.is_down() {
+            trace!(face = %self.id, "SimFace: packet dropped (link down)");
+            return Ok(());
+        }
+        // Datagram loss (reliable streams never drop) — a runtime Fault::DegradeLink can override the
+        // profile's rate.
+        let loss_rate = self.state.loss_override().unwrap_or(self.config.loss_rate);
+        if !self.reliable && loss_rate > 0.0 {
             let roll: f64 = self.rng.lock().unwrap().random();
-            if roll < self.config.loss_rate {
+            if roll < loss_rate {
                 trace!(face = %self.id, "SimFace: packet dropped (loss)");
                 return Ok(());
             }
@@ -142,7 +211,7 @@ impl Transport for SimFace {
         } else {
             self.jitter()
         };
-        let mut deliver_at = tx_start + self.config.delay + jitter;
+        let mut deliver_at = tx_start + self.config.delay + jitter + self.state.extra_delay();
 
         // Reliable: never deliver before the previous packet (in-order, HOL-style).
         if self.reliable {

@@ -340,6 +340,8 @@ impl Simulation {
         }
 
         let mut links: HashMap<(NodeId, NodeId), FaceId> = HashMap::new();
+        let mut link_states: HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>> =
+            HashMap::new();
         for link in &self.links {
             if !nodes.contains_key(&link.a) || !nodes.contains_key(&link.b) {
                 bail!("link references non-existent node");
@@ -347,6 +349,7 @@ impl Simulation {
             wire_link(
                 &nodes,
                 &mut links,
+                &mut link_states,
                 link.a,
                 link.b,
                 &link.profile,
@@ -467,7 +470,7 @@ impl Simulation {
             radio_faces,
             apps: Mutex::new(apps),
             next_app: AtomicUsize::new(next_app),
-            inner: Mutex::new(FabricInner { nodes, links }),
+            inner: Mutex::new(FabricInner { nodes, links, link_states }),
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
             seed: self.seed,
@@ -485,12 +488,17 @@ struct FabricInner {
     nodes: HashMap<NodeId, NodeEntry>,
     /// Directed: the face at `.0` pointing toward `.1`.
     links: HashMap<(NodeId, NodeId), FaceId>,
+    /// The live fault knob for each directed link face — cut / degrade a link at runtime.
+    link_states: HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>>,
 }
 
-/// Wire a symmetric SimLink between two existing nodes, recording both directed faces.
+/// Wire a symmetric SimLink between two existing nodes, recording both directed faces and their
+/// live fault knobs.
+#[allow(clippy::too_many_arguments)]
 fn wire_link(
     nodes: &HashMap<NodeId, NodeEntry>,
     links: &mut HashMap<(NodeId, NodeId), FaceId>,
+    link_states: &mut HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>>,
     a: NodeId,
     b: NodeId,
     profile: &FaceProfile,
@@ -511,6 +519,9 @@ fn wire_link(
         ea.engine.runtime(),
         world_seed,
     );
+    // Grab the live fault knobs before the faces move into the engines.
+    link_states.insert((a, b), face_a.link_state());
+    link_states.insert((b, a), face_b.link_state());
     ea.engine.add_face(face_a, ea.handle.cancel_token());
     eb.engine.add_face(face_b, eb.handle.cancel_token());
     links.insert((a, b), id_a);
@@ -1251,8 +1262,8 @@ impl RunningSimulation {
         if !guard.nodes.contains_key(&a) || !guard.nodes.contains_key(&b) {
             bail!("connect references non-existent node");
         }
-        let FabricInner { nodes, links } = &mut *guard;
-        wire_link(nodes, links, a, b, &profile, self.channel_buffer, self.seed);
+        let FabricInner { nodes, links, link_states } = &mut *guard;
+        wire_link(nodes, links, link_states, a, b, &profile, self.channel_buffer, self.seed);
         drop(guard);
         self.tracer.record_now(
             a.0,
@@ -1262,6 +1273,75 @@ impl RunningSimulation {
             None,
         );
         Ok(())
+    }
+
+    /// Cut or restore the (undirected) link between `a` and `b` — a link failure / recovery, both
+    /// directions. A cut link silently drops every frame until restored (or [`heal`](Self::heal)).
+    pub fn set_link_up(&self, a: NodeId, b: NodeId, up: bool) -> Result<()> {
+        let (sa, sb) = self.link_state_pair(a, b)?;
+        sa.set_down(!up);
+        sb.set_down(!up);
+        Ok(())
+    }
+
+    /// Degrade the link between `a` and `b` (both directions): override its loss rate and/or add
+    /// extra per-frame delay (congestion). `None` leaves that knob at the profile default.
+    pub fn degrade_link(
+        &self,
+        a: NodeId,
+        b: NodeId,
+        loss_rate: Option<f64>,
+        extra_delay: Option<std::time::Duration>,
+    ) -> Result<()> {
+        let (sa, sb) = self.link_state_pair(a, b)?;
+        for s in [sa, sb] {
+            if let Some(l) = loss_rate {
+                s.set_loss(Some(l));
+            }
+            if let Some(d) = extra_delay {
+                s.set_extra_delay(d);
+            }
+        }
+        Ok(())
+    }
+
+    /// Partition the fabric: cut every link that crosses the boundary of `group` (exactly one
+    /// endpoint in `group`). Links wholly inside or outside are untouched. Undo with [`heal`](Self::heal).
+    pub fn partition(&self, group: &[NodeId]) {
+        let set: std::collections::HashSet<NodeId> = group.iter().copied().collect();
+        let guard = self.inner.lock().unwrap();
+        for ((from, to), state) in guard.link_states.iter() {
+            if set.contains(from) != set.contains(to) {
+                state.set_down(true);
+            }
+        }
+    }
+
+    /// Heal all link faults: restore every link to its profile defaults (up, no loss override, no
+    /// extra delay).
+    pub fn heal(&self) {
+        let guard = self.inner.lock().unwrap();
+        for state in guard.link_states.values() {
+            state.reset();
+        }
+    }
+
+    /// The live fault knobs for both directions of the link between `a` and `b`.
+    fn link_state_pair(
+        &self,
+        a: NodeId,
+        b: NodeId,
+    ) -> Result<(
+        std::sync::Arc<crate::sim_face::LinkState>,
+        std::sync::Arc<crate::sim_face::LinkState>,
+    )> {
+        let guard = self.inner.lock().unwrap();
+        let sa = guard.link_states.get(&(a, b)).cloned();
+        let sb = guard.link_states.get(&(b, a)).cloned();
+        match (sa, sb) {
+            (Some(sa), Some(sb)) => Ok((sa, sb)),
+            _ => bail!("no link between {a} and {b}"),
+        }
     }
 
     /// Spawn a new node from `profile` on the running fabric; returns its handle.

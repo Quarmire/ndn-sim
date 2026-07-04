@@ -355,6 +355,27 @@ pub enum Fault {
         #[serde(default)]
         z: f64,
     },
+    /// Cut or restore an existing link between `a` and `b` (a link failure, then recovery) — unlike
+    /// `RemoveNode` this preserves node state and FIB, modelling a flaky link.
+    SetLink {
+        a: usize,
+        b: usize,
+        /// `true` = restore, `false` = cut.
+        up: bool,
+    },
+    /// Degrade an existing link: override its loss rate and/or add extra per-frame delay (congestion).
+    DegradeLink {
+        a: usize,
+        b: usize,
+        #[serde(default)]
+        loss_rate: Option<f64>,
+        #[serde(default)]
+        delay_ms: Option<u64>,
+    },
+    /// Partition the network: cut every link crossing the boundary of `nodes`. Heal with [`Fault::Heal`].
+    Partition { nodes: Vec<usize> },
+    /// Heal all link faults (restore every cut/degraded link to its profile defaults).
+    Heal,
 }
 
 impl Fault {
@@ -394,6 +415,21 @@ impl Fault {
             }
             Fault::MoveNode { node, x, y, z } => {
                 fabric.move_node(NodeId(*node), crate::world::Position::xyz(*x, *y, *z));
+                Ok(())
+            }
+            Fault::SetLink { a, b, up } => fabric.set_link_up(NodeId(*a), NodeId(*b), *up),
+            Fault::DegradeLink { a, b, loss_rate, delay_ms } => fabric.degrade_link(
+                NodeId(*a),
+                NodeId(*b),
+                *loss_rate,
+                delay_ms.map(Duration::from_millis),
+            ),
+            Fault::Partition { nodes } => {
+                fabric.partition(&nodes.iter().map(|&n| NodeId(n)).collect::<Vec<_>>());
+                Ok(())
+            }
+            Fault::Heal => {
+                fabric.heal();
                 Ok(())
             }
         }

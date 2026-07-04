@@ -19,6 +19,11 @@
 //! validation, co-simulation, radio, world, and analysis. For the long tail (individual
 //! propagation/interference models, scene renderers, OTLP export) reach into the crate root or the
 //! specific module.
+//!
+//! **Name note — two `FreeSpace`s.** [`crate::world::FreeSpace`] is a propagation *Environment*
+//! (world/obstruction model); [`crate::phy::FreeSpace`] is a `PropagationBackend` (distance→loss for
+//! a [`RadioLinkConfig`](crate::RadioLinkConfig)). Different roles, same word — so neither is in this
+//! prelude; reach the one you want by its full module path.
 
 // Re-exported so `use ndn_sim::prelude::*` also brings the engine config the builder needs.
 pub use ndn_engine::builder::EngineConfig;

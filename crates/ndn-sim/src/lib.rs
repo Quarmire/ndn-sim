@@ -49,6 +49,33 @@
 //! assert_eq!(scenario.nodes.len(), 2);
 //! ```
 //!
+//! ## Radio and the IP plane
+//!
+//! Nodes can share a **radio medium** instead of point-to-point links — a [`RadioLinkConfig`] picks
+//! the MAC discipline ([`WifiMode`]) and organisation ([`WifiOperatingMode`]), or use [`LoraLinkConfig`]
+//! for LoRa. And ndn-lab carries a deterministic **IP plane** ([`IpNetwork`]) with pluggable routing
+//! ([`ShortestPath`]/[`DistanceVector`]/[`Olsr`] proactive, [`Aodv`]/[`Dsr`] reactive,
+//! [`GreedyGeographic`]/[`Gpsr`] geographic) so the *same* workload can be benchmarked NDN-vs-IP.
+//!
+//! ```rust,no_run
+//! use ndn_sim::{IpNetwork, Position, RadioLinkConfig, ShortestPath, Wifi, WifiMode};
+//! # fn f(rt: std::sync::Arc<dyn ndn_runtime::Runtime>) {
+//! // Three stations on a shared Wi-Fi medium; IP routes itself over the in-range links.
+//! let net = IpNetwork::from_positions_wifi(
+//!     rt,
+//!     vec![Position::xy(0.0, 0.0), Position::xy(20.0, 0.0), Position::xy(40.0, 0.0)],
+//!     &Wifi::new(),
+//!     &RadioLinkConfig::new(30.0, WifiMode::Managed),
+//!     &ShortestPath,
+//! );
+//! # let _ = net; }
+//! ```
+//!
+//! The two planes enter differently *by design*: the NDN side is a mutable [`Simulation`] builder
+//! (topology grows incrementally, then `start()`), while [`IpNetwork`]'s `from_*` constructors take
+//! the whole topology up front — routing tables are computed from the complete graph at build time.
+//! [`from_scenario`](IpNetwork::from_scenario) bridges them: one [`Scenario`] drives both planes.
+//!
 //! ## The four capability axes
 //!
 //! - **Kernels** ([`DesKernel`], [`VirtualKernel`], [`WallClockKernel`], [`RealTimeKernel`]) — from a

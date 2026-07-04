@@ -404,10 +404,16 @@ impl RadioLinkConfig {
             propagation: Arc::new(crate::phy::FreeSpace),
         }
     }
-    /// Set the operating mode (IBSS / AP / mesh).
-    pub fn operating(mut self, op: crate::wifi::WifiOperatingMode) -> Self {
+    /// Set the operating mode (IBSS / AP / mesh) — the `with_*` spelling matching
+    /// [`with_propagation`](Self::with_propagation).
+    pub fn with_operating_mode(mut self, op: crate::wifi::WifiOperatingMode) -> Self {
         self.op_mode = op;
         self
+    }
+
+    /// Shorthand alias for [`with_operating_mode`](Self::with_operating_mode).
+    pub fn operating(self, op: crate::wifi::WifiOperatingMode) -> Self {
+        self.with_operating_mode(op)
     }
     /// Swap the propagation backend (free-space, log-distance, …).
     pub fn with_propagation(mut self, p: Arc<dyn crate::phy::PropagationBackend>) -> Self {

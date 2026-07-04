@@ -51,7 +51,13 @@ const BASIC_RATE_MCS: u8 = 0;
 const BEACON_BYTES: usize = 128;
 const BEACON_INTERVAL_US: f64 = 102_400.0;
 
-/// The radio operating mode — the crux of the named-data-radio vs normal-Wi-Fi comparison.
+/// The **MAC discipline** — raw monitor-mode injection vs a normal Wi-Fi MAC. This is the crux of the
+/// named-data-radio vs normal-Wi-Fi comparison, and is **orthogonal** to [`WifiOperatingMode`]: this
+/// enum is *how a frame is sent* (monitor broadcast vs managed CSMA-CA/ACK), while `WifiOperatingMode`
+/// is *how the nodes are organised* (ad-hoc / infrastructure / mesh). A [`RadioLinkConfig`] carries
+/// one of each — e.g. `Managed` + `Ap` = normal infrastructure Wi-Fi.
+///
+/// [`RadioLinkConfig`]: crate::RadioLinkConfig
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WifiMode {
     /// Raw monitor-mode injection: every frame is a broadcast at a radiotap-chosen rate, with **no

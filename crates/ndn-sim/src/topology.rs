@@ -280,6 +280,17 @@ impl Simulation {
         self.links.push(PendingLink { a, b, profile });
     }
 
+    /// Connect two nodes — the `add_*` spelling matching [`add_node`](Self::add_node) /
+    /// [`add_route`](Self::add_route) / [`add_app`](Self::add_app). Same as [`link`](Self::link).
+    pub fn add_link(&mut self, a: NodeId, b: NodeId, config: LinkConfig) {
+        self.link(a, b, config);
+    }
+
+    /// Typed-link form of [`add_link`](Self::add_link) (same as [`link_profiled`](Self::link_profiled)).
+    pub fn add_link_profiled(&mut self, a: NodeId, b: NodeId, profile: FaceProfile) {
+        self.link_profiled(a, b, profile);
+    }
+
     /// Pre-install a FIB route: packets for `prefix` at `node` forward toward `nexthop_node`
     /// via the SimLink face connecting them.
     pub fn add_route(&mut self, node: NodeId, prefix: &str, nexthop_node: NodeId) {

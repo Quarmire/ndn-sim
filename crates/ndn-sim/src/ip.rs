@@ -251,6 +251,16 @@ impl RunningIpNode {
         self.inner.addr
     }
 
+    /// Replace this node's routing table at runtime (dynamic re-route). Each entry is
+    /// `(destination network, prefix length, outgoing face index)`.
+    pub fn set_routes(&self, routes: Vec<(Ipv4, u8, usize)>) {
+        let mut table = self.inner.routes.lock().unwrap();
+        *table = routes
+            .into_iter()
+            .map(|(net, prefix_len, via)| Route { net, prefix_len, via })
+            .collect();
+    }
+
     /// Forwarding counters (forwarded / delivered / dropped / tx_bytes).
     pub fn stats(&self) -> IpNodeStats {
         IpNodeStats {
@@ -369,6 +379,17 @@ impl RunningIpNode {
 pub struct IpNetwork {
     nodes: Vec<RunningIpNode>,
     addrs: Vec<Ipv4>,
+    /// The undirected link list (index = link id), for rebuilding the topology view on re-route.
+    links: Vec<(usize, usize)>,
+    /// Per node, its `(neighbour → outgoing face index)` map — to translate a routing table's
+    /// next-hop *nodes* into face indices when installing.
+    face_to: Vec<HashMap<usize, usize>>,
+    /// The live fault knobs for each link's two directed faces (for [`set_link`](Self::set_link)).
+    link_states: Vec<(Arc<crate::sim_face::LinkState>, Arc<crate::sim_face::LinkState>)>,
+    /// Whether each link is currently up (a down link is excluded from re-routing).
+    link_up: Vec<std::sync::atomic::AtomicBool>,
+    /// Node positions, for position-based re-routing (GPSR).
+    positions: Option<Vec<crate::world::Position>>,
 }
 
 impl IpNetwork {
@@ -398,18 +419,20 @@ impl IpNetwork {
         let mut builders: Vec<IpNode> =
             addrs.iter().map(|&a| IpNode::new(a, Arc::clone(&runtime))).collect();
 
-        // Wire links, tracking each node's (neighbour → face index) map.
+        // Wire links, tracking each node's (neighbour → face index) map + the links' fault knobs.
         let mut face_to: Vec<HashMap<usize, usize>> = vec![HashMap::new(); n];
+        let mut link_states = Vec::with_capacity(links.len());
         for (link_id, &(a, b)) in links.iter().enumerate() {
             let (fa, fb) = ip_link(Arc::clone(&runtime), profile, 256, link_id as u64);
+            link_states.push((fa.link_state(), fb.link_state()));
             face_to[a].insert(b, builders[a].attach(fa));
             face_to[b].insert(a, builders[b].attach(fb));
         }
 
         // Compute routing tables with the chosen algorithm, install as /32 routes toward each dest.
         let mut view = crate::routing::TopologyView::from_links(n, links);
-        if let Some(p) = positions {
-            view = view.with_positions(p);
+        if let Some(p) = &positions {
+            view = view.with_positions(p.clone());
         }
         let tables = algo.compute(&view);
         for (u, table) in tables.iter().enumerate() {
@@ -421,7 +444,16 @@ impl IpNetwork {
         }
 
         let nodes = builders.into_iter().map(IpNode::start).collect();
-        IpNetwork { nodes, addrs }
+        let link_up = links.iter().map(|_| std::sync::atomic::AtomicBool::new(true)).collect();
+        IpNetwork {
+            nodes,
+            addrs,
+            links: links.to_vec(),
+            face_to,
+            link_states,
+            link_up,
+            positions,
+        }
     }
 
     /// Build + start from a [`Scenario`](crate::Scenario)'s node + link graph (NDN routes / radio are
@@ -471,6 +503,50 @@ impl IpNetwork {
     /// Total bytes put on the wire across all nodes — the IP "bytes on the wire" for a cost comparison.
     pub fn total_tx_bytes(&self) -> u64 {
         self.nodes.iter().map(|n| n.stats().tx_bytes).sum()
+    }
+
+    /// Cut or restore a link (both directions) — a topology change (mobility / failure). The link is
+    /// excluded from / included in subsequent [`reroute_with`](Self::reroute_with). Returns whether
+    /// such a link exists. Until you re-route, traffic on a cut link's old route is dropped.
+    pub fn set_link(&self, a: usize, b: usize, up: bool) -> bool {
+        for (i, &(x, y)) in self.links.iter().enumerate() {
+            if (x, y) == (a, b) || (x, y) == (b, a) {
+                self.link_up[i].store(up, std::sync::atomic::Ordering::Relaxed);
+                let (sa, sb) = &self.link_states[i];
+                sa.set_down(!up);
+                sb.set_down(!up);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Recompute every node's routing table with `algo` over the **currently-up** topology and
+    /// install it live — the adaptive-routing step a proactive protocol runs on a topology change
+    /// (a link forming/breaking), and a reactive one runs on demand. Positions are carried through
+    /// for geographic protocols.
+    pub fn reroute_with(&self, algo: &dyn crate::routing::RoutingAlgorithm) {
+        let up_links: Vec<(usize, usize)> = self
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.link_up[*i].load(std::sync::atomic::Ordering::Relaxed))
+            .map(|(_, &l)| l)
+            .collect();
+        let mut view = crate::routing::TopologyView::from_links(self.addrs.len(), &up_links);
+        if let Some(p) = &self.positions {
+            view = view.with_positions(p.clone());
+        }
+        let tables = algo.compute(&view);
+        for (u, table) in tables.iter().enumerate() {
+            let routes: Vec<(Ipv4, u8, usize)> = table
+                .iter()
+                .filter_map(|e| {
+                    self.face_to[u].get(&e.next_hop).map(|&via| (self.addrs[e.dest], 32, via))
+                })
+                .collect();
+            self.nodes[u].set_routes(routes);
+        }
     }
 }
 

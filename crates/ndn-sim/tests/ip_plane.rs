@@ -182,3 +182,41 @@ fn geographic_routing_delivers_by_position() {
     });
     assert!(recv >= 5, "GPSR greedy delivered along the line by position: {recv}");
 }
+
+/// Adaptive routing: a diamond has two disjoint paths 0→3. Shortest-path routes via node 1; cutting
+/// the 1–3 link drops the flow (stale route), and reroute_with recomputes over the surviving
+/// topology so delivery resumes via node 2. The core of routing that reacts to topology change.
+#[test]
+fn ip_reroutes_around_a_cut_link() {
+    use ndn_sim::{IpNetwork, ShortestPath};
+    let (before, during, after) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+        let net = IpNetwork::from_links(rt, 4, &[(0, 1), (1, 3), (0, 2), (2, 3)], &prof);
+        let dst = net.addr(3);
+        let before = net
+            .node(0)
+            .ping(dst, 3, 16, Duration::from_millis(2), Duration::from_millis(300))
+            .await
+            .received;
+
+        net.set_link(1, 3, false); // cut the active path — routes are now stale
+        let during = net
+            .node(0)
+            .ping(dst, 3, 16, Duration::from_millis(2), Duration::from_millis(300))
+            .await
+            .received;
+
+        net.reroute_with(&ShortestPath); // adapt to the new topology
+        let after = net
+            .node(0)
+            .ping(dst, 3, 16, Duration::from_millis(2), Duration::from_millis(300))
+            .await
+            .received;
+
+        (before, during, after)
+    });
+    assert!(before >= 2, "delivered before the cut: {before}");
+    assert_eq!(during, 0, "cut link + stale route drops the flow");
+    assert!(after >= 2, "re-routing around the cut restored delivery: {after}");
+}

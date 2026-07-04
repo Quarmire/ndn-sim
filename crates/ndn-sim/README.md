@@ -5,6 +5,16 @@ multi-node networks of *real* `ForwarderEngine`s on a pluggable time kernel, wit
 a named-radio face, one control + telemetry API, an MCP server, and a UDP bridge to real
 forwarders — all behind the `Face` + `Runtime` seams, so the engine stays simulation-oblivious.
 
+## Benchmarking NDN vs IP (in progress)
+
+Because everything below the forwarding engine is byte-oriented (`SimFace` carries `Bytes`), ndn-lab
+can host a **deterministic in-sim IP forwarding plane** on the *same* kernel / world / medium / faults
+as the NDN plane — so the same scenario can be run both ways and compared with the same `FlowStats`
+(RTT / loss / goodput). Slice 1 (`ndn_sim::ip`): `IpNode` forwards by destination (longest-prefix
+match + TTL) over `SimFace` byte channels, with a built-in echo and a `ping` that measures round-trip
+`FlowStats`. Workloads (`TrafficSource`), the `Fault`s (partition/degrade), and the run/diff harness
+are all protocol-neutral and shared. Routing generation and an NDN-vs-IP diff report layer on next.
+
 ## The four capability axes
 
 1. **Executor-agnostic core** — from a deterministic discrete-event queue (`DesKernel`,

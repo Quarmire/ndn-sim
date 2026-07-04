@@ -99,6 +99,7 @@ pub mod control_plane;
 pub mod cosim;
 pub mod des;
 pub mod geometry;
+pub mod ip;
 pub mod kernel;
 pub mod link_model;
 #[cfg(feature = "mavlink")]
@@ -140,6 +141,7 @@ pub use cosim::{
 };
 pub use des::{DesKernel, DesSession};
 pub use geometry::{Obstacle, ObstructedPropagation};
+pub use ip::{IpNode, IpNodeStats, IpPacket, Ipv4, RunningIpNode, ip_link};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{
     DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,

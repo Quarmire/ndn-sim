@@ -136,6 +136,112 @@ impl DutyCycle {
     }
 }
 
+/// LoRaWAN device **class** — the downlink (network→device) behaviour, trading energy for latency.
+/// Every device supports Class A; B and C add more downlink opportunity at higher receive energy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeviceClass {
+    /// **Class A**: the device opens two short RX windows only right after each *uplink* (lowest
+    /// energy, highest downlink latency). The baseline every LoRaWAN device must implement.
+    A,
+    /// **Class B**: adds scheduled, beacon-synchronised **ping slots** every `ping_period`, so the
+    /// network gets periodic downlink chances without waiting for an uplink (middle ground).
+    B { ping_period: Duration },
+    /// **Class C**: the device listens **continuously** except while transmitting — near-immediate
+    /// downlink at the cost of the highest receive energy (mains-powered).
+    C,
+}
+
+impl DeviceClass {
+    /// Default RX1 delay after an uplink (LoRaWAN default 1 s).
+    const RX1_DELAY: Duration = Duration::from_secs(1);
+    /// A modelled RX-window dwell (preamble detect + a short listen).
+    const RX_WINDOW: Duration = Duration::from_millis(15);
+
+    /// Expected latency before the network can deliver a downlink, given the device uplinks every
+    /// `uplink_interval`. Class A waits for the next uplink's RX window; Class B for the next ping
+    /// slot; Class C listens continuously (≈ immediate).
+    pub fn downlink_latency(self, uplink_interval: Duration) -> Duration {
+        match self {
+            DeviceClass::A => uplink_interval / 2 + Self::RX1_DELAY,
+            DeviceClass::B { ping_period } => ping_period / 2,
+            DeviceClass::C => Duration::from_millis(1),
+        }
+    }
+
+    /// Fraction of time the receiver is on (an energy proxy): Class A only in the two post-uplink
+    /// windows, Class B additionally one ping-slot dwell per period, Class C ≈ always on.
+    pub fn receive_duty(self, uplink_interval: Duration) -> f64 {
+        let ui = uplink_interval.as_secs_f64().max(1e-9);
+        let a_duty = 2.0 * Self::RX_WINDOW.as_secs_f64() / ui;
+        match self {
+            DeviceClass::A => a_duty,
+            DeviceClass::B { ping_period } => {
+                a_duty + Self::RX_WINDOW.as_secs_f64() / ping_period.as_secs_f64().max(1e-9)
+            }
+            DeviceClass::C => 1.0,
+        }
+    }
+}
+
+/// A LoRa link for the IP/NDN fabric: a range gate + PHY config + tx power + a pluggable propagation
+/// backend + duty-cycle regulator. The LoRa analogue of [`RadioLinkConfig`](crate::RadioLinkConfig)
+/// — consumed by [`IpNetwork::from_positions_lora`](crate::IpNetwork::from_positions_lora) so a
+/// scenario can run IP/NDN over LoRa's long-range, low-rate links.
+#[derive(Clone)]
+pub struct LoraLinkConfig {
+    pub range_m: f64,
+    pub cfg: LoraConfig,
+    pub tx_power_dbm: f64,
+    pub payload_bytes: usize,
+    pub freq_hz: f64,
+    pub propagation: std::sync::Arc<dyn crate::phy::PropagationBackend>,
+    pub duty: DutyCycle,
+}
+
+impl LoraLinkConfig {
+    /// Defaults: the given SF at 125 kHz, 14 dBm (EU868 max EIRP), 32-byte payload, free-space at
+    /// 868 MHz, 1 % duty cycle.
+    pub fn new(range_m: f64, sf: SpreadingFactor) -> Self {
+        LoraLinkConfig {
+            range_m,
+            cfg: LoraConfig::new(sf),
+            tx_power_dbm: 14.0,
+            payload_bytes: 32,
+            freq_hz: 868.1e6,
+            propagation: std::sync::Arc::new(crate::phy::FreeSpace),
+            duty: DutyCycle::EU868_1PCT,
+        }
+    }
+    /// Swap the propagation backend (free-space, log-distance, …).
+    pub fn with_propagation(mut self, p: std::sync::Arc<dyn crate::phy::PropagationBackend>) -> Self {
+        self.propagation = p;
+        self
+    }
+    /// LoRa thermal noise floor (dBm) for the configured bandwidth: −174 + 10·log₁₀(BW) + 6 dB NF.
+    fn noise_floor_dbm(&self) -> f64 {
+        -174.0 + 10.0 * self.cfg.bandwidth_hz.log10() + 6.0
+    }
+    /// SNR (dB) at a link distance — received power (pluggable propagation) minus the LoRa noise
+    /// floor. High SFs still close the link at *negative* SNR (below the noise floor).
+    pub fn snr_at(&self, dist_m: f64) -> f64 {
+        let ctx = crate::phy::PathContext {
+            distance_m: dist_m,
+            freq_hz: self.freq_hz,
+            tx_power_dbm: self.tx_power_dbm,
+            tx_gain_dbi: 0.0,
+            rx_gain_dbi: 0.0,
+        };
+        self.propagation.rx_power_dbm(&ctx) - self.noise_floor_dbm()
+    }
+    /// Per-link `(loss, airtime)` for the fabric: loss from this SF's demod curve at the link SNR,
+    /// airtime from the Semtech formula for `payload_bytes` (so LoRa's long on-air time shows up as
+    /// link latency, an order of magnitude beyond Wi-Fi).
+    pub fn link_cost(&self, dist_m: f64) -> (f64, Duration) {
+        let loss = (1.0 - self.cfg.frame_delivery(self.snr_at(dist_m))).clamp(0.0, 1.0);
+        (loss, self.cfg.airtime(self.payload_bytes))
+    }
+}
+
 /// A LoRa channel (sub-GHz). The general [`Channel`](crate::phy::Channel) covers the spectral
 /// relationships; this is a convenience for the common bands.
 pub fn eu868_channel() -> crate::phy::Channel {
@@ -177,6 +283,41 @@ mod tests {
         assert_eq!(adr_select(10.0, 3.0), Some(SpreadingFactor::Sf7));
         assert_eq!(adr_select(-16.0, 3.0), Some(SpreadingFactor::Sf12));
         assert_eq!(adr_select(-30.0, 3.0), None, "even SF12 can't close a −30 dB link");
+    }
+
+    #[test]
+    fn device_class_trades_downlink_latency_for_receive_energy() {
+        let ui = Duration::from_secs(60); // uplink once a minute
+        let (a, b, c) = (
+            DeviceClass::A,
+            DeviceClass::B { ping_period: Duration::from_secs(2) },
+            DeviceClass::C,
+        );
+        // Latency: Class A (wait for uplink) ≫ Class B (ping slot) ≫ Class C (always listening).
+        assert!(a.downlink_latency(ui) > b.downlink_latency(ui));
+        assert!(b.downlink_latency(ui) > c.downlink_latency(ui));
+        // Receive energy is the inverse tradeoff: A < B < C (C listens continuously).
+        assert!(a.receive_duty(ui) < b.receive_duty(ui));
+        assert!(b.receive_duty(ui) < c.receive_duty(ui));
+        assert_eq!(c.receive_duty(ui), 1.0, "Class C's receiver is always on");
+    }
+
+    #[test]
+    fn lora_link_cost_closes_long_range_only_at_high_sf() {
+        use crate::phy::LogDistance;
+        use std::sync::Arc;
+        // A lossy (exponent-3.5) 1 km link: SF7 (needs high SNR) can't close it; SF12, decoding below
+        // the noise floor, can. And LoRa's airtime is far beyond Wi-Fi's — the link latency reflects it.
+        let far = 1000.0;
+        let prop = || Arc::new(LogDistance { exponent: 3.5, ref_loss_db: 40.0, ref_dist_m: 1.0 });
+        let sf7 = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf7).with_propagation(prop());
+        let sf12 = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12).with_propagation(prop());
+        let (loss7, air7) = sf7.link_cost(far);
+        let (loss12, air12) = sf12.link_cost(far);
+        assert!(loss7 > 0.5, "SF7 can't close the lossy 1 km link ({loss7})");
+        assert!(loss12 < 0.2, "SF12 closes it below the noise floor ({loss12})");
+        assert!(air12 > air7, "SF12 pays for the range in airtime ({air12:?} vs {air7:?})");
+        assert!(air12 > Duration::from_millis(500), "LoRa SF12 airtime is very long: {air12:?}");
     }
 
     #[test]

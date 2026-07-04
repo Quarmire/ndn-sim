@@ -210,6 +210,28 @@ fn reactive_routing_delivers_and_costs_less_for_one_flow() {
     );
 }
 
+/// IP runs over LoRa: a multi-km link that only a high spreading factor can close delivers a flow,
+/// and its per-packet latency is dominated by LoRa's very long airtime (unlike Wi-Fi).
+#[test]
+fn ip_runs_over_a_long_range_lora_link() {
+    use ndn_sim::{IpNetwork, LoraLinkConfig, Position, ShortestPath, SpreadingFactor};
+    let (recv, rtt_ms) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        // Two nodes 3 km apart — SF12 (below-noise) closes it; range gate 10 km.
+        let positions = vec![Position::xy(0.0, 0.0), Position::xy(3000.0, 0.0)];
+        let cfg = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12);
+        let net = IpNetwork::from_positions_lora(rt, positions, &cfg, &ShortestPath);
+        let stats = net
+            .node(0)
+            .ping(net.addr(1), 6, 16, Duration::from_secs(5), Duration::from_secs(30))
+            .await;
+        (stats.received, stats.mean_rtt_ms())
+    });
+    assert!(recv >= 4, "IP delivered over the 3 km LoRa link: {recv}");
+    // LoRa SF12 airtime is hundreds of ms each way ⇒ RTT is far beyond any Wi-Fi link.
+    assert!(rtt_ms > 500.0, "LoRa's long airtime dominates the round-trip: {rtt_ms} ms");
+}
+
 /// GPSR perimeter recovery delivers across a concave void that pure greedy geographic drops: source 0
 /// is a local minimum (both neighbours farther from the dest), so `GreedyGeographic` never routes it,
 /// but `Gpsr` routes around the void via the right-hand rule.

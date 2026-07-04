@@ -162,7 +162,9 @@ pub use kernel::{
 };
 pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
-pub use lora::{CodingRate, DutyCycle, LoraConfig, SpreadingFactor, adr_select};
+pub use lora::{
+    CodingRate, DeviceClass, DutyCycle, LoraConfig, LoraLinkConfig, SpreadingFactor, adr_select,
+};
 pub use mcp::SimMcp;
 pub use medium::{
     CarrierSenseInterference, Delivery, DeliveryReason, FreeSpacePathLoss, InterferenceModel,

@@ -754,6 +754,57 @@ impl IpNetwork {
         net
     }
 
+    /// Build a mobile IP network **over LoRa**: like [`from_positions_wifi`](Self::from_positions_wifi)
+    /// but each in-range link's loss + latency come from the [`LoraLinkConfig`](crate::lora::LoraLinkConfig)
+    /// (SF demod curve + Semtech airtime). Long range, high per-frame latency — the sub-GHz counterpoint
+    /// to Wi-Fi, so a benchmark can run the *same* NDN/IP workload over LoRa.
+    pub fn from_positions_lora(
+        runtime: Arc<dyn Runtime>,
+        positions: Vec<crate::world::Position>,
+        cfg: &crate::lora::LoraLinkConfig,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) -> Self {
+        let n = positions.len();
+        let full: Vec<(usize, usize)> =
+            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
+        let prof = FaceProfile::internal();
+        let net = Self::from_links_with(runtime, n, &full, Some(positions.clone()), &prof, algo);
+        net.reconnect_lora(&positions, cfg, algo);
+        net
+    }
+
+    /// Mobility + LoRa re-route: a link is up when the endpoints are within `cfg.range_m`, and each
+    /// up-link's drop probability + added latency come from the LoRa model at the link SNR. LoRa is a
+    /// shared ALOHA broadcast medium — no association, no operating modes.
+    pub fn reconnect_lora(
+        &self,
+        positions: &[crate::world::Position],
+        cfg: &crate::lora::LoraLinkConfig,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        *self.positions.lock().unwrap() = Some(positions.to_vec());
+        for (i, &(a, b)) in self.links.iter().enumerate() {
+            let dist = positions[a].distance(positions[b]);
+            let (sa, sb) = &self.link_states[i];
+            if dist <= cfg.range_m {
+                let (loss, airtime) = cfg.link_cost(dist);
+                for s in [sa, sb] {
+                    s.set_down(false);
+                    s.set_loss(Some(loss));
+                    s.set_extra_delay(airtime);
+                }
+                self.link_up[i].store(true, Relaxed);
+            } else {
+                for s in [sa, sb] {
+                    s.set_down(true);
+                }
+                self.link_up[i].store(false, Relaxed);
+            }
+        }
+        self.reroute_with(algo);
+    }
+
     /// **Hands-free mobility-driven routing.** Spawn a background loop that, every `interval`, reads
     /// node positions from the `world` at the current virtual time (IP node `i` ↔ `NodeId(i)`) and
     /// [`reconnect`](Self::reconnect)s — so a mobility model, a recorded trace, or live co-sim moving

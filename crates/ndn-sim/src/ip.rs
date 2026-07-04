@@ -577,6 +577,46 @@ impl IpNetwork {
         self.reroute_with(algo);
     }
 
+    /// **Mobility + Wi-Fi MAC re-route.** Like [`reconnect`](Self::reconnect), but each in-range
+    /// link's drop probability and added delay come from the [`Wifi`](crate::Wifi) MAC at the
+    /// SNR implied by distance under `mode` (Monitor = one-shot, higher loss / lower airtime;
+    /// Managed = retries, lower loss / higher airtime). `frame_bytes` is the representative frame
+    /// size for the cost estimate. This is IP running over the modelled broadcast radio.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconnect_wifi(
+        &self,
+        positions: &[crate::world::Position],
+        range: f64,
+        wifi: &crate::wifi::Wifi,
+        mode: crate::wifi::WifiMode,
+        tx_power_dbm: f64,
+        retry_limit: u32,
+        frame_bytes: usize,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) {
+        *self.positions.lock().unwrap() = Some(positions.to_vec());
+        for (i, &(a, b)) in self.links.iter().enumerate() {
+            let dist = positions[a].distance(positions[b]);
+            let (sa, sb) = &self.link_states[i];
+            if dist <= range {
+                let snr = crate::wifi::snr_from_distance(tx_power_dbm, dist);
+                let (loss, airtime) = wifi.link_cost(mode, snr, frame_bytes, retry_limit);
+                for s in [sa, sb] {
+                    s.set_down(false);
+                    s.set_loss(Some(loss));
+                    s.set_extra_delay(airtime);
+                }
+                self.link_up[i].store(true, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                for s in [sa, sb] {
+                    s.set_down(true);
+                }
+                self.link_up[i].store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        self.reroute_with(algo);
+    }
+
     /// Build a **mobile** IP network: `positions.len()` nodes fully meshed with potential links, but
     /// only links within `range` are initially up (unit-disk-graph connectivity). Drive it with
     /// [`reconnect`](Self::reconnect) as nodes move. `algo` routes over the in-range topology (a
@@ -594,6 +634,41 @@ impl IpNetwork {
         let net =
             Self::from_links_with(runtime, n, &full, Some(positions.clone()), profile, algo);
         net.reconnect(&positions, range, algo);
+        net
+    }
+
+    /// Build a mobile IP network **over the Wi-Fi MAC**: like [`from_positions`](Self::from_positions)
+    /// but each link's loss + delay come from the [`Wifi`](crate::Wifi) model under `mode` (see
+    /// [`reconnect_wifi`](Self::reconnect_wifi)). The link faces carry no intrinsic loss/delay — the
+    /// MAC is the only channel effect. `retry_limit` and `frame_bytes` parameterise the cost model.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_positions_wifi(
+        runtime: Arc<dyn Runtime>,
+        positions: Vec<crate::world::Position>,
+        range: f64,
+        wifi: &crate::wifi::Wifi,
+        mode: crate::wifi::WifiMode,
+        tx_power_dbm: f64,
+        retry_limit: u32,
+        frame_bytes: usize,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) -> Self {
+        let n = positions.len();
+        let full: Vec<(usize, usize)> =
+            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
+        // A plain in-proc face carries no loss/delay of its own; the MAC supplies both.
+        let prof = FaceProfile::internal();
+        let net = Self::from_links_with(runtime, n, &full, Some(positions.clone()), &prof, algo);
+        net.reconnect_wifi(
+            &positions,
+            range,
+            wifi,
+            mode,
+            tx_power_dbm,
+            retry_limit,
+            frame_bytes,
+            algo,
+        );
         net
     }
 

@@ -112,3 +112,36 @@ fn world_driven_router_tracks_mobility() {
     assert!(near >= 2, "delivered while node 1 was in range: {near}");
     assert_eq!(far, 0, "node 1 flew out of range; the router dropped the broken link: {far}");
 }
+
+/// IP over the Wi-Fi MAC: at a marginal SNR (a link near the edge of range), managed unicast's
+/// ACK+retry delivers far more than a single monitor-mode broadcast — the reliability the MAC buys.
+#[test]
+fn ip_over_wifi_managed_beats_monitor_at_marginal_snr() {
+    use ndn_sim::{IpNetwork, Position, ShortestPath, Wifi, WifiMode};
+    let (mono, managed) = DesKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
+        let wifi = Wifi::new();
+        let positions = vec![Position::xy(0.0, 0.0), Position::xy(2600.0, 0.0)]; // ~6.6 dB SNR
+
+        let net_m = IpNetwork::from_positions_wifi(
+            k.runtime(), positions.clone(), 4000.0, &wifi, WifiMode::Monitor, 20.0, 6, 64, &ShortestPath,
+        );
+        let m = net_m
+            .node(0)
+            .ping(net_m.addr(1), 25, 64, Duration::from_millis(1), Duration::from_millis(300))
+            .await
+            .received;
+
+        let net_g = IpNetwork::from_positions_wifi(
+            k.runtime(), positions, 4000.0, &wifi, WifiMode::Managed, 20.0, 6, 64, &ShortestPath,
+        );
+        let g = net_g
+            .node(0)
+            .ping(net_g.addr(1), 25, 64, Duration::from_millis(1), Duration::from_millis(300))
+            .await
+            .received;
+
+        (m, g)
+    });
+    assert!(managed > mono + 3, "managed (ACK+retry) beats monitor one-shot: {managed} vs {mono}");
+    assert!(managed >= 22, "managed nearly-reliable at marginal SNR: {managed}");
+}

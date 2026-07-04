@@ -119,6 +119,15 @@ fn us(x: f64) -> Duration {
     Duration::from_nanos((x * 1_000.0).max(0.0) as u64)
 }
 
+/// A simple free-space SNR (dB) for a `tx_power_dbm` transmitter received `dist_m` away at 2.4 GHz.
+/// A placeholder channel model — the pluggable propagation / antenna backend supersedes it.
+pub fn snr_from_distance(tx_power_dbm: f64, dist_m: f64) -> f64 {
+    let d = dist_m.max(1.0);
+    // FSPL(dB) = 20·log10(d) + 20·log10(f) − 147.55.
+    let fspl = 20.0 * d.log10() + 20.0 * 2.4e9_f64.log10() - 147.55;
+    LinkModel::snr_db(tx_power_dbm - fspl)
+}
+
 fn avg_backoff_us() -> f64 {
     CW_MIN / 2.0 * SLOT_US
 }
@@ -287,6 +296,35 @@ impl Wifi {
             }
         }
         TxOutcome { delivered, attempts, airtime, mcs: last_mcs }
+    }
+
+    /// The **expected per-frame loss and airtime** for a `bytes` frame to a peer at `snr_db` under
+    /// `mode`, with `retry_limit` unicast retries — the *statistical* MAC cost used to drive an
+    /// in-sim radio link (loss → the link's drop probability, airtime → its added delay). Monitor is
+    /// one-shot (higher loss, lower airtime); managed trades airtime (retries) for reliability.
+    pub fn link_cost(
+        &self,
+        mode: WifiMode,
+        snr_db: f64,
+        bytes: usize,
+        retry_limit: u32,
+    ) -> (f64, Duration) {
+        let mcs = self.link.best_mcs(snr_db).unwrap_or(0);
+        match mode {
+            WifiMode::Monitor => {
+                let p = self.link.frame_delivery(mcs, snr_db);
+                (1.0 - p, broadcast_airtime(bytes, mcs))
+            }
+            WifiMode::Managed => {
+                let p = self.link.frame_delivery(mcs, snr_db).clamp(1e-3, 1.0);
+                let attempts = (retry_limit + 1) as i32;
+                let delivered = 1.0 - (1.0 - p).powi(attempts);
+                let expected_attempts = (delivered / p).max(1.0); // geometric, capped by delivered
+                let per = managed_unicast_attempt_airtime(bytes, 1, mcs, AccessCategory::BestEffort);
+                let airtime = Duration::from_nanos((per.as_nanos() as f64 * expected_attempts) as u64);
+                (1.0 - delivered, airtime)
+            }
+        }
     }
 
     /// **Managed multicast / broadcast**: a single group-addressed frame at the **basic (legacy)

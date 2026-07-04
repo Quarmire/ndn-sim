@@ -104,6 +104,7 @@ pub mod geometry;
 pub mod ip;
 pub mod kernel;
 pub mod link_model;
+pub mod lora;
 #[cfg(feature = "mavlink")]
 pub mod mavlink;
 pub mod mcp;
@@ -161,6 +162,7 @@ pub use kernel::{
 };
 pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
+pub use lora::{CodingRate, DutyCycle, LoraConfig, SpreadingFactor, adr_select};
 pub use mcp::SimMcp;
 pub use medium::{
     CarrierSenseInterference, Delivery, DeliveryReason, FreeSpacePathLoss, InterferenceModel,

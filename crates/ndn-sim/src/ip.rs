@@ -388,8 +388,12 @@ pub struct IpNetwork {
     link_states: Vec<(Arc<crate::sim_face::LinkState>, Arc<crate::sim_face::LinkState>)>,
     /// Whether each link is currently up (a down link is excluded from re-routing).
     link_up: Vec<std::sync::atomic::AtomicBool>,
-    /// Node positions, for position-based re-routing (GPSR).
-    positions: Option<Vec<crate::world::Position>>,
+    /// Node positions, for position-based re-routing (GPSR) and range-gated connectivity. Mutable so
+    /// mobility ([`reconnect`](Self::reconnect)) can update them.
+    positions: Mutex<Option<Vec<crate::world::Position>>>,
+    /// The kernel runtime + build epoch, for the World-driven background re-router.
+    runtime: Arc<dyn Runtime>,
+    epoch_ns: u64,
 }
 
 impl IpNetwork {
@@ -443,6 +447,7 @@ impl IpNetwork {
             }
         }
 
+        let epoch_ns = runtime.unix_nanos();
         let nodes = builders.into_iter().map(IpNode::start).collect();
         let link_up = links.iter().map(|_| std::sync::atomic::AtomicBool::new(true)).collect();
         IpNetwork {
@@ -452,7 +457,9 @@ impl IpNetwork {
             face_to,
             link_states,
             link_up,
-            positions,
+            positions: Mutex::new(positions),
+            runtime,
+            epoch_ns,
         }
     }
 
@@ -534,8 +541,8 @@ impl IpNetwork {
             .map(|(_, &l)| l)
             .collect();
         let mut view = crate::routing::TopologyView::from_links(self.addrs.len(), &up_links);
-        if let Some(p) = &self.positions {
-            view = view.with_positions(p.clone());
+        if let Some(p) = self.positions.lock().unwrap().clone() {
+            view = view.with_positions(p);
         }
         let tables = algo.compute(&view);
         for (u, table) in tables.iter().enumerate() {
@@ -547,6 +554,76 @@ impl IpNetwork {
                 .collect();
             self.nodes[u].set_routes(routes);
         }
+    }
+
+    /// **Mobility-driven re-route.** Update node positions, bring each link up iff its endpoints are
+    /// within `range` (the unit-disk-graph connectivity model standard in MANET routing studies),
+    /// then [`reroute_with`](Self::reroute_with) over the new topology. Call this as the World moves
+    /// nodes — links form and break, and the chosen protocol (proactive / geographic) adapts.
+    pub fn reconnect(
+        &self,
+        positions: &[crate::world::Position],
+        range: f64,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) {
+        *self.positions.lock().unwrap() = Some(positions.to_vec());
+        for (i, &(a, b)) in self.links.iter().enumerate() {
+            let up = positions[a].distance(positions[b]) <= range;
+            self.link_up[i].store(up, std::sync::atomic::Ordering::Relaxed);
+            let (sa, sb) = &self.link_states[i];
+            sa.set_down(!up);
+            sb.set_down(!up);
+        }
+        self.reroute_with(algo);
+    }
+
+    /// Build a **mobile** IP network: `positions.len()` nodes fully meshed with potential links, but
+    /// only links within `range` are initially up (unit-disk-graph connectivity). Drive it with
+    /// [`reconnect`](Self::reconnect) as nodes move. `algo` routes over the in-range topology (a
+    /// geographic algorithm like GPSR uses the positions directly).
+    pub fn from_positions(
+        runtime: Arc<dyn Runtime>,
+        positions: Vec<crate::world::Position>,
+        range: f64,
+        profile: &FaceProfile,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) -> Self {
+        let n = positions.len();
+        let full: Vec<(usize, usize)> =
+            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
+        let net =
+            Self::from_links_with(runtime, n, &full, Some(positions.clone()), profile, algo);
+        net.reconnect(&positions, range, algo);
+        net
+    }
+
+    /// **Hands-free mobility-driven routing.** Spawn a background loop that, every `interval`, reads
+    /// node positions from the `world` at the current virtual time (IP node `i` ↔ `NodeId(i)`) and
+    /// [`reconnect`](Self::reconnect)s — so a mobility model, a recorded trace, or live co-sim moving
+    /// the World automatically re-forms links and re-converges the routing. Runs until `cancel`.
+    pub fn spawn_router(
+        self: &Arc<Self>,
+        world: Arc<crate::world::World>,
+        range: f64,
+        interval: Duration,
+        algo: Arc<dyn crate::routing::RoutingAlgorithm>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        let me = Arc::clone(self);
+        ndn_app::rt::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = ndn_app::rt::sleep(interval) => {}
+                }
+                let t = me.runtime.unix_nanos().saturating_sub(me.epoch_ns) as f64 / 1e9;
+                let view = world.snapshot(t);
+                let positions: Vec<crate::world::Position> = (0..me.nodes.len())
+                    .map(|i| view.position(crate::NodeId(i)).unwrap_or(crate::world::Position::ORIGIN))
+                    .collect();
+                me.reconnect(&positions, range, &*algo);
+            }
+        });
     }
 }
 

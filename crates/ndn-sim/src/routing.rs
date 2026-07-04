@@ -83,8 +83,9 @@ pub enum RoutingCategory {
     Geographic,
 }
 
-/// A routing algorithm that computes per-node routing tables from a [`TopologyView`].
-pub trait RoutingAlgorithm {
+/// A routing algorithm that computes per-node routing tables from a [`TopologyView`]. `Send + Sync`
+/// so it can drive a background re-router ([`IpNetwork::spawn_router`](crate::IpNetwork::spawn_router)).
+pub trait RoutingAlgorithm: Send + Sync {
     /// A short name (e.g. `"shortest-path"`, `"distance-vector"`).
     fn name(&self) -> &'static str;
     /// The protocol family it models.

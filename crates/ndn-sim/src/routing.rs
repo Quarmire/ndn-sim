@@ -17,11 +17,12 @@
 //! MANET (mobile ad-hoc):
 //! - **DSDV** — proactive destination-sequenced distance-vector (Perkins & Bhagwat, SIGCOMM 1994).
 //!   A DV with sequence numbers to avoid loops/count-to-infinity; converged routes = [`DistanceVector`].
-//! - **AODV** — reactive on-demand DV, RREQ/RREP + sequence numbers (RFC 3561). *Roadmap*
-//!   ([`RoutingCategory::Reactive`]).
+//! - **AODV** — reactive on-demand DV, RREQ/RREP + sequence numbers (RFC 3561). Modelled by
+//!   [`Aodv`] (min-hop routes; on-demand, flow-scaled overhead).
 //! - **OLSR** — proactive link-state with Multipoint Relays to bound flooding (RFC 3626; OLSRv2 RFC
 //!   7181). Converged routes = [`ShortestPath`]; the MPR overhead model is *roadmap*.
-//! - **DSR** — reactive source routing (RFC 4728). *Roadmap*.
+//! - **DSR** — reactive source routing (RFC 4728). Modelled by [`Dsr`] (source-routed, no periodic
+//!   control traffic).
 //! - **Babel** — loop-avoiding DV, wired + wireless (RFC 8966).
 //!
 //! VANET / FANET (high mobility, position-aware):
@@ -107,6 +108,31 @@ pub trait RoutingAlgorithm: Send + Sync {
 fn flood_bytes(view: &TopologyView, msg_bytes: u64) -> u64 {
     let edges: usize = view.adj.iter().map(Vec::len).sum(); // = 2 × undirected edges
     edges as u64 * msg_bytes
+}
+
+/// Average shortest-path **hop count** from node 0 to the reachable others (BFS) — a cheap proxy for
+/// typical path length, used to size the reactive protocols' RREP / return traffic.
+fn avg_hops(view: &TopologyView) -> u64 {
+    if view.n <= 1 {
+        return 0;
+    }
+    let mut depth = vec![u32::MAX; view.n];
+    let mut q = std::collections::VecDeque::new();
+    depth[0] = 0;
+    q.push_back(0usize);
+    while let Some(u) = q.pop_front() {
+        for &(v, _) in &view.adj[u] {
+            if depth[v] == u32::MAX {
+                depth[v] = depth[u] + 1;
+                q.push_back(v);
+            }
+        }
+    }
+    let reached: Vec<u32> = depth.iter().copied().filter(|&d| d != u32::MAX && d > 0).collect();
+    if reached.is_empty() {
+        return 0;
+    }
+    reached.iter().map(|&d| d as u64).sum::<u64>() / reached.len() as u64
 }
 
 /// **Link-state / Dijkstra** shortest paths (the converged state of OSPF / OLSR). Each node computes
@@ -286,6 +312,81 @@ impl RoutingAlgorithm for GreedyGeographic {
     }
 }
 
+/// **AODV** — Ad-hoc On-demand Distance Vector (RFC 3561). *Reactive*: a node floods a Route Request
+/// (RREQ) only when it needs a route to a destination it isn't already tracking; the destination (or
+/// an intermediate node with a fresh-enough route) unicasts a Route Reply (RREP) back along the
+/// reverse path. Destination sequence numbers keep routes loop-free and reject stale ones.
+///
+/// On a static graph the first RREQ to reach the destination has travelled a min-hop path, so the
+/// routes AODV installs are min-hop shortest paths — modelled here with hop-count Dijkstra. What sets
+/// it apart from the proactive families is [`control_overhead`](Self::control_overhead): it scales
+/// with the number of **active destinations** (routes are built on demand), *not* with the topology
+/// size — so on a large network carrying few flows AODV is far cheaper than link-state or
+/// distance-vector, and the benchmark shows the crossover as flows grow.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Aodv;
+
+impl RoutingAlgorithm for Aodv {
+    fn name(&self) -> &'static str {
+        "aodv"
+    }
+    fn category(&self) -> RoutingCategory {
+        RoutingCategory::Reactive
+    }
+    fn compute(&self, view: &TopologyView) -> Vec<Vec<RouteEntry>> {
+        // On-demand discovery converges to min-hop routes on a static graph.
+        (0..view.n).map(|src| dijkstra_table(view, src)).collect()
+    }
+    /// Per active destination: one network-wide RREQ flood + a RREP unicast back along the discovered
+    /// (avg-length) path, plus periodic HELLO beacons for local link sensing (RFC 3561 §6.9). The
+    /// discovery term is proportional to `active_flows`, so idle destinations cost nothing.
+    fn control_overhead(&self, view: &TopologyView, active_flows: usize) -> u64 {
+        if view.n == 0 {
+            return 0;
+        }
+        let rreq_flood = flood_bytes(view, 24); // 24 B RREQ flooded once per node
+        let rrep = avg_hops(view).max(1) * 28; // RREP unicast hop-by-hop back to the source
+        let discovery = active_flows as u64 * (rreq_flood + rrep);
+        let hello = view.n as u64 * 20; // one HELLO broadcast per node per period
+        discovery + hello
+    }
+}
+
+/// **DSR** — Dynamic Source Routing (RFC 4728). *Reactive* and *source-routed*: route discovery
+/// floods a RREQ that **accumulates the hop list** as it propagates; the RREP returns that full
+/// source route, and every data packet then carries the route in its header. Purely on-demand — DSR
+/// has **no periodic control traffic at all** (no HELLO), the extreme of the reactive family.
+///
+/// Installed routes on a static graph are min-hop (hop-count Dijkstra here); DSR's distinctive costs
+/// are the discovery flood (with route accumulation) and a per-packet source-route header on the data
+/// plane. With zero active flows its control overhead is exactly zero.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Dsr;
+
+impl RoutingAlgorithm for Dsr {
+    fn name(&self) -> &'static str {
+        "dsr"
+    }
+    fn category(&self) -> RoutingCategory {
+        RoutingCategory::Reactive
+    }
+    fn compute(&self, view: &TopologyView) -> Vec<Vec<RouteEntry>> {
+        (0..view.n).map(|src| dijkstra_table(view, src)).collect()
+    }
+    /// Per active destination: a RREQ flood whose messages grow as they accumulate the route
+    /// (~2 B/hop) + a source-routed RREP back. No periodic beacons — so with no active flows, zero
+    /// control traffic (contrast the proactive families' constant background chatter).
+    fn control_overhead(&self, view: &TopologyView, active_flows: usize) -> u64 {
+        if view.n == 0 {
+            return 0;
+        }
+        let hops = avg_hops(view).max(1);
+        let rreq_flood = flood_bytes(view, 24 + hops * 2); // RREQ carries the accumulating route
+        let rrep = hops * (24 + hops * 2); // full source route returned hop-by-hop
+        active_flows as u64 * (rreq_flood + rrep)
+    }
+}
+
 /// The kind of network being modelled — picks a sensible default routing algorithm per the
 /// literature. A benchmark can always override with a specific [`RoutingAlgorithm`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,6 +458,65 @@ mod tests {
         let gpsr = GreedyGeographic.control_overhead(&view, 1);
         assert!(gpsr * 5 < sp, "GPSR beacons ≪ link-state floods ({gpsr} vs {sp})");
         assert!(gpsr * 5 < dv, "GPSR beacons ≪ distance-vector exchanges ({gpsr} vs {dv})");
+    }
+
+    /// AODV/DSR discover routes on demand, but on a static graph they converge to the same min-hop
+    /// paths the proactive families do — the difference is *overhead*, not the installed routes.
+    #[test]
+    fn reactive_routes_are_min_hop_like_shortest_path() {
+        let view = square_with_diagonal();
+        let sp = ShortestPath.compute(&view);
+        for algo in [&Aodv as &dyn RoutingAlgorithm, &Dsr] {
+            let t = algo.compute(&view);
+            for (u, sp_u) in sp.iter().enumerate() {
+                for r in sp_u {
+                    let e = t[u].iter().find(|e| e.dest == r.dest).expect("reactive reaches it too");
+                    assert_eq!(e.metric, r.metric, "{} node {u}→{}: same min-hop", algo.name(), r.dest);
+                }
+            }
+        }
+    }
+
+    /// The defining reactive-vs-proactive contrast: on-demand overhead scales with the number of
+    /// **active flows**, while proactive chatter is periodic and flat in the flow count — and DSR,
+    /// fully reactive, is silent when nothing is flowing.
+    #[test]
+    fn reactive_overhead_scales_with_active_flows_proactive_does_not() {
+        let links: Vec<(usize, usize)> = (0..9).map(|i| (i, i + 1)).collect(); // a 10-node line
+        let view = TopologyView::from_links(10, &links);
+
+        assert_eq!(
+            ShortestPath.control_overhead(&view, 1),
+            ShortestPath.control_overhead(&view, 8),
+            "link-state chatter is periodic, not per-flow",
+        );
+        let (aodv_1, aodv_8) = (Aodv.control_overhead(&view, 1), Aodv.control_overhead(&view, 8));
+        assert!(aodv_8 > aodv_1, "AODV overhead grows with active flows ({aodv_1} → {aodv_8})");
+        assert_eq!(Dsr.control_overhead(&view, 0), 0, "DSR is silent when nothing is flowing");
+        assert!(
+            ShortestPath.control_overhead(&view, 0) > 0,
+            "proactive still floods link-state when idle",
+        );
+    }
+
+    /// The crossover a benchmark exposes: on a large, sparse network a *single* flow makes on-demand
+    /// AODV far cheaper than proactive link-state — but once *every* node is a source, the reactive
+    /// floods dominate and the proactive tables amortise.
+    #[test]
+    fn reactive_wins_with_few_flows_loses_when_everyone_talks() {
+        let links: Vec<(usize, usize)> = (0..49).map(|i| (i, i + 1)).collect(); // 50-node line
+        let view = TopologyView::from_links(50, &links);
+
+        let few = 1;
+        assert!(
+            Aodv.control_overhead(&view, few) < ShortestPath.control_overhead(&view, few),
+            "few flows on a large net ⇒ AODV ≪ link-state",
+        );
+        let many = 50;
+        assert!(
+            Aodv.control_overhead(&view, many) > ShortestPath.control_overhead(&view, many),
+            "every node sourcing ⇒ reactive floods overtake the amortised proactive tables",
+        );
     }
 
     #[test]

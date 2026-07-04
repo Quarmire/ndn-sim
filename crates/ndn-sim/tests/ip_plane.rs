@@ -183,6 +183,33 @@ fn geographic_routing_delivers_by_position() {
     assert!(recv >= 5, "GPSR greedy delivered along the line by position: {recv}");
 }
 
+/// Reactive routing (AODV/DSR, RFC 3561/4728): discovers routes on demand yet delivers over the same
+/// min-hop path a proactive protocol would — and for a single flow on the line its modelled control
+/// overhead is a fraction of link-state's periodic flooding (the on-demand advantage).
+#[test]
+fn reactive_routing_delivers_and_costs_less_for_one_flow() {
+    use ndn_sim::{Aodv, IpNetwork, RoutingAlgorithm, ShortestPath, TopologyView};
+    let (recv, aodv_overhead, sp_overhead) = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+        let rt = k.runtime();
+        let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+        let links = [(0, 1), (1, 2), (2, 3), (3, 4)];
+        let net = IpNetwork::from_links_with(rt, 5, &links, None, &prof, &Aodv);
+        let stats = net
+            .node(0)
+            .ping(net.addr(4), 8, 32, Duration::from_millis(2), Duration::from_secs(1))
+            .await;
+        // Same graph, one active flow: contrast the control overhead of reactive vs proactive.
+        let view = TopologyView::from_links(5, &links);
+        let one_flow = 1;
+        (stats.received, Aodv.control_overhead(&view, one_flow), ShortestPath.control_overhead(&view, one_flow))
+    });
+    assert!(recv >= 7, "AODV discovered the route and delivered end-to-end: {recv}");
+    assert!(
+        aodv_overhead < sp_overhead,
+        "one flow ⇒ on-demand AODV chatter ({aodv_overhead} B) < proactive link-state ({sp_overhead} B)"
+    );
+}
+
 /// Adaptive routing: a diamond has two disjoint paths 0→3. Shortest-path routes via node 1; cutting
 /// the 1–3 link drops the flow (stale route), and reroute_with recomputes over the surviving
 /// topology so delivery resumes via node 2. The core of routing that reacts to topology change.

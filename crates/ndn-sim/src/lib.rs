@@ -94,6 +94,8 @@
 pub mod analysis;
 pub mod app;
 pub mod bridge;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compare;
 pub mod control;
 pub mod control_plane;
 pub mod cosim;
@@ -131,6 +133,8 @@ pub use analysis::{
     RunCapture, RunDiff, diff_runs, explain_link,
 };
 pub use app::{AppHandle, AppId, AppSpec, FlowStats, TrafficPattern};
+#[cfg(not(target_arch = "wasm32"))]
+pub use compare::{ComparisonSpec, ProtocolComparison, compare_ndn_vs_ip};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,

@@ -148,7 +148,9 @@ pub use cosim::{
 };
 pub use des::{DesKernel, DesSession};
 pub use geometry::{Obstacle, ObstructedPropagation};
-pub use ip::{IpNetwork, IpNode, IpNodeStats, IpPacket, Ipv4, RunningIpNode, ip_link};
+pub use ip::{
+    IpNetwork, IpNode, IpNodeStats, IpPacket, Ipv4, RadioLinkConfig, RunningIpNode, ip_link,
+};
 pub use routing::{
     DistanceVector, GreedyGeographic, NetworkKind, RoutingAlgorithm, RoutingCategory, ShortestPath,
     TopologyView,
@@ -196,8 +198,8 @@ pub use topology::{
     Simulation, Strategy,
 };
 pub use wifi::{
-    AccessCategory, FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, WifiMode, broadcast_airtime,
-    frame_airtime,
+    AccessCategory, FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, WifiMode,
+    WifiOperatingMode, broadcast_airtime, frame_airtime,
 };
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]

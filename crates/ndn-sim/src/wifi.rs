@@ -78,6 +78,42 @@ impl WifiMode {
     }
 }
 
+/// The 802.11 **operating mode** — how nodes organise, distinct from [`WifiMode`] (which is the
+/// PHY/MAC discipline). This shapes the connectivity graph and the association cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiOperatingMode {
+    /// Ad-hoc: in-range peers link directly; distributed beacons; no AP association (light join).
+    Ibss,
+    /// Infrastructure: every station links **only to the AP** (a star) — station↔station traffic
+    /// relays through it — and a station must **associate** before sending (setup cost; a handoff
+    /// gap when it roams out of and back into range).
+    Ap { ap: usize },
+    /// 802.11s mesh: in-range peers link and forward for each other (like IBSS for connectivity),
+    /// with mesh peering handshakes between neighbours.
+    Mesh,
+}
+
+impl WifiOperatingMode {
+    /// Whether a link between nodes `a` and `b` is *permitted* by the mode (before range gating):
+    /// AP mode allows only station↔AP; IBSS/mesh allow any peer pair.
+    pub fn link_allowed(self, a: usize, b: usize) -> bool {
+        match self {
+            WifiOperatingMode::Ibss | WifiOperatingMode::Mesh => true,
+            WifiOperatingMode::Ap { ap } => a == ap || b == ap,
+        }
+    }
+    /// The one-time association setup delay a station pays on (re-)joining in this mode — the cost
+    /// monitor mode never pays. AP association is the scan+auth+assoc(+handshake) sequence; IBSS/mesh
+    /// join/peering is lighter.
+    pub fn association_setup(self) -> Duration {
+        match self {
+            WifiOperatingMode::Ap { .. } => Duration::from_millis(120), // scan+auth+assoc+4-way
+            WifiOperatingMode::Mesh => Duration::from_millis(40),       // peering
+            WifiOperatingMode::Ibss => Duration::from_millis(5),        // adopt TSF
+        }
+    }
+}
+
 /// EDCA access categories — QoS contention parameters (higher priority ⇒ shorter AIFS + smaller
 /// contention window ⇒ less airtime waiting). Values are the 802.11 defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

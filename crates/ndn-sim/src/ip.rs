@@ -373,6 +373,60 @@ impl RunningIpNode {
     }
 }
 
+/// Config for an IP network running over the Wi-Fi MAC: connectivity range, PHY/MAC [`mode`] +
+/// [`op_mode`], transmit power, and a **pluggable** propagation backend mapping distance → SNR.
+///
+/// [`mode`]: crate::WifiMode
+/// [`op_mode`]: crate::WifiOperatingMode
+#[derive(Clone)]
+pub struct RadioLinkConfig {
+    pub range_m: f64,
+    pub mode: crate::wifi::WifiMode,
+    pub op_mode: crate::wifi::WifiOperatingMode,
+    pub tx_power_dbm: f64,
+    pub retry_limit: u32,
+    pub frame_bytes: usize,
+    pub freq_hz: f64,
+    pub propagation: Arc<dyn crate::phy::PropagationBackend>,
+}
+
+impl RadioLinkConfig {
+    /// Defaults: IBSS, the given MAC mode, 20 dBm, free-space propagation at 2.4 GHz, 512-byte frames.
+    pub fn new(range_m: f64, mode: crate::wifi::WifiMode) -> Self {
+        RadioLinkConfig {
+            range_m,
+            mode,
+            op_mode: crate::wifi::WifiOperatingMode::Ibss,
+            tx_power_dbm: 20.0,
+            retry_limit: 6,
+            frame_bytes: 512,
+            freq_hz: 2.4e9,
+            propagation: Arc::new(crate::phy::FreeSpace),
+        }
+    }
+    /// Set the operating mode (IBSS / AP / mesh).
+    pub fn operating(mut self, op: crate::wifi::WifiOperatingMode) -> Self {
+        self.op_mode = op;
+        self
+    }
+    /// Swap the propagation backend (free-space, log-distance, …).
+    pub fn with_propagation(mut self, p: Arc<dyn crate::phy::PropagationBackend>) -> Self {
+        self.propagation = p;
+        self
+    }
+    /// SNR (dB) at a link distance, via the pluggable propagation backend (isotropic gains).
+    fn snr_at(&self, dist_m: f64) -> f64 {
+        let ctx = crate::phy::PathContext {
+            distance_m: dist_m,
+            freq_hz: self.freq_hz,
+            tx_power_dbm: self.tx_power_dbm,
+            tx_gain_dbi: 0.0,
+            rx_gain_dbi: 0.0,
+        };
+        crate::link_model::LinkModel::snr_db(self.propagation.rx_power_dbm(&ctx))
+    }
+}
+
 /// A ready-to-run IP network built from a topology: `n` nodes addressed `10.0.0.{i+1}`, links wired
 /// with a shared `profile`, and shortest-path `/32` routes auto-installed by BFS from each node —
 /// the IP analogue of [`topo::add_routes_toward`](crate::topo::add_routes_toward). Started on build.
@@ -577,30 +631,27 @@ impl IpNetwork {
         self.reroute_with(algo);
     }
 
-    /// **Mobility + Wi-Fi MAC re-route.** Like [`reconnect`](Self::reconnect), but each in-range
-    /// link's drop probability and added delay come from the [`Wifi`](crate::Wifi) MAC at the
-    /// SNR implied by distance under `mode` (Monitor = one-shot, higher loss / lower airtime;
-    /// Managed = retries, lower loss / higher airtime). `frame_bytes` is the representative frame
-    /// size for the cost estimate. This is IP running over the modelled broadcast radio.
-    #[allow(clippy::too_many_arguments)]
+    /// **Mobility + Wi-Fi MAC re-route.** Like [`reconnect`](Self::reconnect), but a link is up only
+    /// if the [operating mode](crate::WifiOperatingMode) permits it (AP mode = star through the AP)
+    /// *and* the endpoints are in range, and each up-link's drop probability + added delay come from
+    /// the [`Wifi`](crate::Wifi) MAC at the SNR from the config's pluggable propagation backend under
+    /// its [`WifiMode`](crate::WifiMode) (Monitor one-shot vs Managed retries). This is IP running
+    /// over the modelled broadcast radio.
     pub fn reconnect_wifi(
         &self,
         positions: &[crate::world::Position],
-        range: f64,
         wifi: &crate::wifi::Wifi,
-        mode: crate::wifi::WifiMode,
-        tx_power_dbm: f64,
-        retry_limit: u32,
-        frame_bytes: usize,
+        cfg: &RadioLinkConfig,
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) {
         *self.positions.lock().unwrap() = Some(positions.to_vec());
         for (i, &(a, b)) in self.links.iter().enumerate() {
             let dist = positions[a].distance(positions[b]);
+            let up = cfg.op_mode.link_allowed(a, b) && dist <= cfg.range_m;
             let (sa, sb) = &self.link_states[i];
-            if dist <= range {
-                let snr = crate::wifi::snr_from_distance(tx_power_dbm, dist);
-                let (loss, airtime) = wifi.link_cost(mode, snr, frame_bytes, retry_limit);
+            if up {
+                let snr = cfg.snr_at(dist);
+                let (loss, airtime) = wifi.link_cost(cfg.mode, snr, cfg.frame_bytes, cfg.retry_limit);
                 for s in [sa, sb] {
                     s.set_down(false);
                     s.set_loss(Some(loss));
@@ -638,19 +689,14 @@ impl IpNetwork {
     }
 
     /// Build a mobile IP network **over the Wi-Fi MAC**: like [`from_positions`](Self::from_positions)
-    /// but each link's loss + delay come from the [`Wifi`](crate::Wifi) model under `mode` (see
-    /// [`reconnect_wifi`](Self::reconnect_wifi)). The link faces carry no intrinsic loss/delay — the
-    /// MAC is the only channel effect. `retry_limit` and `frame_bytes` parameterise the cost model.
-    #[allow(clippy::too_many_arguments)]
+    /// but each link's loss + delay come from the [`Wifi`](crate::Wifi) model per `cfg` (mode,
+    /// operating mode, propagation — see [`reconnect_wifi`](Self::reconnect_wifi)). The link faces
+    /// carry no intrinsic loss/delay — the MAC is the only channel effect.
     pub fn from_positions_wifi(
         runtime: Arc<dyn Runtime>,
         positions: Vec<crate::world::Position>,
-        range: f64,
         wifi: &crate::wifi::Wifi,
-        mode: crate::wifi::WifiMode,
-        tx_power_dbm: f64,
-        retry_limit: u32,
-        frame_bytes: usize,
+        cfg: &RadioLinkConfig,
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) -> Self {
         let n = positions.len();
@@ -659,16 +705,7 @@ impl IpNetwork {
         // A plain in-proc face carries no loss/delay of its own; the MAC supplies both.
         let prof = FaceProfile::internal();
         let net = Self::from_links_with(runtime, n, &full, Some(positions.clone()), &prof, algo);
-        net.reconnect_wifi(
-            &positions,
-            range,
-            wifi,
-            mode,
-            tx_power_dbm,
-            retry_limit,
-            frame_bytes,
-            algo,
-        );
+        net.reconnect_wifi(&positions, wifi, cfg, algo);
         net
     }
 

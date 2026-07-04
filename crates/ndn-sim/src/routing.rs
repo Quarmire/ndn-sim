@@ -92,6 +92,21 @@ pub trait RoutingAlgorithm: Send + Sync {
     fn category(&self) -> RoutingCategory;
     /// `tables[u][..]` = node `u`'s routing table (one [`RouteEntry`] per reachable destination).
     fn compute(&self, view: &TopologyView) -> Vec<Vec<RouteEntry>>;
+    /// An estimate of the **control traffic** (bytes) this protocol puts on the wire per update
+    /// period over `view` with `active_flows` distinct destinations in use — the routing overhead a
+    /// benchmark bills against the payload (so OLSR vs DV vs GPSR differ in *cost*, not just routes).
+    /// Grounded in each family's mechanism; see the impls. Default `0` (a genie/static baseline).
+    fn control_overhead(&self, view: &TopologyView, active_flows: usize) -> u64 {
+        let _ = (view, active_flows);
+        0
+    }
+}
+
+/// Approx bytes on the wire for a message flooded once by every node (each node's neighbours receive
+/// it): `nodes × avg_degree × msg_bytes`.
+fn flood_bytes(view: &TopologyView, msg_bytes: u64) -> u64 {
+    let edges: usize = view.adj.iter().map(Vec::len).sum(); // = 2 × undirected edges
+    edges as u64 * msg_bytes
 }
 
 /// **Link-state / Dijkstra** shortest paths (the converged state of OSPF / OLSR). Each node computes
@@ -108,6 +123,15 @@ impl RoutingAlgorithm for ShortestPath {
     }
     fn compute(&self, view: &TopologyView) -> Vec<Vec<RouteEntry>> {
         (0..view.n).map(|src| dijkstra_table(view, src)).collect()
+    }
+    /// Link-state: every node floods a link-state advert (its neighbour list) each period.
+    fn control_overhead(&self, view: &TopologyView, _active_flows: usize) -> u64 {
+        if view.n == 0 {
+            return 0;
+        }
+        let avg_deg = view.adj.iter().map(Vec::len).sum::<usize>() / view.n;
+        let lsa_bytes = 24 + avg_deg as u64 * 6; // header + one entry per neighbour
+        view.n as u64 * flood_bytes(view, lsa_bytes)
     }
 }
 
@@ -205,6 +229,13 @@ impl RoutingAlgorithm for DistanceVector {
             })
             .collect()
     }
+    /// Distance-vector: each node sends its FULL table (all n destinations) to every neighbour
+    /// each period — an `n`-entry vector across every directed edge (RIP entry ≈ 20 B).
+    fn control_overhead(&self, view: &TopologyView, _active_flows: usize) -> u64 {
+        let directed_edges = view.adj.iter().map(Vec::len).sum::<usize>() as u64;
+        let vector_bytes = view.n as u64 * 20;
+        directed_edges * vector_bytes
+    }
 }
 
 /// **GPSR greedy geographic forwarding** (Karp & Kung, 2000): each node's next hop toward a
@@ -247,6 +278,11 @@ impl RoutingAlgorithm for GreedyGeographic {
                     .collect()
             })
             .collect()
+    }
+    /// Geographic: just a small position beacon **broadcast** by each node per period (no tables to
+    /// flood) — a single transmission per node, hence far cheaper than the table-driven protocols.
+    fn control_overhead(&self, view: &TopologyView, _active_flows: usize) -> u64 {
+        view.n as u64 * 16 // position beacon (x,y,z + id), broadcast once
     }
 }
 
@@ -309,6 +345,18 @@ mod tests {
                 assert_eq!(d.metric, r.metric, "node {u} → {}: same cost", r.dest);
             }
         }
+    }
+
+    /// Geographic routing's selling point: its control overhead (position beacons) is a fraction of
+    /// the table-driven protocols' (link-state floods / full distance-vector exchanges).
+    #[test]
+    fn geographic_control_overhead_is_far_lower() {
+        let view = square_with_diagonal();
+        let sp = ShortestPath.control_overhead(&view, 1);
+        let dv = DistanceVector::default().control_overhead(&view, 1);
+        let gpsr = GreedyGeographic.control_overhead(&view, 1);
+        assert!(gpsr * 5 < sp, "GPSR beacons ≪ link-state floods ({gpsr} vs {sp})");
+        assert!(gpsr * 5 < dv, "GPSR beacons ≪ distance-vector exchanges ({gpsr} vs {dv})");
     }
 
     #[test]

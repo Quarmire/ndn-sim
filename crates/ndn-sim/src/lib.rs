@@ -123,6 +123,7 @@ pub mod stepper;
 pub mod telemetry;
 pub mod topo;
 pub mod topology;
+pub mod wifi;
 pub mod tracer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod validate;
@@ -185,6 +186,9 @@ pub use telemetry::{
 pub use topology::{
     Clock, FaceKind, FaceStats, NodeId, RouteExplanation, RouteNexthop, RunningSimulation,
     Simulation, Strategy,
+};
+pub use wifi::{
+    FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, broadcast_airtime, frame_airtime,
 };
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]

@@ -35,6 +35,62 @@ fn ap_mode_relays_station_to_station_through_the_ap() {
     assert!(ap_recv >= 4, "the AP-relayed flow still delivers ({ap_recv})");
 }
 
+/// Infrastructure (AP) mode makes a roaming station **re-associate** every time it leaves and
+/// re-enters range — a handoff cost that accrues as control overhead. IBSS/monitor pays none.
+#[test]
+fn ap_mode_charges_a_handoff_each_time_a_station_roams_back() {
+    let (ap_handoffs, ap_overhead, ibss_handoffs) =
+        DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+            let wifi = Wifi::new();
+            let cfg = RadioLinkConfig::new(50.0, WifiMode::Managed)
+                .operating(WifiOperatingMode::Ap { ap: 0 });
+            // AP at origin; station starts in range → its initial association is the first handoff.
+            let ap = IpNetwork::from_positions_wifi(
+                k.runtime(),
+                vec![Position::xy(0.0, 0.0), Position::xy(30.0, 0.0)],
+                &wifi,
+                &cfg,
+                &ShortestPath,
+            );
+            // Roam out of range (deassociate), then back (re-associate) — a second handoff.
+            ap.reconnect_wifi(
+                &[Position::xy(0.0, 0.0), Position::xy(100.0, 0.0)],
+                &wifi,
+                &cfg,
+                &ShortestPath,
+            );
+            ap.reconnect_wifi(
+                &[Position::xy(0.0, 0.0), Position::xy(30.0, 0.0)],
+                &wifi,
+                &cfg,
+                &ShortestPath,
+            );
+
+            // IBSS has no AP association — no handoffs however the station moves.
+            let ibss_cfg = RadioLinkConfig::new(50.0, WifiMode::Managed);
+            let ibss = IpNetwork::from_positions_wifi(
+                k.runtime(),
+                vec![Position::xy(0.0, 0.0), Position::xy(30.0, 0.0)],
+                &wifi,
+                &ibss_cfg,
+                &ShortestPath,
+            );
+            ibss.reconnect_wifi(
+                &[Position::xy(0.0, 0.0), Position::xy(100.0, 0.0)],
+                &wifi,
+                &ibss_cfg,
+                &ShortestPath,
+            );
+            (ap.handoff_count(), ap.association_overhead(), ibss.handoff_count())
+        });
+    assert_eq!(ap_handoffs, 2, "initial join + one roam-back = two associations");
+    assert!(
+        ap_overhead >= Duration::from_millis(240),
+        "each handoff charges the ~120 ms scan+auth+assoc handshake: {ap_overhead:?}"
+    );
+    assert_eq!(ibss_handoffs, 0, "IBSS pays no association/handoff cost");
+}
+
 /// Swapping the propagation backend changes reach: a link that works under free-space is starved
 /// under a lossier log-distance channel (exponent 3.5) at the same distance.
 #[test]

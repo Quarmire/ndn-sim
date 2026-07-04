@@ -448,6 +448,14 @@ pub struct IpNetwork {
     /// The kernel runtime + build epoch, for the World-driven background re-router.
     runtime: Arc<dyn Runtime>,
     epoch_ns: u64,
+    /// Per node, whether it is currently associated to its AP (AP mode only). A station roaming out
+    /// of and back into range must **re-associate** — the handoff gap monitor mode never pays.
+    associated: Vec<std::sync::atomic::AtomicBool>,
+    /// Count of (re)associations across all stations — the roaming/handoff overhead of infrastructure
+    /// Wi-Fi.
+    handoffs: std::sync::atomic::AtomicU64,
+    /// Accumulated association-handshake time (ns) — scan+auth+assoc(+4-way) charged per handoff.
+    assoc_overhead_ns: std::sync::atomic::AtomicU64,
 }
 
 impl IpNetwork {
@@ -514,6 +522,9 @@ impl IpNetwork {
             positions: Mutex::new(positions),
             runtime,
             epoch_ns,
+            associated: (0..n).map(|_| std::sync::atomic::AtomicBool::new(false)).collect(),
+            handoffs: std::sync::atomic::AtomicU64::new(0),
+            assoc_overhead_ns: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -645,6 +656,13 @@ impl IpNetwork {
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) {
         *self.positions.lock().unwrap() = Some(positions.to_vec());
+        use std::sync::atomic::Ordering::Relaxed;
+        // In AP mode a link is the station↔AP association; identify the station endpoint (if any).
+        let station_of = |a: usize, b: usize| match cfg.op_mode {
+            crate::wifi::WifiOperatingMode::Ap { ap } if a == ap => Some(b),
+            crate::wifi::WifiOperatingMode::Ap { ap } if b == ap => Some(a),
+            _ => None,
+        };
         for (i, &(a, b)) in self.links.iter().enumerate() {
             let dist = positions[a].distance(positions[b]);
             let up = cfg.op_mode.link_allowed(a, b) && dist <= cfg.range_m;
@@ -652,20 +670,47 @@ impl IpNetwork {
             if up {
                 let snr = cfg.snr_at(dist);
                 let (loss, airtime) = wifi.link_cost(cfg.mode, snr, cfg.frame_bytes, cfg.retry_limit);
+                // (Re)association: a station coming into AP range must scan+auth+assoc(+4-way) before
+                // it can pass traffic — a one-time per-handoff cost. Account it (handoff count +
+                // total handshake time); the link itself carries only the per-frame MAC cost.
+                if let Some(station) = station_of(a, b)
+                    && !self.associated[station].swap(true, Relaxed)
+                {
+                    let setup = cfg.op_mode.association_setup();
+                    self.handoffs.fetch_add(1, Relaxed);
+                    self.assoc_overhead_ns.fetch_add(setup.as_nanos() as u64, Relaxed);
+                }
                 for s in [sa, sb] {
                     s.set_down(false);
                     s.set_loss(Some(loss));
                     s.set_extra_delay(airtime);
                 }
-                self.link_up[i].store(true, std::sync::atomic::Ordering::Relaxed);
+                self.link_up[i].store(true, Relaxed);
             } else {
+                // Link down: if it was a station↔AP association, the station is now unassociated and
+                // will re-associate (another handoff) when it returns.
+                if let Some(station) = station_of(a, b) {
+                    self.associated[station].store(false, Relaxed);
+                }
                 for s in [sa, sb] {
                     s.set_down(true);
                 }
-                self.link_up[i].store(false, std::sync::atomic::Ordering::Relaxed);
+                self.link_up[i].store(false, Relaxed);
             }
         }
         self.reroute_with(algo);
+    }
+
+    /// Total (re)associations across all stations since build — the roaming/handoff count under AP
+    /// (infrastructure) mode. Zero in IBSS/mesh (no AP association) and for monitor-mode radio.
+    pub fn handoff_count(&self) -> u64 {
+        self.handoffs.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Accumulated association-handshake time across all handoffs — the control overhead
+    /// infrastructure Wi-Fi pays for mobility that a connectionless broadcast face never does.
+    pub fn association_overhead(&self) -> Duration {
+        Duration::from_nanos(self.assoc_overhead_ns.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Build a **mobile** IP network: `positions.len()` nodes fully meshed with potential links, but

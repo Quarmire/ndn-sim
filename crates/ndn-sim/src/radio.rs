@@ -85,6 +85,13 @@ pub struct RadioBus {
     mac_mode: Mutex<crate::wifi::WifiMode>,
     /// Total airtime consumed on the medium (ns) — the cost NDN-over-monitor vs NDN-over-managed differ on.
     airtime_ns: std::sync::atomic::AtomicU64,
+    /// Managed-mode ACK/retransmit budget: in `Managed` a frame's per-receiver delivery is
+    /// retry-improved (`1−(1−p)^(retry+1)`) — the reliability normal Wi-Fi buys that monitor lacks.
+    retry_limit: std::sync::atomic::AtomicU32,
+    /// When set, concurrent in-range transmitters degrade a frame's **SINR** (their power adds to the
+    /// noise) rather than only causing a binary collision — the capture effect. Opt-in (off preserves
+    /// the simple collision model existing scenarios rely on).
+    sinr_interference: std::sync::atomic::AtomicBool,
 }
 
 impl RadioBus {
@@ -168,13 +175,27 @@ impl RadioBus {
             radio_log: Mutex::new(None),
             mac_mode: Mutex::new(crate::wifi::WifiMode::Monitor),
             airtime_ns: std::sync::atomic::AtomicU64::new(0),
+            retry_limit: std::sync::atomic::AtomicU32::new(6),
+            sinr_interference: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
-    /// Set the MAC discipline for airtime accounting (`Monitor` = named-data radio, one broadcast per
-    /// frame; `Managed` = normal Wi-Fi, a unicast per in-range receiver).
+    /// Set the MAC discipline for airtime accounting + reliability (`Monitor` = named-data radio, one
+    /// broadcast per frame, no retries; `Managed` = normal Wi-Fi, a unicast per in-range receiver
+    /// with ACK/retransmit-improved delivery).
     pub fn set_mac_mode(&self, mode: crate::wifi::WifiMode) {
         *self.mac_mode.lock().unwrap() = mode;
+    }
+
+    /// Set the managed-mode retransmit budget (default 6).
+    pub fn set_retry_limit(&self, retry_limit: u32) {
+        self.retry_limit.store(retry_limit, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Enable SINR-based interference: concurrent in-range transmitters raise the effective noise at
+    /// a receiver (capture effect), instead of only a binary collision. Off by default.
+    pub fn set_sinr_interference(&self, on: bool) {
+        self.sinr_interference.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Total airtime consumed on the medium so far.
@@ -254,6 +275,8 @@ impl RadioBus {
             return Vec::new();
         };
         let env = self.world.environment();
+        let mode = *self.mac_mode.lock().unwrap();
+        let sinr_on = self.sinr_interference.load(std::sync::atomic::Ordering::Relaxed);
 
         // This frame's airtime (bits / PHY rate) → its on-air window. Snapshot the *other*
         // frames overlapping the start instant (concurrent transmitters) before recording ours.
@@ -319,24 +342,53 @@ impl RadioBus {
                 log_delivery(false, d.reason, d.rssi_dbm);
                 continue; // below receiver sensitivity / obstructed — not even detectable
             }
-            // Collision: did this receiver also hear a concurrent (in-range) transmitter?
-            let clashers: Vec<NodeId> = concurrent
+            // Concurrent (in-range) transmitters this receiver also hears (hidden-terminal set).
+            let clashers: Vec<(NodeId, Position)> = concurrent
                 .iter()
                 .filter(|(_, p)| p.distance(rx_pos) <= max_range)
-                .map(|(s, _)| *s)
+                .map(|(s, p)| (*s, *p))
                 .collect();
-            if self.interference.collides(rx_node, &clashers) {
-                out.push((rx_node, d.rssi_dbm, false));
-                log_delivery(false, crate::medium::DeliveryReason::Collision, d.rssi_dbm);
-                trace!(
-                    from = node.0,
-                    to = rx_node.0,
-                    "radio: frame lost to collision"
-                );
-                continue;
+            // Without SINR modelling, any in-range concurrent transmitter is a hard collision.
+            if !sinr_on {
+                let clasher_ids: Vec<NodeId> = clashers.iter().map(|(s, _)| *s).collect();
+                if self.interference.collides(rx_node, &clasher_ids) {
+                    out.push((rx_node, d.rssi_dbm, false));
+                    log_delivery(false, crate::medium::DeliveryReason::Collision, d.rssi_dbm);
+                    trace!(
+                        from = node.0,
+                        to = rx_node.0,
+                        "radio: frame lost to collision"
+                    );
+                    continue;
+                }
             }
-            let snr = LinkModel::snr_db(d.rssi_dbm);
-            let p = self.link_model.frame_delivery(mcs_index, snr);
+            // Effective SNR: the plain link SNR, or — with SINR modelling on — degraded by the
+            // aggregate power of the concurrent transmitters (capture effect: a strong wanted signal
+            // survives a weak interferer; two comparable signals both drown).
+            let snr = if sinr_on && !clashers.is_empty() {
+                let noise_floor = d.rssi_dbm - LinkModel::snr_db(d.rssi_dbm);
+                let mut interf_mw = 10f64.powf(noise_floor / 10.0);
+                for (_, p) in &clashers {
+                    let ictx = TxContext {
+                        tx_pos: *p,
+                        rx_pos,
+                        tx_power_dbm: self.tx_power_dbm,
+                        environment: env.as_ref(),
+                        frame_len: frame.len(),
+                    };
+                    interf_mw += 10f64.powf(self.propagation.deliver(&ictx).rssi_dbm / 10.0);
+                }
+                d.rssi_dbm - 10.0 * interf_mw.log10()
+            } else {
+                LinkModel::snr_db(d.rssi_dbm)
+            };
+            // Per-frame delivery. Managed Wi-Fi ACKs + retransmits, so a receiver's effective
+            // delivery is retry-improved (1−(1−p)^(retry+1)); monitor injection has no ACK.
+            let mut p = self.link_model.frame_delivery(mcs_index, snr);
+            if matches!(mode, crate::wifi::WifiMode::Managed) {
+                let retries = self.retry_limit.load(std::sync::atomic::Ordering::Relaxed);
+                p = 1.0 - (1.0 - p).powi(retries as i32 + 1);
+            }
             let roll: f64 = self.rng.lock().unwrap().random();
             let survived = roll < p;
             out.push((rx_node, d.rssi_dbm, survived));
@@ -381,7 +433,7 @@ impl RadioBus {
         // Airtime cost under the MAC discipline: monitor charges one broadcast (reaches all in-range
         // in a single transmission — NDN's multicast advantage); managed charges a unicast per
         // in-range receiver (normal Wi-Fi replaces the broadcast with N unicasts).
-        let cost = match *self.mac_mode.lock().unwrap() {
+        let cost = match mode {
             crate::wifi::WifiMode::Monitor => crate::wifi::broadcast_airtime(frame.len(), mcs_index),
             crate::wifi::WifiMode::Managed => {
                 let n = out.len().max(1) as u32;
@@ -659,6 +711,84 @@ mod tests {
         assert!(
             r2.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok),
             "no collision without a model"
+        );
+    }
+
+    /// Managed Wi-Fi ACKs + retransmits, so on a marginal link its per-frame delivery is
+    /// retry-improved over monitor-mode injection (which has no ACK). Same seed, same link.
+    #[tokio::test]
+    async fn managed_retries_improve_delivery_over_monitor_at_the_edge() {
+        let positions = [
+            (NodeId(0), Position::xy(0.0, 0.0)),
+            // ~450 m at MCS5 ⇒ SNR at the threshold ⇒ a genuine mix of hits/misses on monitor.
+            (NodeId(1), Position::xy(450.0, 0.0)),
+        ];
+        let delivered = |mode| {
+            let bus = bus_with(&positions, 7);
+            bus.set_mac_mode(mode);
+            bus.attach(NodeId(1));
+            let mut hits = 0usize;
+            for _ in 0..200 {
+                for (rx, _rssi, ok) in bus.transmit(NodeId(0), 5, Bytes::from_static(b"x"), 0) {
+                    if ok && rx == NodeId(1) {
+                        hits += 1;
+                    }
+                }
+            }
+            hits
+        };
+        let monitor = delivered(crate::wifi::WifiMode::Monitor);
+        let managed = delivered(crate::wifi::WifiMode::Managed);
+        assert!(
+            monitor > 0 && monitor < 200,
+            "marginal link ⇒ a genuine mix on monitor: {monitor}/200"
+        );
+        assert!(
+            managed > monitor,
+            "managed ACK/retransmit lifts delivery: managed {managed} vs monitor {monitor}"
+        );
+    }
+
+    /// With SINR modelling on, a strong wanted signal survives a weak concurrent interferer (capture
+    /// effect), but drowns under a comparably-strong one — richer than a binary collision.
+    #[tokio::test]
+    async fn sinr_capture_survives_a_weak_interferer_but_drowns_a_strong_one() {
+        let max = FreeSpacePathLoss::default().max_range_m();
+
+        // Weak interferer (far, near sensitivity) vs a very strong wanted signal (metres away).
+        let capture = bus_with(
+            &[
+                (NodeId(0), Position::xy(0.0, 0.0)),      // receiver
+                (NodeId(1), Position::xy(3.0, 0.0)),      // wanted: strong
+                (NodeId(2), Position::xy(max * 0.9, 0.0)), // interferer: weak
+            ],
+            3,
+        );
+        capture.set_sinr_interference(true);
+        capture.attach(NodeId(0));
+        capture.transmit(NodeId(2), 7, Bytes::from_static(b"interfere"), 0); // interferer on the air
+        let r = capture.transmit(NodeId(1), 7, Bytes::from_static(b"wanted!!!"), 0);
+        assert!(
+            r.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok),
+            "strong signal captures the receiver over a weak interferer"
+        );
+
+        // A comparably-strong interferer: neither captures, so the wanted frame drowns.
+        let drown = bus_with(
+            &[
+                (NodeId(0), Position::xy(0.0, 0.0)),
+                (NodeId(1), Position::xy(3.0, 0.0)),
+                (NodeId(2), Position::xy(3.0, 0.5)), // interferer: comparable power
+            ],
+            3,
+        );
+        drown.set_sinr_interference(true);
+        drown.attach(NodeId(0));
+        drown.transmit(NodeId(2), 7, Bytes::from_static(b"interfere"), 0);
+        let r = drown.transmit(NodeId(1), 7, Bytes::from_static(b"wanted!!!"), 0);
+        assert!(
+            r.iter().any(|(n, _, ok)| *n == NodeId(0) && !*ok),
+            "two comparable signals collide ⇒ the wanted frame drowns"
         );
     }
 }

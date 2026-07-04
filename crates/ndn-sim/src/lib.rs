@@ -153,8 +153,8 @@ pub use ip::{
     IpNetwork, IpNode, IpNodeStats, IpPacket, Ipv4, RadioLinkConfig, RunningIpNode, ip_link,
 };
 pub use routing::{
-    Aodv, DistanceVector, Dsr, GreedyGeographic, NetworkKind, RoutingAlgorithm, RoutingCategory,
-    ShortestPath, TopologyView,
+    Aodv, DistanceVector, Dsr, GreedyGeographic, NetworkKind, Olsr, RoutingAlgorithm,
+    RoutingCategory, ShortestPath, TopologyView,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{

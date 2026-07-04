@@ -20,7 +20,7 @@
 //! - **AODV** — reactive on-demand DV, RREQ/RREP + sequence numbers (RFC 3561). Modelled by
 //!   [`Aodv`] (min-hop routes; on-demand, flow-scaled overhead).
 //! - **OLSR** — proactive link-state with Multipoint Relays to bound flooding (RFC 3626; OLSRv2 RFC
-//!   7181). Converged routes = [`ShortestPath`]; the MPR overhead model is *roadmap*.
+//!   7181). Modelled by [`Olsr`]: shortest-path routes + an MPR-reduced overhead model.
 //! - **DSR** — reactive source routing (RFC 4728). Modelled by [`Dsr`] (source-routed, no periodic
 //!   control traffic).
 //! - **Babel** — loop-avoiding DV, wired + wireless (RFC 8966).
@@ -133,6 +133,49 @@ fn avg_hops(view: &TopologyView) -> u64 {
         return 0;
     }
     reached.iter().map(|&d| d as u64).sum::<u64>() / reached.len() as u64
+}
+
+/// Node `u`'s **Multipoint Relay** set (RFC 3626 §8.3.1): a minimal subset of its 1-hop neighbours
+/// that together reach all of its 2-hop neighbours. The greedy heuristic — repeatedly take the
+/// neighbour covering the most still-uncovered 2-hop nodes — which OLSR uses to bound flooding.
+fn mpr_set(view: &TopologyView, u: usize) -> Vec<usize> {
+    use std::collections::HashSet;
+    let n1: Vec<usize> = view.adj[u].iter().map(|&(v, _)| v).collect();
+    let n1_set: HashSet<usize> = n1.iter().copied().collect();
+    // 2-hop neighbours: neighbours-of-neighbours that are neither `u` nor 1-hop neighbours.
+    let mut n2: HashSet<usize> = HashSet::new();
+    for &v in &n1 {
+        for &(w, _) in &view.adj[v] {
+            if w != u && !n1_set.contains(&w) {
+                n2.insert(w);
+            }
+        }
+    }
+    if n2.is_empty() {
+        return Vec::new(); // fully covered by 1-hop already (dense neighbourhood) — no relays needed
+    }
+    let covers = |v: usize, target: &HashSet<usize>| -> usize {
+        view.adj[v].iter().filter(|&&(w, _)| target.contains(&w)).count()
+    };
+    let mut uncovered = n2;
+    let mut mprs: Vec<usize> = Vec::new();
+    while !uncovered.is_empty() {
+        // Greedy: the neighbour covering the most uncovered 2-hop nodes (ties broken by lowest id).
+        let best = n1
+            .iter()
+            .copied()
+            .filter(|v| !mprs.contains(v))
+            .max_by(|&a, &b| covers(a, &uncovered).cmp(&covers(b, &uncovered)).then(b.cmp(&a)));
+        let Some(best) = best else { break };
+        if covers(best, &uncovered) == 0 {
+            break; // no remaining neighbour makes progress (disconnected 2-hop) — stop
+        }
+        for &(w, _) in &view.adj[best] {
+            uncovered.remove(&w);
+        }
+        mprs.push(best);
+    }
+    mprs
 }
 
 /// **Link-state / Dijkstra** shortest paths (the converged state of OSPF / OLSR). Each node computes
@@ -387,6 +430,60 @@ impl RoutingAlgorithm for Dsr {
     }
 }
 
+/// **OLSR** — Optimized Link State Routing (RFC 3626). *Proactive* link-state like OSPF, but it bounds
+/// the flooding cost two ways with **Multipoint Relays**: (1) only MPR nodes re-broadcast control
+/// traffic (not every node), and (2) Topology Control messages advertise only a node's *MPR-selector*
+/// set, not its full neighbour list. The converged routes are the same shortest paths as
+/// [`ShortestPath`]; the payoff is [`control_overhead`](Self::control_overhead) far below pure
+/// link-state flooding on dense networks — the reason OLSR is a canonical MANET choice.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Olsr;
+
+impl RoutingAlgorithm for Olsr {
+    fn name(&self) -> &'static str {
+        "olsr"
+    }
+    fn category(&self) -> RoutingCategory {
+        RoutingCategory::Proactive
+    }
+    fn compute(&self, view: &TopologyView) -> Vec<Vec<RouteEntry>> {
+        // Link-state converges to the same shortest paths OSPF does.
+        (0..view.n).map(|src| dijkstra_table(view, src)).collect()
+    }
+    /// Two message classes: periodic **HELLO** (1-hop only — neighbour + MPR sensing, never flooded)
+    /// and **TC** (flooded, but only MPR nodes re-broadcast and each carries only the MPR-selector
+    /// set). The MPR reduction is what makes OLSR cheaper than pure link-state as density grows.
+    fn control_overhead(&self, view: &TopologyView, _active_flows: usize) -> u64 {
+        let n = view.n;
+        if n == 0 {
+            return 0;
+        }
+        let avg_deg = view.adj.iter().map(Vec::len).sum::<usize>() / n;
+        // HELLO: each node broadcasts its neighbour/MPR view to 1-hop neighbours (one edge-crossing).
+        let hello = flood_bytes(view, 8 + avg_deg as u64 * 4);
+        // Which nodes are anyone's MPR (only these relay TC), and how many selectors they advertise.
+        let mut is_mpr = vec![false; n];
+        let mut total_selections = 0u64;
+        for u in 0..n {
+            for v in mpr_set(view, u) {
+                is_mpr[v] = true;
+                total_selections += 1;
+            }
+        }
+        let mpr_nodes = is_mpr.iter().filter(|&&b| b).count() as u64;
+        if mpr_nodes == 0 {
+            return hello; // dense enough that no relays are needed — HELLO only
+        }
+        let avg_selectors = total_selections / mpr_nodes;
+        let tc_bytes = 12 + avg_selectors * 4; // TC advertises only the MPR-selector set
+        // TC originates at each MPR node and floods, but only the MPR fraction re-broadcasts, so the
+        // full-flood edge cost is scaled by that fraction.
+        let mpr_fraction_num = mpr_nodes;
+        let tc = mpr_nodes * flood_bytes(view, tc_bytes) * mpr_fraction_num / n as u64;
+        hello + tc
+    }
+}
+
 /// The kind of network being modelled — picks a sensible default routing algorithm per the
 /// literature. A benchmark can always override with a specific [`RoutingAlgorithm`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -517,6 +614,32 @@ mod tests {
             Aodv.control_overhead(&view, many) > ShortestPath.control_overhead(&view, many),
             "every node sourcing ⇒ reactive floods overtake the amortised proactive tables",
         );
+    }
+
+    /// OLSR converges to the same shortest paths as link-state, but its MPR-bounded flooding costs
+    /// far less on a dense neighbourhood: a 5-clique with three pendants hung off one hub needs only
+    /// that hub as a relay, so OLSR's control overhead is a fraction of pure link-state's.
+    #[test]
+    fn olsr_matches_shortest_path_but_floods_far_less() {
+        // K5 over {0..4} + pendants 5,6,7 attached only to hub 0.
+        let mut links: Vec<(usize, usize)> =
+            (0..5).flat_map(|i| ((i + 1)..5).map(move |j| (i, j))).collect();
+        links.extend([(0, 5), (0, 6), (0, 7)]);
+        let view = TopologyView::from_links(8, &links);
+
+        // Same routes as link-state SPF.
+        let sp = ShortestPath.compute(&view);
+        let olsr = Olsr.compute(&view);
+        for (u, sp_u) in sp.iter().enumerate() {
+            for r in sp_u {
+                let e = olsr[u].iter().find(|e| e.dest == r.dest).expect("olsr reaches it");
+                assert_eq!(e.metric, r.metric, "olsr node {u}→{}: same cost", r.dest);
+            }
+        }
+        // MPR reduction ⇒ far less control traffic than pure link-state flooding.
+        let ls = ShortestPath.control_overhead(&view, 1);
+        let ol = Olsr.control_overhead(&view, 1);
+        assert!(ol * 2 < ls, "OLSR MPR flooding ≪ pure link-state ({ol} vs {ls})");
     }
 
     #[test]

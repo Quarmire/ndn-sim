@@ -41,7 +41,7 @@ use ndn_manifest::model::{
 };
 use ndn_manifest::{term_hash, FrozenDag};
 use ndn_render_contract::{
-    contract_via, r#match, Budget, Floor, Match, TrustFrontier, Verdict, Via,
+    contract_via, r#match, select_best, Budget, Floor, Match, TrustFrontier, Verdict, Via,
 };
 
 use crate::telemetry::FabricGauges;
@@ -55,6 +55,7 @@ pub const INTENT_OTLP_GAUGE: &str = "otlp.gauge";
 
 const VIA_SPARKLINE: &str = "ndn-lab/sparkline-svg";
 const VIA_OTLP: &str = "ndn-lab/otlp-gauge";
+const VIA_ASCII: &str = "ndn-lab/ascii-sparkline";
 
 fn term(label: &str, doc: &str) -> Term {
     Term { label: label.into(), doc: Some(doc.into()), ty: None, attrs: Vec::new() }
@@ -73,6 +74,7 @@ impl Renderers {
         let mut table: BTreeMap<&'static str, fn(&[FabricGauges]) -> String> = BTreeMap::new();
         table.insert(VIA_SPARKLINE, render_sparkline_lens);
         table.insert(VIA_OTLP, render_otlp_lens);
+        table.insert(VIA_ASCII, render_ascii_lens);
         Renderers { table }
     }
     fn get(&self, id: &str) -> Option<fn(&[FabricGauges]) -> String> {
@@ -93,6 +95,23 @@ fn render_sparkline_lens(samples: &[FabricGauges]) -> String {
 fn render_otlp_lens(samples: &[FabricGauges]) -> String {
     let latest = samples.last().copied().unwrap_or_default();
     crate::otel_export::OtlpExporter::new("127.0.0.1:4318").fabric_gauges_payload(&latest)
+}
+
+/// ASCII-sparkline lens (the CLI surface): the airtime window as Unicode block
+/// glyphs. The named loss `glyph-quantization` is real — every value is bucketed
+/// to one of **8** levels, where the SVG lens draws the exact polyline. A CLI
+/// can't Express `series.window`; it Approximates it, and honestly says why.
+fn render_ascii_lens(samples: &[FabricGauges]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if samples.is_empty() {
+        return String::new();
+    }
+    let vals: Vec<f64> = samples.iter().map(|g| g.radio_airtime_ns as f64).collect();
+    let (min, max) = vals.iter().fold((f64::MAX, f64::MIN), |(mn, mx), &v| (mn.min(v), mx.max(v)));
+    let span = (max - min).max(1e-9);
+    vals.iter()
+        .map(|&v| BARS[(((v - min) / span) * 7.0).round() as usize % 8])
+        .collect()
 }
 
 // ── the resolved view: match once, render many ──────────────────────────────
@@ -123,11 +142,12 @@ impl KeelView {
     /// Assemble the ndn-lab telemetry DAG (vocabulary + OTLP bridge stratum +
     /// one `FabricGauges` manifest + the two contracts) and resolve the lenses.
     ///
-    /// `admit_otel_bridge` toggles whether the consumer admits the bridge
-    /// stratum's edges (C10). Without it, the OTLP lens simply has no path and
-    /// drops out — two consumers diverge *honestly* rather than fighting over a
-    /// serializer.
-    pub fn for_fabric_gauges(admit_otel_bridge: bool) -> Self {
+    /// `admit_otel_bridge` toggles the OTLP bridge (C10). `svg_capable` toggles
+    /// whether this *surface* holds the SVG sparkline contract: a graphical
+    /// surface does, a CLI does not — and when it doesn't, `series.window` is
+    /// still offered, by the ASCII lens at lower (declared) fidelity. That's the
+    /// first real competition for an intent, which the matcher's `select` resolves.
+    pub fn for_fabric_gauges(admit_otel_bridge: bool, svg_capable: bool) -> Self {
         let mut dag = FrozenDag::new();
 
         // The kernel trio rides in every DAG (R14) and gives the total floor.
@@ -138,21 +158,30 @@ impl KeelView {
         // Render-side terms (NOT the producer's self-description — these are the
         // lens's concern, so they stay hand-authored per Law #1).
         let metric_gauge = term_hash(&term("metric-gauge", "A renderable numeric gauge over virtual time.")).unwrap();
+        let ascii_sparkline = term_hash(&term("ascii-sparkline", "A gauge window as Unicode block glyphs.")).unwrap();
+        let loss_glyph = term_hash(&term("glyph-quantization", "Loss: continuous values bucketed to 8 block-glyph levels.")).unwrap();
         let otel_gauge = term_hash(&term("gauge", "An OpenTelemetry gauge data point.")).unwrap();
         let loss_flatten = term_hash(&term("otel-attribute-flattening", "Loss: NDN structure flattened to OTLP key/value attributes.")).unwrap();
 
         // The ndn-lab telemetry vocabulary: the DESCRIBE terms come from the
         // derive (`FabricGauges::manifest_terms()` — retired the hand-built list),
-        // plus the render target it narrows to.
+        // plus the render targets it reaches. metric-gauge is a lossless narrowing;
+        // ascii-sparkline is a LOSSY maps-to (glyph quantization) — so a lens over
+        // it can only Approximate `series.window`, and says why.
         let mut ndnlab_terms = FabricGauges::manifest_terms();
         ndnlab_terms.push(term("metric-gauge", "A renderable numeric gauge over virtual time."));
+        ndnlab_terms.push(term("ascii-sparkline", "A gauge window as Unicode block glyphs."));
+        ndnlab_terms.push(term("glyph-quantization", "Loss: continuous values bucketed to 8 block-glyph levels."));
         let ndnlab = dag
             .insert_document(&Document::Vocabulary(Vocabulary {
                 label: "ndn-lab".into(),
-                doc: Some("ndn-lab telemetry: derived fabric-gauge terms + their renderable form.".into()),
+                doc: Some("ndn-lab telemetry: derived fabric-gauge terms + their renderable forms.".into()),
                 imports: Vec::new(),
                 terms: ndnlab_terms,
-                edges: vec![EdgeForm::NarrowerThan { narrower: FabricGauges::schema(), broader: metric_gauge }],
+                edges: vec![
+                    EdgeForm::NarrowerThan { narrower: FabricGauges::schema(), broader: metric_gauge },
+                    EdgeForm::MapsTo { from: metric_gauge, to: ascii_sparkline, loss: loss_glyph, attrs: Vec::new() },
+                ],
                 supersedes: None,
             }))
             .expect("ndn-lab vocab encodes");
@@ -215,7 +244,25 @@ impl KeelView {
             }))
             .expect("sparkline contract encodes");
 
-        // Lens 2 — the OTLP exporter: Expresses otlp.gauge over the OTEL gauge
+        // Lens 2 — the CLI: also offers series.window, but only Approximately —
+        // its target `ascii-sparkline` is reached through the lossy glyph-
+        // quantization maps-to. The competitor that makes `select` matter.
+        let ascii = dag
+            .insert_document(&Document::Contract(Contract {
+                label: "ascii-sparkline".into(),
+                doc: Some("A gauge window as Unicode block glyphs, for a terminal.".into()),
+                imports: vec![ndnlab],
+                binds: vec![Subject::Name("ndn-lab/".into())],
+                clauses: vec![Clause::Express {
+                    intent: Intent { name: INTENT_SERIES_WINDOW.into(), attrs: Vec::new() },
+                    target: ascii_sparkline,
+                    via: Some(Via::Native(VIA_ASCII.into())),
+                    attrs: Vec::new(),
+                }],
+            }))
+            .expect("ascii contract encodes");
+
+        // Lens 3 — the OTLP exporter: Expresses otlp.gauge over the OTEL gauge
         // term, reachable only through the bridge's lossy maps-to ⇒ Approximate.
         let otlp = dag
             .insert_document(&Document::Contract(Contract {
@@ -238,8 +285,15 @@ impl KeelView {
             frontier.admit(bridge);
         }
 
+        // The surface's available contracts: a graphical surface holds the SVG
+        // sparkline; a CLI does not (so series.window falls to the ASCII lens).
+        let mut contracts = vec![ascii, otlp, t0];
+        if svg_capable {
+            contracts.push(sparkline);
+        }
+
         // Resolve ONCE. Everything after is a Spark stream past this Block.
-        let matches = r#match(&dag, &[sparkline, otlp, t0], &frontier, Budget::generous())
+        let matches = r#match(&dag, &contracts, &frontier, Budget::generous())
             .expect("generous budget suffices");
 
         KeelView { dag, matches, renderers: Renderers::new(), resolves: 1 }
@@ -267,6 +321,19 @@ impl KeelView {
     /// The cached match for an intent, if any (no re-matching).
     pub fn lens_for(&self, intent: &str) -> Option<&Match> {
         self.matches.iter().find(|m| m.intent == intent)
+    }
+
+    /// Every resolved offer for an intent — there may be *several competing*
+    /// lenses (e.g. `series.window` from both the SVG and the ASCII contract).
+    pub fn offers_for(&self, intent: &str) -> Vec<Match> {
+        self.matches.iter().filter(|m| m.intent == intent).cloned().collect()
+    }
+
+    /// The best offer for an intent at or above a fidelity floor — the matcher's
+    /// own [`select_best`] (deterministic F46 order: Express before Approximate,
+    /// fewer loss hops first). `None` if nothing meets the floor.
+    pub fn select_for(&self, intent: &str, floor: Floor) -> Option<Match> {
+        select_best(self.offers_for(intent), floor)
     }
 
     /// Render a batch of samples through a resolved lens: dispatch its
@@ -424,24 +491,40 @@ mod tests {
     }
 
     #[test]
-    fn one_manifest_two_lenses_express_and_approximate() {
-        let view = KeelView::for_fabric_gauges(true);
-
-        // The sparkline lens Expresses (lossless narrower hop).
-        let spark = view.lens_for(INTENT_SERIES_WINDOW).expect("sparkline offered");
-        assert_eq!(spark.verdict, Verdict::Express, "series.window is lossless");
-
-        // The OTLP lens is Approximate — reached only through the bridge's
-        // lossy maps-to, whose loss term the trace names.
+    fn series_window_has_competing_offers_svg_expresses_ascii_approximates() {
+        let view = KeelView::for_fabric_gauges(true, true);
+        let offers = view.offers_for(INTENT_SERIES_WINDOW);
+        assert_eq!(offers.len(), 2, "SVG + ASCII both offer series.window");
+        // select prefers the lossless SVG; the ASCII offer names its glyph loss.
+        let best = view.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap();
+        assert_eq!(best.verdict, Verdict::Express, "select picks the lossless SVG");
+        let ascii = offers.iter().find(|m| matches!(m.verdict, Verdict::Approximate(_))).unwrap();
+        let trace = ndn_explain::trace(&view.dag, ascii);
+        assert!(trace.contains("glyph-quantization"), "ASCII loss named: {trace}");
+        // OTLP still Approximate via the bridge, loss named.
         let otlp = view.lens_for(INTENT_OTLP_GAUGE).expect("otlp offered");
-        assert!(matches!(otlp.verdict, Verdict::Approximate(_)), "otlp is lossy: {:?}", otlp.verdict);
-        let trace = ndn_explain::trace(&view.dag, otlp);
-        assert!(trace.contains("otel-attribute-flattening"), "loss named in the trace: {trace}");
+        assert!(matches!(otlp.verdict, Verdict::Approximate(_)));
+        assert!(ndn_explain::trace(&view.dag, otlp).contains("otel-attribute-flattening"));
+    }
+
+    #[test]
+    fn select_picks_svg_but_degrades_to_ascii_on_a_cli_surface() {
+        // Graphical surface: select over the two series.window offers picks SVG.
+        let gui = KeelView::for_fabric_gauges(true, true);
+        assert_eq!(gui.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap().verdict, Verdict::Express);
+        assert!(gui.select_for(INTENT_SERIES_WINDOW, Floor::Express).is_some(), "GUI meets an Express floor");
+
+        // CLI surface: no SVG contract ⇒ series.window honestly degrades to ASCII…
+        let cli = KeelView::for_fabric_gauges(true, false);
+        let c = cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).expect("ASCII offer survives");
+        assert!(matches!(c.verdict, Verdict::Approximate(_)), "CLI degrades to the ASCII lens");
+        // …and an Express floor filters the CLI out entirely — no lossless offer.
+        assert!(cli.select_for(INTENT_SERIES_WINDOW, Floor::Express).is_none(), "CLI can't meet Express");
     }
 
     #[test]
     fn resolve_once_then_stream_samples() {
-        let view = KeelView::for_fabric_gauges(true);
+        let view = KeelView::for_fabric_gauges(true, true);
         let s = samples();
         // Render every lens over several batches — the matcher never re-runs.
         for _ in 0..5 {
@@ -455,38 +538,40 @@ mod tests {
 
     #[test]
     fn native_dispatch_produces_the_real_artifacts() {
-        let view = KeelView::for_fabric_gauges(true);
+        let view = KeelView::for_fabric_gauges(true, true);
         let s = samples();
-        let spark = view.render(view.lens_for(INTENT_SERIES_WINDOW).unwrap(), &s).unwrap();
-        assert!(spark.body.contains("<svg") && spark.body.contains("polyline"), "real sparkline SVG");
+        let svg = view.render(&view.select_for(INTENT_SERIES_WINDOW, Floor::Express).unwrap(), &s).unwrap();
+        assert!(svg.body.contains("<svg") && svg.body.contains("polyline"), "real sparkline SVG");
         let otlp = view.render(view.lens_for(INTENT_OTLP_GAUGE).unwrap(), &s).unwrap();
         assert!(otlp.body.contains("ndn.radio.airtime_us"), "real OTLP gauge JSON");
+        // The ASCII lens (the Approximate series.window offer) renders block glyphs.
+        let ascii_offer = view.offers_for(INTENT_SERIES_WINDOW).into_iter().find(|m| matches!(m.verdict, Verdict::Approximate(_))).unwrap();
+        let ascii = view.render(&ascii_offer, &s).unwrap();
+        assert!(ascii.body.chars().all(|c| "▁▂▃▄▅▆▇█".contains(c)) && !ascii.body.is_empty(), "real ASCII sparkline: {}", ascii.body);
     }
 
     #[test]
     fn c10_frontier_divergence_is_honest() {
-        // Admit the bridge ⇒ both lenses resolve.
-        let with = KeelView::for_fabric_gauges(true);
-        assert_eq!(with.lenses().len(), 2, "sparkline + otlp");
+        // Admit the bridge ⇒ SVG + ASCII + OTLP all resolve.
+        let with = KeelView::for_fabric_gauges(true, true);
+        assert_eq!(with.lenses().len(), 3, "sparkline + ascii + otlp");
 
-        // Withhold the bridge ⇒ the OTLP path is simply gone; the sparkline
-        // still Expresses. Two consumers diverge honestly, not by a fight over a
-        // serializer.
-        let without = KeelView::for_fabric_gauges(false);
-        assert!(without.lens_for(INTENT_SERIES_WINDOW).is_some(), "sparkline unaffected");
+        // Withhold the bridge ⇒ the OTLP path is simply gone; the two
+        // series.window lenses survive. Consumers diverge honestly.
+        let without = KeelView::for_fabric_gauges(false, true);
         let otlp = without.lens_for(INTENT_OTLP_GAUGE);
         assert!(
             otlp.is_none() || !matches!(otlp.unwrap().verdict, Verdict::Express | Verdict::Approximate(_)),
             "without the bridge, OTLP has no renderable verdict"
         );
-        assert_eq!(without.lenses().len(), 1, "only the sparkline lens survives");
+        assert_eq!(without.lenses().len(), 2, "SVG + ASCII survive; OTLP gone");
     }
 
     #[test]
     fn best_lens_prefers_express() {
-        let view = KeelView::for_fabric_gauges(true);
+        let view = KeelView::for_fabric_gauges(true, true);
         let best = view.best_lens(Floor::Approximate).expect("a lens at or above the floor");
-        assert_eq!(best.intent, INTENT_SERIES_WINDOW, "Express beats Approximate in F46 order");
+        assert_eq!(best.intent, INTENT_SERIES_WINDOW, "Express (SVG) beats Approximate in F46 order");
     }
 
     // ── the nested topology slice ────────────────────────────────────────────

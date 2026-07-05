@@ -67,26 +67,30 @@ fn main() {
         stream
     });
 
-    // ── one metric, two surfaces, zero conversions ───────────────────────────
-    let view = KeelView::for_fabric_gauges(/* admit the OTLP bridge stratum */ true);
-
+    // ── one metric, three surfaces, and the choice is declared ───────────────
     println!("── ndn-lab telemetry through the Keel ──");
-    println!("{} fabric-gauge samples; final airtime {} µs\n", stream.len(), stream.last().map(|g| g.radio_airtime_ns / 1000).unwrap_or(0));
+    println!("{} fabric-gauge samples; final airtime {} µs", stream.len(), stream.last().map(|g| g.radio_airtime_ns / 1000).unwrap_or(0));
 
-    for m in view.lenses() {
-        let r = view.render(m, &stream).expect("lens renders");
-        println!("{}", r.trace); // ndn_bench::explain: names the verdict, the loss, the path
-        let head: String = r.body.chars().take(96).collect();
-        println!("    → {head}…\n");
+    // A graphical surface holds every lens; series.window has two competing offers.
+    let gui = KeelView::for_fabric_gauges(/* otlp bridge */ true, /* svg-capable */ true);
+    println!("\n[graphical surface] lenses:");
+    for m in gui.lenses() {
+        println!("  {}", gui.render(m, &stream).expect("renders").trace);
     }
+    // select resolves the competition for series.window: the lossless SVG wins.
+    let picked = gui.select_for("series.window", Floor::Approximate).unwrap();
+    println!("  select(series.window, ≥Approximate) → {:?} (the SVG)", picked.verdict);
 
-    if let Some(best) = view.best_lens(Floor::Approximate) {
-        println!("best lens at floor=Approximate: {} ({:?})", best.intent, best.verdict);
-    }
-    println!(
-        "\nresolved once ({} match call); {} samples streamed as Sparks past the one schema.",
-        view.resolves(),
-        stream.len()
-    );
-    println!("nobody wrote an exporter integration; the OTLP loss is a term, not buried code.");
+    // A CLI surface can't render SVG, so it doesn't hold that contract. series.window
+    // degrades — honestly — to the ASCII lens; an Express floor filters the CLI out.
+    let cli = KeelView::for_fabric_gauges(true, /* svg-capable */ false);
+    let ascii = cli.select_for("series.window", Floor::Approximate).unwrap();
+    let rendered = cli.render(&ascii, &stream).unwrap();
+    println!("\n[cli surface] select(series.window, ≥Approximate) degrades honestly:");
+    println!("  {}", rendered.trace);
+    println!("  → {}", rendered.body);
+    println!("  select(series.window, ≥Express) → {:?} (CLI filtered out — no lossless offer)",
+        cli.select_for("series.window", Floor::Express).map(|m| m.verdict));
+
+    println!("\none metric, three surfaces; resolved once; the choice between them is declared,\ndeterministic, and auditable — nobody wrote an integration, and every loss is a term.");
 }

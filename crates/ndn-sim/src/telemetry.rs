@@ -132,7 +132,10 @@ pub struct IpMetricsSample {
 /// roaming cost. One snapshot for a whole `RadioBus` / `IpNetwork` at a virtual instant, so these —
 /// previously only reachable via ad-hoc accessors — also flow to the OTLP exporter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(ndn_manifest_derive::Manifest)]
+#[manifest(ty = "fabric-gauges", describes = "ndn-lab/run/fabric-gauges")]
 pub struct FabricGauges {
+    /// Kernel-clock time of the sample (ns).
     pub virtual_time_ns: u64,
     /// Total airtime consumed on the shared radio medium (ns) — `RadioBus::total_airtime`.
     pub radio_airtime_ns: u64,

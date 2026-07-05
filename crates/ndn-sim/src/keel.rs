@@ -37,10 +37,9 @@
 use std::collections::BTreeMap;
 
 use ndn_manifest::model::{
-    Clause, Contract, Document, EdgeForm, Intent, Manifest, ManifestEntry, Subject, Term, Value,
-    Vocabulary,
+    Clause, Contract, Document, EdgeForm, Intent, Subject, Term, Vocabulary,
 };
-use ndn_manifest::{term_hash, FrozenDag, hash::Hash};
+use ndn_manifest::{term_hash, FrozenDag};
 use ndn_render_contract::{
     contract_via, r#match, Budget, Floor, Match, TrustFrontier, Verdict, Via,
 };
@@ -59,63 +58,6 @@ const VIA_OTLP: &str = "ndn-lab/otlp-gauge";
 
 fn term(label: &str, doc: &str) -> Term {
     Term { label: label.into(), doc: Some(doc.into()), ty: None, attrs: Vec::new() }
-}
-
-/// The term hashes the vocabulary/manifest/contracts are wired from — computed
-/// once so producers never re-hash. (This struct is exactly the shape a
-/// `#[derive(Manifest)]` on `FabricGauges` would need to synthesise: a type
-/// term + one field term per struct field. See the module notes.)
-struct Handles {
-    /// The manifest type: `fabric-gauges`.
-    fabric_gauges: Hash,
-    /// The broader renderable term the type narrows to.
-    metric_gauge: Hash,
-    /// The OTLP-side term reached through the bridge.
-    otel_gauge: Hash,
-    /// The declared loss of the ndn-lab → OTLP mapping.
-    loss_flatten: Hash,
-    /// Field terms, in `FabricGauges` field order.
-    f_virtual_time: Hash,
-    f_radio_airtime: Hash,
-    f_handoffs: Hash,
-    f_assoc_overhead: Hash,
-}
-
-impl Handles {
-    fn new() -> Self {
-        Handles {
-            fabric_gauges: term_hash(&term("fabric-gauges", "One fabric-wide gauge snapshot.")).unwrap(),
-            metric_gauge: term_hash(&term("metric-gauge", "A renderable numeric gauge over virtual time.")).unwrap(),
-            otel_gauge: term_hash(&term("gauge", "An OpenTelemetry gauge data point.")).unwrap(),
-            loss_flatten: term_hash(&term("otel-attribute-flattening", "Loss: NDN structure flattened to OTLP key/value attributes.")).unwrap(),
-            f_virtual_time: term_hash(&term("virtual-time", "Kernel-clock time of the sample (ns).")).unwrap(),
-            f_radio_airtime: term_hash(&term("radio-airtime", "Shared-radio airtime consumed (ns).")).unwrap(),
-            f_handoffs: term_hash(&term("handoffs", "AP-mode (re)associations.")).unwrap(),
-            f_assoc_overhead: term_hash(&term("assoc-overhead", "Association-handshake time (ns).")).unwrap(),
-        }
-    }
-}
-
-// ── the producer: a telemetry sample describes itself ────────────────────────
-
-/// `FabricGauges` → a [`Manifest`]: say-what-it-is-once, against the ndn-lab
-/// vocabulary. **This is the by-hand producer the derive would replace** — one
-/// `ManifestEntry` per struct field, each binding a field term hash to a flat
-/// `Value`. (A single snapshot; a *run* is a stream of these, all sharing this
-/// one resolved type.)
-fn fabric_gauges_manifest(g: &FabricGauges, h: &Handles) -> Manifest {
-    Manifest {
-        ty: h.fabric_gauges,
-        label: Some("fabric-gauges".into()),
-        describes: Subject::Name("ndn-lab/run/fabric-gauges".into()),
-        entries: vec![
-            ManifestEntry { field: h.f_virtual_time, value: Value::Integer(g.virtual_time_ns) },
-            ManifestEntry { field: h.f_radio_airtime, value: Value::Integer(g.radio_airtime_ns) },
-            ManifestEntry { field: h.f_handoffs, value: Value::Integer(g.handoffs) },
-            ManifestEntry { field: h.f_assoc_overhead, value: Value::Integer(g.association_overhead_ns) },
-        ],
-        edges: Vec::new(),
-    }
 }
 
 // ── the native-renderer registry (Via::Native id → a Rust renderer) ──────────
@@ -186,7 +128,6 @@ impl KeelView {
     /// drops out — two consumers diverge *honestly* rather than fighting over a
     /// serializer.
     pub fn for_fabric_gauges(admit_otel_bridge: bool) -> Self {
-        let h = Handles::new();
         let mut dag = FrozenDag::new();
 
         // The kernel trio rides in every DAG (R14) and gives the total floor.
@@ -194,22 +135,24 @@ impl KeelView {
         dag.insert_bytes(&fp.im0_bytes).expect("IM₀ decodes");
         let t0 = dag.insert_bytes(&fp.t0_bytes).expect("T₀ decodes");
 
-        // The ndn-lab telemetry vocabulary: the gauge type narrows (losslessly)
-        // to the renderable metric-gauge term.
+        // Render-side terms (NOT the producer's self-description — these are the
+        // lens's concern, so they stay hand-authored per Law #1).
+        let metric_gauge = term_hash(&term("metric-gauge", "A renderable numeric gauge over virtual time.")).unwrap();
+        let otel_gauge = term_hash(&term("gauge", "An OpenTelemetry gauge data point.")).unwrap();
+        let loss_flatten = term_hash(&term("otel-attribute-flattening", "Loss: NDN structure flattened to OTLP key/value attributes.")).unwrap();
+
+        // The ndn-lab telemetry vocabulary: the DESCRIBE terms come from the
+        // derive (`FabricGauges::manifest_terms()` — retired the hand-built list),
+        // plus the render target it narrows to.
+        let mut ndnlab_terms = FabricGauges::manifest_terms();
+        ndnlab_terms.push(term("metric-gauge", "A renderable numeric gauge over virtual time."));
         let ndnlab = dag
             .insert_document(&Document::Vocabulary(Vocabulary {
                 label: "ndn-lab".into(),
-                doc: Some("ndn-lab telemetry terms: fabric gauges and their renderable form.".into()),
+                doc: Some("ndn-lab telemetry: derived fabric-gauge terms + their renderable form.".into()),
                 imports: Vec::new(),
-                terms: vec![
-                    term("fabric-gauges", "One fabric-wide gauge snapshot."),
-                    term("metric-gauge", "A renderable numeric gauge over virtual time."),
-                    term("virtual-time", "Kernel-clock time of the sample (ns)."),
-                    term("radio-airtime", "Shared-radio airtime consumed (ns)."),
-                    term("handoffs", "AP-mode (re)associations."),
-                    term("assoc-overhead", "Association-handshake time (ns)."),
-                ],
-                edges: vec![EdgeForm::NarrowerThan { narrower: h.fabric_gauges, broader: h.metric_gauge }],
+                terms: ndnlab_terms,
+                edges: vec![EdgeForm::NarrowerThan { narrower: FabricGauges::schema(), broader: metric_gauge }],
                 supersedes: None,
             }))
             .expect("ndn-lab vocab encodes");
@@ -239,18 +182,21 @@ impl KeelView {
                 imports: vec![ndnlab, otel],
                 terms: Vec::new(),
                 edges: vec![EdgeForm::MapsTo {
-                    from: h.metric_gauge,
-                    to: h.otel_gauge,
-                    loss: h.loss_flatten,
+                    from: metric_gauge,
+                    to: otel_gauge,
+                    loss: loss_flatten,
                     attrs: Vec::new(),
                 }],
                 supersedes: None,
             }))
             .expect("bridge vocab encodes");
 
-        // The self-describing sample (one; a run streams many past this schema).
-        dag.insert_document(&Document::Manifest(fabric_gauges_manifest(&FabricGauges::default(), &h)))
-            .expect("manifest encodes");
+        // The self-describing sample, straight from the derive (one; a run streams
+        // many past this schema).
+        dag.insert_document(&Document::Manifest(
+            FabricGauges::default().to_manifest_default().expect("all-integer gauges never refuse"),
+        ))
+        .expect("manifest encodes");
 
         // Lens 1 — the sparkline: Expresses series.window over the gauge type
         // directly (lossless narrower hop) via the native sparkline renderer.
@@ -262,7 +208,7 @@ impl KeelView {
                 binds: vec![Subject::Name("ndn-lab/".into())],
                 clauses: vec![Clause::Express {
                     intent: Intent { name: INTENT_SERIES_WINDOW.into(), attrs: Vec::new() },
-                    target: h.metric_gauge,
+                    target: metric_gauge,
                     via: Some(Via::Native(VIA_SPARKLINE.into())),
                     attrs: Vec::new(),
                 }],
@@ -279,7 +225,7 @@ impl KeelView {
                 binds: vec![Subject::Name("ndn-lab/".into())],
                 clauses: vec![Clause::Express {
                     intent: Intent { name: INTENT_OTLP_GAUGE.into(), attrs: Vec::new() },
-                    target: h.otel_gauge,
+                    target: otel_gauge,
                     via: Some(Via::Native(VIA_OTLP.into())),
                     attrs: Vec::new(),
                 }],
@@ -352,15 +298,16 @@ impl KeelView {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// The topology slice — a NESTED producer, by hand (F54 ordering ruling).
+// The topology slice — the nested producer, now DERIVED.
 //
-// FabricGauges is flat u64s; a SceneSnapshot is nested: lists of records, an
-// optional field, mixed primitives. Building it by hand is the evidence the
-// `#[derive(Manifest)]` must be designed against. The pain points, marked ⚑
-// below, are the report.
+// SceneView's hand-woven vocabulary (the scene-node/scene-link record terms, the
+// field terms, the whole nested manifest) is retired onto `#[derive(Manifest)]`
+// on the real scene types: SceneSnapshot::manifest_terms()/schema()/
+// to_manifest_default() (see crate::scene). Only the render-side term
+// (topology-map) and the narrower edge stay hand-authored — that's the lens's
+// concern, not the producer's self-description (Law #1).
 // ═════════════════════════════════════════════════════════════════════════════
 
-use ndn_manifest::model::{Cardinality, Field, PrimitiveKind, TypeExpr};
 use ndn_manifest_describe::DescribeError;
 
 use crate::scene::SceneSnapshot;
@@ -368,118 +315,6 @@ use crate::scene::SceneSnapshot;
 const VIA_TOPOLOGY: &str = "ndn-lab/topology-svg";
 /// The topology-map render intent.
 pub const INTENT_TOPOLOGY_MAP: &str = "topology.map";
-
-/// F55-B (finding #1, now ruled): `f64 → Decimal` is a **declared loss**, and a
-/// non-finite float has no honest decimal — so this delegates to the shared,
-/// tested [`ndn_manifest_describe::decimal`] (round-half-even at a declared
-/// precision; `NaN`/`inf` ⇒ `Err`, never a silent zero — the bug the ruling
-/// asked me to fix, not record).
-fn dec(v: f64, field: &'static str) -> Result<Value, DescribeError> {
-    ndn_manifest_describe::decimal(v, 4, field)
-}
-
-fn field(label: &str, ty: TypeExpr, card: Cardinality) -> Field {
-    Field { label: label.into(), doc: Some(label.into()), ty, cardinality: card, attrs: Vec::new() }
-}
-
-/// A term carrying a type (a manifest field term: `nodes : list-of(...)`).
-fn typed_term(label: &str, doc: &str, ty: TypeExpr) -> Term {
-    Term { label: label.into(), doc: Some(doc.into()), ty: Some(ty), attrs: Vec::new() }
-}
-
-/// The record shape of one `SceneNode` — nine positional fields (R11: order IS
-/// identity). ⚑ Pain #2: the derive must emit this `TypeExpr::Record` from the
-/// struct's fields, and the manifest's `Value::Record` must be built in the
-/// EXACT same order — two sites that must never drift.
-fn scene_node_record() -> TypeExpr {
-    use PrimitiveKind::*;
-    TypeExpr::Record(vec![
-        field("id", TypeExpr::Primitive(Integer), Cardinality::One),
-        field("label", TypeExpr::Primitive(Text), Cardinality::One),
-        field("x", TypeExpr::Primitive(Decimal), Cardinality::One),
-        field("y", TypeExpr::Primitive(Decimal), Cardinality::One),
-        field("faces", TypeExpr::Primitive(Integer), Cardinality::One),
-        field("pit-depth", TypeExpr::Primitive(Integer), Cardinality::One),
-        field("cs-hit-rate", TypeExpr::Primitive(Decimal), Cardinality::One),
-        field("in-interests", TypeExpr::Primitive(Integer), Cardinality::One),
-        field("out-data", TypeExpr::Primitive(Integer), Cardinality::One),
-    ])
-}
-
-/// The record shape of one `SceneLink`. Finding #3, now ruled (F55-A):
-/// `Option<T>` is the kernel's **`Cardinality::Optional`** — cardinality
-/// declares, list-ness encodes. So `distance` is a *bare* `Decimal` field with
-/// `Optional` cardinality (not `list-of`), and the *value* is the 0-or-1 list.
-fn scene_link_record() -> TypeExpr {
-    use PrimitiveKind::*;
-    TypeExpr::Record(vec![
-        field("from", TypeExpr::Primitive(Integer), Cardinality::One),
-        field("to", TypeExpr::Primitive(Integer), Cardinality::One),
-        field("distance", TypeExpr::Primitive(Decimal), Cardinality::Optional),
-    ])
-}
-
-fn node_term() -> Term {
-    Term { label: "scene-node".into(), doc: Some("A node in a scene snapshot.".into()), ty: Some(scene_node_record()), attrs: Vec::new() }
-}
-fn link_term() -> Term {
-    Term { label: "scene-link".into(), doc: Some("An edge in a scene snapshot.".into()), ty: Some(scene_link_record()), attrs: Vec::new() }
-}
-
-/// `SceneSnapshot` → a nested [`Manifest`]. ⚑ Pain #4: the whole body is
-/// hand-woven `Value::List`/`Value::Record` in field order — verbose, and every
-/// primitive cast (`usize`→`Integer`, `f64`→`Decimal`) is a decision. This is
-/// the exact code a derive would generate; that it's this mechanical *except*
-/// for `dec()` and the `Option` encoding is the argument for the macro.
-fn scene_manifest(
-    scene: &SceneSnapshot,
-    ty: Hash,
-    f_time: Hash,
-    f_nodes: Hash,
-    f_links: Hash,
-) -> Result<Manifest, DescribeError> {
-    let nodes = scene
-        .nodes
-        .iter()
-        .map(|n| {
-            Ok(Value::Record(vec![
-                Value::Integer(n.id as u64),
-                Value::Text(n.label.clone()),
-                dec(n.x, "x")?,
-                dec(n.y, "y")?,
-                Value::Integer(n.faces),
-                Value::Integer(n.pit_depth),
-                dec(n.cs_hit_rate, "cs-hit-rate")?,
-                Value::Integer(n.in_interests),
-                Value::Integer(n.out_data),
-            ]))
-        })
-        .collect::<Result<Vec<_>, DescribeError>>()?;
-    let links = scene
-        .links
-        .iter()
-        .map(|l| {
-            // F55-A: Optional value = the 0-or-1 list; a present distance is a
-            // declared-loss decimal, so this stays fallible on a non-finite input.
-            let distance = ndn_manifest_describe::optional(match l.distance_m {
-                Some(d) => Some(dec(d, "distance")?),
-                None => None,
-            });
-            Ok(Value::Record(vec![Value::Integer(l.from as u64), Value::Integer(l.to as u64), distance]))
-        })
-        .collect::<Result<Vec<_>, DescribeError>>()?;
-    Ok(Manifest {
-        ty,
-        label: Some("scene".into()),
-        describes: Subject::Name("ndn-lab/run/scene".into()),
-        entries: vec![
-            ManifestEntry { field: f_time, value: Value::Integer(scene.virtual_time_ns) },
-            ManifestEntry { field: f_nodes, value: ndn_manifest_describe::list(nodes) },
-            ManifestEntry { field: f_links, value: ndn_manifest_describe::list(links) },
-        ],
-        edges: Vec::new(),
-    })
-}
 
 /// A resolved topology lens over a scene snapshot — the nested-manifest twin of
 /// [`KeelView`], kept separate because its renderer consumes a `SceneSnapshot`,
@@ -494,50 +329,35 @@ pub struct SceneView {
 }
 
 impl SceneView {
-    /// Assemble the scene DAG (vocabulary with the two record terms + the scene
-    /// manifest + the topology contract) and resolve the lens once.
+    /// Assemble the scene DAG (the derived scene vocabulary + the topology render
+    /// term + the scene manifest + the contract) and resolve the lens once.
     pub fn for_scene(scene: &SceneSnapshot) -> Result<Self, DescribeError> {
-        use PrimitiveKind::Integer;
-        // ⚑ Pain #5: nested type refs are hash-only (C5). The `nodes`/`links`
-        // field terms are typed `list-of(term-of(scene-node))`, so the record
-        // term must be hashed FIRST and threaded into the field term's type — a
-        // strict emit order the derive must honour for every nested struct.
-        let node_h = term_hash(&node_term()).unwrap();
-        let link_h = term_hash(&link_term()).unwrap();
-        let ty = term_hash(&term("scene", "A network scene snapshot.")).unwrap();
+        // Render-side (Law #1): the renderable target the scene type narrows to.
         let map = term_hash(&term("topology-map", "A renderable network map.")).unwrap();
-
-        let vtime = typed_term("virtual-time", "Snapshot time (ns).", TypeExpr::Primitive(Integer));
-        let nodes = typed_term("nodes", "The scene's nodes.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(node_h))));
-        let links = typed_term("links", "The scene's edges.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(link_h))));
-        let (f_time, f_nodes, f_links) =
-            (term_hash(&vtime).unwrap(), term_hash(&nodes).unwrap(), term_hash(&links).unwrap());
 
         let mut dag = FrozenDag::new();
         let fp = ndn_manifest::kernel::fixed_point();
         dag.insert_bytes(&fp.im0_bytes).expect("IM₀");
         let t0 = dag.insert_bytes(&fp.t0_bytes).expect("T₀");
 
+        // The DESCRIBE terms (scene marker, field terms, nested scene-node /
+        // scene-link / radio-link / scene-bounds records) come from the derive;
+        // only the render target is hand-added.
+        let mut terms = SceneSnapshot::manifest_terms();
+        terms.push(term("topology-map", "A renderable network map."));
         let vocab = dag
             .insert_document(&Document::Vocabulary(Vocabulary {
                 label: "ndn-lab-scene".into(),
-                doc: Some("Scene snapshot terms: nested nodes + links, and their renderable map.".into()),
+                doc: Some("Derived scene terms + their renderable map.".into()),
                 imports: Vec::new(),
-                terms: vec![
-                    term("scene", "A network scene snapshot."),
-                    term("topology-map", "A renderable network map."),
-                    node_term(),
-                    link_term(),
-                    vtime,
-                    nodes,
-                    links,
-                ],
-                edges: vec![EdgeForm::NarrowerThan { narrower: ty, broader: map }],
+                terms,
+                edges: vec![EdgeForm::NarrowerThan { narrower: SceneSnapshot::schema(), broader: map }],
                 supersedes: None,
             }))
             .expect("scene vocab encodes");
 
-        let manifest = scene_manifest(scene, ty, f_time, f_nodes, f_links)?;
+        // The self-describing manifest, straight from the derive.
+        let manifest = scene.to_manifest_default()?;
         let manifest_bytes = ndn_manifest::canon::encode_document(&Document::Manifest(manifest.clone()))
             .expect("nested manifest encodes canonically");
         dag.insert_document(&Document::Manifest(manifest)).expect("manifest inserts");
@@ -723,139 +543,47 @@ mod tests {
         assert_eq!(bytes, reencoded.as_slice(), "decode ∘ encode is byte identity (R13)");
     }
 
-    // ── SU-1a: the derive reproduces the hand-built vocabulary byte-identically ──
+    // ── the retirement: producers derive; the schema is frozen by a pin ──────
     //
-    // Mirror structs annotated per DERIVE.md. The `///` docs equal the kebab
-    // labels because the hand-built `field()` helper set doc == label; that's the
-    // convergence point, not a natural doc style — a finding in itself.
-    use ndn_manifest_derive::Manifest;
+    // The hand-built vocabularies are gone — the real FabricGauges / SceneSnapshot
+    // now describe themselves via #[derive(Manifest)]. The byte-identity gate is
+    // replaced by the freeze pattern: pin the derived schema hashes, so a field
+    // reorder or a doc edit (which silently mints a NEW term — the L-07 fork)
+    // turns red and demands a deliberate version, not an accident.
+    use crate::scene::{RadioLink, SceneBounds, SceneLink, SceneNode};
 
-    /// A node in a scene snapshot.
-    #[derive(Manifest)]
-    #[manifest(ty = "scene-node")]
-    #[allow(dead_code)]
-    struct NodeMirror {
-        /// id
-        id: u64,
-        /// label
-        label: String,
-        /// x
-        #[field(decimal(places = 4))]
-        x: f64,
-        /// y
-        #[field(decimal(places = 4))]
-        y: f64,
-        /// faces
-        faces: u64,
-        /// pit-depth
-        pit_depth: u64,
-        /// cs-hit-rate
-        #[field(decimal(places = 4))]
-        cs_hit_rate: f64,
-        /// in-interests
-        in_interests: u64,
-        /// out-data
-        out_data: u64,
-    }
-
-    /// An edge in a scene snapshot.
-    #[derive(Manifest)]
-    #[manifest(ty = "scene-link")]
-    #[allow(dead_code)]
-    struct LinkMirror {
-        /// from
-        from: u64,
-        /// to
-        to: u64,
-        /// distance
-        #[field(decimal(places = 4))]
-        distance: Option<f64>,
-    }
-
-    /// A network scene snapshot.
-    #[derive(Manifest)]
-    #[manifest(ty = "scene", describes = "ndn-lab/run/scene")]
-    #[allow(dead_code)]
-    struct SceneMirror {
-        /// Snapshot time (ns).
-        virtual_time: u64,
-        /// The scene's nodes.
-        nodes: Vec<NodeMirror>,
-        /// The scene's edges.
-        links: Vec<LinkMirror>,
+    fn hex(h: &ndn_manifest::hash::Hash) -> String {
+        h.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]
-    fn su1a_derive_reproduces_hand_built_term_hashes() {
-        let th = |t: &ndn_manifest::model::Term| ndn_manifest::term_hash(t).unwrap();
-        // Nested record terms.
-        assert_eq!(NodeMirror::record_schema(), th(&node_term()), "scene-node record term");
-        assert_eq!(LinkMirror::record_schema(), th(&link_term()), "scene-link record term");
-        // Top-level marker + the three field terms (as for_scene builds them).
-        use PrimitiveKind::Integer;
-        assert_eq!(SceneMirror::schema(), th(&term("scene", "A network scene snapshot.")), "scene marker");
-        let ft = SceneMirror::field_terms();
-        assert_eq!(th(&ft[0]), th(&typed_term("virtual-time", "Snapshot time (ns).", TypeExpr::Primitive(Integer))));
-        let node_h = th(&node_term());
-        let link_h = th(&link_term());
-        assert_eq!(th(&ft[1]), th(&typed_term("nodes", "The scene's nodes.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(node_h))))));
-        assert_eq!(th(&ft[2]), th(&typed_term("links", "The scene's edges.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(link_h))))));
-    }
+    fn derived_schema_is_deterministic_and_frozen() {
+        // Determinism: the same annotated struct always hashes the same.
+        assert_eq!(FabricGauges::schema(), FabricGauges::schema());
+        assert_eq!(SceneSnapshot::schema(), SceneSnapshot::schema());
 
-    /// The flat producer (FabricGauges shape) derives too — the macro is designed
-    /// against both structural shapes, not overfit to nesting.
-    #[derive(Manifest)]
-    #[manifest(ty = "fabric-gauges", describes = "ndn-lab/run/fabric-gauges")]
-    #[allow(dead_code)]
-    struct GaugesMirror {
-        /// Kernel-clock time of the sample (ns).
-        virtual_time_ns: u64,
-        /// Shared-radio airtime consumed (ns).
-        radio_airtime_ns: u64,
-        /// AP-mode (re)associations.
-        handoffs: u64,
-        /// Association-handshake time (ns).
-        association_overhead_ns: u64,
+        // Freeze pins (regenerate deliberately if a schema is intentionally versioned).
+        assert_eq!(hex(&FabricGauges::schema()), "d58bdcdc5bd70f4e662d6996178e308d0f46e5becdc48bd7219aff72ec894570");
+        assert_eq!(hex(&SceneSnapshot::schema()), "badb3407d302e2ec2ab56b43f52846ad720f35194445f51467e2f1ea766d902e");
+        assert_eq!(hex(&SceneNode::record_schema()), "fbc93f3a1528f6910cbda5c70d8f5f5cc2ed2400df6b20a3c6b1d07717bee949");
+        assert_eq!(hex(&SceneLink::record_schema()), "d3253e38b57e0a409cbdff01dbf2cbcfef875fa5fc39c3e3960c2a6fa1f7a46b");
+        assert_eq!(hex(&RadioLink::record_schema()), "b709ea9594f6893f1d4bcaa18ec6ba03da51683806133328d405d2f4049390ba");
+        assert_eq!(hex(&SceneBounds::record_schema()), "bccb0b687f58b7e3cebdfa312e02d1c38203e5d9eb71d2a7f83af20fbdf64ec7");
     }
 
     #[test]
-    fn flat_derive_round_trips_canonically() {
-        let g = GaugesMirror {
-            virtual_time_ns: 5_000_000,
-            radio_airtime_ns: 7_405_000,
-            handoffs: 2,
-            association_overhead_ns: 240_000_000,
-        };
-        let m = g.to_manifest_default().expect("all-integer struct never refuses");
-        let bytes = ndn_manifest::canon::encode_document(&Document::Manifest(m)).unwrap();
-        let decoded = ndn_manifest::canon::decode_document(&bytes).unwrap();
-        let re = ndn_manifest::canon::encode_decoded(&decoded).unwrap();
-        assert_eq!(bytes, re, "flat derived manifest canonically round-trips");
-        assert_eq!(GaugesMirror::field_terms().len(), 4, "one field term per struct field");
-    }
-
-    #[test]
-    fn su1a_derive_reproduces_the_hand_built_manifest_bytes() {
-        // The full manifest for the same data encodes byte-identically to the
-        // hand-woven one — the derive is a faithful generator, not a lookalike.
-        let s = scene();
-        let mirror = SceneMirror {
-            virtual_time: s.virtual_time_ns,
-            nodes: s.nodes.iter().map(|n| NodeMirror {
-                id: n.id as u64, label: n.label.clone(), x: n.x, y: n.y, faces: n.faces,
-                pit_depth: n.pit_depth, cs_hit_rate: n.cs_hit_rate, in_interests: n.in_interests, out_data: n.out_data,
-            }).collect(),
-            links: s.links.iter().map(|l| LinkMirror { from: l.from as u64, to: l.to as u64, distance: l.distance_m }).collect(),
-        };
-        let derived = mirror.to_manifest_default().expect("finite");
-
-        let ty = SceneMirror::schema();
-        let ft = SceneMirror::field_terms();
-        let th = |t: &ndn_manifest::model::Term| ndn_manifest::term_hash(t).unwrap();
-        let hand = scene_manifest(&s, ty, th(&ft[0]), th(&ft[1]), th(&ft[2])).expect("finite");
-
-        let db = ndn_manifest::canon::encode_document(&Document::Manifest(derived)).unwrap();
-        let hb = ndn_manifest::canon::encode_document(&Document::Manifest(hand)).unwrap();
-        assert_eq!(db, hb, "derived manifest bytes == hand-built manifest bytes (SU-1a)");
+    fn derived_producers_encode_canonically() {
+        // Flat (FabricGauges) and nested (SceneSnapshot) both derive a manifest
+        // that canonically round-trips — decode ∘ encode is byte identity (R13).
+        let g = FabricGauges { virtual_time_ns: 5_000_000, radio_airtime_ns: 7_405_000, handoffs: 2, association_overhead_ns: 240_000_000 };
+        for m in [g.to_manifest_default().expect("gauges never refuse"), scene().to_manifest_default().expect("finite scene")] {
+            let bytes = ndn_manifest::canon::encode_document(&Document::Manifest(m)).unwrap();
+            let decoded = ndn_manifest::canon::decode_document(&bytes).unwrap();
+            let re = ndn_manifest::canon::encode_decoded(&decoded).unwrap();
+            assert_eq!(bytes, re, "derived manifest canonically round-trips");
+        }
+        // The derive walks the whole struct: scene describes all five fields.
+        assert_eq!(SceneSnapshot::field_terms().len(), 5);
+        assert_eq!(FabricGauges::field_terms().len(), 4);
     }
 }

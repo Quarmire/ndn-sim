@@ -35,6 +35,7 @@ ndn-manifest          = { path = "../../../ndn-rs/crates/core/ndn-manifest" }
 ndn-render-contract   = { path = "../../../ndn-rs/crates/core/ndn-render-contract" }
 ndn-explain           = { path = "../../../ndn-rs/crates/tools/ndn-explain" }
 ndn-manifest-describe = { path = "../../../ndn-rs/crates/tools/ndn-manifest-describe" }
+ndn-manifest-derive   = { path = "../../../ndn-rs/crates/tools/ndn-manifest-derive" }
 
 serde      = { workspace = true }
 serde_json = { workspace = true }

@@ -722,4 +722,140 @@ mod tests {
         let reencoded = ndn_manifest::canon::encode_decoded(&decoded).expect("re-encodes");
         assert_eq!(bytes, reencoded.as_slice(), "decode ∘ encode is byte identity (R13)");
     }
+
+    // ── SU-1a: the derive reproduces the hand-built vocabulary byte-identically ──
+    //
+    // Mirror structs annotated per DERIVE.md. The `///` docs equal the kebab
+    // labels because the hand-built `field()` helper set doc == label; that's the
+    // convergence point, not a natural doc style — a finding in itself.
+    use ndn_manifest_derive::Manifest;
+
+    /// A node in a scene snapshot.
+    #[derive(Manifest)]
+    #[manifest(ty = "scene-node")]
+    #[allow(dead_code)]
+    struct NodeMirror {
+        /// id
+        id: u64,
+        /// label
+        label: String,
+        /// x
+        #[field(decimal(places = 4))]
+        x: f64,
+        /// y
+        #[field(decimal(places = 4))]
+        y: f64,
+        /// faces
+        faces: u64,
+        /// pit-depth
+        pit_depth: u64,
+        /// cs-hit-rate
+        #[field(decimal(places = 4))]
+        cs_hit_rate: f64,
+        /// in-interests
+        in_interests: u64,
+        /// out-data
+        out_data: u64,
+    }
+
+    /// An edge in a scene snapshot.
+    #[derive(Manifest)]
+    #[manifest(ty = "scene-link")]
+    #[allow(dead_code)]
+    struct LinkMirror {
+        /// from
+        from: u64,
+        /// to
+        to: u64,
+        /// distance
+        #[field(decimal(places = 4))]
+        distance: Option<f64>,
+    }
+
+    /// A network scene snapshot.
+    #[derive(Manifest)]
+    #[manifest(ty = "scene", describes = "ndn-lab/run/scene")]
+    #[allow(dead_code)]
+    struct SceneMirror {
+        /// Snapshot time (ns).
+        virtual_time: u64,
+        /// The scene's nodes.
+        nodes: Vec<NodeMirror>,
+        /// The scene's edges.
+        links: Vec<LinkMirror>,
+    }
+
+    #[test]
+    fn su1a_derive_reproduces_hand_built_term_hashes() {
+        let th = |t: &ndn_manifest::model::Term| ndn_manifest::term_hash(t).unwrap();
+        // Nested record terms.
+        assert_eq!(NodeMirror::record_schema(), th(&node_term()), "scene-node record term");
+        assert_eq!(LinkMirror::record_schema(), th(&link_term()), "scene-link record term");
+        // Top-level marker + the three field terms (as for_scene builds them).
+        use PrimitiveKind::Integer;
+        assert_eq!(SceneMirror::schema(), th(&term("scene", "A network scene snapshot.")), "scene marker");
+        let ft = SceneMirror::field_terms();
+        assert_eq!(th(&ft[0]), th(&typed_term("virtual-time", "Snapshot time (ns).", TypeExpr::Primitive(Integer))));
+        let node_h = th(&node_term());
+        let link_h = th(&link_term());
+        assert_eq!(th(&ft[1]), th(&typed_term("nodes", "The scene's nodes.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(node_h))))));
+        assert_eq!(th(&ft[2]), th(&typed_term("links", "The scene's edges.", TypeExpr::ListOf(Box::new(TypeExpr::TermOf(link_h))))));
+    }
+
+    /// The flat producer (FabricGauges shape) derives too — the macro is designed
+    /// against both structural shapes, not overfit to nesting.
+    #[derive(Manifest)]
+    #[manifest(ty = "fabric-gauges", describes = "ndn-lab/run/fabric-gauges")]
+    #[allow(dead_code)]
+    struct GaugesMirror {
+        /// Kernel-clock time of the sample (ns).
+        virtual_time_ns: u64,
+        /// Shared-radio airtime consumed (ns).
+        radio_airtime_ns: u64,
+        /// AP-mode (re)associations.
+        handoffs: u64,
+        /// Association-handshake time (ns).
+        association_overhead_ns: u64,
+    }
+
+    #[test]
+    fn flat_derive_round_trips_canonically() {
+        let g = GaugesMirror {
+            virtual_time_ns: 5_000_000,
+            radio_airtime_ns: 7_405_000,
+            handoffs: 2,
+            association_overhead_ns: 240_000_000,
+        };
+        let m = g.to_manifest_default().expect("all-integer struct never refuses");
+        let bytes = ndn_manifest::canon::encode_document(&Document::Manifest(m)).unwrap();
+        let decoded = ndn_manifest::canon::decode_document(&bytes).unwrap();
+        let re = ndn_manifest::canon::encode_decoded(&decoded).unwrap();
+        assert_eq!(bytes, re, "flat derived manifest canonically round-trips");
+        assert_eq!(GaugesMirror::field_terms().len(), 4, "one field term per struct field");
+    }
+
+    #[test]
+    fn su1a_derive_reproduces_the_hand_built_manifest_bytes() {
+        // The full manifest for the same data encodes byte-identically to the
+        // hand-woven one — the derive is a faithful generator, not a lookalike.
+        let s = scene();
+        let mirror = SceneMirror {
+            virtual_time: s.virtual_time_ns,
+            nodes: s.nodes.iter().map(|n| NodeMirror {
+                id: n.id as u64, label: n.label.clone(), x: n.x, y: n.y, faces: n.faces,
+                pit_depth: n.pit_depth, cs_hit_rate: n.cs_hit_rate, in_interests: n.in_interests, out_data: n.out_data,
+            }).collect(),
+            links: s.links.iter().map(|l| LinkMirror { from: l.from as u64, to: l.to as u64, distance: l.distance_m }).collect(),
+        };
+        let derived = mirror.to_manifest_default().expect("finite");
+
+        let ty = SceneMirror::schema();
+        let ft = SceneMirror::field_terms();
+        let th = |t: &ndn_manifest::model::Term| ndn_manifest::term_hash(t).unwrap();
+        let hand = scene_manifest(&s, ty, th(&ft[0]), th(&ft[1]), th(&ft[2])).expect("finite");
+
+        let db = ndn_manifest::canon::encode_document(&Document::Manifest(derived)).unwrap();
+        let hb = ndn_manifest::canon::encode_document(&Document::Manifest(hand)).unwrap();
+        assert_eq!(db, hb, "derived manifest bytes == hand-built manifest bytes (SU-1a)");
+    }
 }

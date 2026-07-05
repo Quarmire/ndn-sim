@@ -31,9 +31,10 @@ ndn-security  = { workspace = true }
 # calculus. Zero-dep spec crates + the tool-tier `explain` micro-crate, pulled by
 # path from the sibling ndn-rs workspace (they carry no transitive deps — C7,
 # which is what makes cross-workspace path deps painless).
-ndn-manifest        = { path = "../../../ndn-rs/crates/core/ndn-manifest" }
-ndn-render-contract = { path = "../../../ndn-rs/crates/core/ndn-render-contract" }
-ndn-explain         = { path = "../../../ndn-rs/crates/tools/ndn-explain" }
+ndn-manifest          = { path = "../../../ndn-rs/crates/core/ndn-manifest" }
+ndn-render-contract   = { path = "../../../ndn-rs/crates/core/ndn-render-contract" }
+ndn-explain           = { path = "../../../ndn-rs/crates/tools/ndn-explain" }
+ndn-manifest-describe = { path = "../../../ndn-rs/crates/tools/ndn-manifest-describe" }
 
 serde      = { workspace = true }
 serde_json = { workspace = true }

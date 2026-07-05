@@ -360,7 +360,8 @@ impl KeelView {
 // below, are the report.
 // ═════════════════════════════════════════════════════════════════════════════
 
-use ndn_manifest::model::{Cardinality, Decimal, Field, PrimitiveKind, TypeExpr};
+use ndn_manifest::model::{Cardinality, Field, PrimitiveKind, TypeExpr};
+use ndn_manifest_describe::DescribeError;
 
 use crate::scene::SceneSnapshot;
 
@@ -368,15 +369,13 @@ const VIA_TOPOLOGY: &str = "ndn-lab/topology-svg";
 /// The topology-map render intent.
 pub const INTENT_TOPOLOGY_MAP: &str = "topology.map";
 
-/// ⚑ Pain #1: **`f64` has no clean canonical decimal.** The wire wants a
-/// canonical `Decimal` (no exponent, no trailing zeros); `f64` can format to
-/// `1e-7`/`NaN`/`inf`, none canonical. A derive can't mechanically map `f64` —
-/// it needs a precision policy. Here: fixed 4 dp, then normalize, `0` on refusal.
-fn dec(v: f64) -> Value {
-    let canon = Decimal::normalize(&format!("{v:.4}"))
-        .or_else(|| Decimal::from_canonical("0"))
-        .expect("0 is canonical");
-    Value::Decimal(canon)
+/// F55-B (finding #1, now ruled): `f64 → Decimal` is a **declared loss**, and a
+/// non-finite float has no honest decimal — so this delegates to the shared,
+/// tested [`ndn_manifest_describe::decimal`] (round-half-even at a declared
+/// precision; `NaN`/`inf` ⇒ `Err`, never a silent zero — the bug the ruling
+/// asked me to fix, not record).
+fn dec(v: f64, field: &'static str) -> Result<Value, DescribeError> {
+    ndn_manifest_describe::decimal(v, 4, field)
 }
 
 fn field(label: &str, ty: TypeExpr, card: Cardinality) -> Field {
@@ -407,17 +406,16 @@ fn scene_node_record() -> TypeExpr {
     ])
 }
 
-/// The record shape of one `SceneLink`. ⚑ Pain #3: **`Option<T>` inside a
-/// positional record.** There is no null `Value`, and omitting a field would
-/// shift positions — so an optional field is modelled as a 0-or-1 `list-of`
-/// (empty = None). That's a real design choice a derive must make for every
-/// `Option<_>`, and it's not mechanical.
+/// The record shape of one `SceneLink`. Finding #3, now ruled (F55-A):
+/// `Option<T>` is the kernel's **`Cardinality::Optional`** — cardinality
+/// declares, list-ness encodes. So `distance` is a *bare* `Decimal` field with
+/// `Optional` cardinality (not `list-of`), and the *value* is the 0-or-1 list.
 fn scene_link_record() -> TypeExpr {
     use PrimitiveKind::*;
     TypeExpr::Record(vec![
         field("from", TypeExpr::Primitive(Integer), Cardinality::One),
         field("to", TypeExpr::Primitive(Integer), Cardinality::One),
-        field("distance", TypeExpr::ListOf(Box::new(TypeExpr::Primitive(Decimal))), Cardinality::One),
+        field("distance", TypeExpr::Primitive(Decimal), Cardinality::Optional),
     ])
 }
 
@@ -433,46 +431,54 @@ fn link_term() -> Term {
 /// primitive cast (`usize`→`Integer`, `f64`→`Decimal`) is a decision. This is
 /// the exact code a derive would generate; that it's this mechanical *except*
 /// for `dec()` and the `Option` encoding is the argument for the macro.
-fn scene_manifest(scene: &SceneSnapshot, ty: Hash, f_time: Hash, f_nodes: Hash, f_links: Hash) -> Manifest {
+fn scene_manifest(
+    scene: &SceneSnapshot,
+    ty: Hash,
+    f_time: Hash,
+    f_nodes: Hash,
+    f_links: Hash,
+) -> Result<Manifest, DescribeError> {
     let nodes = scene
         .nodes
         .iter()
         .map(|n| {
-            Value::Record(vec![
+            Ok(Value::Record(vec![
                 Value::Integer(n.id as u64),
                 Value::Text(n.label.clone()),
-                dec(n.x),
-                dec(n.y),
+                dec(n.x, "x")?,
+                dec(n.y, "y")?,
                 Value::Integer(n.faces),
                 Value::Integer(n.pit_depth),
-                dec(n.cs_hit_rate),
+                dec(n.cs_hit_rate, "cs-hit-rate")?,
                 Value::Integer(n.in_interests),
                 Value::Integer(n.out_data),
-            ])
+            ]))
         })
-        .collect();
+        .collect::<Result<Vec<_>, DescribeError>>()?;
     let links = scene
         .links
         .iter()
         .map(|l| {
-            let distance = match l.distance_m {
-                Some(d) => Value::List(vec![dec(d)]),
-                None => Value::List(Vec::new()), // ⚑ Pain #3 again: None = empty list
-            };
-            Value::Record(vec![Value::Integer(l.from as u64), Value::Integer(l.to as u64), distance])
+            // F55-A: Optional value = the 0-or-1 list; a present distance is a
+            // declared-loss decimal, so this stays fallible on a non-finite input.
+            let distance = ndn_manifest_describe::optional(match l.distance_m {
+                Some(d) => Some(dec(d, "distance")?),
+                None => None,
+            });
+            Ok(Value::Record(vec![Value::Integer(l.from as u64), Value::Integer(l.to as u64), distance]))
         })
-        .collect();
-    Manifest {
+        .collect::<Result<Vec<_>, DescribeError>>()?;
+    Ok(Manifest {
         ty,
         label: Some("scene".into()),
         describes: Subject::Name("ndn-lab/run/scene".into()),
         entries: vec![
             ManifestEntry { field: f_time, value: Value::Integer(scene.virtual_time_ns) },
-            ManifestEntry { field: f_nodes, value: Value::List(nodes) },
-            ManifestEntry { field: f_links, value: Value::List(links) },
+            ManifestEntry { field: f_nodes, value: ndn_manifest_describe::list(nodes) },
+            ManifestEntry { field: f_links, value: ndn_manifest_describe::list(links) },
         ],
         edges: Vec::new(),
-    }
+    })
 }
 
 /// A resolved topology lens over a scene snapshot — the nested-manifest twin of
@@ -490,7 +496,7 @@ pub struct SceneView {
 impl SceneView {
     /// Assemble the scene DAG (vocabulary with the two record terms + the scene
     /// manifest + the topology contract) and resolve the lens once.
-    pub fn for_scene(scene: &SceneSnapshot) -> Self {
+    pub fn for_scene(scene: &SceneSnapshot) -> Result<Self, DescribeError> {
         use PrimitiveKind::Integer;
         // ⚑ Pain #5: nested type refs are hash-only (C5). The `nodes`/`links`
         // field terms are typed `list-of(term-of(scene-node))`, so the record
@@ -531,7 +537,7 @@ impl SceneView {
             }))
             .expect("scene vocab encodes");
 
-        let manifest = scene_manifest(scene, ty, f_time, f_nodes, f_links);
+        let manifest = scene_manifest(scene, ty, f_time, f_nodes, f_links)?;
         let manifest_bytes = ndn_manifest::canon::encode_document(&Document::Manifest(manifest.clone()))
             .expect("nested manifest encodes canonically");
         dag.insert_document(&Document::Manifest(manifest)).expect("manifest inserts");
@@ -553,7 +559,7 @@ impl SceneView {
 
         let frontier = TrustFrontier::from_vocabularies([vocab]);
         let matches = r#match(&dag, &[topo, t0], &frontier, Budget::generous()).expect("budget");
-        SceneView { dag, matches, manifest_bytes, render: render_topology_lens }
+        Ok(SceneView { dag, matches, manifest_bytes, render: render_topology_lens })
     }
 
     /// The resolved topology lens, if the matcher admitted it.
@@ -685,7 +691,7 @@ mod tests {
     #[test]
     fn nested_scene_manifest_expresses_topology_and_renders_svg() {
         let s = scene();
-        let view = SceneView::for_scene(&s);
+        let view = SceneView::for_scene(&s).expect("finite scene describes");
         let m = view.topology_lens().expect("topology.map offered");
         assert_eq!(m.verdict, Verdict::Express, "scene narrows to topology-map losslessly");
         let r = view.render(m, &s).expect("renders");
@@ -693,11 +699,23 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_coordinate_is_refused_not_zeroed() {
+        // F55-B: a NaN position has no honest decimal — describing it must fail,
+        // not silently encode 0 (which would poison a downstream aggregate).
+        let mut s = scene();
+        s.nodes[0].x = f64::NAN;
+        match SceneView::for_scene(&s) {
+            Err(e) => assert_eq!(e, DescribeError::NonFinite { field: "x" }, "NaN refused, never a guess"),
+            Ok(_) => panic!("a NaN coordinate must not describe"),
+        }
+    }
+
+    #[test]
     fn nested_manifest_encodes_canonically_and_round_trips() {
         // The lists-of-records + optional-as-list encode to canonical bytes and
         // decode∘encode is byte identity — the discipline the flat gauge skipped.
         let s = scene();
-        let view = SceneView::for_scene(&s);
+        let view = SceneView::for_scene(&s).expect("finite scene describes");
         let bytes = view.manifest_bytes();
         assert!(!bytes.is_empty(), "nested manifest encoded");
         let decoded = ndn_manifest::canon::decode_document(bytes).expect("decodes");

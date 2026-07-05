@@ -222,7 +222,7 @@ pub use sim_face::SimFace;
 pub use sim_link::{FaceProfile, LinkConfig, SimLink};
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use stepper::Stepper;
-pub use keel::{KeelView, Rendered, SceneView};
+pub use keel::{KeelView, Rendered, SceneView, Surface};
 // Re-exported for the KeelView surface (best_lens floor; Rendered verdict).
 pub use ndn_render_contract::{Floor, Verdict};
 pub use telemetry::{

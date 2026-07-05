@@ -41,7 +41,7 @@ use ndn_manifest::model::{
 };
 use ndn_manifest::{term_hash, FrozenDag};
 use ndn_render_contract::{
-    contract_via, r#match, select_best, Budget, Floor, Match, TrustFrontier, Verdict, Via,
+    contract_via, r#match, select_best_for, Budget, Floor, Match, TrustFrontier, Verdict, Via,
 };
 
 use crate::telemetry::FabricGauges;
@@ -56,6 +56,21 @@ pub const INTENT_OTLP_GAUGE: &str = "otlp.gauge";
 const VIA_SPARKLINE: &str = "ndn-lab/sparkline-svg";
 const VIA_OTLP: &str = "ndn-lab/otlp-gauge";
 const VIA_ASCII: &str = "ndn-lab/ascii-sparkline";
+const VIA_THUMBNAIL: &str = "ndn-lab/thumbnail-svg";
+
+/// A rendering surface's contract capabilities — which lenses it can dispatch.
+/// The matcher's `select` resolves the competition among whatever a surface holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// Full graphical (browser/GUI): the exact SVG sparkline, a thumbnail, ASCII.
+    Graphical,
+    /// Bandwidth-thin graphical: a thumbnail + ASCII, but **not** the full SVG —
+    /// so `series.window` has two competing *Approximate* offers and the F46
+    /// tiebreak (equal loss depth ⇒ contract hash) actually decides the pick.
+    ThinGraphical,
+    /// A terminal: ASCII only (+ OTLP for a collector).
+    Cli,
+}
 
 fn term(label: &str, doc: &str) -> Term {
     Term { label: label.into(), doc: Some(doc.into()), ty: None, attrs: Vec::new() }
@@ -75,6 +90,7 @@ impl Renderers {
         table.insert(VIA_SPARKLINE, render_sparkline_lens);
         table.insert(VIA_OTLP, render_otlp_lens);
         table.insert(VIA_ASCII, render_ascii_lens);
+        table.insert(VIA_THUMBNAIL, render_thumbnail_lens);
         Renderers { table }
     }
     fn get(&self, id: &str) -> Option<fn(&[FabricGauges]) -> String> {
@@ -95,6 +111,17 @@ fn render_sparkline_lens(samples: &[FabricGauges]) -> String {
 fn render_otlp_lens(samples: &[FabricGauges]) -> String {
     let latest = samples.last().copied().unwrap_or_default();
     crate::otel_export::OtlpExporter::new("127.0.0.1:4318").fabric_gauges_payload(&latest)
+}
+
+/// Thumbnail lens (a graphical fallback): a smaller SVG over a **decimated** set
+/// of samples. The named loss `resolution-decimation` is real — it draws every
+/// 3rd point, where the full sparkline draws them all. A second Approximate offer
+/// for `series.window`, at the same loss depth as ASCII — so `select`'s tiebreak
+/// (equal depth ⇒ contract hash) has real work to do.
+fn render_thumbnail_lens(samples: &[FabricGauges]) -> String {
+    let series: Vec<(u64, f64)> =
+        samples.iter().step_by(3).map(|g| (g.virtual_time_ns, g.radio_airtime_ns as f64)).collect();
+    crate::scene::render_sparkline(&series, 120, 24)
 }
 
 /// ASCII-sparkline lens (the CLI surface): the airtime window as Unicode block
@@ -142,12 +169,12 @@ impl KeelView {
     /// Assemble the ndn-lab telemetry DAG (vocabulary + OTLP bridge stratum +
     /// one `FabricGauges` manifest + the two contracts) and resolve the lenses.
     ///
-    /// `admit_otel_bridge` toggles the OTLP bridge (C10). `svg_capable` toggles
-    /// whether this *surface* holds the SVG sparkline contract: a graphical
-    /// surface does, a CLI does not — and when it doesn't, `series.window` is
-    /// still offered, by the ASCII lens at lower (declared) fidelity. That's the
-    /// first real competition for an intent, which the matcher's `select` resolves.
-    pub fn for_fabric_gauges(admit_otel_bridge: bool, svg_capable: bool) -> Self {
+    /// `admit_otel_bridge` toggles the OTLP bridge (C10). `surface` sets which
+    /// lens contracts this surface holds — a [`Graphical`](Surface::Graphical)
+    /// browser has the exact SVG + a thumbnail + ASCII; a [`Cli`](Surface::Cli)
+    /// only ASCII. `series.window` is offered by several at different fidelity, and
+    /// the matcher's `select` resolves the competition per surface.
+    pub fn for_fabric_gauges(admit_otel_bridge: bool, surface: Surface) -> Self {
         let mut dag = FrozenDag::new();
 
         // The kernel trio rides in every DAG (R14) and gives the total floor.
@@ -160,6 +187,8 @@ impl KeelView {
         let metric_gauge = term_hash(&term("metric-gauge", "A renderable numeric gauge over virtual time.")).unwrap();
         let ascii_sparkline = term_hash(&term("ascii-sparkline", "A gauge window as Unicode block glyphs.")).unwrap();
         let loss_glyph = term_hash(&term("glyph-quantization", "Loss: continuous values bucketed to 8 block-glyph levels.")).unwrap();
+        let thumbnail = term_hash(&term("thumbnail-svg", "A small SVG over a decimated gauge window.")).unwrap();
+        let loss_decimate = term_hash(&term("resolution-decimation", "Loss: only every 3rd sample survives.")).unwrap();
         let otel_gauge = term_hash(&term("gauge", "An OpenTelemetry gauge data point.")).unwrap();
         let loss_flatten = term_hash(&term("otel-attribute-flattening", "Loss: NDN structure flattened to OTLP key/value attributes.")).unwrap();
 
@@ -172,15 +201,21 @@ impl KeelView {
         ndnlab_terms.push(term("metric-gauge", "A renderable numeric gauge over virtual time."));
         ndnlab_terms.push(term("ascii-sparkline", "A gauge window as Unicode block glyphs."));
         ndnlab_terms.push(term("glyph-quantization", "Loss: continuous values bucketed to 8 block-glyph levels."));
+        ndnlab_terms.push(term("thumbnail-svg", "A small SVG over a decimated gauge window."));
+        ndnlab_terms.push(term("resolution-decimation", "Loss: only every 3rd sample survives."));
         let ndnlab = dag
             .insert_document(&Document::Vocabulary(Vocabulary {
                 label: "ndn-lab".into(),
                 doc: Some("ndn-lab telemetry: derived fabric-gauge terms + their renderable forms.".into()),
                 imports: Vec::new(),
                 terms: ndnlab_terms,
+                // Two 1-hop lossy renderings + a lossless one. ascii and thumbnail
+                // sit at the SAME loss depth (different loss *terms*) — so the
+                // tiebreak between them is the contract-hash key, never severity.
                 edges: vec![
                     EdgeForm::NarrowerThan { narrower: FabricGauges::schema(), broader: metric_gauge },
                     EdgeForm::MapsTo { from: metric_gauge, to: ascii_sparkline, loss: loss_glyph, attrs: Vec::new() },
+                    EdgeForm::MapsTo { from: metric_gauge, to: thumbnail, loss: loss_decimate, attrs: Vec::new() },
                 ],
                 supersedes: None,
             }))
@@ -262,7 +297,25 @@ impl KeelView {
             }))
             .expect("ascii contract encodes");
 
-        // Lens 3 — the OTLP exporter: Expresses otlp.gauge over the OTEL gauge
+        // Lens 3 — the thumbnail: a graphical fallback. Also Approximates
+        // series.window (over `thumbnail-svg`, one lossy maps-to) — the second
+        // Approximate offer, at the same depth as ASCII.
+        let thumbnail_c = dag
+            .insert_document(&Document::Contract(Contract {
+                label: "thumbnail".into(),
+                doc: Some("A small SVG over a decimated window, for a thin surface.".into()),
+                imports: vec![ndnlab],
+                binds: vec![Subject::Name("ndn-lab/".into())],
+                clauses: vec![Clause::Express {
+                    intent: Intent { name: INTENT_SERIES_WINDOW.into(), attrs: Vec::new() },
+                    target: thumbnail,
+                    via: Some(Via::Native(VIA_THUMBNAIL.into())),
+                    attrs: Vec::new(),
+                }],
+            }))
+            .expect("thumbnail contract encodes");
+
+        // Lens 4 — the OTLP exporter: Expresses otlp.gauge over the OTEL gauge
         // term, reachable only through the bridge's lossy maps-to ⇒ Approximate.
         let otlp = dag
             .insert_document(&Document::Contract(Contract {
@@ -285,10 +338,13 @@ impl KeelView {
             frontier.admit(bridge);
         }
 
-        // The surface's available contracts: a graphical surface holds the SVG
-        // sparkline; a CLI does not (so series.window falls to the ASCII lens).
+        // The surface's available contracts. ASCII + OTLP everywhere; the exact
+        // SVG only on a full graphical surface; the thumbnail on any graphical one.
         let mut contracts = vec![ascii, otlp, t0];
-        if svg_capable {
+        if matches!(surface, Surface::Graphical | Surface::ThinGraphical) {
+            contracts.push(thumbnail_c);
+        }
+        if surface == Surface::Graphical {
             contracts.push(sparkline);
         }
 
@@ -324,16 +380,68 @@ impl KeelView {
     }
 
     /// Every resolved offer for an intent — there may be *several competing*
-    /// lenses (e.g. `series.window` from both the SVG and the ASCII contract).
-    pub fn offers_for(&self, intent: &str) -> Vec<Match> {
-        self.matches.iter().filter(|m| m.intent == intent).cloned().collect()
+    /// lenses (e.g. `series.window` from the SVG, thumbnail, and ASCII contracts).
+    pub fn offers_for(&self, intent: &str) -> Vec<&Match> {
+        self.matches.iter().filter(|m| m.intent == intent).collect()
     }
 
     /// The best offer for an intent at or above a fidelity floor — the matcher's
-    /// own [`select_best`] (deterministic F46 order: Express before Approximate,
-    /// fewer loss hops first). `None` if nothing meets the floor.
-    pub fn select_for(&self, intent: &str, floor: Floor) -> Option<Match> {
-        select_best(self.offers_for(intent), floor)
+    /// own [`select_best_for`] (F46 order: Express before Approximate, then fewer
+    /// loss hops, then contract hash; borrowing, so a cached view never clones).
+    /// `None` if nothing meets the floor.
+    pub fn select_for(&self, intent: &str, floor: Floor) -> Option<&Match> {
+        select_best_for(&self.matches, intent, floor)
+    }
+
+    /// Compose the `series.window` competition into an HTML page — a browser
+    /// surface a human opens. `select`'s pick (at `floor`) is highlighted; the
+    /// ranked fallbacks follow in the matcher's F46 order, each with its verdict
+    /// and declared loss. One metric, its competing offers, the deterministic
+    /// choice, the costs — all visible on one page.
+    pub fn render_html(&self, samples: &[FabricGauges], floor: Floor) -> String {
+        use std::fmt::Write as _;
+        let mut offers = self.offers_for(INTENT_SERIES_WINDOW);
+        offers.sort_by(|a, b| {
+            a.verdict
+                .rank()
+                .cmp(&b.verdict.rank())
+                .then_with(|| a.verdict.loss_len().cmp(&b.verdict.loss_len()))
+                .then_with(|| a.contract.cmp(&b.contract)) // the tiebreak, made visible
+        });
+        let picked = self.select_for(INTENT_SERIES_WINDOW, floor);
+
+        let mut h = String::new();
+        let _ = write!(h, "<!doctype html><meta charset=utf-8><title>ndn-lab · series.window</title>");
+        let _ = write!(h, "<style>body{{font:14px system-ui;margin:2rem;max-width:40rem}}\
+            .card{{border:1px solid #ccc;padding:.5rem 1rem;margin:.6rem 0;border-radius:6px}}\
+            .pick{{border:2px solid #0a7;background:#f4fffb}}pre{{font-size:1.5rem;margin:.2rem 0}}\
+            .v{{color:#555;font-weight:600}}.loss{{color:#c60}}</style>");
+        let _ = write!(h, "<h1>series.window — one metric, {} offers</h1>", offers.len());
+        match picked {
+            Some(p) => {
+                let _ = write!(h, "<p><b>select(≥{floor:?})</b> chose {}.</p>", ndn_explain::document_label(&self.dag, &p.contract));
+            }
+            None => {
+                let _ = write!(h, "<p><b>select(≥{floor:?})</b> → nothing meets this floor on this surface.</p>");
+            }
+        }
+        for m in &offers {
+            let is_pick = picked.is_some_and(|p| std::ptr::eq(p, *m));
+            let body = self.render(m, samples).map(|r| r.body).unwrap_or_default();
+            let _ = write!(h, "<div class=\"card{}\">", if is_pick { " pick" } else { "" });
+            let _ = write!(h, "<div class=v>{} — {:?}</div>", ndn_explain::document_label(&self.dag, &m.contract), m.verdict);
+            if let Verdict::Approximate(loss) = &m.verdict {
+                let names: Vec<String> = loss.0.iter().map(|l| ndn_explain::term_label(&self.dag, l)).collect();
+                let _ = write!(h, "<div class=loss>declared loss: {}</div>", names.join(" · "));
+            }
+            if body.contains("<svg") {
+                let _ = write!(h, "{body}");
+            } else {
+                let _ = write!(h, "<pre>{body}</pre>");
+            }
+            let _ = write!(h, "</div>");
+        }
+        h
     }
 
     /// Render a batch of samples through a resolved lens: dispatch its
@@ -491,40 +599,54 @@ mod tests {
     }
 
     #[test]
-    fn series_window_has_competing_offers_svg_expresses_ascii_approximates() {
-        let view = KeelView::for_fabric_gauges(true, true);
+    fn series_window_has_competing_offers_svg_expresses_others_approximate() {
+        let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
         let offers = view.offers_for(INTENT_SERIES_WINDOW);
-        assert_eq!(offers.len(), 2, "SVG + ASCII both offer series.window");
+        assert_eq!(offers.len(), 3, "SVG + thumbnail + ASCII all offer series.window");
         // select prefers the lossless SVG; the ASCII offer names its glyph loss.
         let best = view.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap();
         assert_eq!(best.verdict, Verdict::Express, "select picks the lossless SVG");
-        let ascii = offers.iter().find(|m| matches!(m.verdict, Verdict::Approximate(_))).unwrap();
-        let trace = ndn_explain::trace(&view.dag, ascii);
-        assert!(trace.contains("glyph-quantization"), "ASCII loss named: {trace}");
+        let ascii = offers.into_iter().find(|m| ndn_explain::trace(&view.dag, m).contains("glyph-quantization")).unwrap();
+        assert!(matches!(ascii.verdict, Verdict::Approximate(_)), "the ASCII offer is lossy");
         // OTLP still Approximate via the bridge, loss named.
         let otlp = view.lens_for(INTENT_OTLP_GAUGE).expect("otlp offered");
-        assert!(matches!(otlp.verdict, Verdict::Approximate(_)));
         assert!(ndn_explain::trace(&view.dag, otlp).contains("otel-attribute-flattening"));
     }
 
     #[test]
-    fn select_picks_svg_but_degrades_to_ascii_on_a_cli_surface() {
-        // Graphical surface: select over the two series.window offers picks SVG.
-        let gui = KeelView::for_fabric_gauges(true, true);
+    fn select_picks_svg_but_degrades_honestly_on_thinner_surfaces() {
+        // Full graphical: select picks the lossless SVG; an Express floor is met.
+        let gui = KeelView::for_fabric_gauges(true, Surface::Graphical);
         assert_eq!(gui.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap().verdict, Verdict::Express);
         assert!(gui.select_for(INTENT_SERIES_WINDOW, Floor::Express).is_some(), "GUI meets an Express floor");
 
-        // CLI surface: no SVG contract ⇒ series.window honestly degrades to ASCII…
-        let cli = KeelView::for_fabric_gauges(true, false);
-        let c = cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).expect("ASCII offer survives");
-        assert!(matches!(c.verdict, Verdict::Approximate(_)), "CLI degrades to the ASCII lens");
-        // …and an Express floor filters the CLI out entirely — no lossless offer.
+        // CLI: no SVG contract ⇒ series.window honestly degrades to ASCII, and an
+        // Express floor filters the terminal out entirely.
+        let cli = KeelView::for_fabric_gauges(true, Surface::Cli);
+        assert!(matches!(cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap().verdict, Verdict::Approximate(_)));
         assert!(cli.select_for(INTENT_SERIES_WINDOW, Floor::Express).is_none(), "CLI can't meet Express");
     }
 
     #[test]
+    fn thin_graphical_tiebreak_is_the_contract_hash_and_deterministic() {
+        // Two Approximate offers (thumbnail + ASCII) at EQUAL loss depth ⇒ the F46
+        // choice is the third key, the contract hash: arbitrary but eternal.
+        let thin = KeelView::for_fabric_gauges(true, Surface::ThinGraphical);
+        let offers = thin.offers_for(INTENT_SERIES_WINDOW);
+        assert_eq!(offers.len(), 2, "thumbnail + ASCII, no full SVG");
+        assert!(offers.iter().all(|m| matches!(m.verdict, Verdict::Approximate(_))), "both Approximate");
+        assert!(offers.iter().all(|m| m.verdict.loss_len() == 1), "equal loss depth");
+        // The pick is the lower contract hash, and it is stable across builds.
+        let pick = thin.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap();
+        let expect_lower = offers.iter().min_by(|a, b| a.contract.cmp(&b.contract)).unwrap();
+        assert_eq!(pick.contract, expect_lower.contract, "tiebreak = min contract hash");
+        let again = KeelView::for_fabric_gauges(true, Surface::ThinGraphical);
+        assert_eq!(pick.contract, again.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap().contract, "deterministic");
+    }
+
+    #[test]
     fn resolve_once_then_stream_samples() {
-        let view = KeelView::for_fabric_gauges(true, true);
+        let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
         let s = samples();
         // Render every lens over several batches — the matcher never re-runs.
         for _ in 0..5 {
@@ -538,38 +660,41 @@ mod tests {
 
     #[test]
     fn native_dispatch_produces_the_real_artifacts() {
-        let view = KeelView::for_fabric_gauges(true, true);
+        let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
         let s = samples();
-        let svg = view.render(&view.select_for(INTENT_SERIES_WINDOW, Floor::Express).unwrap(), &s).unwrap();
+        let svg = view.render(view.select_for(INTENT_SERIES_WINDOW, Floor::Express).unwrap(), &s).unwrap();
         assert!(svg.body.contains("<svg") && svg.body.contains("polyline"), "real sparkline SVG");
         let otlp = view.render(view.lens_for(INTENT_OTLP_GAUGE).unwrap(), &s).unwrap();
         assert!(otlp.body.contains("ndn.radio.airtime_us"), "real OTLP gauge JSON");
-        // The ASCII lens (the Approximate series.window offer) renders block glyphs.
-        let ascii_offer = view.offers_for(INTENT_SERIES_WINDOW).into_iter().find(|m| matches!(m.verdict, Verdict::Approximate(_))).unwrap();
-        let ascii = view.render(&ascii_offer, &s).unwrap();
-        assert!(ascii.body.chars().all(|c| "▁▂▃▄▅▆▇█".contains(c)) && !ascii.body.is_empty(), "real ASCII sparkline: {}", ascii.body);
+        // The ASCII lens renders block glyphs (the CLI surface's series.window).
+        let cli = KeelView::for_fabric_gauges(true, Surface::Cli);
+        let ascii = cli.render(cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap(), &s).unwrap();
+        assert!(!ascii.body.is_empty() && ascii.body.chars().all(|c| "▁▂▃▄▅▆▇█".contains(c)), "real ASCII: {}", ascii.body);
+        // The browser surface composes an HTML page with the pick + fallbacks.
+        let html = view.render_html(&s, Floor::Approximate);
+        assert!(html.contains("<!doctype html") && html.contains("class=\"card pick") && html.contains("<svg"));
     }
 
     #[test]
     fn c10_frontier_divergence_is_honest() {
-        // Admit the bridge ⇒ SVG + ASCII + OTLP all resolve.
-        let with = KeelView::for_fabric_gauges(true, true);
-        assert_eq!(with.lenses().len(), 3, "sparkline + ascii + otlp");
+        // Admit the bridge ⇒ SVG + thumbnail + ASCII + OTLP all resolve.
+        let with = KeelView::for_fabric_gauges(true, Surface::Graphical);
+        assert_eq!(with.lenses().len(), 4, "sparkline + thumbnail + ascii + otlp");
 
-        // Withhold the bridge ⇒ the OTLP path is simply gone; the two
-        // series.window lenses survive. Consumers diverge honestly.
-        let without = KeelView::for_fabric_gauges(false, true);
+        // Withhold the bridge ⇒ the OTLP path is gone; the three series.window
+        // lenses survive. Consumers diverge honestly.
+        let without = KeelView::for_fabric_gauges(false, Surface::Graphical);
         let otlp = without.lens_for(INTENT_OTLP_GAUGE);
         assert!(
             otlp.is_none() || !matches!(otlp.unwrap().verdict, Verdict::Express | Verdict::Approximate(_)),
             "without the bridge, OTLP has no renderable verdict"
         );
-        assert_eq!(without.lenses().len(), 2, "SVG + ASCII survive; OTLP gone");
+        assert_eq!(without.lenses().len(), 3, "SVG + thumbnail + ASCII survive; OTLP gone");
     }
 
     #[test]
     fn best_lens_prefers_express() {
-        let view = KeelView::for_fabric_gauges(true, true);
+        let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
         let best = view.best_lens(Floor::Approximate).expect("a lens at or above the floor");
         assert_eq!(best.intent, INTENT_SERIES_WINDOW, "Express (SVG) beats Approximate in F46 order");
     }

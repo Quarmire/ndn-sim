@@ -30,7 +30,7 @@ pub struct ScenePoint {
 }
 
 /// A node as the GUI draws it: where it is + the metric badges worth showing at a glance.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, ndn_manifest_derive::Manifest)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
 #[manifest(ty = "scene-node")]
 pub struct SceneNode {
     /// Node id.
@@ -58,7 +58,7 @@ pub struct SceneNode {
 
 /// An undirected link edge between two nodes; `distance_m` is set when both ends are placed
 /// (the basis for "links light up by RSSI" once a propagation model is consulted).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, ndn_manifest_derive::Manifest)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
 #[manifest(ty = "scene-link")]
 pub struct SceneLink {
     /// Source node id.
@@ -71,7 +71,7 @@ pub struct SceneLink {
 }
 
 /// The world extent the GUI viewports onto.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, ndn_manifest_derive::Manifest)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
 #[manifest(ty = "scene-bounds")]
 pub struct SceneBounds {
     /// Minimum x (m).
@@ -99,7 +99,7 @@ impl SceneBounds {
 
 /// A radio reachability edge: `from` can hear `to` at `rssi_dbm` (from positions + propagation).
 /// This is what "links light up by RSSI" draws — distinct from wired [`SceneLink`]s.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, ndn_manifest_derive::Manifest)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
 #[manifest(ty = "radio-link")]
 pub struct RadioLink {
     /// Source node id.
@@ -112,7 +112,7 @@ pub struct RadioLink {
 }
 
 /// A renderable snapshot of the fabric — the `world_snapshot()` the GUI draws each frame.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, ndn_manifest_derive::Manifest)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
 #[manifest(ty = "scene", describes = "ndn-lab/run/scene")]
 pub struct SceneSnapshot {
     /// Snapshot time (ns).

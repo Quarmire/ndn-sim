@@ -36,11 +36,11 @@
 
 use std::collections::BTreeMap;
 
-use ndn_manifest::model::{
+use manifest::model::{
     Clause, Contract, Document, EdgeForm, Intent, Subject, Term, Vocabulary,
 };
-use ndn_manifest::{term_hash, FrozenDag};
-use ndn_render_contract::{
+use manifest::{term_hash, FrozenDag};
+use render_contract::{
     contract_via, r#match, select_best_for, Budget, Floor, Match, TrustFrontier, Verdict, Via,
 };
 
@@ -178,7 +178,7 @@ impl KeelView {
         let mut dag = FrozenDag::new();
 
         // The kernel trio rides in every DAG (R14) and gives the total floor.
-        let fp = ndn_manifest::kernel::fixed_point();
+        let fp = manifest::kernel::fixed_point();
         dag.insert_bytes(&fp.im0_bytes).expect("IM₀ decodes");
         let t0 = dag.insert_bytes(&fp.t0_bytes).expect("T₀ decodes");
 
@@ -419,7 +419,7 @@ impl KeelView {
         let _ = write!(h, "<h1>series.window — one metric, {} offers</h1>", offers.len());
         match picked {
             Some(p) => {
-                let _ = write!(h, "<p><b>select(≥{floor:?})</b> chose {}.</p>", ndn_explain::document_label(&self.dag, &p.contract));
+                let _ = write!(h, "<p><b>select(≥{floor:?})</b> chose {}.</p>", explain::document_label(&self.dag, &p.contract));
             }
             None => {
                 let _ = write!(h, "<p><b>select(≥{floor:?})</b> → nothing meets this floor on this surface.</p>");
@@ -429,9 +429,9 @@ impl KeelView {
             let is_pick = picked.is_some_and(|p| std::ptr::eq(p, *m));
             let body = self.render(m, samples).map(|r| r.body).unwrap_or_default();
             let _ = write!(h, "<div class=\"card{}\">", if is_pick { " pick" } else { "" });
-            let _ = write!(h, "<div class=v>{} — {:?}</div>", ndn_explain::document_label(&self.dag, &m.contract), m.verdict);
+            let _ = write!(h, "<div class=v>{} — {:?}</div>", explain::document_label(&self.dag, &m.contract), m.verdict);
             if let Verdict::Approximate(loss) = &m.verdict {
-                let names: Vec<String> = loss.0.iter().map(|l| ndn_explain::term_label(&self.dag, l)).collect();
+                let names: Vec<String> = loss.0.iter().map(|l| explain::term_label(&self.dag, l)).collect();
                 let _ = write!(h, "<div class=loss>declared loss: {}</div>", names.join(" · "));
             }
             if body.contains("<svg") {
@@ -457,7 +457,7 @@ impl KeelView {
             intent: m.intent.clone(),
             verdict: m.verdict.clone(),
             body: renderer(samples),
-            trace: ndn_explain::trace(&self.dag, m),
+            trace: explain::trace(&self.dag, m),
         })
     }
 
@@ -483,7 +483,7 @@ impl KeelView {
 // concern, not the producer's self-description (Law #1).
 // ═════════════════════════════════════════════════════════════════════════════
 
-use ndn_manifest_describe::DescribeError;
+use manifest_describe::DescribeError;
 
 use crate::scene::SceneSnapshot;
 
@@ -511,7 +511,7 @@ impl SceneView {
         let map = term_hash(&term("topology-map", "A renderable network map.")).unwrap();
 
         let mut dag = FrozenDag::new();
-        let fp = ndn_manifest::kernel::fixed_point();
+        let fp = manifest::kernel::fixed_point();
         dag.insert_bytes(&fp.im0_bytes).expect("IM₀");
         let t0 = dag.insert_bytes(&fp.t0_bytes).expect("T₀");
 
@@ -533,7 +533,7 @@ impl SceneView {
 
         // The self-describing manifest, straight from the derive.
         let manifest = scene.to_manifest_default()?;
-        let manifest_bytes = ndn_manifest::canon::encode_document(&Document::Manifest(manifest.clone()))
+        let manifest_bytes = manifest::canon::encode_document(&Document::Manifest(manifest.clone()))
             .expect("nested manifest encodes canonically");
         dag.insert_document(&Document::Manifest(manifest)).expect("manifest inserts");
 
@@ -569,7 +569,7 @@ impl SceneView {
             intent: m.intent.clone(),
             verdict: m.verdict.clone(),
             body: (self.render)(scene),
-            trace: ndn_explain::trace(&self.dag, m),
+            trace: explain::trace(&self.dag, m),
         })
     }
 
@@ -606,11 +606,11 @@ mod tests {
         // select prefers the lossless SVG; the ASCII offer names its glyph loss.
         let best = view.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap();
         assert_eq!(best.verdict, Verdict::Express, "select picks the lossless SVG");
-        let ascii = offers.into_iter().find(|m| ndn_explain::trace(&view.dag, m).contains("glyph-quantization")).unwrap();
+        let ascii = offers.into_iter().find(|m| explain::trace(&view.dag, m).contains("glyph-quantization")).unwrap();
         assert!(matches!(ascii.verdict, Verdict::Approximate(_)), "the ASCII offer is lossy");
         // OTLP still Approximate via the bridge, loss named.
         let otlp = view.lens_for(INTENT_OTLP_GAUGE).expect("otlp offered");
-        assert!(ndn_explain::trace(&view.dag, otlp).contains("otel-attribute-flattening"));
+        assert!(explain::trace(&view.dag, otlp).contains("otel-attribute-flattening"));
     }
 
     #[test]
@@ -748,8 +748,8 @@ mod tests {
         let view = SceneView::for_scene(&s).expect("finite scene describes");
         let bytes = view.manifest_bytes();
         assert!(!bytes.is_empty(), "nested manifest encoded");
-        let decoded = ndn_manifest::canon::decode_document(bytes).expect("decodes");
-        let reencoded = ndn_manifest::canon::encode_decoded(&decoded).expect("re-encodes");
+        let decoded = manifest::canon::decode_document(bytes).expect("decodes");
+        let reencoded = manifest::canon::encode_decoded(&decoded).expect("re-encodes");
         assert_eq!(bytes, reencoded.as_slice(), "decode ∘ encode is byte identity (R13)");
     }
 
@@ -762,7 +762,7 @@ mod tests {
     // turns red and demands a deliberate version, not an accident.
     use crate::scene::{RadioLink, SceneBounds, SceneLink, SceneNode};
 
-    fn hex(h: &ndn_manifest::hash::Hash) -> String {
+    fn hex(h: &manifest::hash::Hash) -> String {
         h.iter().map(|b| format!("{b:02x}")).collect()
     }
 
@@ -787,9 +787,9 @@ mod tests {
         // that canonically round-trips — decode ∘ encode is byte identity (R13).
         let g = FabricGauges { virtual_time_ns: 5_000_000, radio_airtime_ns: 7_405_000, handoffs: 2, association_overhead_ns: 240_000_000 };
         for m in [g.to_manifest_default().expect("gauges never refuse"), scene().to_manifest_default().expect("finite scene")] {
-            let bytes = ndn_manifest::canon::encode_document(&Document::Manifest(m)).unwrap();
-            let decoded = ndn_manifest::canon::decode_document(&bytes).unwrap();
-            let re = ndn_manifest::canon::encode_decoded(&decoded).unwrap();
+            let bytes = manifest::canon::encode_document(&Document::Manifest(m)).unwrap();
+            let decoded = manifest::canon::decode_document(&bytes).unwrap();
+            let re = manifest::canon::encode_decoded(&decoded).unwrap();
             assert_eq!(bytes, re, "derived manifest canonically round-trips");
         }
         // The derive walks the whole struct: scene describes all five fields.

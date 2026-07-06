@@ -224,7 +224,7 @@ pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_sp
 pub use stepper::Stepper;
 pub use keel::{KeelView, Rendered, SceneView, Surface};
 // Re-exported for the KeelView surface (best_lens floor; Rendered verdict).
-pub use ndn_render_contract::{Floor, Verdict};
+pub use render_contract::{Floor, Verdict};
 pub use telemetry::{
     FabricGauges, IpMetricsSample, MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter,
     compare_metrics, sample_engine,

@@ -29,13 +29,13 @@ ndn-security  = { workspace = true }
 
 # The Keel: ndn-lab is the first real consumer of the manifest/render-contract
 # calculus. Zero-dep spec crates + the tool-tier `explain` micro-crate, pulled by
-# path from the sibling ndn-rs workspace (they carry no transitive deps — C7,
+# path from the sibling flotilla repo (they carry no transitive deps — C7,
 # which is what makes cross-workspace path deps painless).
-ndn-manifest          = { path = "../../../ndn-rs/crates/core/ndn-manifest" }
-ndn-render-contract   = { path = "../../../ndn-rs/crates/core/ndn-render-contract" }
-ndn-explain           = { path = "../../../ndn-rs/crates/tools/ndn-explain" }
-ndn-manifest-describe = { path = "../../../ndn-rs/crates/tools/ndn-manifest-describe" }
-ndn-manifest-derive   = { path = "../../../ndn-rs/crates/tools/ndn-manifest-derive" }
+manifest              = { path = "../../../flotilla/crates/core/manifest" }
+render-contract       = { path = "../../../flotilla/crates/core/render-contract" }
+explain               = { path = "../../../flotilla/crates/tools/explain" }
+manifest-describe     = { path = "../../../flotilla/crates/tools/manifest-describe" }
+manifest-derive       = { path = "../../../flotilla/crates/tools/manifest-derive" }
 
 serde      = { workspace = true }
 serde_json = { workspace = true }
@@ -80,3 +80,6 @@ ndn-time         = { workspace = true }
 ndn-time-sources = { workspace = true }
 ndn-timekeeper   = { workspace = true }
 ndn-sync         = { workspace = true }
+# multihop.rs / relay_hops.rs: pipe relaying over a simulated multi-hop net.
+ndn-coding       = { workspace = true }
+ndn-pipes        = { workspace = true }

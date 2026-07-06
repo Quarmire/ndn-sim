@@ -1,6 +1,7 @@
 name: CI — ndn-sim
 
-# Depends on ndn-rs via ../ path deps → sibling checkout.
+# Path-deps ndn-rs + ndn-ext + the private flotilla (Keel/Waterline calculus) via
+# ../ → sibling checkouts. flotilla is private, so its checkout needs a PAT.
 
 on:
   push:
@@ -23,6 +24,19 @@ jobs:
         with: { path: ndn-sim }
       - uses: actions/checkout@v4
         with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: main, path: ndn-rs }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: main, path: ndn-ext }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: main, path: ndn-radio-drivers }
+      # flotilla is PRIVATE (the Keel/Waterline content-calculus ndn-sim consumes).
+      # A cross-repo private checkout needs a token: create a fine-grained PAT with
+      # read access to Quarmire/flotilla and add it as the FLOTILLA_TOKEN secret.
+      - uses: actions/checkout@v4
+        with:
+          repository: "${{ github.repository_owner }}/flotilla"
+          ref: main
+          path: flotilla
+          token: ${{ secrets.FLOTILLA_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt, clippy }
       - uses: actions/cache@v4
@@ -33,9 +47,14 @@ jobs:
             ndn-sim/target
           key: ${{ runner.os }}-cargo-sim-${{ hashFiles('ndn-sim/**/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-sim-
-      - name: Format
+      # Scope fmt to ndn-sim's own members: `cargo fmt --all` also formats the
+      # sibling path deps (ndn-rs / ndn-ext / flotilla), which aren't this repo's.
+      - name: Format (ndn-sim members)
         working-directory: ndn-sim
-        run: cargo fmt --all -- --check
+        run: |
+          PKGS=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys;print(' '.join('-p '+p['name'] for p in json.load(sys.stdin)['packages']))")
+          cargo fmt $PKGS -- --check
       - name: Lint
         working-directory: ndn-sim
         run: cargo clippy -- -D warnings

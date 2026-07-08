@@ -20,11 +20,14 @@
 //!   harness was being built, so the checked-in assertion is the GREEN side of the gate:
 //!   convergence at 400. Red-capability was verified against the pre-fix tree — see the
 //!   RED-PROOF note on `run_burst` for the observed wedge.
-//! - **NS-8** (`lagging_peer_...`): a publisher restart (fresh boot, empty `DataStore`) leaves
-//!   a one-Block-behind peer with no fetch path — starvation on the stock data plane. The
-//!   test also proves the scenario is *recoverable* (the field workaround — re-publishing
-//!   history through the new boot — converges), so the starvation assert isolates the data
-//!   plane, not broken wiring. A history-serving fix flips the starvation leg.
+//! - **NS-8** (`lagging_peer_...`): a publisher restart with a fresh empty `DataStore` per boot
+//!   leaves a one-Block-behind peer with no fetch path — starvation on the stock data plane
+//!   (`lagging_peer_starves_after_publisher_restart`, still red-capable). **FLIPPED GREEN
+//!   (N-13, 2026-07-08):** with a persistent store carried across the boot
+//!   (`BackendStore`/retained `DataStore` + `SvSync::join` seq recovery + serve-from-store), the
+//!   restarted boot recovers its seq and answers the gap fetch from its store — the peer
+//!   converges with NO O(history) re-announce (`lagging_peer_converges_after_restart_via_persistent_store`).
+//!   The retired workaround was skyfall's `announce_history` genesis-first re-publish.
 //!
 //! Deterministic: `VirtualKernel` + seeded fabric + seeded `fastrand` (ndn-sync's suppression
 //! jitter is thread-local; the kernel's runtime is single-threaded, so seeding the test thread
@@ -271,15 +274,23 @@ fn run_burst(n: u64, seed: u64) -> CatchupOutcome {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────────
-// NS-8 — a peer that fell one Block behind while the publisher's process restarted starves
-// forever on the stock data plane: the missing Block exists in the application's history, but
-// the new boot's SVS instance neither advertises nor serves it. The workaround leg (re-publish
-// history through the new boot) converges — proving the starvation assert isolates the data
-// plane, not broken test wiring.
+// NS-8 — a peer one Block behind while the publisher's process restarts. On the STOCK per-boot
+// data plane (fresh empty `DataStore`, seq reset) the missing Block lives only in the
+// application's history — the new boot neither advertises nor serves it — so the peer starves
+// forever (`lagging_peer_starves_after_publisher_restart`, ephemeral). With a PERSISTENT store
+// carried across the boot (N-13/N-15: `BackendStore`/retained `DataStore` +
+// `SvSync::join` seq recovery + serve-from-store), the restarted boot recovers its seq and
+// answers the gap fetch straight from the store — the peer converges with NO O(history)
+// re-announce (`lagging_peer_converges_after_restart_via_persistent_store`, the green gate).
 // ────────────────────────────────────────────────────────────────────────────────────────────
 
-#[test]
-fn lagging_peer_starves_after_publisher_restart() {
+/// Run the NS-8 restart scenario and return the post-restart catch-up outcome plus the bytes
+/// B ended up holding for seq 3. `persistent` selects the served-history store discipline:
+/// `true` = one store retained across boots (the N-13 fix), `false` = a fresh empty store per
+/// boot (the stock starvation). A publishes exactly three Blocks total and — critically —
+/// **never re-publishes after the restart**, so any convergence is a served-from-store fetch of
+/// the single missing Block (announce cost O(gap)=1, not O(history)=3).
+fn run_lagging_peer(persistent: bool) -> (CatchupOutcome, Option<Vec<u8>>) {
     fastrand::seed(8);
     let kernel = VirtualKernel::new();
     kernel.run(|k| async move {
@@ -333,8 +344,12 @@ fn lagging_peer_starves_after_publisher_restart() {
         }
 
         // Boot 1: A publishes two Blocks; B replicates them.
-        let mut publisher = RestartablePublisher::new(&fabric, a, &group, &name("/nodes/A"), &cancel)
-            .unwrap();
+        let mut publisher = if persistent {
+            RestartablePublisher::new(&fabric, a, &group, &name("/nodes/A"), &cancel).unwrap()
+        } else {
+            RestartablePublisher::new_ephemeral(&fabric, a, &group, &name("/nodes/A"), &cancel)
+                .unwrap()
+        };
         publisher.start().await.unwrap();
         ndn_sim::fieldkit::settle(Duration::from_millis(200)).await;
         publisher.publisher().unwrap().put(history[0]).await.unwrap();
@@ -346,52 +361,59 @@ fn lagging_peer_starves_after_publisher_restart() {
         );
 
         // B goes dark; A publishes one more Block (B never hears the announcement), then A's
-        // process restarts: fresh boot, EMPTY DataStore, seq space reset. The third Block now
-        // exists only in the application's history — nothing on the wire serves it.
+        // process restarts. Persistent: the store survives the boot. Ephemeral: fresh empty
+        // store, seq reset. Either way the third Block now lives only in A's store — nothing was
+        // re-published on the wire.
         fabric.set_link_up(a, b, false).unwrap();
         publisher.publisher().unwrap().put(history[2]).await.unwrap();
         publisher.stop();
         publisher.start().await.unwrap();
         fabric.set_link_up(a, b, true).unwrap();
 
-        // THE STARVATION: B is one Block behind, the link is healthy, both sides sync — and
-        // nothing ever converges. Silent, permanent.
-        let starved = drive_until_or_stall(&progress, 3, Duration::from_secs(20)).await;
-        assert_eq!(
-            starved,
-            CatchupOutcome::Stalled { at: 2 },
-            "PINNED BUG (NS-8): the stock per-boot data plane must starve the lagging peer. \
-             If B converged, a history-serving story landed — flip this leg into its gate."
-        );
-        // And it stays starved — this is not slow convergence.
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        assert_eq!(progress.get(), 2, "still exactly one Block behind, forever");
-
-        // The field workaround (skyfall `announce_history`): re-publish the WHOLE history
-        // through the new boot. Convergence here proves the starvation above was the data
-        // plane's doing — same fabric, same replica, only the serving story changed. (It
-        // works because the authoritative-for-self guard keeps the restarted publisher from
-        // adopting its own old seqs, so the re-publish realigns the seq space 1..=3 and B's
-        // acked vector leaves exactly the gap at 3 — the O(history)-per-boot cost and the
-        // alignment luck are both named in the field report as the reason a real fix is
-        // needed.)
-        publish_backlog(publisher.publisher().unwrap(), history.len(), |i| {
-            history[i].as_bytes().to_vec()
-        })
-        .await
-        .unwrap();
-        assert_eq!(
-            drive_until_or_stall(&progress, 3, Duration::from_secs(20)).await,
-            CatchupOutcome::Reached(3),
-            "re-announced history un-starves the peer (the workaround shape)"
-        );
-        assert_eq!(
-            received.lock().unwrap().get(&3).map(|b| b.as_ref().to_vec()),
-            Some(history[2].as_bytes().to_vec()),
-            "the missing Block itself crossed — byte-identical"
-        );
+        // Drive the catch-up. Persistent: B fetches the ONE missing Block, served from A's
+        // recovered store, and converges. Ephemeral: nothing serves seq 3 — permanent starvation.
+        let outcome = drive_until_or_stall(&progress, 3, Duration::from_secs(20)).await;
+        if let CatchupOutcome::Stalled { at } = outcome {
+            // A stall verdict must mean WEDGED, not slow: nothing may move for another window.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            assert_eq!(progress.get(), at, "the starvation is permanent, not slow convergence");
+        }
+        let seq3 = received.lock().unwrap().get(&3).map(|b| b.as_ref().to_vec());
 
         cancel.cancel();
         fabric.shutdown().await;
-    });
+        (outcome, seq3)
+    })
+}
+
+/// Stock per-boot data plane (fresh empty store per boot): the lagging peer starves forever —
+/// the pinned NS-8 bug. Red-capable characterization that the persistent gate below must beat.
+#[test]
+fn lagging_peer_starves_after_publisher_restart() {
+    let (outcome, seq3) = run_lagging_peer(false);
+    assert_eq!(
+        outcome,
+        CatchupOutcome::Stalled { at: 2 },
+        "PINNED BUG (NS-8): a fresh empty store per boot leaves the lagging peer no fetch path"
+    );
+    assert_eq!(seq3, None, "the missing Block never crossed on the stock data plane");
+}
+
+/// THE GATE (NS-8 / N-13). A persistent store carried across the restart lets the new boot
+/// recover its seq and SERVE its history: B fetches the single missing Block straight from A's
+/// store and converges — no `O(history)` genesis-first re-announce (A re-published nothing after
+/// the restart, so the announce cost is O(gap)=1). Flipped GREEN from the starvation leg above.
+#[test]
+fn lagging_peer_converges_after_restart_via_persistent_store() {
+    let (outcome, seq3) = run_lagging_peer(true);
+    assert_eq!(
+        outcome,
+        CatchupOutcome::Reached(3),
+        "persistent-backed publisher serves its history across the boot — the peer converges"
+    );
+    assert_eq!(
+        seq3,
+        Some(b"history-3".to_vec()),
+        "the missing Block crossed, byte-identical, served from the restarted publisher's store"
+    );
 }

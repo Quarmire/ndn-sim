@@ -33,9 +33,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use ndn_app::{Consumer, EngineAppExt, Publisher};
+use ndn_app::{Consumer, EngineAppExt, Publisher, PublisherConfig};
 use ndn_packet::{Interest, Name};
-use ndn_sync::{SvsConfig, SyncHandle, join_svs_group, svs_data_name};
+use ndn_sync::{DataStore, MemoryStore, SvsConfig, SyncHandle, join_svs_group, svs_data_name};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -271,24 +271,45 @@ pub async fn naive_catchup(mut replica: TwoPhaseReplica, progress: Progress) {
 }
 
 /// A publisher that can model a **process restart** (the NS-8 shape): stopping cancels the
-/// instance's app faces and drops its SVS data plane; starting again is a *fresh boot* — empty
-/// `DataStore`, seq space restarted at 1, no memory of what the previous boot advertised. A
-/// peer that fell behind during the previous boot now has no fetch path to the missing history
-/// (it lives in the application's store, not the new boot's data plane) — the starvation this
-/// scenario exists to expose. The application-level workaround (and the shape a real fix must
-/// beat) is re-publishing history through the new boot: [`publish_backlog`] on the restarted
-/// instance.
+/// instance's app faces and drops its SVS data plane; starting again is a *fresh boot* — new app
+/// faces, a new SVS instance, no memory of what the previous boot advertised on the wire.
+///
+/// **Persistence across the boot (N-13/N-15).** The `DataStore` is held HERE, by the
+/// `RestartablePublisher`, not by the per-boot instance — the in-process analogue of a
+/// disk-backed store surviving the process. On restart it is handed to the fresh instance via
+/// [`PublisherConfig::store`], so `SvSync::join` recovers the sequence high-water from it and the
+/// new boot **serves its prior history from the store**: a peer that fell behind fetches the
+/// missing Block straight from disk, no `O(history)` genesis-first re-announce. Construct with
+/// [`new`](Self::new) (persistent — the fixed regime) or [`new_ephemeral`](Self::new_ephemeral)
+/// (a fresh empty store per boot — the stock starvation the NS-8 gate pins).
 pub struct RestartablePublisher {
     engine: ndn_engine::ForwarderEngine,
     group: Name,
     local: Name,
     parent: CancellationToken,
     current: Option<(Publisher, CancellationToken)>,
+    /// The served-history store. `Some` = one store retained across boots (persistent);
+    /// `None` = a fresh empty store minted per boot (the stock per-boot data plane).
+    store: Option<Arc<dyn DataStore>>,
 }
 
 impl RestartablePublisher {
-    /// Bind to `node`'s engine (no instance started yet).
+    /// Bind to `node`'s engine with a **persistent** store retained across boots (the N-13 fix).
     pub fn new(
+        fabric: &RunningSimulation,
+        node: NodeId,
+        group: &Name,
+        local: &Name,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
+        let mut this = Self::new_ephemeral(fabric, node, group, local, cancel)?;
+        this.store = Some(Arc::new(MemoryStore::new()));
+        Ok(this)
+    }
+
+    /// Bind to `node`'s engine with a **fresh empty store per boot** — the stock per-boot data
+    /// plane that starves a lagging peer after a restart (the pinned NS-8 shape).
+    pub fn new_ephemeral(
         fabric: &RunningSimulation,
         node: NodeId,
         group: &Name,
@@ -303,17 +324,23 @@ impl RestartablePublisher {
             local: local.clone(),
             parent: cancel.clone(),
             current: None,
+            store: None,
         })
     }
 
-    /// Start a fresh instance (a new boot): new app faces, new SVS instance, empty store,
-    /// seq restarts at 1. Stops any running instance first.
+    /// Start a fresh instance (a new boot): new app faces, new SVS instance. With a persistent
+    /// store (see [`new`](Self::new)) the instance recovers its seq and serves prior history from
+    /// it; ephemeral, it boots empty with seq reset. Stops any running instance first.
     pub async fn start(&mut self) -> Result<&Publisher> {
         self.stop();
         let instance_cancel = self.parent.child_token();
         let app = self.engine.app_node(instance_cancel.child_token());
+        let config = PublisherConfig {
+            store: self.store.clone(),
+            ..PublisherConfig::default()
+        };
         let publisher = app
-            .publish(self.group.clone(), self.local.clone())
+            .publish_with_config(self.group.clone(), self.local.clone(), config)
             .await
             .map_err(|e| anyhow::anyhow!("start publisher: {e:?}"))?;
         self.current = Some((publisher, instance_cancel));

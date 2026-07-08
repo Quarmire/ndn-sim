@@ -1,5 +1,5 @@
 //! **The Keel slice** — ndn-lab as the first real consumer of the manifest /
-//! render-contract calculus (`ndn-manifest` + `ndn-render-contract`).
+//! render-contract calculus (the `manifest` + `render-contract` crates).
 //!
 //! The thesis, applied to a simulator: a telemetry sample **describes itself**
 //! (a [`Manifest`] over an ndn-lab [`Vocabulary`]); renderers **publish what
@@ -31,7 +31,7 @@
 //!   [`Renderers`] and is not allowed to accrue any other meaning (native-via
 //!   is the register's acknowledged attestation gap).
 //!
-//! Presentation of *why* a verdict landed is delegated to `ndn_bench::explain`
+//! Presentation of *why* a verdict landed is delegated to the `explain` crate
 //! — the tool-tier trace renderer — so the spec crates stay label-blind.
 
 use std::collections::BTreeMap;
@@ -161,7 +161,7 @@ pub struct Rendered {
     pub verdict: Verdict,
     /// The rendered artifact (SVG, OTLP/JSON, …).
     pub body: String,
-    /// A human-auditable trace of *why* this verdict landed (`ndn_bench::explain`).
+    /// A human-auditable trace of *why* this verdict landed (the `explain` crate).
     pub trace: String,
 }
 

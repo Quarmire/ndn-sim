@@ -16,9 +16,10 @@
 //! ```
 //!
 //! This pulls in the everyday vocabulary — the builder, kernels, control plane, scenarios,
-//! validation, co-simulation, radio, world, and analysis. For the long tail (individual
-//! propagation/interference models, scene renderers, OTLP export) reach into the crate root or the
-//! specific module.
+//! validation, co-simulation, world, the radio MAC + LoRa, the IP plane + its routing algorithms,
+//! metric series, the Keel render surface, and analysis. For the long tail (individual
+//! propagation/interference models, scene renderers, the OTLP exporter) reach into the crate root or
+//! the specific module.
 //!
 //! **Name note — two `FreeSpace`s.** [`crate::world::FreeSpace`] is a propagation *Environment*
 //! (world/obstruction model); [`crate::phy::FreeSpace`] is a `PropagationBackend` (distance→loss for
@@ -56,6 +57,20 @@ pub use crate::{
 };
 pub use crate::{Environment, MobilityModel, Position, World};
 pub use crate::{PropagationModel, RadioBus, SimRadioFace, WirelessMedium};
+
+// The radio MAC + LoRa: a shared medium instead of point-to-point links.
+pub use crate::{RadioLinkConfig, Wifi, WifiMode, WifiOperatingMode};
+pub use crate::{LoraLinkConfig, SpreadingFactor};
+
+// The deterministic IP plane + its pluggable routing (for NDN-vs-IP benchmarks).
+pub use crate::{IpNetwork, NetworkKind, RoutingAlgorithm};
+pub use crate::{Aodv, DistanceVector, Dsr, Gpsr, GreedyGeographic, Olsr, ShortestPath};
+
+// Telemetry: virtual-time metric series (the OTLP exporter itself stays long-tail).
+pub use crate::{FabricGauges, MetricsLog, MetricsSample, sample_engine};
+
+// The Keel: telemetry types describe themselves; renderers compete for intents.
+pub use crate::{Floor, KeelView, Rendered, SceneView, Surface, Verdict};
 
 // Analysis + observability (the "why").
 pub use crate::{Explanation, RunCapture, SimTracer, diff_runs, explain_link};

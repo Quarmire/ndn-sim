@@ -45,11 +45,17 @@ use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_packet::Name;
 use ndn_security::{KeyChain, SignWith, TrustSchema, ValidationResult, Validator};
 use ndn_sim::fieldkit::{
-    CatchupOutcome, HistoryServerNode, Progress, RestartablePublisher, TwoPhaseReplica,
-    drive_until_or_stall, naive_catchup, publish_backlog,
+    CatchupOutcome, Progress, RestartablePublisher, TwoPhaseReplica, drive_until_or_stall,
+    naive_catchup, publish_backlog,
 };
 use ndn_sim::{FrameMatcher, HoldRule, LinkConfig, Simulation, VirtualKernel};
-use ndn_sync::{DataStore, MemoryStore, svs_data_name};
+use ndn_app::Consumer;
+use ndn_repo::{
+    BlobFetch, Repo, RepoCmd, RepoCmdRes, RepoService, RepoServiceConfig, SyncJoin,
+    sync_protocol_svs_v3,
+};
+use ndn_sync::{DataStore, MemoryStore, SvSyncConfig, SvsConfig, svs_data_name};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 const GROUP: &str = "/grp";
@@ -422,62 +428,150 @@ fn lagging_peer_converges_after_restart_via_persistent_store() {
 
 // ────────────────────────────────────────────────────────────────────────────────────────────
 // D-42 — the OFFLINE-writer regime the online-restart fix does NOT cover: a peer needs a chain's
-// history while the writer is simply DOWN. A cooperative HistoryServer (durable replica: ingest
-// everything advertised, serve from store) closes it. Topology W—H—R (writer and reader never
-// directly linked), so a converged reader can ONLY have been served by H. RED without the
-// server is exactly `lagging_peer_starves_after_publisher_restart` on the stock path.
+// history while the writer is simply DOWN. The durable serving member is a REAL `ndn-repo` in
+// two-phase (reject-without-poison) mode — the ndn-sync `HistoryServer` fork was retired in favor
+// of ndn-repo (regaining ndnd RepoCmd interop). Topology W—hub—REPO—hub—R: with the writer's link
+// down and the reader served only through the repo, a converged reader can ONLY have been served
+// by the repo. RED without a server is `lagging_peer_starves_after_publisher_restart`.
 // ────────────────────────────────────────────────────────────────────────────────────────────
 
-/// THE OFFLINE GATE (D-42). A HistoryServer on H ingests W's chain while W is up; W then goes
-/// offline and STAYS down; the lagging reader R fetches the history FROM H and converges,
-/// byte-identical. Served by H, provably — the W↔H link is down and W and R share no link.
+/// A real `ndn-repo` `RepoService` in two-phase mode, attached to a node's engine over an app
+/// face — the D-42 durable serving member. It auto-joins `group` (operator config), ingests the
+/// chain reject-without-poison, and serves it from `store`. The publication namespace lives under
+/// the group (ndnd/`svs_data_name` convention), so one `group` prefix routes sync + data alike.
+struct RepoNode {
+    store: Arc<dyn DataStore>,
+}
+
+impl RepoNode {
+    async fn attach(
+        fabric: &ndn_sim::RunningSimulation,
+        node: ndn_sim::NodeId,
+        group: &Name,
+        node_id: &str,
+        store: Arc<dyn DataStore>,
+        sync_interval: Duration,
+        cancel: &CancellationToken,
+    ) -> Self {
+        let engine = fabric.engine_of(node).expect("engine for repo node");
+        let app = engine.app_node(cancel.child_token());
+        let conn = app.connection();
+
+        let repo = Repo::new(Arc::clone(&store));
+        let config = RepoServiceConfig {
+            node_id: node_id.to_string(),
+            two_phase_ingest: true,
+            initial_groups: vec![group.clone()],
+            svs: SvSyncConfig {
+                svs: SvsConfig { sync_interval, jitter_ms: 0, ..Default::default() },
+                fetch_timeout: Duration::from_secs(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (send_tx, mut send_rx) = mpsc::channel::<Bytes>(256);
+        let (recv_tx, recv_rx) = mpsc::channel::<Bytes>(256);
+        let (reg_tx, mut reg_rx) = mpsc::channel::<Name>(64);
+        let svc = RepoService::new(repo, name("/repo-svc"), send_tx, config).with_registration(reg_tx);
+
+        // Register every prefix the service asks for (its command prefix + each joined group) on
+        // the face, so the forwarder delivers commands, sync Interests, and publication Interests.
+        {
+            let conn = Arc::clone(&conn);
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        p = reg_rx.recv() => match p {
+                            Some(p) => { let _ = conn.register_prefix(&p).await; }
+                            None => break,
+                        },
+                    }
+                }
+            });
+        }
+        // Outbound: everything the service emits → the face.
+        {
+            let conn = Arc::clone(&conn);
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        pkt = send_rx.recv() => match pkt {
+                            Some(p) => { let _ = conn.send(p).await; }
+                            None => break,
+                        },
+                    }
+                }
+            });
+        }
+        // Inbound: everything off the face → the service demux.
+        {
+            let conn = Arc::clone(&conn);
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                loop {
+                    let wire = tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        w = conn.recv() => match w { Some(w) => w, None => break },
+                    };
+                    if recv_tx.send(wire).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        tokio::spawn(svc.run(recv_rx));
+        Self { store }
+    }
+
+    fn store(&self) -> &Arc<dyn DataStore> {
+        &self.store
+    }
+}
+
+/// THE OFFLINE GATE (D-42), now via **ndn-repo**. A repo ingests W's chain while W is up; W goes
+/// offline and STAYS down; the lagging reader fetches the history from the repo and converges,
+/// byte-identical. Served by the repo, provably — the writer's link is down and CS is off, so a
+/// server store is the only possible source.
 #[test]
-fn offline_writer_history_served_by_history_server() {
+fn offline_writer_history_served_via_ndn_repo() {
     fastrand::seed(8);
     let kernel = VirtualKernel::new();
     kernel.run(|k| async move {
+        let no_cs = || EngineConfig { cs_capacity_bytes: 0, ..EngineConfig::default() };
         let mut sim = Simulation::new().kernel(k).seed(8);
-        let w = sim.add_node(EngineConfig::default());
-        let h = sim.add_node(EngineConfig::default());
-        let r = sim.add_node(EngineConfig::default());
-        // W — H — R. No W↔R link: R can only be served by H.
-        sim.link(w, h, LinkConfig::lan());
-        sim.link(h, r, LinkConfig::lan());
-        // Sync group across both hops.
-        sim.add_route(w, GROUP, h);
-        sim.add_route(h, GROUP, w);
-        sim.add_route(h, GROUP, r);
-        sim.add_route(r, GROUP, h);
-        // Data plane: H ingests W's data from W; R fetches W's data from H.
-        sim.add_route(h, "/nodes/W", w);
-        sim.add_route(r, "/nodes/W", h);
-        // H holds two group faces and both fetches-and-serves /nodes/W → multicast.
-        sim.add_strategy(h, GROUP, "multicast");
-        sim.add_strategy(h, "/nodes/W", "multicast");
+        let sw = sim.add_node(no_cs());
+        let w = sim.add_node(no_cs());
+        let repo = sim.add_node(no_cs());
+        let r = sim.add_node(no_cs());
+        for member in [w, repo, r] {
+            sim.link(sw, member, LinkConfig::lan());
+        }
+        // One prefix routes sync AND data (publications live under the group). The hub multicasts
+        // to the writer + repo + reader; whichever is live and holds a Block answers.
+        for member in [w, repo, r] {
+            sim.add_route(member, GROUP, sw);
+            sim.add_route(sw, GROUP, member);
+        }
+        sim.add_strategy(sw, GROUP, "multicast");
+        // The reader registers the group for sync AND fetches data under it (ndnd naming). Those
+        // two FIB nexthops (its own sync face + the hub) must both be tried, or a data fetch can
+        // be delivered only to the reader's own face and never reach the repo — so multicast.
+        sim.add_strategy(r, GROUP, "multicast");
         let fabric = sim.start().await.unwrap();
 
         let cancel = CancellationToken::new();
         let group = name(GROUP);
-        let w_base = name("/nodes/W");
+        let w_base = name("/grp/w"); // publisher under the group (ndnd naming)
         let history = ["hist-1", "hist-2", "hist-3"];
 
-        // The durable HistoryServer on H (ingests everything advertised, serves from store).
-        // Serve /nodes/W at the SAME prefix H routes to W, so under multicast the FIB entry has
-        // both nexthops (H-app + the W link): H's own ingest fetch reaches W (its app face is the
-        // excluded originator), and R's fetch reaches H's store (the W link being down).
+        // The durable serving member: a real ndn-repo in two-phase mode.
         let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let server = HistoryServerNode::attach(
-            &fabric,
-            h,
-            &group,
-            &name("/nodes/H"),
-            std::slice::from_ref(&w_base),
-            Arc::clone(&store),
-            Duration::from_millis(50),
-            &cancel,
-        )
-        .await
-        .unwrap();
+        let server =
+            RepoNode::attach(&fabric, repo, &group, "repo", Arc::clone(&store), Duration::from_millis(50), &cancel).await;
 
         // W publishes three Blocks while up.
         let publisher = fabric
@@ -492,7 +586,7 @@ fn offline_writer_history_served_by_history_server() {
             publisher.put(blk).await.unwrap();
         }
 
-        // Wait until H has durably ingested W's full history.
+        // Wait until the repo has durably ingested W's full history.
         let mut ingested = false;
         for _ in 0..600 {
             if (1..=3).all(|s| server.store().find_under(&svs_data_name(&w_base, &group, s)).is_some())
@@ -502,53 +596,24 @@ fn offline_writer_history_served_by_history_server() {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(ingested, "HistoryServer must ingest W's full history while W is up");
+        assert!(ingested, "the ndn-repo must ingest W's full history while W is up");
 
-        // W goes offline and STAYS down — the writer process is gone.
-        fabric.set_link_up(w, h, false).unwrap();
+        // W goes offline and STAYS down.
+        fabric.set_link_up(sw, w, false).unwrap();
         drop(publisher);
 
-        // R (lagging peer) discovers via H's advertisement and fetches the history from H.
-        let replica = TwoPhaseReplica::attach(
-            &fabric,
-            r,
-            &group,
-            &name("/nodes/R"),
-            Duration::from_millis(500),
-            &cancel,
-        )
-        .await
-        .unwrap();
-        let progress = Progress::new();
-        let received: Arc<StdMutex<BTreeMap<u64, Bytes>>> = Arc::new(StdMutex::new(BTreeMap::new()));
-        {
-            let progress = progress.clone();
-            let received = Arc::clone(&received);
-            let mut replica = replica;
-            tokio::spawn(async move {
-                while let Some(update) = replica.handle.recv().await {
-                    for seq in update.low_seq..=update.high_seq {
-                        if let Some(bytes) = replica.fetch(&update.name, seq).await {
-                            let _ = replica.handle.ack(&update.publisher, seq).await;
-                            if received.lock().unwrap().insert(seq, bytes).is_none() {
-                                progress.incr();
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        let outcome = drive_until_or_stall(&progress, 3, Duration::from_secs(20)).await;
+        // The reader fetches the history — served by the repo, writer gone.
+        let (outcome, seq3) =
+            drive_reader(&fabric, r, &group, &name("/grp/r"), &cancel, 3, Duration::from_secs(20)).await;
         assert_eq!(
             outcome,
             CatchupOutcome::Reached(3),
-            "R converges — served by the HistoryServer with the writer offline (D-42 offline tier)"
+            "reader converges — served by the ndn-repo with the writer offline (D-42 offline tier)"
         );
         assert_eq!(
-            received.lock().unwrap().get(&3).map(|b| b.as_ref().to_vec()),
+            seq3,
             Some(b"hist-3".to_vec()),
-            "the missing Block crossed byte-identical, served by H (writer's link down)"
+            "the missing Block crossed byte-identical, served by the repo (writer's link down)"
         );
 
         cancel.cancel();
@@ -557,31 +622,257 @@ fn offline_writer_history_served_by_history_server() {
     });
 }
 
-/// C1 (D-42) — a serving member is UNTRUSTED: the fetcher RE-VERIFIES. A byzantine
-/// HistoryServer that serves tampered bytes under a valid name is rejected by the fetcher's
-/// signature validation, never accepted "because it's the repo." Proves no trusted-server
-/// short-circuit on the fetch side: the server serves BOTH a genuine and a tampered Block; the
-/// verifying fetcher accepts the genuine and rejects the tampered — purely on the crypto.
-#[test]
-fn history_server_served_bytes_are_re_verified_not_trusted() {
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// D-42 cooperative HA (mediator-federation-policy §Redistribution) — the mesh keeps serving
+// through member churn. Invariant: "≥1 live member ⇒ K restorable" — a new member back-fills the
+// chain from a SURVIVING SERVER (never the offline writer), so history stays reachable as members
+// come and go. This gate proves the SUBSTRATE MECHANISM composes for that continuity; the churn is
+// triggered manually (drop/add a member), NOT by an auto-orchestrator — presence-triggered
+// auto-redistribution (D-46) is the policy-layer binding, a separate ndf-policy follow-on.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Attach a fresh two-phase reader on `node`, drive it toward `target`, and return the outcome
+/// plus the bytes it ended up holding for seq 3.
+async fn drive_reader(
+    fabric: &ndn_sim::RunningSimulation,
+    node: ndn_sim::NodeId,
+    group: &Name,
+    local: &Name,
+    cancel: &CancellationToken,
+    target: u64,
+    timeout: Duration,
+) -> (CatchupOutcome, Option<Vec<u8>>) {
+    let replica =
+        TwoPhaseReplica::attach(fabric, node, group, local, Duration::from_millis(500), cancel)
+            .await
+            .unwrap();
+    let progress = Progress::new();
+    let received: Arc<StdMutex<BTreeMap<u64, Bytes>>> = Arc::new(StdMutex::new(BTreeMap::new()));
+    {
+        let progress = progress.clone();
+        let received = Arc::clone(&received);
+        let mut replica = replica;
+        tokio::spawn(async move {
+            while let Some(update) = replica.handle.recv().await {
+                for seq in update.low_seq..=update.high_seq {
+                    if let Some(bytes) = replica.fetch(&update.name, seq).await {
+                        let _ = replica.handle.ack(&update.publisher, seq).await;
+                        if received.lock().unwrap().insert(seq, bytes).is_none() {
+                            progress.incr();
+                        }
+                    }
+                }
+            }
+        });
+    }
+    let outcome = drive_until_or_stall(&progress, target, timeout).await;
+    let seq3 = received.lock().unwrap().get(&3).map(|b| b.as_ref().to_vec());
+    (outcome, seq3)
+}
+
+/// Run the churn scenario over real **ndn-repo** members. `backfill_from_peer` is the single knob
+/// under test: when `true` a joining repo's chain fetches reach the cooperative (a surviving
+/// repo); when `false` they reach ONLY the (offline) writer — the mutation that must make HA
+/// fail. Returns the baseline reader outcome, the post-churn fresh-reader outcome, and that
+/// reader's seq-3 bytes.
+///
+/// Topology: an undropped hub `SW` carries everything under `/grp` (sync + data, since ndnd names
+/// publications under the group), so connectivity survives any member dropping. Members drop by
+/// downing their hub link (a presence-absence). The mutation is separated from sync by prefix
+/// specificity: repo3's `/grp/w` (data) route is overridden to the writer in RED, while its `/grp`
+/// (sync) route always reaches the hub — so it still HEARS the survivor but cannot FETCH from it.
+#[allow(clippy::too_many_lines)]
+fn run_cooperative_ha(
+    backfill_from_peer: bool,
+) -> (CatchupOutcome, CatchupOutcome, Option<Vec<u8>>) {
     fastrand::seed(8);
     let kernel = VirtualKernel::new();
     kernel.run(|k| async move {
         let mut sim = Simulation::new().kernel(k).seed(8);
-        let h = sim.add_node(EngineConfig::default());
-        let r = sim.add_node(EngineConfig::default());
-        sim.link(h, r, LinkConfig::lan());
-        sim.add_route(r, "/nodes/W", h); // R fetches W's data from the server H
+        // No forwarder content store anywhere: a cached copy at the hub would mask the RED
+        // starvation (and inflate GREEN), but caching is best-effort availability, not the HA
+        // guarantee under test. With CS off, the ONLY source of a Block is a repo's store.
+        let no_cs = || EngineConfig {
+            cs_capacity_bytes: 0,
+            ..EngineConfig::default()
+        };
+        let sw = sim.add_node(no_cs());
+        let w = sim.add_node(no_cs());
+        let repo1 = sim.add_node(no_cs());
+        let repo2 = sim.add_node(no_cs());
+        let repo3 = sim.add_node(no_cs());
+        let r = sim.add_node(no_cs());
+        let r2 = sim.add_node(no_cs());
+        for member in [w, repo1, repo2, repo3, r, r2] {
+            sim.link(sw, member, LinkConfig::lan());
+        }
+        sim.link(repo3, w, LinkConfig::lan()); // the RED "back-fill only from the writer" path
+
+        // Everything under /grp fans out through the hub (sync AND data — ndnd naming).
+        for member in [w, repo1, repo2, repo3, r, r2] {
+            sim.add_route(member, GROUP, sw);
+            sim.add_route(sw, GROUP, member);
+        }
+        sim.add_strategy(sw, GROUP, "multicast");
+        // Readers register the group for sync yet fetch data under it — both nexthops (own sync
+        // face + hub) must be tried, or a data fetch never leaves for the cooperative.
+        sim.add_strategy(r, GROUP, "multicast");
+        sim.add_strategy(r2, GROUP, "multicast");
+        // THE MUTATION: repo3's DATA route for the writer's namespace `/grp/w` (a longer prefix
+        // than `/grp`, so it governs data fetches while `/grp` still governs sync). GREEN leaves
+        // it unset → data rides `/grp` to the hub (a surviving repo). RED points it at the writer
+        // (direct link, and the writer is offline) → repo3 can only "catch up from the writer".
+        if !backfill_from_peer {
+            sim.add_route(repo3, "/grp/w", w);
+        }
+
+        let fabric = sim.start().await.unwrap();
+        let cancel = CancellationToken::new();
+        let group = name(GROUP);
+        let w_base = name("/grp/w"); // publisher under the group (ndnd naming)
+        let history = ["hist-1", "hist-2", "hist-3"];
+
+        // K=2: repo1 and repo2 serve, ingesting W's chain while the writer is up.
+        let store1: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
+        let s1 = RepoNode::attach(&fabric, repo1, &group, "repo1", Arc::clone(&store1), Duration::from_millis(50), &cancel).await;
+        let store2: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
+        let s2 = RepoNode::attach(&fabric, repo2, &group, "repo2", Arc::clone(&store2), Duration::from_millis(50), &cancel).await;
+
+        // Writer publishes, then leaves for good.
+        let publisher = fabric
+            .engine_of(w)
+            .unwrap()
+            .app_node(cancel.child_token())
+            .publish(group.clone(), w_base.clone())
+            .await
+            .unwrap();
+        ndn_sim::fieldkit::settle(Duration::from_millis(200)).await;
+        for blk in history {
+            publisher.put(blk).await.unwrap();
+        }
+        let mut ingested = false;
+        for _ in 0..600 {
+            if [&store1, &store2].iter().all(|st| {
+                (1..=3).all(|s| st.find_under(&svs_data_name(&w_base, &group, s)).is_some())
+            }) {
+                ingested = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(ingested, "the K=2 repos must ingest the chain while the writer is up");
+        // Writer OFFLINE for the rest of the scenario (both its links down + process gone).
+        fabric.set_link_up(sw, w, false).unwrap();
+        fabric.set_link_up(repo3, w, false).unwrap();
+        drop(publisher);
+
+        // Baseline: a reader converges, served by the live cooperative (writer offline).
+        let (baseline, _) =
+            drive_reader(&fabric, r, &group, &name("/grp/r"), &cancel, 3, Duration::from_secs(15)).await;
+
+        // CHURN. Drop repo1 (K → 1), then a NEW repo3 joins and must back-fill the full chain from
+        // the surviving repo2 (GREEN) — or reach only the offline writer (RED).
+        fabric.set_link_up(sw, repo1, false).unwrap();
+        let store3: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
+        let s3 = RepoNode::attach(&fabric, repo3, &group, "repo3", Arc::clone(&store3), Duration::from_millis(50), &cancel).await;
+        for _ in 0..300 {
+            if (1..=3).all(|s| store3.find_under(&svs_data_name(&w_base, &group, s)).is_some()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Drop repo2 — the last member that ingested directly from the writer. Only repo3 remains:
+        // it holds the chain iff it back-filled.
+        fabric.set_link_up(sw, repo2, false).unwrap();
+
+        // Continuity: a FRESH reader that joins after the full churn converges iff ≥1 live member
+        // holds the chain — i.e. iff redistribution restored K by peer back-fill.
+        let (after, seq3) =
+            drive_reader(&fabric, r2, &group, &name("/grp/r2"), &cancel, 3, Duration::from_secs(20)).await;
+
+        cancel.cancel();
+        drop((s1, s2, s3));
+        fabric.shutdown().await;
+        (baseline, after, seq3)
+    })
+}
+
+/// THE HA GATE (D-42 redistribution). Through a full member turnover — drop H1, a new H3 joins
+/// and back-fills from surviving H2, drop H2 — a fresh reader still converges byte-identical,
+/// served by the back-filled member with the writer offline the whole time. "≥1 live member ⇒
+/// K restorable" holds as a substrate mechanism.
+#[test]
+fn cooperative_ha_survives_member_churn_via_peer_backfill() {
+    let (baseline, after, seq3) = run_cooperative_ha(true);
+    assert_eq!(
+        baseline,
+        CatchupOutcome::Reached(3),
+        "baseline: the live cooperative serves the reader with the writer offline"
+    );
+    assert_eq!(
+        after,
+        CatchupOutcome::Reached(3),
+        "≥1 live member ⇒ K restorable: the fresh reader converges after full churn, served by \
+         the back-filled member"
+    );
+    assert_eq!(
+        seq3,
+        Some(b"hist-3".to_vec()),
+        "the chain crossed byte-identical through redistribution (peer back-fill)"
+    );
+}
+
+/// THE RED HALF (mutation-check). Disable peer back-fill — a joining member's chain fetches reach
+/// ONLY the offline writer ("never by assuming the writer is online", inverted). Now
+/// redistribution cannot restore K: the new member stays empty, and once the members that
+/// ingested directly from the writer drop, the reader starves. This is what makes the gate
+/// load-bearing: back-fill from a surviving server is THE mechanism that enables cooperative HA.
+#[test]
+fn cooperative_ha_starves_when_backfill_reaches_only_the_writer() {
+    let (baseline, after, _) = run_cooperative_ha(false);
+    assert_eq!(
+        baseline,
+        CatchupOutcome::Reached(3),
+        "baseline is identical: original members serve the reader before churn"
+    );
+    assert!(
+        matches!(after, CatchupOutcome::Stalled { .. }),
+        "without peer back-fill (a joiner reaching only the offline writer) redistribution cannot \
+         restore K; once the original holders drop, the fresh reader starves — got {after:?}"
+    );
+}
+
+/// C1 (D-42) — a serving member is UNTRUSTED: the fetcher RE-VERIFIES, and this composes over
+/// ndn-repo unchanged (nothing repo-side is in the trust path). A byzantine ndn-repo that serves
+/// tampered bytes under a valid name is rejected by the fetcher's signature validation, never
+/// accepted "because it's the repo." The repo serves BOTH a genuine and a tampered Block; the
+/// verifying fetcher accepts the genuine and rejects the tampered — purely on the crypto.
+#[test]
+fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
+    fastrand::seed(8);
+    let kernel = VirtualKernel::new();
+    kernel.run(|k| async move {
+        let no_cs = || EngineConfig { cs_capacity_bytes: 0, ..EngineConfig::default() };
+        let mut sim = Simulation::new().kernel(k).seed(8);
+        let sw = sim.add_node(no_cs());
+        let repo = sim.add_node(no_cs());
+        let r = sim.add_node(no_cs());
+        for member in [repo, r] {
+            sim.link(sw, member, LinkConfig::lan());
+            sim.add_route(member, GROUP, sw);
+            sim.add_route(sw, GROUP, member);
+        }
+        sim.add_strategy(sw, GROUP, "multicast");
         let fabric = sim.start().await.unwrap();
 
         let cancel = CancellationToken::new();
         let group = name(GROUP);
-        let w_base = name("/nodes/W");
+        let w_base = name("/grp/w"); // publisher under the group (ndnd naming)
         let good_name = svs_data_name(&w_base, &group, 1);
         let bad_name = svs_data_name(&w_base, &group, 2);
 
         // W's key + a validator that trusts W's anchor (the fetcher's trust).
-        let kc = KeyChain::ephemeral("/nodes/W").unwrap();
+        let kc = KeyChain::ephemeral("/grp/w").unwrap();
         let validator = Validator::new(TrustSchema::hierarchical());
         if let Some(cert) = kc.manager_arc().trust_anchor(kc.key_name()) {
             validator.add_trust_anchor(cert);
@@ -608,42 +899,32 @@ fn history_server_served_bytes_are_re_verified_not_trusted() {
             Bytes::from(t)
         };
 
-        // A byzantine HistoryServer: it holds (and will serve) BOTH the genuine and the tampered
-        // wire under valid names. (No writer needed — we poison the store directly.)
+        // A byzantine ndn-repo: it holds (and will serve) BOTH the genuine and the tampered wire
+        // under valid names. (No writer needed — we poison the store directly.)
         let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let server = HistoryServerNode::attach(
-            &fabric,
-            h,
-            &group,
-            &name("/nodes/H"),
-            std::slice::from_ref(&w_base),
-            Arc::clone(&store),
-            Duration::from_millis(50),
-            &cancel,
-        )
-        .await
-        .unwrap();
+        let server =
+            RepoNode::attach(&fabric, repo, &group, "repo", Arc::clone(&store), Duration::from_millis(50), &cancel).await;
         store.insert(good_name.clone(), good_wire);
         store.insert(bad_name.clone(), tampered_wire);
 
         let mut consumer = fabric.engine_of(r).unwrap().app_consumer(cancel.child_token());
 
-        // Genuine Block: served by H and it VERIFIES → accepted.
+        // Genuine Block: served by the repo and it VERIFIES → accepted.
         let good = tokio::time::timeout(Duration::from_secs(5), consumer.fetch(good_name.clone()))
             .await
             .expect("fetch good timed out")
-            .expect("H serves the genuine wire");
+            .expect("repo serves the genuine wire");
         assert!(
             matches!(validator.validate(&good).await, ValidationResult::Valid(_)),
-            "a genuine, correctly-signed Block served by H validates"
+            "a genuine, correctly-signed Block served by the repo validates"
         );
 
-        // Tampered Block: also served by H, but the fetcher's verification REJECTS it — not
+        // Tampered Block: also served by the repo, but the fetcher's verification REJECTS it — not
         // accepted because the repo served it.
         let bad = tokio::time::timeout(Duration::from_secs(5), consumer.fetch(bad_name.clone()))
             .await
             .expect("fetch bad timed out")
-            .expect("H serves the tampered wire too");
+            .expect("repo serves the tampered wire too");
         assert_eq!(*bad.name, bad_name, "same valid name — only the bytes are tampered");
         assert!(
             !matches!(validator.validate(&bad).await, ValidationResult::Valid(_)),
@@ -654,4 +935,69 @@ fn history_server_served_bytes_are_re_verified_not_trusted() {
         drop(server);
         fabric.shutdown().await;
     });
+}
+
+/// The PAYOFF of riding ndn-repo instead of the retired fork: the ndnd `RepoCmd` interop is back.
+/// An ndnd-shaped client drives the repo over the wire — a `SyncJoin` makes it start holding a
+/// group, a `BlobFetch` queues a by-name ingest — each answered with a `RepoCmdRes` 200. (The
+/// HistoryServer fork had no command interface; this is what the fork forfeited.)
+#[test]
+fn ndnd_repo_cmd_interop_drives_the_repo() {
+    fastrand::seed(8);
+    let kernel = VirtualKernel::new();
+    kernel.run(|k| async move {
+        let no_cs = || EngineConfig { cs_capacity_bytes: 0, ..EngineConfig::default() };
+        let mut sim = Simulation::new().kernel(k).seed(8);
+        let sw = sim.add_node(no_cs());
+        let repo = sim.add_node(no_cs());
+        let c = sim.add_node(no_cs());
+        sim.link(sw, repo, LinkConfig::lan());
+        sim.link(sw, c, LinkConfig::lan());
+        // Route the repo command prefix (client → repo) and the repo's group (both via the hub).
+        sim.add_route(c, "/repo-svc", sw);
+        sim.add_route(sw, "/repo-svc", repo);
+        sim.add_route(repo, GROUP, sw);
+        sim.add_route(sw, GROUP, repo);
+        let fabric = sim.start().await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let group = name(GROUP);
+        let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
+        let _repo =
+            RepoNode::attach(&fabric, repo, &group, "repo", Arc::clone(&store), Duration::from_millis(50), &cancel).await;
+
+        let mut consumer = fabric.engine_of(c).unwrap().app_consumer(cancel.child_token());
+
+        // ndnd-shaped SyncJoin: tell the repo to start holding a NEW group over the wire.
+        let join = RepoCmd::SyncJoin(SyncJoin {
+            protocol: Some(sync_protocol_svs_v3()),
+            group: Some(name("/grp2")),
+            ..Default::default()
+        });
+        let res = drive_repo_cmd(&mut consumer, &name("/repo-svc/join"), join.encode()).await;
+        assert_eq!(res.status, 200, "SyncJoin accepted over the wire (ndnd RepoCmd interop)");
+
+        // ndnd-shaped BlobFetch: queue a by-name ingest.
+        let blob = RepoCmd::BlobFetch(BlobFetch {
+            name: Some(name("/grp/w/grp/%01")),
+            ..Default::default()
+        });
+        let res2 = drive_repo_cmd(&mut consumer, &name("/repo-svc/blob"), blob.encode()).await;
+        assert_eq!(res2.status, 200, "BlobFetch accepted over the wire (ndnd RepoCmd interop)");
+
+        cancel.cancel();
+        fabric.shutdown().await;
+    });
+}
+
+/// Send an ndnd-shaped `RepoCmd` as a signed command Interest and decode the `RepoCmdRes` reply.
+async fn drive_repo_cmd(consumer: &mut Consumer, name: &Name, cmd: Bytes) -> RepoCmdRes {
+    let builder = InterestBuilder::new(name.clone())
+        .must_be_fresh()
+        .app_parameters(cmd.to_vec());
+    let data = tokio::time::timeout(Duration::from_secs(5), consumer.fetch_with(builder))
+        .await
+        .expect("repo command timed out")
+        .expect("no RepoCmdRes reply");
+    RepoCmdRes::decode(data.content().unwrap().clone()).expect("decode RepoCmdRes")
 }

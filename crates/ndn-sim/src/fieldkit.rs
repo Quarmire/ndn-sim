@@ -36,8 +36,7 @@ use bytes::Bytes;
 use ndn_app::{Consumer, EngineAppExt, Publisher, PublisherConfig};
 use ndn_packet::{Interest, Name};
 use ndn_sync::{
-    DataStore, HistoryServer, HistoryServerConfig, MemoryStore, SvSyncConfig, SvsConfig, SyncHandle,
-    join_svs_group, svs_data_name,
+    DataStore, MemoryStore, SvsConfig, SyncHandle, join_svs_group, svs_data_name,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -251,112 +250,9 @@ impl TwoPhaseReplica {
     }
 }
 
-/// A durable [`HistoryServer`] (D-42) attached to a node's engine: it ingests every advertised
-/// publication for `group` and serves it from its store — the offline-history serving path a
-/// lagging peer reaches when the writer is DOWN. `serve_prefixes` are the publisher data prefixes
-/// (`<publisher>/<group>`) it answers fetches for; register the ones the fabric routes to it.
-/// Wired like a publisher (all inbound → the SvSync demux, all outbound → the face), so the demux
-/// both fetches-to-ingest and serves-from-store over one face.
-pub struct HistoryServerNode {
-    server: HistoryServer,
-    store: Arc<dyn DataStore>,
-}
-
-impl HistoryServerNode {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn attach(
-        fabric: &RunningSimulation,
-        node: NodeId,
-        group: &Name,
-        local: &Name,
-        serve_prefixes: &[Name],
-        store: Arc<dyn DataStore>,
-        sync_interval: Duration,
-        cancel: &CancellationToken,
-    ) -> Result<Self> {
-        let engine = fabric
-            .engine_of(node)
-            .context("no engine for history server node")?;
-        let app = engine.app_node(cancel.child_token());
-        let conn = app.connection();
-        conn.register_prefix(group)
-            .await
-            .map_err(|e| anyhow::anyhow!("register group prefix: {e:?}"))?;
-        for p in serve_prefixes {
-            conn.register_prefix(p)
-                .await
-                .map_err(|e| anyhow::anyhow!("register serve prefix: {e:?}"))?;
-        }
-
-        let (net_out_tx, mut net_out_rx) = mpsc::channel::<Bytes>(256);
-        let (net_in_tx, net_in_rx) = mpsc::channel::<Bytes>(256);
-        // Outbound: everything the demux emits (sync Interests, fetch Interests, served Data).
-        {
-            let conn = Arc::clone(&conn);
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        pkt = net_out_rx.recv() => match pkt {
-                            Some(p) => { let _ = conn.send(p).await; }
-                            None => break,
-                        },
-                    }
-                }
-            });
-        }
-        // Inbound: EVERYTHING off the face → the demux (unlike TwoPhaseReplica, which filters to
-        // sync Interests; a server also handles data Interests to serve and Data to ingest).
-        {
-            let conn = Arc::clone(&conn);
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                loop {
-                    let wire = tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        w = conn.recv() => match w { Some(w) => w, None => break },
-                    };
-                    if net_in_tx.send(wire).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-
-        let config = HistoryServerConfig {
-            svsync: SvSyncConfig {
-                svs: SvsConfig {
-                    sync_interval,
-                    jitter_ms: 0,
-                    ..SvsConfig::default()
-                },
-                fetch_timeout: Duration::from_secs(2),
-                ..SvSyncConfig::default()
-            },
-            ingest_validator: None,
-        };
-        let server = HistoryServer::join(
-            group.clone(),
-            local.clone(),
-            Arc::clone(&store),
-            net_out_tx,
-            net_in_rx,
-            config,
-        );
-        Ok(Self { server, store })
-    }
-
-    /// The durable store the server ingests into and serves from.
-    pub fn store(&self) -> &Arc<dyn DataStore> {
-        &self.store
-    }
-
-    /// Borrow the underlying [`HistoryServer`].
-    pub fn server(&self) -> &HistoryServer {
-        &self.server
-    }
-}
+// The durable history-serving member is no longer an ndn-sync `HistoryServer` (that fork was
+// retired in favor of ndn-repo's two-phase mode — see field_faults.rs `RepoNode`). The general
+// `serve_all_stored` SvSync knob it needed remains in ndn-sync and is consumed by ndn-repo.
 
 /// The **pre-fix consumer shape** (deliberately naive — this is the known-bad reference the
 /// burst scenario must wedge, kept exportable so fix sessions can run naive-vs-fixed against

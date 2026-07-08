@@ -7,6 +7,20 @@
 //! converge to the same shortest paths; their differences (control overhead, reconvergence latency,
 //! behaviour under mobility) are what a benchmark exposes once the topology moves.
 //!
+//! ```
+//! use ndn_sim::{Aodv, RoutingAlgorithm, ShortestPath, TopologyView};
+//!
+//! // A 4-node line. Any algorithm computes per-node tables from the same view.
+//! let view = TopologyView::from_links(4, &[(0, 1), (1, 2), (2, 3)]);
+//! let tables = ShortestPath.compute(&view);
+//! let to3 = tables[0].iter().find(|r| r.dest == 3).unwrap();
+//! assert_eq!(to3.next_hop, 1, "node 0 reaches node 3 via its neighbour");
+//!
+//! // The families differ in *overhead*, not routes: one flow on this graph is
+//! // cheaper on-demand (AODV) than under periodic link-state flooding.
+//! assert!(Aodv.control_overhead(&view, 1) < ShortestPath.control_overhead(&view, 1));
+//! ```
+//!
 //! # Grounding (canonical references)
 //!
 //! Infrastructure / wired (table-driven, stable topology):

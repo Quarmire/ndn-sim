@@ -8,17 +8,35 @@
 //! an inert renderer binding. ndn-lab stops hand-rolling one serializer per
 //! output — it describes the metric once and every output is a *lens*.
 //!
-//! This slice takes **one** telemetry type — [`FabricGauges`] — and offers it
-//! through **two** lenses:
+//! One telemetry type — [`FabricGauges`] — is offered through **competing**
+//! lenses, and the matcher's `select` resolves the competition per [`Surface`]:
 //!
-//! - a **sparkline** contract, which Expresses `series.window` over the gauge
-//!   type directly (`fabric-gauges` *narrower-than* `metric-gauge`, lossless) —
-//!   verdict **Express**;
-//! - an **OTLP** contract, reachable only through the separate
-//!   `ndn-lab-otel-bridge` stratum whose `maps-to` edge demotes fidelity — so
-//!   the Phase-B OTLP lossiness that used to be buried in a hand-written
-//!   serializer becomes a **named loss term** (`otel-attribute-flattening`) a
-//!   reader can point at — verdict **Approximate**.
+//! - a **sparkline** contract Expresses `series.window` over the gauge type
+//!   directly (`fabric-gauges` *narrower-than* `metric-gauge`, lossless);
+//! - a **thumbnail** and an **ASCII** contract Approximate the same intent at
+//!   equal declared loss depth (`resolution-decimation` / `glyph-quantization`)
+//!   — on a surface with no exact-SVG contract, selection falls to them;
+//! - an **OTLP** contract is reachable only through the separate
+//!   `ndn-lab-otel-bridge` stratum whose `maps-to` edge demotes fidelity — the
+//!   OTLP lossiness that used to be buried in a hand-written serializer is a
+//!   **named loss term** (`otel-attribute-flattening`) a reader can point at.
+//!
+//! ```
+//! use ndn_sim::{FabricGauges, Floor, KeelView, Surface};
+//!
+//! // Resolve once (schema = the Block), then stream samples (Sparks) past it.
+//! let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
+//! let samples = [FabricGauges { virtual_time_ns: 1, radio_airtime_ns: 500_000, ..Default::default() }];
+//!
+//! // select picks the lossless SVG on a graphical surface…
+//! let best = view.select_for("series.window", Floor::Approximate).unwrap();
+//! let r = view.render(best, &samples).unwrap();
+//! assert!(r.body.contains("<svg"));
+//!
+//! // …and a CLI surface honestly degrades (no lossless offer at all).
+//! let cli = KeelView::for_fabric_gauges(true, Surface::Cli);
+//! assert!(cli.select_for("series.window", Floor::Express).is_none());
+//! ```
 //!
 //! Two properties the design demands are honoured here:
 //!

@@ -7,9 +7,30 @@
 //! [`Fault`](crate::Fault)s (a downed/degraded [`LinkState`] affects IP exactly as it does NDN).
 //! Below the forwarding engine, the sim doesn't care whether the bytes are Interests/Data or IP.
 //!
-//! **Slice 1**: unicast forward-by-destination (longest-prefix match + TTL) with a built-in echo,
-//! and [`ping`](RunningIpNode::ping) measuring round-trip [`FlowStats`]. Routing generation, an
-//! NDN-vs-IP diff harness, and richer transports layer on top.
+//! [`IpNode`] does unicast forward-by-destination (longest-prefix match + TTL) with a built-in
+//! echo and a [`ping`](RunningIpNode::ping) measuring round-trip [`FlowStats`]; [`IpNetwork`]
+//! wires a whole topology and routes it with any [`RoutingAlgorithm`](crate::RoutingAlgorithm)
+//! (proactive / reactive / geographic — see [`routing`](crate::routing)), over wired links, the
+//! Wi-Fi MAC ([`from_positions_wifi`](IpNetwork::from_positions_wifi)), or LoRa
+//! ([`from_positions_lora`](IpNetwork::from_positions_lora)). The NDN-vs-IP diff harness lives in
+//! [`compare`](crate::compare).
+//!
+//! ```
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//! use ndn_sim::{DesKernel, FaceProfile, IpNetwork, LinkConfig, SimKernel};
+//!
+//! // A 3-node line, auto-routed shortest-path; ping end-to-end, deterministically.
+//! let received = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
+//!     let prof = FaceProfile::internal().with_link(LinkConfig::lan());
+//!     let net = IpNetwork::from_links(k.runtime(), 3, &[(0, 1), (1, 2)], &prof);
+//!     net.node(0)
+//!         .ping(net.addr(2), 3, 32, Duration::from_millis(2), Duration::from_secs(1))
+//!         .await
+//!         .received
+//! });
+//! assert!(received >= 2, "pings echoed across two hops");
+//! ```
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

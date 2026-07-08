@@ -76,7 +76,18 @@
 //! the whole topology up front — routing tables are computed from the complete graph at build time.
 //! [`from_scenario`](IpNetwork::from_scenario) bridges them: one [`Scenario`] drives both planes.
 //!
-//! ## The four capability axes
+//! ## Telemetry that describes itself (the Keel)
+//!
+//! ndn-lab does not hand-roll one serializer per output. A telemetry type carries
+//! `#[derive(Manifest)]` (see [`FabricGauges`] / [`scene::SceneSnapshot`]) and *describes itself*;
+//! renderers publish **contracts** declaring what they can express; a deterministic matcher binds
+//! `(manifest × intent × contracts)` to a verdict — and competing renderers are resolved by
+//! [`KeelView::select_for`] against a fidelity [`Floor`], with every lossy step a *named term* a
+//! reader can audit. One metric renders as an exact SVG (Express), ASCII glyphs or an OTLP gauge
+//! (Approximate, loss declared) depending on what the [`Surface`] can hold — see [`keel`] and
+//! `examples/keel-telemetry.rs`.
+//!
+//! ## The five capability axes
 //!
 //! - **Kernels** ([`DesKernel`], [`VirtualKernel`], [`WallClockKernel`], [`RealTimeKernel`]) — from a
 //!   deterministic event queue (bit-reproducible replay) to real-time (hosts live devices).
@@ -86,6 +97,9 @@
 //!   (ArduPilot SITL / Gazebo / Bevy) drive node motion; `cosim` commands actuate them back.
 //! - **Observability** ([`analysis::explain_link`], [`diff_runs`], [`OtlpExporter`]) — causal "why"
 //!   over radio delivery, cross-run diff, and OTLP/Jaeger export.
+//! - **Self-description** ([`KeelView`], [`SceneView`], [`Surface`]) — telemetry described once via
+//!   `#[derive(Manifest)]`; renderers compete per intent; selection is deterministic and every loss
+//!   is a named, auditable term.
 //!
 //! The [`ControlPlane`] projects all of this over one JSON surface (in-process / NDN-native / TCP /
 //! WebSocket), and [`SimMcp`] projects *that* as Model Context Protocol tools for agents.
@@ -112,7 +126,19 @@
 //! | [`medium`]   | `WirelessMedium` / `PropagationModel` — position-driven broadcast delivery |
 //! | [`link_model`] | `LinkModel` — RSSI/SNR → MCS → per-frame delivery (the 802.11n logical link) |
 //! | [`radio`]    | `RadioBus` / `SimRadioFace` — the named-radio simulated face (engine `Face`) |
+//! | [`wifi`]     | 802.11 MAC model — `Monitor` (named-data radio) vs `Managed` (CSMA-CA/ACK/minstrel/EDCA); IBSS / AP / mesh |
+//! | [`phy`]      | pluggable multi-radio PHY — channels, antennas, propagation + interference backends (SINR) |
+//! | [`lora`]     | LoRa PHY/MAC — spreading factors, Semtech airtime, duty cycle, device classes A/B/C |
+//! | [`ip`]       | `IpNetwork` / `IpNode` — the deterministic in-sim IP forwarding plane |
+//! | [`routing`]  | `RoutingAlgorithm` — proactive (OSPF/RIP-class, OLSR), reactive (AODV/DSR), geographic (GPSR), each with a control-overhead model |
+//! | [`compare`]  | the NDN-vs-IP diff harness — the same workload run both ways, one report |
+//! | [`keel`]     | `KeelView` / `SceneView` / `Surface` — self-describing telemetry through render contracts; competing lenses, deterministic selection |
 //! | [`telemetry`] | `MetricsLog` / `SimSpanEmitter` — Runtime-clocked metric gauges + OTLP spans |
+//! | [`analysis`] | `explain_link` / `diff_runs` — causal "why" over deliveries + cross-run divergence |
+//! | [`validate`] | `ValidationSpec` / `run_validation` — faults + properties + seed sweeps as a CI gate |
+//! | [`cosim`]    | external simulators drive node motion (ArduPilot SITL / Gazebo / Bevy); commands actuate back |
+//! | [`stepper`]  | `Stepper` — event-at-a-time deterministic debugging on the DES queue |
+//! | [`topo`]     | topology generators — line / ring / star / grid / mesh / tree / random |
 //! | [`topology`] | `Simulation` builder + `RunningSimulation` live fabric |
 //! | [`tracer`]   | `SimTracer` — structured event capture for analysis |
 

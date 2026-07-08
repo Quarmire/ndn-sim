@@ -5,17 +5,29 @@ multi-node networks of *real* `ForwarderEngine`s on a pluggable time kernel, wit
 a named-radio face, one control + telemetry API, an MCP server, and a UDP bridge to real
 forwarders — all behind the `Face` + `Runtime` seams, so the engine stays simulation-oblivious.
 
-## Benchmarking NDN vs IP (in progress)
+## Benchmarking NDN vs IP
 
 Because everything below the forwarding engine is byte-oriented (`SimFace` carries `Bytes`), ndn-lab
-can host a **deterministic in-sim IP forwarding plane** on the *same* kernel / world / medium / faults
-as the NDN plane — so the same scenario can be run both ways and compared with the same `FlowStats`
-(RTT / loss / goodput). Slice 1 (`ndn_sim::ip`): `IpNode` forwards by destination (longest-prefix
-match + TTL) over `SimFace` byte channels, with a built-in echo and a `ping` that measures round-trip
-`FlowStats`. Workloads (`TrafficSource`), the `Fault`s (partition/degrade), and the run/diff harness
-are all protocol-neutral and shared. Routing generation and an NDN-vs-IP diff report layer on next.
+hosts a **deterministic in-sim IP forwarding plane** on the *same* kernel / world / medium / faults
+as the NDN plane — the same scenario runs both ways and is compared with the same `FlowStats`
+(RTT / loss / goodput). The IP plane (`ndn_sim::ip`) routes itself with pluggable algorithms
+grounded in the literature (`ndn_sim::routing`): proactive (OSPF/RIP-class, OLSR with a real MPR
+overhead model), reactive (AODV, DSR — control overhead scales with active flows, not topology),
+and geographic (GPSR with perimeter recovery around voids). Links can be wired, the faithful
+802.11 MAC (`WifiMode::Monitor` = named-data radio vs `Managed` = CSMA-CA/ACK/minstrel, over
+IBSS / AP / mesh), or LoRa (spreading factors, duty cycle, device classes A/B/C) — with a
+pluggable multi-radio PHY (channels, antennas, propagation, SINR interference) underneath.
 
-## The four capability axes
+## Telemetry that describes itself (the Keel)
+
+Telemetry types carry `#[derive(Manifest)]` and describe themselves; renderers publish **render
+contracts**; a deterministic matcher binds data + intent to competing lenses, and selection at a
+fidelity floor picks between them — an exact SVG (Express), or ASCII glyphs / a thumbnail / an
+OTLP gauge (Approximate, each loss a *named term*), depending on what the surface can hold. No
+hand-written exporter integrations; every loss is auditable. See `ndn_sim::keel` and
+`examples/keel-telemetry.rs`.
+
+## The five capability axes
 
 1. **Executor-agnostic core** — from a deterministic discrete-event queue (`DesKernel`,
    bit-reproducible replay) through the tokio paused-clock `VirtualKernel` to real-time
@@ -26,6 +38,8 @@ are all protocol-neutral and shared. Routing generation and an NDN-vs-IP diff re
    drive node motion; `cosim` commands actuate them back (bidirectional, NDN-native).
 4. **Observability / analysis** — causal "why" over radio delivery (`explain_link`), cross-run diff
    (`diff_runs`), live telemetry streaming + OTLP/Jaeger export.
+5. **Self-description** — telemetry described once (`#[derive(Manifest)]`), rendered through
+   competing render contracts with deterministic selection and named, auditable losses (the Keel).
 
 ## The `ndn-lab` binary (the doorway)
 
@@ -83,6 +97,9 @@ validate (`run_validation`) — a model composes, inspects, drives, and gates a 
 | **Kernels** | `DesKernel` (from-scratch deterministic event queue; event-granular single-step), `VirtualKernel` (tokio paused clock; deterministic, faster-than-real, `run_capped` budget), `WallClockKernel` (real time), `RealTimeKernel` (governor: real pace + logical clock, hosts real devices), `SteppableKernel` (pause / step / run-until) |
 | **World** | `Position` + `MobilityModel` (static/linear/waypoint) + `Environment`, `WorldView` snapshots over a uniform spatial grid |
 | **Medium / radio** | `WirelessMedium` (propagation + range) and `RadioBus` + `SimRadioFace` — the named-radio face with RSSI→MCS→per-frame delivery (`LinkModel`) + carrier-sense collisions |
+| **802.11 MAC / PHY / LoRa** | `WifiMode` Monitor-vs-Managed (CSMA-CA/ACK/minstrel/A-MPDU/EDCA, IBSS/AP/mesh + association cost); pluggable multi-radio PHY (channels/antennas/propagation/SINR); LoRa SF/airtime/duty-cycle + device classes |
+| **IP plane + routing** | `IpNetwork`/`IpNode` on the same byte substrate; routing = `ShortestPath`/`DistanceVector`/`Olsr` (proactive), `Aodv`/`Dsr` (reactive), `Gpsr` (geographic), each with a control-overhead model; `compare_ndn_vs_ip` diff report |
+| **The Keel** | self-describing telemetry (`#[derive(Manifest)]`) through render contracts — competing lenses (`KeelView`/`SceneView`/`Surface`), deterministic selection, named losses |
 | **Faces** | per-type behavioral catalogue (`FaceProfile`: udp/tcp/quic/ws/ethernet/multicast/shm/serial/ble/nan) — the engine sees each type's `FaceKind`/MTU/loss/ordering |
 | **Control plane** | one declarative API (`SimCommand`/`SimQuery`) over three transports: in-proc, TCP JSON-RPC, and NDN-native `/localhop/sim/control` + a notification stream |
 | **Apps** | declarative producers/consumers (`AppSpec`) — "a producer of /foo here, a consumer there" |

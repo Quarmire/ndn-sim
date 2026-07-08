@@ -7,10 +7,12 @@
 //! A fault that cannot turn a known-bad implementation red is a shell. So each test here
 //! asserts that the *current* upstream behavior exhibits the failure:
 //!
-//! - **NS-6** (`held_reply_...`): `ndn_app::Consumer::fetch_wire` pairs request→response by
-//!   arrival order (no name match). When ndn-app fixes the pairing, this test FAILS — that is
-//!   the fix session's cue to flip the assertions (late reply refused / re-matched by name)
-//!   and keep the same scenario as its regression gate.
+//! - **NS-6** (`held_reply_...`): `ndn_app::Consumer::fetch_wire` used to pair
+//!   request→response by arrival order (no name match) — this test originally PINNED that
+//!   off-by-one (a held /svc/1 reply returned as /svc/2's answer, the stream shifted by one).
+//!   **FLIPPED GREEN (NS-6a fixed, 2026-07-08):** `fetch_wire` now pairs by name and discards
+//!   stragglers, so the same scenario asserts the fixed contract — the late reply is never
+//!   mis-delivered and each fetch returns its own Data. A mispair here means NS-6 is back.
 //! - **NS-7** (`burst_catchup_...`): the pre-N-11 `svs_task` (bounded update=256 / ack=64
 //!   channels, one select loop, blocking `update_tx.send(...).await` inside an arm) mutually
 //!   stalls with a fetch-and-ack-inline consumer under a 400-Block catch-up. The N-11 fix
@@ -52,13 +54,14 @@ fn name(s: &str) -> Name {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────────
-// NS-6 — a held (delayed-not-dropped) Data reply arrives after the requester timed out, and
-// the stock Consumer's arrival-order pairing hands every subsequent fetch the previous
-// fetch's reply. The reorder fault is the sim primitive; the off-by-one is the bug it exposes.
+// NS-6 — a held (delayed-not-dropped) Data reply arrives after the requester timed out. The
+// pre-fix Consumer paired by arrival order and handed every subsequent fetch the previous
+// fetch's reply (the off-by-one this test originally pinned red). With NS-6a fixed, the same
+// fault must be ABSORBED: the straggler is discarded, every fetch answers with its own name.
 // ────────────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn held_reply_shifts_arrival_order_pairing_by_one() {
+fn held_reply_is_discarded_never_mispaired() {
     let kernel = VirtualKernel::new();
     kernel.run(|k| async move {
         let mut sim = Simulation::new().kernel(k).seed(6);
@@ -124,30 +127,35 @@ fn held_reply_shifts_arrival_order_pairing_by_one() {
             "fetch #1 must time out client-side (reply held, not dropped): {r1:?}"
         );
 
-        // Fetch #2: the STOCK consumer pairs by arrival order — the late /svc/1 reply arrives
-        // first and is returned as /svc/2's answer. THE NS-6 OFF-BY-ONE, live.
+        // Fetch #2: the late /svc/1 reply arrives FIRST (t≈180 ms, before /svc/2's own reply
+        // at ≈270 ms). NS-6a contract: it is a straggler — discarded, never mis-delivered —
+        // and this fetch returns its OWN Data. (Pre-fix, arrival-order pairing returned
+        // /svc/1 here and shifted every later fetch by one; the pinned red run is in git
+        // history at ndn-sim dbe14fd.)
         let d2 = consumer
             .fetch_wire(interest("/svc/2"), Duration::from_secs(4))
             .await
             .expect("fetch #2 returned a packet");
         assert_eq!(
             d2.name.to_string(),
-            "/svc/1",
-            "PINNED BUG (NS-6): arrival-order pairing returned the late reply of the previous \
-             fetch. If this assert fails because the name now matches /svc/2, the consumer \
-             pairing was FIXED — flip this test into the fix's regression gate."
+            "/svc/2",
+            "NS-6 regression: a straggler reply was mis-delivered as this fetch's answer"
         );
 
-        // And the stream stays shifted by one — every later fetch gets its predecessor's reply.
+        // No shift: every later fetch keeps answering with its own name.
         let d3 = consumer
             .fetch_wire(interest("/svc/3"), Duration::from_secs(4))
             .await
             .expect("fetch #3 returned a packet");
-        assert_eq!(
-            d3.name.to_string(),
-            "/svc/2",
-            "the shift persists: fetch #3 received fetch #2's reply"
-        );
+        assert_eq!(d3.name.to_string(), "/svc/3", "the stream must not shift");
+
+        // The held reply wasn't wasted — just correctly attributed: it satisfied B's PIT and
+        // sits in the CS, so a re-ask for /svc/1 succeeds cleanly.
+        let d1 = consumer
+            .fetch_wire(interest("/svc/1"), Duration::from_secs(4))
+            .await
+            .expect("re-fetch of the timed-out name succeeds");
+        assert_eq!(d1.name.to_string(), "/svc/1");
 
         cancel.cancel();
         fabric.shutdown().await;

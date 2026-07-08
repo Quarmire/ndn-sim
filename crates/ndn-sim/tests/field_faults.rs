@@ -41,13 +41,15 @@ use bytes::Bytes;
 use ndn_app::error::AppError;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
+use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_packet::Name;
-use ndn_packet::encode::InterestBuilder;
+use ndn_security::{KeyChain, SignWith, TrustSchema, ValidationResult, Validator};
 use ndn_sim::fieldkit::{
-    CatchupOutcome, Progress, RestartablePublisher, TwoPhaseReplica, drive_until_or_stall,
-    naive_catchup, publish_backlog,
+    CatchupOutcome, HistoryServerNode, Progress, RestartablePublisher, TwoPhaseReplica,
+    drive_until_or_stall, naive_catchup, publish_backlog,
 };
 use ndn_sim::{FrameMatcher, HoldRule, LinkConfig, Simulation, VirtualKernel};
+use ndn_sync::{DataStore, MemoryStore, svs_data_name};
 use tokio_util::sync::CancellationToken;
 
 const GROUP: &str = "/grp";
@@ -416,4 +418,240 @@ fn lagging_peer_converges_after_restart_via_persistent_store() {
         Some(b"history-3".to_vec()),
         "the missing Block crossed, byte-identical, served from the restarted publisher's store"
     );
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// D-42 — the OFFLINE-writer regime the online-restart fix does NOT cover: a peer needs a chain's
+// history while the writer is simply DOWN. A cooperative HistoryServer (durable replica: ingest
+// everything advertised, serve from store) closes it. Topology W—H—R (writer and reader never
+// directly linked), so a converged reader can ONLY have been served by H. RED without the
+// server is exactly `lagging_peer_starves_after_publisher_restart` on the stock path.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+
+/// THE OFFLINE GATE (D-42). A HistoryServer on H ingests W's chain while W is up; W then goes
+/// offline and STAYS down; the lagging reader R fetches the history FROM H and converges,
+/// byte-identical. Served by H, provably — the W↔H link is down and W and R share no link.
+#[test]
+fn offline_writer_history_served_by_history_server() {
+    fastrand::seed(8);
+    let kernel = VirtualKernel::new();
+    kernel.run(|k| async move {
+        let mut sim = Simulation::new().kernel(k).seed(8);
+        let w = sim.add_node(EngineConfig::default());
+        let h = sim.add_node(EngineConfig::default());
+        let r = sim.add_node(EngineConfig::default());
+        // W — H — R. No W↔R link: R can only be served by H.
+        sim.link(w, h, LinkConfig::lan());
+        sim.link(h, r, LinkConfig::lan());
+        // Sync group across both hops.
+        sim.add_route(w, GROUP, h);
+        sim.add_route(h, GROUP, w);
+        sim.add_route(h, GROUP, r);
+        sim.add_route(r, GROUP, h);
+        // Data plane: H ingests W's data from W; R fetches W's data from H.
+        sim.add_route(h, "/nodes/W", w);
+        sim.add_route(r, "/nodes/W", h);
+        // H holds two group faces and both fetches-and-serves /nodes/W → multicast.
+        sim.add_strategy(h, GROUP, "multicast");
+        sim.add_strategy(h, "/nodes/W", "multicast");
+        let fabric = sim.start().await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let group = name(GROUP);
+        let w_base = name("/nodes/W");
+        let history = ["hist-1", "hist-2", "hist-3"];
+
+        // The durable HistoryServer on H (ingests everything advertised, serves from store).
+        // Serve /nodes/W at the SAME prefix H routes to W, so under multicast the FIB entry has
+        // both nexthops (H-app + the W link): H's own ingest fetch reaches W (its app face is the
+        // excluded originator), and R's fetch reaches H's store (the W link being down).
+        let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
+        let server = HistoryServerNode::attach(
+            &fabric,
+            h,
+            &group,
+            &name("/nodes/H"),
+            std::slice::from_ref(&w_base),
+            Arc::clone(&store),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        // W publishes three Blocks while up.
+        let publisher = fabric
+            .engine_of(w)
+            .unwrap()
+            .app_node(cancel.child_token())
+            .publish(group.clone(), w_base.clone())
+            .await
+            .unwrap();
+        ndn_sim::fieldkit::settle(Duration::from_millis(200)).await;
+        for blk in history {
+            publisher.put(blk).await.unwrap();
+        }
+
+        // Wait until H has durably ingested W's full history.
+        let mut ingested = false;
+        for _ in 0..600 {
+            if (1..=3).all(|s| server.store().find_under(&svs_data_name(&w_base, &group, s)).is_some())
+            {
+                ingested = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(ingested, "HistoryServer must ingest W's full history while W is up");
+
+        // W goes offline and STAYS down — the writer process is gone.
+        fabric.set_link_up(w, h, false).unwrap();
+        drop(publisher);
+
+        // R (lagging peer) discovers via H's advertisement and fetches the history from H.
+        let replica = TwoPhaseReplica::attach(
+            &fabric,
+            r,
+            &group,
+            &name("/nodes/R"),
+            Duration::from_millis(500),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        let progress = Progress::new();
+        let received: Arc<StdMutex<BTreeMap<u64, Bytes>>> = Arc::new(StdMutex::new(BTreeMap::new()));
+        {
+            let progress = progress.clone();
+            let received = Arc::clone(&received);
+            let mut replica = replica;
+            tokio::spawn(async move {
+                while let Some(update) = replica.handle.recv().await {
+                    for seq in update.low_seq..=update.high_seq {
+                        if let Some(bytes) = replica.fetch(&update.name, seq).await {
+                            let _ = replica.handle.ack(&update.publisher, seq).await;
+                            if received.lock().unwrap().insert(seq, bytes).is_none() {
+                                progress.incr();
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        let outcome = drive_until_or_stall(&progress, 3, Duration::from_secs(20)).await;
+        assert_eq!(
+            outcome,
+            CatchupOutcome::Reached(3),
+            "R converges — served by the HistoryServer with the writer offline (D-42 offline tier)"
+        );
+        assert_eq!(
+            received.lock().unwrap().get(&3).map(|b| b.as_ref().to_vec()),
+            Some(b"hist-3".to_vec()),
+            "the missing Block crossed byte-identical, served by H (writer's link down)"
+        );
+
+        cancel.cancel();
+        drop(server);
+        fabric.shutdown().await;
+    });
+}
+
+/// C1 (D-42) — a serving member is UNTRUSTED: the fetcher RE-VERIFIES. A byzantine
+/// HistoryServer that serves tampered bytes under a valid name is rejected by the fetcher's
+/// signature validation, never accepted "because it's the repo." Proves no trusted-server
+/// short-circuit on the fetch side: the server serves BOTH a genuine and a tampered Block; the
+/// verifying fetcher accepts the genuine and rejects the tampered — purely on the crypto.
+#[test]
+fn history_server_served_bytes_are_re_verified_not_trusted() {
+    fastrand::seed(8);
+    let kernel = VirtualKernel::new();
+    kernel.run(|k| async move {
+        let mut sim = Simulation::new().kernel(k).seed(8);
+        let h = sim.add_node(EngineConfig::default());
+        let r = sim.add_node(EngineConfig::default());
+        sim.link(h, r, LinkConfig::lan());
+        sim.add_route(r, "/nodes/W", h); // R fetches W's data from the server H
+        let fabric = sim.start().await.unwrap();
+
+        let cancel = CancellationToken::new();
+        let group = name(GROUP);
+        let w_base = name("/nodes/W");
+        let good_name = svs_data_name(&w_base, &group, 1);
+        let bad_name = svs_data_name(&w_base, &group, 2);
+
+        // W's key + a validator that trusts W's anchor (the fetcher's trust).
+        let kc = KeyChain::ephemeral("/nodes/W").unwrap();
+        let validator = Validator::new(TrustSchema::hierarchical());
+        if let Some(cert) = kc.manager_arc().trust_anchor(kc.key_name()) {
+            validator.add_trust_anchor(cert);
+        }
+        let signer = kc.signer().unwrap();
+
+        // A genuine W-signed Block, and a tampered one (a content byte flipped after signing, so
+        // the signature no longer matches — the wire still decodes, verification is what fails).
+        let good_content = b"genuine-history-block".to_vec();
+        let good_wire = DataBuilder::new(good_name.clone(), &good_content)
+            .sign_with_sync(&*signer)
+            .expect("sign good");
+        let bad_content = b"about-to-be-tampered!".to_vec();
+        let signed_bad = DataBuilder::new(bad_name.clone(), &bad_content)
+            .sign_with_sync(&*signer)
+            .expect("sign bad");
+        let tampered_wire = {
+            let mut t = signed_bad.to_vec();
+            let pos = t
+                .windows(bad_content.len())
+                .position(|w| w == bad_content.as_slice())
+                .expect("content in wire");
+            t[pos] ^= 0x01;
+            Bytes::from(t)
+        };
+
+        // A byzantine HistoryServer: it holds (and will serve) BOTH the genuine and the tampered
+        // wire under valid names. (No writer needed — we poison the store directly.)
+        let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
+        let server = HistoryServerNode::attach(
+            &fabric,
+            h,
+            &group,
+            &name("/nodes/H"),
+            std::slice::from_ref(&w_base),
+            Arc::clone(&store),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        store.insert(good_name.clone(), good_wire);
+        store.insert(bad_name.clone(), tampered_wire);
+
+        let mut consumer = fabric.engine_of(r).unwrap().app_consumer(cancel.child_token());
+
+        // Genuine Block: served by H and it VERIFIES → accepted.
+        let good = tokio::time::timeout(Duration::from_secs(5), consumer.fetch(good_name.clone()))
+            .await
+            .expect("fetch good timed out")
+            .expect("H serves the genuine wire");
+        assert!(
+            matches!(validator.validate(&good).await, ValidationResult::Valid(_)),
+            "a genuine, correctly-signed Block served by H validates"
+        );
+
+        // Tampered Block: also served by H, but the fetcher's verification REJECTS it — not
+        // accepted because the repo served it.
+        let bad = tokio::time::timeout(Duration::from_secs(5), consumer.fetch(bad_name.clone()))
+            .await
+            .expect("fetch bad timed out")
+            .expect("H serves the tampered wire too");
+        assert_eq!(*bad.name, bad_name, "same valid name — only the bytes are tampered");
+        assert!(
+            !matches!(validator.validate(&bad).await, ValidationResult::Valid(_)),
+            "tampered bytes served by the repo MUST be rejected by the fetcher (untrusted serving)"
+        );
+
+        cancel.cancel();
+        drop(server);
+        fabric.shutdown().await;
+    });
 }

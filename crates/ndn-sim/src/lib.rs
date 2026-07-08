@@ -169,6 +169,8 @@ pub mod profile;
 pub mod radio;
 pub mod replay;
 pub mod routing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fieldkit;
 pub mod scenario;
 pub mod scene;
 pub mod sim_face;
@@ -244,7 +246,7 @@ pub use scene::{
     RadioLink, SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
     render_topology_svg,
 };
-pub use sim_face::SimFace;
+pub use sim_face::{FrameMatcher, HoldRule, SimFace};
 pub use sim_link::{FaceProfile, LinkConfig, SimLink};
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use stepper::Stepper;

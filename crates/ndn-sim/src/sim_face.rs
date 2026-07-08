@@ -18,6 +18,70 @@ use tracing::trace;
 
 use crate::sim_link::{FaceProfile, LinkConfig};
 
+/// Which wire frames a [`HoldRule`] arms on, by TLV outer type. Frames between two engine
+/// faces are bare NDN packets unless the link LP-fragments (an MTU-bearing profile) or a peer
+/// initiates NDNLPv2 — match [`Any`](Self::Any) on such links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameMatcher {
+    /// Every frame.
+    Any,
+    /// Interest packets (outer TLV type `0x05`).
+    Interest,
+    /// Data packets (outer TLV type `0x06`).
+    Data,
+}
+
+impl FrameMatcher {
+    fn matches(&self, pkt: &[u8]) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Interest => pkt.first() == Some(&0x05),
+            Self::Data => pkt.first() == Some(&0x06),
+        }
+    }
+}
+
+/// A targeted **hold**: delay matching frames WITHOUT dropping them — the reorder /
+/// latency-spike fault a loss knob cannot express (NS-6: a late reply to an already-timed-out
+/// request arrives mid-way through the next exchange and shifts every arrival-order-paired
+/// stream by one).
+///
+/// Deterministic by construction: the rule counts *matching* frames crossing the face in
+/// arrival order, skips the first [`skip`](Self::skip), and holds the next
+/// [`count`](Self::count) by [`delay`](Self::delay) on top of the link's normal latency. Held
+/// frames are **exempt from the loss roll** (delayed, never dropped — the contract), but a
+/// downed link (partition) still discards everything.
+///
+/// On a datagram face (`reliable: false`, the `SimLink` default) a held frame is overtaken by
+/// later traffic — a true reorder. On a reliable (TCP-like) face in-order delivery is
+/// preserved, so the hold becomes a head-of-line stall instead; both are faithful.
+#[derive(Debug, Clone)]
+pub struct HoldRule {
+    /// Which frames arm the rule.
+    pub matcher: FrameMatcher,
+    /// Skip this many matching frames before holding starts.
+    pub skip: u64,
+    /// Hold this many matching frames, then let the rest flow normally.
+    pub count: u64,
+    /// Extra delay applied to each held frame (on top of the link's configured latency).
+    pub delay: Duration,
+}
+
+impl HoldRule {
+    /// Hold the `n`-th (0-based) matching frame, once.
+    pub fn nth(matcher: FrameMatcher, n: u64, delay: Duration) -> Self {
+        Self { matcher, skip: n, count: 1, delay }
+    }
+}
+
+/// Live hold bookkeeping: the rule plus how many matching frames have been seen / held.
+#[derive(Debug)]
+struct HoldActive {
+    rule: HoldRule,
+    matched: u64,
+    held: u64,
+}
+
 /// Live, mutable per-face fault knobs — shared (via `Arc`) with the fabric so a runtime
 /// [`Fault`](crate::Fault) can cut a link (partition), or inject loss / extra delay (degrade),
 /// *without* rebuilding the link. A face at rest ([`reset`](LinkState::reset)) behaves exactly as
@@ -30,6 +94,8 @@ pub struct LinkState {
     loss_override_bits: AtomicU64,
     /// Extra delay (ns) added to every frame — congestion / degradation.
     extra_delay_ns: AtomicU64,
+    /// Targeted delay-without-drop rule ([`HoldRule`]) — the reorder fault.
+    hold: Mutex<Option<HoldActive>>,
 }
 
 impl LinkState {
@@ -38,6 +104,7 @@ impl LinkState {
             down: AtomicBool::new(false),
             loss_override_bits: AtomicU64::new(f64::NAN.to_bits()),
             extra_delay_ns: AtomicU64::new(0),
+            hold: Mutex::new(None),
         })
     }
     /// Cut / restore the link (drop everything when `true`).
@@ -52,11 +119,18 @@ impl LinkState {
     pub fn set_extra_delay(&self, extra: Duration) {
         self.extra_delay_ns.store(extra.as_nanos() as u64, Ordering::Relaxed);
     }
-    /// Restore the link to its profile defaults (up, no override, no extra delay).
+    /// Install (or clear) a targeted [`HoldRule`] — delay matching frames without dropping
+    /// them. Replaces any prior rule; the match counter restarts.
+    pub fn set_hold(&self, rule: Option<HoldRule>) {
+        *self.hold.lock().unwrap() =
+            rule.map(|rule| HoldActive { rule, matched: 0, held: 0 });
+    }
+    /// Restore the link to its profile defaults (up, no override, no extra delay, no hold).
     pub fn reset(&self) {
         self.set_down(false);
         self.set_loss(None);
         self.set_extra_delay(Duration::ZERO);
+        self.set_hold(None);
     }
     fn is_down(&self) -> bool {
         self.down.load(Ordering::Relaxed)
@@ -67,6 +141,23 @@ impl LinkState {
     }
     fn extra_delay(&self) -> Duration {
         Duration::from_nanos(self.extra_delay_ns.load(Ordering::Relaxed))
+    }
+    /// Consult (and advance) the hold rule for one outgoing frame: `Some(delay)` if this frame
+    /// is held. Counting is per *matching* frame, in send order — deterministic under the
+    /// single-threaded virtual/DES kernels.
+    fn hold_delay(&self, pkt: &[u8]) -> Option<Duration> {
+        let mut guard = self.hold.lock().unwrap();
+        let active = guard.as_mut()?;
+        if !active.rule.matcher.matches(pkt) {
+            return None;
+        }
+        let idx = active.matched;
+        active.matched += 1;
+        if idx < active.rule.skip || active.held >= active.rule.count {
+            return None;
+        }
+        active.held += 1;
+        Some(active.rule.delay)
     }
 }
 
@@ -175,10 +266,17 @@ impl Transport for SimFace {
             trace!(face = %self.id, "SimFace: packet dropped (link down)");
             return Ok(());
         }
+        // Targeted hold (delay WITHOUT drop): a held frame is exempt from the loss roll —
+        // "delayed, never dropped" is the rule's contract.
+        let hold = self.state.hold_delay(&pkt);
+        if hold.is_some() {
+            trace!(face = %self.id, "SimFace: frame held (delayed, not dropped)");
+        }
+
         // Datagram loss (reliable streams never drop) — a runtime Fault::DegradeLink can override the
         // profile's rate.
         let loss_rate = self.state.loss_override().unwrap_or(self.config.loss_rate);
-        if !self.reliable && loss_rate > 0.0 {
+        if hold.is_none() && !self.reliable && loss_rate > 0.0 {
             let roll: f64 = self.rng.lock().unwrap().random();
             if roll < loss_rate {
                 trace!(face = %self.id, "SimFace: packet dropped (loss)");
@@ -211,7 +309,8 @@ impl Transport for SimFace {
         } else {
             self.jitter()
         };
-        let mut deliver_at = tx_start + self.config.delay + jitter + self.state.extra_delay();
+        let mut deliver_at =
+            tx_start + self.config.delay + jitter + self.state.extra_delay() + hold.unwrap_or_default();
 
         // Reliable: never deliver before the previous packet (in-order, HOL-style).
         if self.reliable {

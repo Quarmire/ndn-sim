@@ -26,6 +26,9 @@ ndn-face      = { workspace = true }
 ndn-app       = { workspace = true }
 # Signed-Interest verification for authenticated control-over-NDN (mutating commands).
 ndn-security  = { workspace = true }
+# The fieldkit scenario primitives (two-phase replica plane, burst/restart shapes) ride the
+# real sync layer — that's the point: they must exercise the STOCK channel geometry.
+ndn-sync      = { workspace = true }
 
 # The Keel: ndn-lab is the first real consumer of the manifest/render-contract
 # calculus. Zero-dep spec crates + the tool-tier `explain` micro-crate, pulled by
@@ -79,7 +82,8 @@ ndn-security = { workspace = true }
 ndn-time         = { workspace = true }
 ndn-time-sources = { workspace = true }
 ndn-timekeeper   = { workspace = true }
-ndn-sync         = { workspace = true }
 # multihop.rs / relay_hops.rs: pipe relaying over a simulated multi-hop net.
 ndn-coding       = { workspace = true }
 ndn-pipes        = { workspace = true }
+# tests/field_faults.rs: seed ndn-sync's thread-local suppression jitter for reproducible runs.
+fastrand         = "2"

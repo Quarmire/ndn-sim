@@ -1316,6 +1316,38 @@ impl RunningSimulation {
         Ok(())
     }
 
+    /// Install a targeted [`HoldRule`](crate::HoldRule) on the **`from` → `to` direction** of the
+    /// link: delay matching frames WITHOUT dropping them — the reorder / latency-spike fault
+    /// (drop-based faults can only produce timeouts; this produces the *late reply*, the NS-6
+    /// trigger). Directional on purpose: holding A→B Data leaves B→A Interests untouched.
+    /// Replaces any prior rule on that direction; clear with [`clear_hold`](Self::clear_hold) or
+    /// [`heal`](Self::heal).
+    pub fn hold_link(&self, from: NodeId, to: NodeId, rule: crate::HoldRule) -> Result<()> {
+        self.directed_link_state(from, to)?.set_hold(Some(rule));
+        Ok(())
+    }
+
+    /// Remove the hold rule on the `from` → `to` direction (frames flow normally again).
+    pub fn clear_hold(&self, from: NodeId, to: NodeId) -> Result<()> {
+        self.directed_link_state(from, to)?.set_hold(None);
+        Ok(())
+    }
+
+    /// The live fault knobs governing the `from` → `to` direction of a link.
+    fn directed_link_state(
+        &self,
+        from: NodeId,
+        to: NodeId,
+    ) -> Result<std::sync::Arc<crate::sim_face::LinkState>> {
+        self.inner
+            .lock()
+            .unwrap()
+            .link_states
+            .get(&(from, to))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no link between {from} and {to}"))
+    }
+
     /// Partition the fabric: cut every link that crosses the boundary of `group` (exactly one
     /// endpoint in `group`). Links wholly inside or outside are untouched. Undo with [`heal`](Self::heal).
     pub fn partition(&self, group: &[NodeId]) {

@@ -55,6 +55,33 @@ pub struct Scenario {
     pub radio_routes: Vec<RadioRouteSpec>,
     #[serde(default)]
     pub strategies: Vec<StrategyChoiceSpec>,
+    /// External peers attached at the edge over real UDP (the bridge doctrine: a real face *on a
+    /// node*, never a fake node). Applied post-start by [`apply_bridges`](Scenario::apply_bridges);
+    /// requires a real-time-capable kernel (`wall_clock` / `real_time`) — an external process
+    /// cannot obey a virtual clock.
+    #[serde(default)]
+    pub bridges: Vec<BridgeSpec>,
+}
+
+/// A declarable UDP bridge to an external NDN endpoint (NFD / ndnd / NDNts / a device):
+///
+/// ```toml
+/// [[bridges]]
+/// node  = 0
+/// local = "127.0.0.1:0"          # fixed port if the peer must dial back
+/// peer  = "127.0.0.1:6363"
+/// route = "/interop"             # optional FIB route over the bridge face
+/// mtu   = 1200                   # optional send-MTU clamp (NDNLPv2-fragments above it)
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BridgeSpec {
+    pub node: usize,
+    pub local: String,
+    pub peer: String,
+    #[serde(default)]
+    pub route: Option<String>,
+    #[serde(default)]
+    pub mtu: Option<u64>,
 }
 
 /// A broadcast FIB route over a node's radio face.
@@ -388,6 +415,40 @@ impl Scenario {
         }
 
         Ok(sim)
+    }
+
+    /// Attach the scenario's declared [`bridges`](Scenario::bridges) to the running fabric:
+    /// a real UDP face per spec (+ optional FIB route, + optional send-MTU clamp). Call after
+    /// [`start`](Simulation::start); a no-op when no bridges are declared.
+    ///
+    /// **Kernel fence:** external endpoints live on real time, so this refuses to run under a
+    /// `des`/`virtual` kernel — the same doctrine [`bridge`](crate::bridge) fixes.
+    pub async fn apply_bridges(&self, fabric: &crate::RunningSimulation) -> Result<()> {
+        if self.bridges.is_empty() {
+            return Ok(());
+        }
+        match self.kernel {
+            KernelSpec::WallClock | KernelSpec::RealTime { .. } => {}
+            _ => bail!(
+                "scenario declares [[bridges]] but a virtual-time kernel: external endpoints \
+                 cannot obey a virtual clock — use kernel.kind = \"wall_clock\" or \"real_time\""
+            ),
+        }
+        for (i, b) in self.bridges.iter().enumerate() {
+            let node = NodeId(b.node);
+            let local = b.local.parse().with_context(|| format!("bridges[{i}].local"))?;
+            let peer = b.peer.parse().with_context(|| format!("bridges[{i}].peer"))?;
+            let face = fabric.bridge_udp_mtu(node, local, peer, b.mtu).await?;
+            if let Some(route) = &b.route {
+                let prefix = route.parse().with_context(|| format!("bridges[{i}].route"))?;
+                fabric
+                    .engine_of(node)
+                    .ok_or_else(|| anyhow::anyhow!("bridges[{i}]: no node {node}"))?
+                    .fib()
+                    .add_nexthop(&prefix, face, 10);
+            }
+        }
+        Ok(())
     }
 
     fn check_node(&self, idx: usize) -> Result<()> {

@@ -32,6 +32,20 @@ impl RunningSimulation {
         local: SocketAddr,
         peer: SocketAddr,
     ) -> Result<FaceId> {
+        self.bridge_udp_mtu(node, local, peer, None).await
+    }
+
+    /// [`bridge_udp`](Self::bridge_udp) with an explicit **send MTU** on the bridge face —
+    /// outbound packets larger than it are NDNLPv2-fragmented. Use it to match a constrained
+    /// external link (or to force fragmentation in an interop test). `None` keeps the transport
+    /// default.
+    pub async fn bridge_udp_mtu(
+        &self,
+        node: NodeId,
+        local: SocketAddr,
+        peer: SocketAddr,
+        mtu: Option<u64>,
+    ) -> Result<FaceId> {
         let engine = self
             .engine_of(node)
             .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?;
@@ -40,6 +54,10 @@ impl RunningSimulation {
             .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?;
         let id = engine.faces().alloc_id();
         let face = UdpFace::bind(local, peer, id).await?;
+        if mtu.is_some() {
+            ndn_transport::Transport::set_send_mtu(&face, mtu)
+                .map_err(|e| anyhow::anyhow!("bridge MTU: {e}"))?;
+        }
         engine.add_face(face, cancel);
         Ok(id)
     }

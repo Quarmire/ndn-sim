@@ -916,6 +916,12 @@ fn normalize_time(samples: &[MetricsSample]) -> Vec<MetricsSample> {
 /// Build + drive the scenario on one kernel at one `seed`, apply the fault schedule at virtual
 /// instants, and capture the terminal [`Observation`].
 fn run_once(spec: &ValidationSpec, kernel: CheckKernel, seed: u64) -> Result<Observation> {
+    if !spec.scenario.bridges.is_empty() {
+        anyhow::bail!(
+            "validation runs are hermetic: [[bridges]] (external endpoints) are not allowed in a \
+             check scenario — attach external peers via `ndn-lab run`/`serve` instead"
+        );
+    }
     let mut scenario = spec.scenario.clone();
     scenario.seed = seed;
     let faults = spec.faults.clone();

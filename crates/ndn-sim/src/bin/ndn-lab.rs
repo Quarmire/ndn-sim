@@ -281,7 +281,11 @@ async fn build_fabric(
     kernel: Arc<dyn SimKernel>,
 ) -> Result<RunningSimulation> {
     Ok(match scenario {
-        Some(s) => s.build(kernel)?.start().await?,
+        Some(s) => {
+            let fabric = s.build(kernel)?.start().await?;
+            s.apply_bridges(&fabric).await?; // external peers attach at the edge, post-start
+            fabric
+        }
         None => Simulation::new().kernel(kernel).start().await?,
     })
 }
@@ -301,6 +305,7 @@ fn cmd_run(path: PathBuf, secs: u64, capture: Option<PathBuf>) -> Result<()> {
         };
         kernel.run(move |k| async move {
             let fabric = scenario.build(k)?.start().await?;
+            scenario.apply_bridges(&fabric).await?; // errors clearly: bridges need real time
             let radio = fabric.capture_radio();
             ndn_app::rt::sleep(dur).await;
             let out = (
@@ -314,6 +319,7 @@ fn cmd_run(path: PathBuf, secs: u64, capture: Option<PathBuf>) -> Result<()> {
     } else if scenario.kernel.is_virtual() {
         VirtualKernel::new().run(|k| async move {
             let fabric = scenario.build(k)?.start().await?;
+            scenario.apply_bridges(&fabric).await?; // errors clearly: bridges need real time
             let radio = fabric.capture_radio();
             tokio::time::sleep(dur).await;
             let out = (

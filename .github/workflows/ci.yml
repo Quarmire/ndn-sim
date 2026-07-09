@@ -11,6 +11,9 @@ on:
     branches: [main]
     paths: ["crates/**", "Cargo.toml", ".github/workflows/ci.yml"]
   workflow_dispatch:
+  schedule:
+    # Weekly foreign-forwarder interop conformance run (the Tier-1 drift guard).
+    - cron: "17 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,3 +67,38 @@ jobs:
       - name: Doc build
         working-directory: ndn-sim
         run: cargo doc --no-deps
+
+  # Opt-in Tier-1 interop conformance: the wire suite against a REAL foreign
+  # forwarder (ndnd, Go). Never runs on push/PR — manual dispatch or the weekly
+  # cron only — so normal CI stays hermetic and fast. Skips cleanly (the tests
+  # self-SKIP) if the ndnd build ever fails to produce a binary.
+  interop:
+    name: interop (vs real ndnd)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: ndn-sim }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: main, path: ndn-rs }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: main, path: ndn-ext }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: main, path: ndn-radio-drivers }
+      - uses: actions/checkout@v4
+        with:
+          repository: "${{ github.repository_owner }}/flotilla"
+          ref: main
+          path: flotilla
+          token: ${{ secrets.FLOTILLA_TOKEN }}
+      - uses: actions/checkout@v4
+        with: { repository: named-data/ndnd, path: ndnd }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: Build ndnd
+        working-directory: ndnd
+        run: go build -o /tmp/ndnd ./cmd/ndnd
+      - name: Interop suite
+        working-directory: ndn-sim
+        run: NDND_BIN=/tmp/ndnd cargo test -p ndn-sim --test interop_ndnd -- --ignored --nocapture

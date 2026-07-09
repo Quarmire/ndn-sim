@@ -41,6 +41,32 @@ hand-written exporter integrations; every loss is auditable. See `ndn_sim::keel`
 5. **Self-description** — telemetry described once (`#[derive(Manifest)]`), rendered through
    competing render contracts with deterministic selection and named, auditable losses (the Keel).
 
+## Interop with other NDN stacks
+
+ndn-lab interops **at the edge, by design** (`ndn_sim::bridge`): a real UDP face attaches to a
+fabric node so any conformant forwarder — NFD, ndnd, NDNts, a phone — peers with the simulated
+fabric over the real NDN wire, while the fabric interior stays deterministic. External endpoints
+live on real time, so bridges require a `wall_clock`/`real_time` kernel (and are refused, loudly,
+under `des`/`virtual` — validation runs stay hermetic).
+
+Declare an external peer straight in a scenario:
+
+```toml
+[[bridges]]
+node  = 0
+local = "127.0.0.1:0"          # fixed port if the peer must dial back
+peer  = "127.0.0.1:6363"       # e.g. a local NFD or ndnd
+route = "/interop"             # optional FIB route over the bridge face
+mtu   = 1200                   # optional send-MTU clamp (NDNLPv2-fragments above it)
+```
+
+A conformance suite validates the wire against a **real ndnd** (Go, named-data.net):
+Interest/Data + MustBeFresh, foreign-signature parsing, NDNLPv2 fragmentation **in both
+directions**, CanBePrefix discovery — plus one *documented divergence* (ndnd deliberately sends
+no Nacks; an unrouted Interest surfaces here as a clean timeout). Run it with
+`testbed/interop.sh` (builds ndnd from a checkout), or in CI via the opt-in `interop` job
+(manual dispatch / weekly cron — never on PRs).
+
 ## The `ndn-lab` binary (the doorway)
 
 ```

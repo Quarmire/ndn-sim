@@ -248,6 +248,29 @@ impl TwoPhaseReplica {
         let data = self.consumer.lock().await.fetch(name).await.ok()?;
         data.content().cloned()
     }
+
+    /// KNOWN-BAD fetch variant — the pre-NS-6a pairing, preserved as a reference: express the
+    /// Interest, then take the NEXT packet off the face as the reply, no name match (built on
+    /// the documented streaming primitives `send_raw` + `recv_data`, which pair by arrival
+    /// order on purpose). The client-side wait (1 s) is deliberately shorter than the Interest
+    /// lifetime (4 s) — the field shape — so a reply held past the wait still has a live PIT
+    /// entry, lands in the face buffer, and is returned as a LATER fetch's answer: the mispair
+    /// that poisoned a chain in the field. Exists so the liveness matrix's NS-6 row can prove,
+    /// live, that its byte-identity invariant catches the class (`ndn_app::Consumer::fetch`
+    /// itself is name-paired since `fe36e7be`).
+    pub async fn fetch_arrival_paired(&self, publisher_base: &Name, seq: u64) -> Option<Bytes> {
+        let name = svs_data_name(publisher_base, &self.group, seq);
+        let wire = ndn_packet::encode::InterestBuilder::new(name)
+            .lifetime(Duration::from_secs(4))
+            .build();
+        let consumer = self.consumer.lock().await;
+        consumer.send_raw(wire).await.ok()?;
+        let data = tokio::time::timeout(Duration::from_secs(1), consumer.recv_data())
+            .await
+            .ok()?
+            .ok()?;
+        data.content().cloned()
+    }
 }
 
 // The durable history-serving member is no longer an ndn-sync `HistoryServer` (that fork was

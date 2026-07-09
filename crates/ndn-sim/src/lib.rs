@@ -171,6 +171,8 @@ pub mod replay;
 pub mod routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fieldkit;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod liveness;
 pub mod scenario;
 pub mod scene;
 pub mod sim_face;

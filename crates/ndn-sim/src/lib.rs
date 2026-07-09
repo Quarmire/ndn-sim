@@ -173,6 +173,8 @@ pub mod routing;
 pub mod fieldkit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod liveness;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ceiling;
 pub mod scenario;
 pub mod scene;
 pub mod sim_face;

@@ -40,6 +40,8 @@ pub use crate::{FrameMatcher, HoldRule};
 pub use crate::fieldkit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::liveness;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::ceiling;
 
 // Kernels — the execution + time engine.
 pub use crate::{DesKernel, RealTimeKernel, SimKernel, WallClockKernel};

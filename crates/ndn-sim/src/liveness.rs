@@ -111,6 +111,28 @@ impl Ledger {
         self.acks.load(Ordering::Relaxed)
     }
 
+    /// How many Blocks `replica` currently holds (diagnostic; also drives the NS-4 red-gate
+    /// consumer's O(history) cost model).
+    pub fn stored_count(&self, replica: &str) -> u64 {
+        self.stored
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|(r, _, _)| r == replica)
+            .count() as u64
+    }
+
+    /// Total payload bytes `replica` holds — the macro "bytes per held Block" metric.
+    pub fn stored_bytes(&self, replica: &str) -> u64 {
+        self.stored
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((r, _, _), _)| r == replica)
+            .map(|(_, b)| b.len() as u64)
+            .sum()
+    }
+
     /// The live global backlog: over every `(replica, publisher)` pair that exists in the
     /// cell, how many authored publications that replica does not yet hold. `replicas` names
     /// the nodes expected to replicate (the cell's topology knowledge, not an end-state).
@@ -284,6 +306,12 @@ pub struct CatchupOpts {
     /// Simulated per-Block processing cost (e.g. a persistent store commit — the FS-5 ~15 ms
     /// that made NS-9 fire in the field). Virtual time; free under the kernel.
     pub per_seq_delay: Duration,
+    /// KNOWN-BAD reference (the NS-4 shape): EXTRA per-Block cost proportional to how many
+    /// Blocks this replica already holds — an O(history) walk per event (the `chain_head`
+    /// trait-default re-walking every ancestry, the resolve re-verifying every packet). The
+    /// ceiling-finder's red gate: with this on, the "per-event cost is flat vs history" bound
+    /// must trip.
+    pub per_stored_delay: Duration,
     /// `Some(n)` = a deliberately WEDGED consumer: after storing `n` Blocks it parks forever
     /// mid-stream — the faithful model of the field deadlock (a consumer frozen in a full ack
     /// channel: progress made, then nothing, no error). The watchdog's own red-capability
@@ -297,6 +325,7 @@ impl Default for CatchupOpts {
             fetch: FetchMode::Stock,
             step: StepBound::None,
             per_seq_delay: Duration::ZERO,
+            per_stored_delay: Duration::ZERO,
             wedge_after: None,
         }
     }
@@ -387,10 +416,20 @@ async fn process_update(
                 FetchMode::ArrivalPaired => continue,
             }
         };
-        if !opts.per_seq_delay.is_zero() {
-            tokio::time::sleep(opts.per_seq_delay).await;
-        }
         let newly = ledger.record_stored(replica_name, &update.publisher, seq, &bytes);
+        if newly {
+            // The per-event cost model applies to NEW Blocks only — it models the commit
+            // (store write, verify, projection), not a re-advertised range's idempotent
+            // re-walk (which the sync layer produces freely and must stay cheap).
+            if !opts.per_seq_delay.is_zero() {
+                tokio::time::sleep(opts.per_seq_delay).await;
+            }
+            if !opts.per_stored_delay.is_zero() {
+                // O(history) per event — cost grows with what is already held (NS-4).
+                let held = ledger.stored_count(replica_name);
+                tokio::time::sleep(opts.per_stored_delay * held as u32).await;
+            }
+        }
         if let Some(cap) = opts.wedge_after {
             let held = {
                 let stored = ledger.stored.lock().unwrap();

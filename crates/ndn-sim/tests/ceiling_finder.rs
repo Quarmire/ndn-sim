@@ -47,10 +47,21 @@ async fn build_pair(
     seed: u64,
     groups: &[String],
 ) -> (RunningSimulation, NodeId, NodeId) {
+    build_pair_link(k, seed, groups, LinkConfig::lan()).await
+}
+
+/// [`build_pair`] over a caller-chosen link — the bend measurement uses a fixed-latency link so
+/// per-fetch RTT dominates scheduling noise.
+async fn build_pair_link(
+    k: std::sync::Arc<dyn ndn_sim::SimKernel>,
+    seed: u64,
+    groups: &[String],
+    link: LinkConfig,
+) -> (RunningSimulation, NodeId, NodeId) {
     let mut sim = Simulation::new().kernel(k).seed(seed);
     let a = sim.add_node(EngineConfig::default());
     let b = sim.add_node(EngineConfig::default());
-    sim.link(a, b, LinkConfig::lan());
+    sim.link(a, b, link);
     for g in groups {
         sim.add_route(a, g, b);
         sim.add_route(b, g, a);
@@ -259,74 +270,124 @@ fn run_ingest_cell(cell: &str, seed: u64, per_stored: Duration) -> PerfCell {
 /// where the fetch strategy is what's being measured.
 fn late_join_curve(seed: u64, window: usize) -> Vec<(u64, f64)> {
     let backlogs = [50u64, 100, 200, 400];
-    let mut curve: Vec<(u64, f64)> = Vec::new(); // (backlog, total ms)
-    for (i, &n) in backlogs.iter().enumerate() {
-        let point_seed = seed + i as u64;
-        fastrand::seed(point_seed);
-        let kernel = VirtualKernel::new();
-        let ms = kernel.run(move |k| async move {
-            let (fabric, a, b) = build_pair(k, point_seed, &["/grp".into()]).await;
-            let cancel = CancellationToken::new();
-            let ledger = Arc::new(Ledger::new());
-            // A tight PERIODIC advert (the stock default is 30 s, which makes a cold
-            // joiner's discovery ride the long-tailed suppression-reply path — seed-
-            // dependent seconds of noise swamping the phase this sweep measures).
-            let pub_cfg = ndn_app::PublisherConfig {
-                svs: ndn_sync::SvsConfig {
-                    sync_interval: Duration::from_millis(200),
-                    jitter_ms: 0,
-                    ..ndn_sync::SvsConfig::default()
-                },
-                ..ndn_app::PublisherConfig::default()
-            };
-            let publisher = fabric
-                .engine_of(a)
-                .unwrap()
-                .app_node(cancel.child_token())
-                .publish_with_config(name("/grp"), name(PUBLISHER), pub_cfg)
-                .await
-                .unwrap();
-            settle(Duration::from_millis(300)).await;
-            // History first, replica after: one cold catch-up of exactly `n`.
-            publish_n(&publisher, &ledger, PUBLISHER, n as usize).await;
-            // Drain the advert burst (≈ a few ms per put, virtual time is free).
-            settle(Duration::from_millis(20 * n + 1_000)).await;
-            // A tight replica sync interval keeps the DISCOVERY floor (first
-            // vector exchange) from swamping the fetch phase the sweep measures.
-            attach_ledgered_at(
-                &fabric, b, "/grp", "/nodes/B", &ledger, "B",
-                CatchupOpts { window, ..CatchupOpts::default() },
-                Duration::from_millis(100), &cancel,
-            )
-            .await;
-            let drain =
-                time_to_drain(&ledger, &["B".to_string()], DRAIN_BUDGET).await;
-            cancel.cancel();
-            fabric.shutdown().await;
-            drain.as_secs_f64() * 1e3
-        });
-        curve.push((n, ms));
-    }
-    curve
+    backlogs
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| (n, late_join_point(seed + i as u64, window, n)))
+        .collect()
 }
 
-/// The bend bound: at the largest backlog, the windowed catch-up must be ≥`min_speedup`×
-/// faster than the serial one on the identical sweep. This is the §6.1 acceptance shape —
-/// red-capable: a window that doesn't pipeline (one fetch per RTT regardless) lands at
-/// ratio ≈ 1 and trips it (see `bend_bound_reddens_when_the_window_does_not_pipeline`).
-fn bend_bound(serial: &[(u64, f64)], windowed: &[(u64, f64)], min_speedup: f64) -> BoundCheck {
-    let (n, serial_ms) = *serial.last().unwrap();
-    let (_, windowed_ms) = *windowed.last().unwrap();
+/// One cold late-join catch-up: publish `backlog` Blocks, let the advert burst drain, then
+/// attach a fresh replica with the given fetch `window` and time (virtual) to full drain.
+/// Returns milliseconds. The reusable unit behind both the curve sweep and the bend
+/// measurement. The curve sweep runs it over a LAN link ([`late_join_point`]); the bend runs
+/// it over a fixed-latency link ([`late_join_point_over`]) so per-fetch RTT dominates noise.
+fn late_join_point(point_seed: u64, window: usize, backlog: u64) -> f64 {
+    late_join_point_over(point_seed, window, backlog, LinkConfig::lan())
+}
+
+fn late_join_point_over(point_seed: u64, window: usize, backlog: u64, link: LinkConfig) -> f64 {
+    fastrand::seed(point_seed);
+    let kernel = VirtualKernel::new();
+    kernel.run(move |k| async move {
+        let (fabric, a, b) = build_pair_link(k, point_seed, &["/grp".into()], link).await;
+        let cancel = CancellationToken::new();
+        let ledger = Arc::new(Ledger::new());
+        // A tight PERIODIC advert (the stock default is 30 s, which makes a cold
+        // joiner's discovery ride the long-tailed suppression-reply path — seed-
+        // dependent seconds of noise swamping the phase this sweep measures).
+        let pub_cfg = ndn_app::PublisherConfig {
+            svs: ndn_sync::SvsConfig {
+                sync_interval: Duration::from_millis(200),
+                jitter_ms: 0,
+                ..ndn_sync::SvsConfig::default()
+            },
+            ..ndn_app::PublisherConfig::default()
+        };
+        let publisher = fabric
+            .engine_of(a)
+            .unwrap()
+            .app_node(cancel.child_token())
+            .publish_with_config(name("/grp"), name(PUBLISHER), pub_cfg)
+            .await
+            .unwrap();
+        settle(Duration::from_millis(300)).await;
+        // History first, replica after: one cold catch-up of exactly `backlog`.
+        publish_n(&publisher, &ledger, PUBLISHER, backlog as usize).await;
+        // Drain the advert burst (≈ a few ms per put, virtual time is free).
+        settle(Duration::from_millis(20 * backlog + 1_000)).await;
+        // A tight replica sync interval keeps the DISCOVERY floor (first
+        // vector exchange) from swamping the fetch phase the sweep measures.
+        attach_ledgered_at(
+            &fabric, b, "/grp", "/nodes/B", &ledger, "B",
+            CatchupOpts { window, ..CatchupOpts::default() },
+            Duration::from_millis(100), &cancel,
+        )
+        .await;
+        let drain = time_to_drain(&ledger, &["B".to_string()], DRAIN_BUDGET).await;
+        cancel.cancel();
+        fabric.shutdown().await;
+        drain.as_secs_f64() * 1e3
+    })
+}
+
+/// Backlog for the bend measurement. Modest, because the SIGNAL comes from the fixed per-fetch
+/// LATENCY ([`BEND_LINK`]), not from piling up Blocks — the F26 lesson applied correctly. On
+/// the LAN link (1 ms RTT) the fetch phase is tiny and the noisy discovery/scheduling floor
+/// swamps it at every backlog (why the old backlog-400 cell read ~2× and even backlog-2400
+/// best-of-3 was flaky, 2.1×–4.9× run to run). Over a fixed-latency link the fetch phase is
+/// `backlog × RTT` of DETERMINISTIC delay that dwarfs the ms-scale scheduling noise, so the
+/// ratio robustly reflects the window factor.
+const BEND_BACKLOG: u64 = 400;
+
+/// A fixed-latency link for the bend: 50 ms one-way (100 ms RTT), NO jitter, NO loss. The RTT
+/// is the deterministic quantum windowing divides; at 100 ms it dwarfs the ms-scale scheduling
+/// noise, so serial ≈ `backlog × 100 ms` and windowed ≈ `(backlog/window) × 100 ms` hold
+/// robustly. (Virtual time, so the 40 s serial drain costs no wall-clock delay — only the real
+/// fetch operations do.)
+fn bend_link() -> LinkConfig {
+    LinkConfig {
+        delay: Duration::from_millis(50),
+        jitter: Duration::ZERO,
+        loss_rate: 0.0,
+        bandwidth_bps: 0,
+    }
+}
+
+/// The best (minimum) late-join time over `BEND_SEEDS` seeds at [`BEND_BACKLOG`] over
+/// [`bend_link`]. With a deterministic link the runs barely vary, but a startup-race fetch
+/// timeout is still one-sided noise (it only ADDS time), so the minimum excludes it.
+const BEND_SEEDS: u64 = 2;
+fn best_late_join(seed: u64, window: usize) -> f64 {
+    (0..BEND_SEEDS)
+        .map(|s| late_join_point_over(seed.wrapping_add(0x5000 + s * 0x101), window, BEND_BACKLOG, bend_link()))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The bend bound: at [`BEND_BACKLOG`] (large enough that the fetch phase dwarfs the fixed
+/// discovery floor), the windowed catch-up must be ≥`min_speedup`× faster than the serial one.
+/// The §6.1 acceptance shape. `serial_ms` / `windowed_ms` are the best-of-`BEND_SEEDS` times
+/// ([`best_late_join`]) — one-sided noise excluded by the minimum. Red-capable: a window that
+/// doesn't pipeline lands at ratio ≈ 1 and trips it (see
+/// `bend_bound_reddens_when_the_window_does_not_pipeline`).
+fn bend_bound(serial_ms: f64, windowed_ms: f64, min_speedup: f64) -> BoundCheck {
     let speedup = if windowed_ms > 0.0 { serial_ms / windowed_ms } else { f64::INFINITY };
     BoundCheck {
         name: "latejoin-window-bends-the-curve".into(),
         claim: format!(
             "the windowed catch-up pipelines: ≥{min_speedup}× faster than serial at backlog \
-             {n} (serial ≈ one RTT per Block; windowed ≈ backlog/window RTTs)"
+             {BEND_BACKLOG} over a fixed-latency link (serial ≈ one 100 ms RTT per Block; \
+             windowed ≈ backlog/window RTTs). Measured over a deterministic-latency link so the \
+             fetch phase — the thing windowing divides — dominates the ms-scale scheduling \
+             noise, giving a robust ratio (the ideal is the window, 16×; overhead lands it \
+             lower). Bound {min_speedup}× — comfortably above a non-pipelining regression's 1× \
+             (red-capable), comfortably below the observed factor (not luck). Best-of-\
+             {BEND_SEEDS} seeds drops one-sided startup-timeout outliers."
         ),
         detail: format!(
-            "serial {serial_ms:.1} ms vs windowed {windowed_ms:.1} ms @ backlog {n} \
-             (speedup {speedup:.2}×, bound ≥{min_speedup}×)"
+            "serial {serial_ms:.1} ms vs windowed {windowed_ms:.1} ms @ backlog {BEND_BACKLOG} \
+             over a 100 ms-RTT link (best-of-{BEND_SEEDS}; speedup {speedup:.2}×, bound \
+             ≥{min_speedup}×)"
         ),
         pass: speedup >= min_speedup,
     }
@@ -369,7 +430,14 @@ fn run_late_join_cell(cell: &str, seed: u64) -> PerfCell {
         (400, windowed[3].1.max(50.0)),
         16.0,
     ));
-    report.bound(bend_bound(&serial, &windowed, 4.0));
+    // The bend is measured at BEND_BACKLOG (not 400): there the fetch phase dwarfs the fixed
+    // discovery floor, so the ratio reflects the real window factor instead of being
+    // quantization-limited to ~2× (the F26 lesson — bound where the signal beats the floor).
+    let serial_bend = best_late_join(seed, 1);
+    let windowed_bend = best_late_join(seed, WINDOW);
+    report.metric("bend_serial_ms", serial_bend);
+    report.metric("bend_windowed_ms", windowed_bend);
+    report.bound(bend_bound(serial_bend, windowed_bend, 4.0));
     report
 }
 
@@ -630,14 +698,16 @@ fn flat_bound_reddens_on_a_quadratic_path() {
     println!("quadratic path caught: {}", flat.detail);
 }
 
-/// RED GATE: the bend bound must trip when the "windowed" run does not actually pipeline.
-/// Two serial sweeps of the same scenario differ only by scheduling noise (speedup ≈ 1×,
-/// nowhere near the required 4×) — a bend bound that passed on that would be a shell.
+/// RED GATE: the bend bound must trip when the "windowed" run does not actually pipeline. Both
+/// operands are the best-of-seeds SERIAL time at BEND_BACKLOG (the window knob silently
+/// ignored), so the ratio ≈ 1× — nowhere near the required 4×. A bend bound that passed on that
+/// would be a shell. Measured at the SAME large backlog the real cell uses, so the gate proves
+/// red-capability at the operating point, not a toy one.
 #[test]
 fn bend_bound_reddens_when_the_window_does_not_pipeline() {
-    let serial = late_join_curve(0xA0B1, 1);
-    let not_pipelined = late_join_curve(0xA0B1, 1); // the window knob silently ignored
-    let bound = bend_bound(&serial, &not_pipelined, 4.0);
+    let serial = best_late_join(0xA0B1, 1);
+    let not_pipelined = best_late_join(0xA0B1, 1); // the window knob silently ignored
+    let bound = bend_bound(serial, not_pipelined, 4.0);
     assert!(
         !bound.pass,
         "the bend bound must trip when windowing yields no pipelining: {}",

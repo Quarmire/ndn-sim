@@ -42,6 +42,8 @@ pub use crate::fieldkit;
 pub use crate::liveness;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::ceiling;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::adversary;
 
 // Kernels — the execution + time engine.
 pub use crate::{DesKernel, RealTimeKernel, SimKernel, WallClockKernel};

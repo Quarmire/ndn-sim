@@ -175,6 +175,8 @@ pub mod fieldkit;
 pub mod liveness;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ceiling;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod adversary;
 pub mod scenario;
 pub mod scene;
 pub mod sim_face;

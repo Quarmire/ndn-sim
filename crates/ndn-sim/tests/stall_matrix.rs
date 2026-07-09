@@ -393,10 +393,26 @@ fn stall_matrix_scoreboard() {
         Some(reorder_hold()), 12, CatchupOpts::default(),
     ));
 
+    // NS-6 row, WINDOWED (skyfall §6.1): the same reorder fault with 16 fetches in flight.
+    // Out-of-order arrival is exactly where a held stale reply could mispair — the
+    // name-correlated window must keep the byte-identity invariant green.
+    board.push(run_simple_cell(
+        "reorder-ns6-windowed/pair", 0xC716, Topo::Pair,
+        LinkConfig { delay: Duration::from_millis(30), ..LinkConfig::default() },
+        Some(reorder_hold()), 12, CatchupOpts { window: 16, ..CatchupOpts::default() },
+    ));
+
     // NS-7 row — a 400-Block catch-up through the stock two-phase channels.
     board.push(run_simple_cell(
         "burst-ns7/pair", 0xC707, Topo::Pair, LinkConfig::lan(), None, 400,
         CatchupOpts::default(),
+    ));
+
+    // NS-7 row, WINDOWED: the same 400-Block burst with the windowed catch-up ON — the
+    // channel-geometry deadlock must stay unreachable when acks arrive in chunk-sized runs.
+    board.push(run_simple_cell(
+        "burst-ns7-windowed/pair", 0xC717, Topo::Pair, LinkConfig::lan(), None, 400,
+        CatchupOpts { window: 16, ..CatchupOpts::default() },
     ));
 
     // NS-8 row — publisher restart with the persistent store (the N-13/N-15 regime).

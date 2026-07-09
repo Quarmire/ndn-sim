@@ -223,6 +223,12 @@ impl AdversaryBoard {
 /// `honest_publishers` names the publishers whose validated content the ledger should credit as
 /// honest progress (an attacker's *validly* signed but off-workload publication is still not
 /// honest backlog — this keeps the watchdog watching the honest workload, not the attacker's).
+///
+/// `window` = max in-flight fetch Interests (`1` = the serial one-per-RTT loop). Windowing
+/// pipelines the FETCH only ([`TwoPhaseReplica::fetch_window`], name-correlated so N
+/// outstanding can never mispair); verify/store/ack still run strictly in seq order over the
+/// buffered chunk, holding at the first miss — so the adversary cells can assert that the
+/// invariants and cost bounds survive the windowed catch-up.
 pub async fn verifying_catchup(
     replica: TwoPhaseReplica,
     ledger: Arc<Ledger>,
@@ -230,52 +236,65 @@ pub async fn verifying_catchup(
     honest_publishers: Vec<String>,
     replica_name: String,
     meter: Arc<CostMeter>,
+    window: usize,
 ) {
     let mut replica = replica;
-    while let Some(update) = replica.handle.recv().await {
+    'updates: while let Some(update) = replica.handle.recv().await {
         let honest = honest_publishers.contains(&update.publisher);
-        for seq in update.low_seq..=update.high_seq {
-            let Some(payload) = replica.fetch(&update.name, seq).await else {
-                break; // unfetchable — hold at the gap
+        let mut next = update.low_seq;
+        while next <= update.high_seq {
+            let hi = (next + window.max(1) as u64 - 1).min(update.high_seq);
+            let chunk = if window > 1 {
+                replica.fetch_window(&update.name, next, hi, window).await
+            } else {
+                vec![replica.fetch(&update.name, next).await]
             };
-            // Decode the inner signed Data and run the real verifier. This is THE per-Block
-            // work an attacker is trying to amplify; count it once, here.
-            let stored_content: Option<Bytes> = match Data::decode(payload) {
-                Ok(data) => {
-                    // Count the verification: honest Blocks are baseline work; attacker Blocks
-                    // are induced work (the numerator of the amplification ratio).
-                    if honest {
-                        meter.baseline_work();
-                    } else {
-                        meter.action();
-                        meter.work();
-                    }
-                    match validator.validate(&data).await {
-                        ValidationResult::Valid(safe) => {
-                            safe.data().content().map(|c| Bytes::copy_from_slice(c))
+            let requested = (hi - next + 1) as usize;
+            for (i, slot) in chunk.into_iter().take(requested).enumerate() {
+                let seq = next + i as u64;
+                let Some(payload) = slot else {
+                    continue 'updates; // unfetchable — hold at the gap; discard the buffered tail
+                };
+                // Decode the inner signed Data and run the real verifier. This is THE per-Block
+                // work an attacker is trying to amplify; count it once, here.
+                let stored_content: Option<Bytes> = match Data::decode(payload) {
+                    Ok(data) => {
+                        // Count the verification: honest Blocks are baseline work; attacker Blocks
+                        // are induced work (the numerator of the amplification ratio).
+                        if honest {
+                            meter.baseline_work();
+                        } else {
+                            meter.action();
+                            meter.work();
                         }
-                        _ => None, // failed crypto / trust — dropped, never stored or acked
+                        match validator.validate(&data).await {
+                            ValidationResult::Valid(safe) => {
+                                safe.data().content().map(|c| Bytes::copy_from_slice(c))
+                            }
+                            _ => None, // failed crypto / trust — dropped, never stored or acked
+                        }
                     }
-                }
-                Err(_) => {
-                    // Malformed payload from the attacker: still one bounded unit of work.
-                    if !honest {
-                        meter.action();
-                        meter.work();
+                    Err(_) => {
+                        // Malformed payload from the attacker: still one bounded unit of work.
+                        if !honest {
+                            meter.action();
+                            meter.work();
+                        }
+                        None
                     }
-                    None
-                }
-            };
+                };
 
-            // Store + ack ONLY validated, honest-workload content — the poison line and the
-            // progress signal. An attacker's dropped Block never advances anything.
-            if honest && let Some(content) = stored_content {
-                if ledger.record_stored(&replica_name, &update.publisher, seq, &content) {
-                    ledger.record_reported(&replica_name);
+                // Store + ack ONLY validated, honest-workload content — the poison line and the
+                // progress signal. An attacker's dropped Block never advances anything.
+                if honest && let Some(content) = stored_content {
+                    if ledger.record_stored(&replica_name, &update.publisher, seq, &content) {
+                        ledger.record_reported(&replica_name);
+                    }
+                    let _ = replica.handle.ack(&update.publisher, seq).await;
+                    ledger.record_ack();
                 }
-                let _ = replica.handle.ack(&update.publisher, seq).await;
-                ledger.record_ack();
             }
+            next = hi + 1;
         }
     }
 }

@@ -95,12 +95,38 @@ async fn attach_ledgered(
     opts: CatchupOpts,
     cancel: &CancellationToken,
 ) {
+    attach_ledgered_at(
+        fabric,
+        node,
+        group,
+        local,
+        ledger,
+        rname,
+        opts,
+        Duration::from_millis(500),
+        cancel,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn attach_ledgered_at(
+    fabric: &RunningSimulation,
+    node: NodeId,
+    group: &str,
+    local: &str,
+    ledger: &Arc<Ledger>,
+    rname: &str,
+    opts: CatchupOpts,
+    sync_interval: Duration,
+    cancel: &CancellationToken,
+) {
     let replica = TwoPhaseReplica::attach(
         fabric,
         node,
         &name(group),
         &name(local),
-        Duration::from_millis(500),
+        sync_interval,
         cancel,
     )
     .await
@@ -214,11 +240,24 @@ fn run_ingest_cell(cell: &str, seed: u64, per_stored: Duration) -> PerfCell {
 
 // ────────────────────────────────────────────────────────────────────────────────────────────
 // Cell: the late-join catch-up curve — time-to-converge vs backlog size (skyfall's
-// late_join.rs, generalized). Bound: linear-ish, not quadratic (8× backlog may cost ≤16×;
-// quadratic would be 64×). The per-Block curve's knee is FOUND and recorded.
+// late_join.rs, generalized), swept SERIAL (window=1, one round trip per Block) and WINDOWED
+// (window=16, the repl-transport §6.1 pipeline) over the identical scenario. Bounds:
+// linear-ish, not quadratic (8× backlog may cost ≤16×; quadratic would be 64×), on both
+// curves; and THE BEND — the windowed curve must actually pipeline (≥4× faster at the largest
+// backlog; ~window× is the theoretical ceiling, RTT-dominated links sit near it). The
+// per-Block knee is FOUND and recorded.
 // ────────────────────────────────────────────────────────────────────────────────────────────
 
-fn run_late_join_cell(cell: &str, seed: u64) -> PerfCell {
+/// One late-join catch-up sweep: cold catch-up of each backlog size over an A—B pair,
+/// returning `(backlog, total ms)` per point. `window = 1` is the serial one-per-RTT loop.
+///
+/// A TRUE late join: after the history is published, the fabric settles until the
+/// publisher's per-put advert burst has fully drained (each `put` broadcasts a sync
+/// Interest; a replica attached mid-burst hears an escalating range one advert at a time
+/// and the measurement becomes the BURST's pacing, not the catch-up's). The cold joiner
+/// then hears one steady-state advert carrying the whole backlog — the skyfall §6.1 shape
+/// where the fetch strategy is what's being measured.
+fn late_join_curve(seed: u64, window: usize) -> Vec<(u64, f64)> {
     let backlogs = [50u64, 100, 200, 400];
     let mut curve: Vec<(u64, f64)> = Vec::new(); // (backlog, total ms)
     for (i, &n) in backlogs.iter().enumerate() {
@@ -229,37 +268,83 @@ fn run_late_join_cell(cell: &str, seed: u64) -> PerfCell {
             let (fabric, a, b) = build_pair(k, point_seed, &["/grp".into()]).await;
             let cancel = CancellationToken::new();
             let ledger = Arc::new(Ledger::new());
+            // A tight PERIODIC advert (the stock default is 30 s, which makes a cold
+            // joiner's discovery ride the long-tailed suppression-reply path — seed-
+            // dependent seconds of noise swamping the phase this sweep measures).
+            let pub_cfg = ndn_app::PublisherConfig {
+                svs: ndn_sync::SvsConfig {
+                    sync_interval: Duration::from_millis(200),
+                    jitter_ms: 0,
+                    ..ndn_sync::SvsConfig::default()
+                },
+                ..ndn_app::PublisherConfig::default()
+            };
             let publisher = fabric
                 .engine_of(a)
                 .unwrap()
                 .app_node(cancel.child_token())
-                .publish(name("/grp"), name(PUBLISHER))
+                .publish_with_config(name("/grp"), name(PUBLISHER), pub_cfg)
                 .await
                 .unwrap();
             settle(Duration::from_millis(300)).await;
             // History first, replica after: one cold catch-up of exactly `n`.
             publish_n(&publisher, &ledger, PUBLISHER, n as usize).await;
-            let start = tokio::time::Instant::now();
-            attach_ledgered(
+            // Drain the advert burst (≈ a few ms per put, virtual time is free).
+            settle(Duration::from_millis(20 * n + 1_000)).await;
+            // A tight replica sync interval keeps the DISCOVERY floor (first
+            // vector exchange) from swamping the fetch phase the sweep measures.
+            attach_ledgered_at(
                 &fabric, b, "/grp", "/nodes/B", &ledger, "B",
-                CatchupOpts::default(), &cancel,
+                CatchupOpts { window, ..CatchupOpts::default() },
+                Duration::from_millis(100), &cancel,
             )
             .await;
             let drain =
                 time_to_drain(&ledger, &["B".to_string()], DRAIN_BUDGET).await;
-            let _ = start;
             cancel.cancel();
             fabric.shutdown().await;
             drain.as_secs_f64() * 1e3
         });
         curve.push((n, ms));
     }
+    curve
+}
+
+/// The bend bound: at the largest backlog, the windowed catch-up must be ≥`min_speedup`×
+/// faster than the serial one on the identical sweep. This is the §6.1 acceptance shape —
+/// red-capable: a window that doesn't pipeline (one fetch per RTT regardless) lands at
+/// ratio ≈ 1 and trips it (see `bend_bound_reddens_when_the_window_does_not_pipeline`).
+fn bend_bound(serial: &[(u64, f64)], windowed: &[(u64, f64)], min_speedup: f64) -> BoundCheck {
+    let (n, serial_ms) = *serial.last().unwrap();
+    let (_, windowed_ms) = *windowed.last().unwrap();
+    let speedup = if windowed_ms > 0.0 { serial_ms / windowed_ms } else { f64::INFINITY };
+    BoundCheck {
+        name: "latejoin-window-bends-the-curve".into(),
+        claim: format!(
+            "the windowed catch-up pipelines: ≥{min_speedup}× faster than serial at backlog \
+             {n} (serial ≈ one RTT per Block; windowed ≈ backlog/window RTTs)"
+        ),
+        detail: format!(
+            "serial {serial_ms:.1} ms vs windowed {windowed_ms:.1} ms @ backlog {n} \
+             (speedup {speedup:.2}×, bound ≥{min_speedup}×)"
+        ),
+        pass: speedup >= min_speedup,
+    }
+}
+
+fn run_late_join_cell(cell: &str, seed: u64) -> PerfCell {
+    const WINDOW: usize = 16;
+    let serial = late_join_curve(seed, 1);
+    let windowed = late_join_curve(seed, WINDOW);
 
     let mut report = PerfCell::new(cell, seed);
-    for (n, ms) in &curve {
+    for (n, ms) in &serial {
         report.metric(format!("catchup_ms_backlog_{n}"), *ms);
     }
-    let per_block: Vec<(u64, f64)> = curve.iter().map(|(n, ms)| (*n, ms / *n as f64)).collect();
+    for (n, ms) in &windowed {
+        report.metric(format!("catchup_ms_backlog_{n}_w{WINDOW}"), *ms);
+    }
+    let per_block: Vec<(u64, f64)> = serial.iter().map(|(n, ms)| (*n, ms / *n as f64)).collect();
     let knee = find_knee(&per_block, 3.0);
     report.metric(
         "knee_backlog",
@@ -269,10 +354,22 @@ fn run_late_join_cell(cell: &str, seed: u64) -> PerfCell {
         "latejoin-linearish",
         "catch-up time grows roughly linearly with backlog (8× blocks ≤ 16× time; quadratic \
          would be 64×)",
-        (50, curve[0].1),
-        (400, curve[3].1),
+        (50, serial[0].1),
+        (400, serial[3].1),
         16.0,
     ));
+    // Small windowed backlogs finish inside one drain-poll tick (50 ms) and read as 0;
+    // clamp both points to the measurement resolution so the growth ratio stays meaningful.
+    report.bound(growth_bound(
+        "latejoin-windowed-linearish",
+        "windowed catch-up still grows roughly linearly with backlog (the window divides the \
+         RTT count; it must not change the growth ORDER; points clamped to the 50 ms drain-poll \
+         resolution)",
+        (50, windowed[0].1.max(50.0)),
+        (400, windowed[3].1.max(50.0)),
+        16.0,
+    ));
+    report.bound(bend_bound(&serial, &windowed, 4.0));
     report
 }
 
@@ -531,6 +628,22 @@ fn flat_bound_reddens_on_a_quadratic_path() {
     );
     assert!(!red.pass);
     println!("quadratic path caught: {}", flat.detail);
+}
+
+/// RED GATE: the bend bound must trip when the "windowed" run does not actually pipeline.
+/// Two serial sweeps of the same scenario differ only by scheduling noise (speedup ≈ 1×,
+/// nowhere near the required 4×) — a bend bound that passed on that would be a shell.
+#[test]
+fn bend_bound_reddens_when_the_window_does_not_pipeline() {
+    let serial = late_join_curve(0xA0B1, 1);
+    let not_pipelined = late_join_curve(0xA0B1, 1); // the window knob silently ignored
+    let bound = bend_bound(&serial, &not_pipelined, 4.0);
+    assert!(
+        !bound.pass,
+        "the bend bound must trip when windowing yields no pipelining: {}",
+        bound.detail
+    );
+    println!("non-pipelining window caught: {}", bound.detail);
 }
 
 /// Same seed ⇒ identical NORMATIVE report (bound verdicts; raw metrics are diagnostic under

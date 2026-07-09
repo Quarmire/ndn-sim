@@ -317,6 +317,13 @@ pub struct CatchupOpts {
     /// channel: progress made, then nothing, no error). The watchdog's own red-capability
     /// probe: backlog stays nonzero, acks freeze, the stall MUST fire.
     pub wedge_after: Option<u64>,
+    /// Max in-flight fetch Interests per catch-up chunk (`1` = the serial one-per-RTT loop).
+    /// `> 1` pipelines the FETCH only ([`TwoPhaseReplica::fetch_window`], name-correlated so N
+    /// outstanding can never mispair) while store/ack still run strictly in seq order,
+    /// holding at the first miss — the ceiling-finder's serial-vs-windowed knob. Applies to
+    /// [`FetchMode::Stock`]; the known-bad [`FetchMode::ArrivalPaired`] stays serial (its
+    /// point is the pairing bug, not throughput).
+    pub window: usize,
 }
 
 impl Default for CatchupOpts {
@@ -327,6 +334,7 @@ impl Default for CatchupOpts {
             per_seq_delay: Duration::ZERO,
             per_stored_delay: Duration::ZERO,
             wedge_after: None,
+            window: 1,
         }
     }
 }
@@ -390,9 +398,11 @@ pub async fn ledgered_catchup(
     }
 }
 
-/// Process one advertised update: per seq — fetch (stock or arrival-paired), simulate the
-/// per-Block cost, record the store, ack, and collect the newly-stored seqs as the step's
-/// events.
+/// Process one advertised update: per seq — fetch (stock serial, stock windowed, or
+/// arrival-paired), simulate the per-Block cost, record the store, ack, and collect the
+/// newly-stored seqs as the step's events. Windowed fetches (`opts.window > 1`) pipeline the
+/// FETCH only: store/ack still run strictly in seq order over the buffered chunk, holding at
+/// the first miss exactly like the serial loop.
 async fn process_update(
     replica: &TwoPhaseReplica,
     ledger: &Ledger,
@@ -401,6 +411,24 @@ async fn process_update(
     opts: &CatchupOpts,
 ) -> Vec<(String, u64)> {
     let mut events = Vec::new();
+    if opts.window > 1 && opts.fetch == FetchMode::Stock {
+        let mut next = update.low_seq;
+        while next <= update.high_seq {
+            let hi = (next + opts.window as u64 - 1).min(update.high_seq);
+            let chunk = replica.fetch_window(&update.name, next, hi, opts.window).await;
+            let requested = (hi - next + 1) as usize;
+            for (i, slot) in chunk.into_iter().take(requested).enumerate() {
+                let seq = next + i as u64;
+                let Some(bytes) = slot else {
+                    return events; // hold at the gap; the buffered tail is discarded
+                };
+                ingest_one(replica, ledger, replica_name, &update, seq, bytes, opts, &mut events)
+                    .await;
+            }
+            next = hi + 1;
+        }
+        return events;
+    }
     for seq in update.low_seq..=update.high_seq {
         let bytes = match opts.fetch {
             FetchMode::Stock => replica.fetch(&update.name, seq).await,
@@ -416,39 +444,55 @@ async fn process_update(
                 FetchMode::ArrivalPaired => continue,
             }
         };
-        let newly = ledger.record_stored(replica_name, &update.publisher, seq, &bytes);
-        if newly {
-            // The per-event cost model applies to NEW Blocks only — it models the commit
-            // (store write, verify, projection), not a re-advertised range's idempotent
-            // re-walk (which the sync layer produces freely and must stay cheap).
-            if !opts.per_seq_delay.is_zero() {
-                tokio::time::sleep(opts.per_seq_delay).await;
-            }
-            if !opts.per_stored_delay.is_zero() {
-                // O(history) per event — cost grows with what is already held (NS-4).
-                let held = ledger.stored_count(replica_name);
-                tokio::time::sleep(opts.per_stored_delay * held as u32).await;
-            }
-        }
-        if let Some(cap) = opts.wedge_after {
-            let held = {
-                let stored = ledger.stored.lock().unwrap();
-                stored.keys().filter(|(r, _, _)| r == replica_name).count() as u64
-            };
-            if held >= cap {
-                // The field deadlock, modeled faithfully: mid-stream, mid-update, the
-                // consumer freezes (as if parked in a full ack channel). No error, no ack,
-                // no return — the watchdog is the only thing that can see this.
-                std::future::pending::<()>().await;
-            }
-        }
-        let _ = replica.handle.ack(&update.publisher, seq).await;
-        ledger.record_ack();
-        if newly {
-            events.push((update.publisher.clone(), seq));
-        }
+        ingest_one(replica, ledger, replica_name, &update, seq, bytes, opts, &mut events).await;
     }
     events
+}
+
+/// Ingest ONE fetched publication: the per-seq store/cost/wedge/ack body, identical for the
+/// serial and windowed paths (windowing changes arrival, never this).
+#[allow(clippy::too_many_arguments)]
+async fn ingest_one(
+    replica: &TwoPhaseReplica,
+    ledger: &Ledger,
+    replica_name: &str,
+    update: &ndn_sync::SyncUpdate,
+    seq: u64,
+    bytes: bytes::Bytes,
+    opts: &CatchupOpts,
+    events: &mut Vec<(String, u64)>,
+) {
+    let newly = ledger.record_stored(replica_name, &update.publisher, seq, &bytes);
+    if newly {
+        // The per-event cost model applies to NEW Blocks only — it models the commit
+        // (store write, verify, projection), not a re-advertised range's idempotent
+        // re-walk (which the sync layer produces freely and must stay cheap).
+        if !opts.per_seq_delay.is_zero() {
+            tokio::time::sleep(opts.per_seq_delay).await;
+        }
+        if !opts.per_stored_delay.is_zero() {
+            // O(history) per event — cost grows with what is already held (NS-4).
+            let held = ledger.stored_count(replica_name);
+            tokio::time::sleep(opts.per_stored_delay * held as u32).await;
+        }
+    }
+    if let Some(cap) = opts.wedge_after {
+        let held = {
+            let stored = ledger.stored.lock().unwrap();
+            stored.keys().filter(|(r, _, _)| r == replica_name).count() as u64
+        };
+        if held >= cap {
+            // The field deadlock, modeled faithfully: mid-stream, mid-update, the
+            // consumer freezes (as if parked in a full ack channel). No error, no ack,
+            // no return — the watchdog is the only thing that can see this.
+            std::future::pending::<()>().await;
+        }
+    }
+    let _ = replica.handle.ack(&update.publisher, seq).await;
+    ledger.record_ack();
+    if newly {
+        events.push((update.publisher.clone(), seq));
+    }
 }
 
 /// One matrix cell's verdicts, serialized into the scoreboard.

@@ -47,6 +47,10 @@ const A_NAME: &str = "/nodes/A";
 const E_NAME: &str = "/nodes/E";
 const STALL_WINDOW: Duration = Duration::from_secs(20);
 const BUDGET: Duration = Duration::from_secs(600);
+/// The honest verifying consumer runs with the windowed catch-up ON (skyfall §6.1): the
+/// adversary board's liveness/poison/cost verdicts hold under N-outstanding fetches, not just
+/// the serial loop.
+const VERIFIER_WINDOW: usize = 16;
 
 fn name(s: &str) -> Name {
     s.parse().unwrap()
@@ -140,6 +144,7 @@ async fn attach_verifier(
     ledger: &Arc<Ledger>,
     validator: &Arc<Validator>,
     meter: &Arc<CostMeter>,
+    window: usize,
     cancel: &CancellationToken,
 ) {
     let replica = TwoPhaseReplica::attach(
@@ -155,6 +160,7 @@ async fn attach_verifier(
         vec![A_NAME.to_string()], // only A's validated content is honest progress
         rname.to_string(),
         Arc::clone(meter),
+        window,
     ));
 }
 
@@ -178,7 +184,7 @@ fn run_invalid_sig_flood(cell: &str, seed: u64) -> AdversaryCell {
         let e_kc = KeyChain::ephemeral(E_NAME).unwrap();
         let validator = validator_trusting(&[&a_kc]); // trusts A only
 
-        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, &cancel).await;
+        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, VERIFIER_WINDOW, &cancel).await;
         let pub_a = attach_publisher(&fabric, a, A_NAME, &cancel).await;
         let pub_e = attach_publisher(&fabric, e, E_NAME, &cancel).await;
         settle(Duration::from_millis(400)).await;
@@ -239,7 +245,7 @@ fn run_fork_storm(cell: &str, seed: u64) -> AdversaryCell {
         let e_kc = KeyChain::ephemeral(E_NAME).unwrap();
         let validator = validator_trusting(&[&a_kc]);
 
-        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, &cancel).await;
+        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, VERIFIER_WINDOW, &cancel).await;
         let pub_a = attach_publisher(&fabric, a, A_NAME, &cancel).await;
         let pub_e = attach_publisher(&fabric, e, E_NAME, &cancel).await;
         settle(Duration::from_millis(400)).await;
@@ -299,7 +305,7 @@ fn run_ack_withholding(cell: &str, seed: u64) -> AdversaryCell {
         let a_kc = KeyChain::ephemeral(A_NAME).unwrap();
         let validator = validator_trusting(&[&a_kc]);
 
-        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, &cancel).await;
+        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, VERIFIER_WINDOW, &cancel).await;
 
         // B2: a withholding replica — fetch + count serve pressure, but never ack. Modeled with
         // the fieldkit's naive fetch loop wired to a SEPARATE ledger so its (non-)progress does

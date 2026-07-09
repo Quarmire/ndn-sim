@@ -33,8 +33,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use ndn_app::{Consumer, EngineAppExt, Publisher, PublisherConfig};
-use ndn_packet::{Interest, Name};
+use ndn_app::{Consumer, DemuxConnection, EngineAppExt, Publisher, PublisherConfig};
+use ndn_packet::encode::InterestBuilder;
+use ndn_packet::lp::{LpPacket, is_lp_packet};
+use ndn_packet::{Data, Interest, Name};
 use ndn_sync::{
     DataStore, MemoryStore, SvsConfig, SyncHandle, join_svs_group, svs_data_name,
 };
@@ -145,6 +147,9 @@ pub struct TwoPhaseReplica {
     /// The live two-phase handle: `recv()` advertised gaps, `ack()` validated-and-stored seqs.
     pub handle: SyncHandle,
     consumer: tokio::sync::Mutex<Consumer>,
+    /// A name-correlating demux on its own face — the [`Self::fetch_window`] plane, where N
+    /// Interests fly at once and each reply is routed to its waiter by name.
+    demux: Arc<DemuxConnection>,
     group: Name,
 }
 
@@ -236,6 +241,7 @@ impl TwoPhaseReplica {
         Ok(Self {
             handle,
             consumer: tokio::sync::Mutex::new(engine.app_consumer(cancel.child_token())),
+            demux: engine.app_node(cancel.child_token()).demux(),
             group: group.clone(),
         })
     }
@@ -247,6 +253,55 @@ impl TwoPhaseReplica {
         let name = svs_data_name(publisher_base, &self.group, seq);
         let data = self.consumer.lock().await.fetch(name).await.ok()?;
         data.content().cloned()
+    }
+
+    /// Windowed fetch of `(publisher_base, lo..=hi)`: up to `window` Interests in flight over
+    /// the name-correlating demux (each reply routed to its waiter **by name**, so N
+    /// outstanding can never mispair), contents returned in seq order (`None` = that seq
+    /// couldn't be fetched). Rides ndn-sync's one windowed pipeline
+    /// (`transfer::windowed_fetch_wires`) — the consumer-side mirror of the NDF
+    /// ChainReplicator's `fetch_window` seam, here so the macro-tier instruments can measure
+    /// the serial-vs-windowed catch-up shape on the identical scenario.
+    pub async fn fetch_window(
+        &self,
+        publisher_base: &Name,
+        lo: u64,
+        hi: u64,
+        window: usize,
+    ) -> Vec<Option<Bytes>> {
+        let demux = Arc::clone(&self.demux);
+        let express: ndn_sync::transfer::Express = Arc::new(move |name: Name| {
+            let demux = Arc::clone(&demux);
+            Box::pin(async move {
+                let wire = InterestBuilder::new(name.clone())
+                    .lifetime(Duration::from_secs(4))
+                    .build();
+                demux
+                    .fetch_correlated(name, wire, Duration::from_millis(4500))
+                    .await
+                    .ok()
+            }) as ndn_sync::transfer::ExpressFut
+        });
+        ndn_sync::transfer::windowed_fetch_wires(
+            lo,
+            hi,
+            window,
+            |s| svs_data_name(publisher_base, &self.group, s),
+            express,
+        )
+        .await
+        .into_iter()
+        .map(|w| {
+            w.and_then(|reply| {
+                let raw = if is_lp_packet(&reply) {
+                    LpPacket::decode(reply).ok()?.fragment?
+                } else {
+                    reply
+                };
+                Data::decode(raw).ok().and_then(|d| d.content().cloned())
+            })
+        })
+        .collect()
     }
 
     /// KNOWN-BAD fetch variant — the pre-NS-6a pairing, preserved as a reference: express the

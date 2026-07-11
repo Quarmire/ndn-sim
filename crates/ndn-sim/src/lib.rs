@@ -162,6 +162,7 @@ pub mod lora;
 pub mod mavlink;
 pub mod mcp;
 pub mod medium;
+pub mod netstat;
 pub mod otel_export;
 pub mod phy;
 pub mod prelude;
@@ -263,6 +264,7 @@ pub use telemetry::{
     FabricGauges, IpMetricsSample, MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter,
     compare_metrics, sample_engine,
 };
+pub use netstat::{PrefixCounters, PrefixSample, PrefixStats};
 pub use topology::{
     Clock, FaceKind, FaceStats, NodeId, RouteExplanation, RouteNexthop, RunningSimulation,
     Simulation, Strategy,

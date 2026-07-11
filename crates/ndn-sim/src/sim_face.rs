@@ -195,6 +195,9 @@ pub struct SimFace {
     rng: Mutex<StdRng>,
     /// Live fault knobs (down / loss-override / extra-delay), shared with the fabric.
     state: Arc<LinkState>,
+    /// Optional name-aware per-prefix accounting: when set, this face classifies
+    /// each frame and counts it into the shared table (see [`crate::netstat`]).
+    prefix_tap: Option<crate::netstat::PrefixTap>,
 }
 
 impl SimFace {
@@ -225,6 +228,7 @@ impl SimFace {
             runtime,
             rng: Mutex::new(StdRng::seed_from_u64(face_seed)),
             state: LinkState::new(),
+            prefix_tap: None,
         }
     }
 
@@ -232,6 +236,14 @@ impl SimFace {
     /// or degrade the link.
     pub(crate) fn link_state(&self) -> Arc<LinkState> {
         Arc::clone(&self.state)
+    }
+
+    /// Install a name-aware per-prefix tap on this face (the fabric does this at link-build time
+    /// when prefix accounting is enabled). Consumes + returns the face so it can be set before the
+    /// face moves into an engine.
+    pub(crate) fn with_prefix_tap(mut self, tap: crate::netstat::PrefixTap) -> Self {
+        self.prefix_tap = Some(tap);
+        self
     }
 }
 
@@ -257,10 +269,20 @@ impl Transport for SimFace {
     }
 
     async fn recv_bytes(&self) -> Result<Bytes, FaceError> {
-        self.rx.lock().await.recv().await.ok_or(FaceError::Closed)
+        let pkt = self.rx.lock().await.recv().await.ok_or(FaceError::Closed)?;
+        // Per-prefix accounting: count the DELIVERY (post-impairment — what actually arrived).
+        if let Some(tap) = &self.prefix_tap {
+            tap.observe(&pkt, false);
+        }
+        Ok(pkt)
     }
 
     async fn send_bytes(&self, pkt: Bytes) -> Result<(), FaceError> {
+        // Per-prefix accounting: count the EMISSION (before the loss roll — the node emitted it, so
+        // a lossy link shows out > in for the prefix, which is the informative truth).
+        if let Some(tap) = &self.prefix_tap {
+            tap.observe(&pkt, true);
+        }
         // A partitioned / downed link drops everything (a runtime Fault::Partition or a down link).
         if self.state.is_down() {
             trace!(face = %self.id, "SimFace: packet dropped (link down)");

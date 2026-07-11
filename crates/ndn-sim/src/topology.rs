@@ -84,6 +84,9 @@ pub struct Simulation {
     /// Perturbs every face's loss/jitter RNG (and the radio erasure RNG). 0 = the default single
     /// realization; a validation seed sweep varies it to draw independent random realizations.
     seed: u64,
+    /// If set, wired links get name-aware per-prefix accounting (grouping names to this many
+    /// components); read via [`RunningSimulation::prefix_stats`]. See [`crate::netstat`].
+    prefix_accounting: Option<usize>,
 }
 
 impl Default for Simulation {
@@ -107,7 +110,17 @@ impl Simulation {
             strategies: Vec::new(),
             radio_routes: Vec::new(),
             seed: 0,
+            prefix_accounting: None,
         }
+    }
+
+    /// Enable **name-aware per-prefix accounting** on wired links: every frame is classified and
+    /// counted per `(node, prefix)`, grouping names to `max_components` (3 is the network-viz
+    /// default). Read the live table via [`RunningSimulation::prefix_stats`]. Off by default (it
+    /// decodes each frame). See [`crate::netstat`].
+    pub fn with_prefix_accounting(mut self, max_components: usize) -> Self {
+        self.prefix_accounting = Some(max_components.max(1));
+        self
     }
 
     /// Declare a broadcast route for `prefix` over `node`'s radio face (the declarative form of
@@ -353,6 +366,10 @@ impl Simulation {
         let mut links: HashMap<(NodeId, NodeId), FaceId> = HashMap::new();
         let mut link_states: HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>> =
             HashMap::new();
+        let prefix_stats = self
+            .prefix_accounting
+            .map(crate::netstat::PrefixStats::with_grouping);
+        let prefix_arg = prefix_stats.as_ref().map(|s| (s, s.grouping()));
         for link in &self.links {
             if !nodes.contains_key(&link.a) || !nodes.contains_key(&link.b) {
                 bail!("link references non-existent node");
@@ -366,6 +383,7 @@ impl Simulation {
                 &link.profile,
                 self.channel_buffer,
                 self.seed,
+                prefix_arg,
             );
         }
 
@@ -485,6 +503,7 @@ impl Simulation {
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
             seed: self.seed,
+            prefix_stats,
         })
     }
 }
@@ -515,6 +534,7 @@ fn wire_link(
     profile: &FaceProfile,
     channel_buffer: usize,
     world_seed: u64,
+    prefix: Option<(&std::sync::Arc<crate::netstat::PrefixStats>, usize)>,
 ) {
     let ea = &nodes[&a];
     let eb = &nodes[&b];
@@ -530,6 +550,14 @@ fn wire_link(
         ea.engine.runtime(),
         world_seed,
     );
+    // Per-prefix accounting: each face counts its owning node's frames by name prefix.
+    let (face_a, face_b) = match prefix {
+        Some((stats, depth)) => (
+            face_a.with_prefix_tap(crate::netstat::PrefixTap::new(stats.clone(), ea.label.clone(), depth)),
+            face_b.with_prefix_tap(crate::netstat::PrefixTap::new(stats.clone(), eb.label.clone(), depth)),
+        ),
+        None => (face_a, face_b),
+    };
     // Grab the live fault knobs before the faces move into the engines.
     link_states.insert((a, b), face_a.link_state());
     link_states.insert((b, a), face_b.link_state());
@@ -738,12 +766,22 @@ pub struct RunningSimulation {
     next_node: AtomicUsize,
     /// The world seed, so links added at runtime (`connect`) seed their RNG consistently.
     seed: u64,
+    /// Name-aware per-prefix counters, if [`with_prefix_accounting`](Simulation::with_prefix_accounting)
+    /// was set. Runtime-added links tap into the same table.
+    prefix_stats: Option<std::sync::Arc<crate::netstat::PrefixStats>>,
 }
 
 impl RunningSimulation {
     /// The kernel this fabric runs on.
     pub fn kernel(&self) -> &std::sync::Arc<dyn SimKernel> {
         &self.kernel
+    }
+
+    /// The live name-aware per-prefix counter table, if
+    /// [`with_prefix_accounting`](Simulation::with_prefix_accounting) was set — `snapshot()` it on a
+    /// cadence for the network-viz feed. `None` when accounting is off. See [`crate::netstat`].
+    pub fn prefix_stats(&self) -> Option<&std::sync::Arc<crate::netstat::PrefixStats>> {
+        self.prefix_stats.as_ref()
     }
 
     /// The face channel buffer depth (for engine-less links `bridge_udp_flow` builds).
@@ -1284,7 +1322,8 @@ impl RunningSimulation {
             bail!("connect references non-existent node");
         }
         let FabricInner { nodes, links, link_states } = &mut *guard;
-        wire_link(nodes, links, link_states, a, b, &profile, self.channel_buffer, self.seed);
+        let prefix_arg = self.prefix_stats.as_ref().map(|s| (s, s.grouping()));
+        wire_link(nodes, links, link_states, a, b, &profile, self.channel_buffer, self.seed, prefix_arg);
         drop(guard);
         self.tracer.record_now(
             a.0,

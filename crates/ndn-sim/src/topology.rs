@@ -746,6 +746,16 @@ impl RunningSimulation {
         &self.kernel
     }
 
+    /// The face channel buffer depth (for engine-less links `bridge_udp_flow` builds).
+    pub(crate) fn flow_channel_buffer(&self) -> usize {
+        self.channel_buffer
+    }
+
+    /// The world seed (so a `bridge_udp_flow` link's loss/jitter RNG matches the fabric's).
+    pub(crate) fn flow_seed(&self) -> u64 {
+        self.seed
+    }
+
     /// The shared event tracer (engine face events + control-plane events).
     pub fn tracer(&self) -> std::sync::Arc<SimTracer> {
         std::sync::Arc::clone(&self.tracer)

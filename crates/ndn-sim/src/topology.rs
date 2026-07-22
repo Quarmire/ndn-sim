@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -345,10 +346,13 @@ impl Simulation {
         // *before* faces are added so their FaceUp events are captured.
         for (i, profile) in self.profiles.into_iter().enumerate() {
             let id = NodeId(i);
-            let (engine, handle) = EngineBuilder::new(profile.config)
-                .runtime(self.kernel.runtime())
-                .build()
-                .await?;
+            let mut builder = EngineBuilder::new(profile.config).runtime(self.kernel.runtime());
+            // Register any face factories the profile carries, so this node's engine can stand real
+            // faces up via `add_face_of_kind` (empty for a pure sim-link node).
+            for factory in &profile.factories {
+                builder = builder.face_factory(Arc::clone(factory));
+            }
+            let (engine, handle) = builder.build().await?;
             engine.set_face_lifecycle_sink(std::sync::Arc::new(TracerFaceSink {
                 tracer: std::sync::Arc::clone(&tracer),
                 node: id.0,
@@ -1440,10 +1444,11 @@ impl RunningSimulation {
     pub async fn spawn_node(&self, profile: NodeProfile) -> Result<NodeId> {
         let id = NodeId(self.next_node.fetch_add(1, Ordering::Relaxed));
         // Build off-lock (async), then insert under the lock.
-        let (engine, handle) = EngineBuilder::new(profile.config)
-            .runtime(self.kernel.runtime())
-            .build()
-            .await?;
+        let mut builder = EngineBuilder::new(profile.config).runtime(self.kernel.runtime());
+        for factory in &profile.factories {
+            builder = builder.face_factory(Arc::clone(factory));
+        }
+        let (engine, handle) = builder.build().await?;
         engine.set_face_lifecycle_sink(std::sync::Arc::new(TracerFaceSink {
             tracer: std::sync::Arc::clone(&self.tracer),
             node: id.0,

@@ -87,6 +87,13 @@ async fn main() {
         // Consumer and relay both route the prefix at the air; producer serves it.
         fabric.route_over_radio(c, &clip).unwrap();
         fabric.route_over_radio(r, &clip).unwrap();
+        // The relay must RE-BROADCAST on its single radio face — install the broadcast strategy
+        // (default best-route/multicast apply split-horizon and silently drop the re-broadcast).
+        // PIT nonce-dedup + the Dead-Nonce-List bound the storm; the ad-hoc face re-radiates the Data.
+        fabric.engine_of(r).unwrap().strategy_table().insert(
+            &clip,
+            Arc::new(ndn_strategy::BroadcastStrategy::new()) as Arc<dyn ndn_strategy::ErasedStrategy>,
+        );
 
         let prod = fabric.engine_of(p).unwrap().register_producer("/relayed", CancellationToken::new());
         let serve = tokio::spawn(async move {
@@ -108,11 +115,11 @@ async fn main() {
     }
 
     println!(
-        "\nfinding: single-hop real forwarding (round-trip, PIT match, CS cache) works over the radio\n\
-         medium unchanged. Multi-hop needs a broadcast-tolerant strategy — the default engine applies\n\
-         split-horizon (never forward back out the face a frame arrived on), and a shared medium has\n\
-         ONE radio face, so a relay silently drops what it should re-broadcast. Fixing it = a multicast/\n\
-         self-learning strategy that permits same-face re-broadcast, with PIT + Dead-Nonce-List for loop\n\
-         control (task #45 / #59 follow-on). The medium, faces, PIT/CS/FIB, and apps are all ready."
+        "\nfinding: real forwarding runs over the radio medium end to end. Single-hop round-trips work\n\
+         with the stock engine; MULTI-HOP works once the relay runs `ndn_strategy::BroadcastStrategy`\n\
+         (multicast without split-horizon) so it re-broadcasts on its one radio face — PIT nonce-dedup\n\
+         + the Dead-Nonce-List bound the storm, and the ad-hoc face re-radiates the returning Data.\n\
+         So a genuine N-node named-data mesh over the RadioBus is now buildable with real PIT/CS/FIB\n\
+         (the foundation for the coding × CCLF × scale and vs-MANET comparisons)."
     );
 }

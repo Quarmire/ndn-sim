@@ -146,6 +146,7 @@
 
 pub mod analysis;
 pub mod app;
+pub mod energy;
 pub mod bridge;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compare;
@@ -224,6 +225,7 @@ pub use routing::{
 pub use kernel::{
     DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,
 };
+pub use energy::{EnergyAccount, EnergyAccounts, EnergyModel, RadioEnergyModel};
 pub use kernel::{ImmediateRuntime, RealTimeKernel, SimKernel, WallClockKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use lora::{

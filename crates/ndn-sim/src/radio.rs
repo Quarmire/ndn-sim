@@ -92,6 +92,10 @@ pub struct RadioBus {
     /// noise) rather than only causing a binary collision — the capture effect. Opt-in (off preserves
     /// the simple collision model existing scenarios rely on).
     sinr_interference: std::sync::atomic::AtomicBool,
+    /// Optional pluggable energy model; when set, `transmit` tallies per-node TX/RX joules.
+    energy_model: Mutex<Option<Arc<dyn crate::energy::EnergyModel>>>,
+    /// Per-node energy accounts (active TX+RX joules); idle is time-based, added by the caller.
+    energy_acct: Mutex<crate::energy::EnergyAccounts>,
 }
 
 impl RadioBus {
@@ -191,7 +195,22 @@ impl RadioBus {
             airtime_ns: std::sync::atomic::AtomicU64::new(0),
             retry_limit: std::sync::atomic::AtomicU32::new(6),
             sinr_interference: std::sync::atomic::AtomicBool::new(false),
+            energy_model: Mutex::new(None),
+            energy_acct: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Install a pluggable [`EnergyModel`](crate::energy::EnergyModel). Once set, `transmit` tallies
+    /// per-node TX energy (the sender) and RX energy (every in-range radio — the "listen to
+    /// everything" cost) into [`energy_accounts`](Self::energy_accounts). Off by default (no cost).
+    pub fn set_energy_model(&self, model: Arc<dyn crate::energy::EnergyModel>) {
+        *self.energy_model.lock().unwrap() = Some(model);
+    }
+
+    /// The per-node energy tally so far (empty if no [`EnergyModel`](crate::energy::EnergyModel) is
+    /// installed). Idle draw is time-based — add `idle_power_w * run_seconds` per node from the model.
+    pub fn energy_accounts(&self) -> crate::energy::EnergyAccounts {
+        self.energy_acct.lock().unwrap().clone()
     }
 
     /// Set the MAC discipline for airtime accounting + reliability (`Monitor` = named-data radio, one
@@ -314,6 +333,27 @@ impl RadioBus {
             snapshot
         };
         let max_range = self.propagation.max_range_m();
+
+        // Energy accounting (opt-in): the sender pays TX once; every in-range radio pays RX — the
+        // "listen to everything" cost the named-radio doctrine (§3.1) attributes to monitor mode.
+        // Independent of whether a receiver is attached: a real radio in range still burns RX energy.
+        if let Some(model) = self.energy_model.lock().unwrap().as_ref() {
+            let airtime = std::time::Duration::from_nanos(airtime_ns);
+            let mut acct = self.energy_acct.lock().unwrap();
+            let tx = acct.entry(node).or_default();
+            tx.tx_j += model.tx_energy_j(airtime, self.tx_power_dbm, mcs_index);
+            tx.frames_tx += 1;
+            tx.bits_tx += (frame.len() as u64) * 8;
+            let rx_e = model.rx_energy_j(airtime, mcs_index);
+            for rx_node in view.within_range(tx_pos, max_range) {
+                if rx_node == node {
+                    continue; // half-duplex: the transmitter is not receiving its own frame
+                }
+                let rx = acct.entry(rx_node).or_default();
+                rx.rx_j += rx_e;
+                rx.frames_rx += 1;
+            }
+        }
 
         let mut out = Vec::new();
         let receivers = self.receivers.lock().unwrap();

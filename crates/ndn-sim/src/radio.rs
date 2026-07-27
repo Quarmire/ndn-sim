@@ -96,6 +96,10 @@ pub struct RadioBus {
     energy_model: Mutex<Option<Arc<dyn crate::energy::EnergyModel>>>,
     /// Per-node energy accounts (active TX+RX joules); idle is time-based, added by the caller.
     energy_acct: Mutex<crate::energy::EnergyAccounts>,
+    /// Optional hardware name-filter (`node → registered name-group key`) for the MAC-offload
+    /// accounting: a listed node pays host-processing energy only for `transmit_named` frames whose
+    /// group matches its key; unlisted nodes (or unnamed frames) are promiscuous — the host sees all.
+    host_filter: Mutex<Option<HashMap<NodeId, u64>>>,
 }
 
 impl RadioBus {
@@ -197,6 +201,7 @@ impl RadioBus {
             sinr_interference: std::sync::atomic::AtomicBool::new(false),
             energy_model: Mutex::new(None),
             energy_acct: Mutex::new(HashMap::new()),
+            host_filter: Mutex::new(None),
         })
     }
 
@@ -211,6 +216,14 @@ impl RadioBus {
     /// installed). Idle draw is time-based — add `idle_power_w * run_seconds` per node from the model.
     pub fn energy_accounts(&self) -> crate::energy::EnergyAccounts {
         self.energy_acct.lock().unwrap().clone()
+    }
+
+    /// Install a hardware name-group filter (`node → registered group key`) for the MAC-offload
+    /// accounting. A listed node then pays **host** processing energy only for [`transmit_named`]
+    /// (Self::transmit_named) frames whose group matches its key — the radio drops the rest before
+    /// the CPU wakes. Without it (default) every in-range host processes every frame (monitor mode).
+    pub fn set_host_filter(&self, filter: HashMap<NodeId, u64>) {
+        *self.host_filter.lock().unwrap() = Some(filter);
     }
 
     /// Set the MAC discipline for airtime accounting + reliability (`Monitor` = named-data radio, one
@@ -296,12 +309,30 @@ impl RadioBus {
     /// `(receiver, rssi_dbm, delivered)` for every in-range node (whether or not it survived
     /// erasure) — for tests and telemetry. Survivors are delivered after their propagation
     /// delay (virtual under a [`VirtualKernel`](crate::VirtualKernel)).
-    pub fn transmit(
+    ///
+    /// The frame carries no name-group, so under energy accounting it reaches **every** in-range
+    /// host (promiscuous / monitor mode). Use [`transmit_named`](Self::transmit_named) to carry a
+    /// name-group so a hardware name-filter can offload non-matching frames off the host CPU.
+    pub fn transmit(&self, node: NodeId, mcs_index: u8, frame: Bytes, now_ns: u64) -> Vec<(NodeId, f64, bool)> {
+        self.transmit_inner(node, mcs_index, frame, now_ns, None)
+    }
+
+    /// Like [`transmit`](Self::transmit) but the frame carries a `group_key` (its name-group hash).
+    /// When a hardware name-filter is installed ([`set_host_filter`](Self::set_host_filter)), only
+    /// receivers registered for this group pay host-processing energy — the MAC offload; the rest
+    /// have the frame dropped by the radio before the CPU wakes. Radio RX energy is charged to all
+    /// in-range radios regardless (the front end still hears it).
+    pub fn transmit_named(&self, node: NodeId, mcs_index: u8, group_key: u64, frame: Bytes, now_ns: u64) -> Vec<(NodeId, f64, bool)> {
+        self.transmit_inner(node, mcs_index, frame, now_ns, Some(group_key))
+    }
+
+    fn transmit_inner(
         &self,
         node: NodeId,
         mcs_index: u8,
         frame: Bytes,
         now_ns: u64,
+        group: Option<u64>,
     ) -> Vec<(NodeId, f64, bool)> {
         let view = self.view_at(now_ns);
         let Some(tx_pos) = view.position(node) else {
@@ -345,13 +376,26 @@ impl RadioBus {
             tx.frames_tx += 1;
             tx.bits_tx += (frame.len() as u64) * 8;
             let rx_e = model.rx_energy_j(airtime, mcs_index);
+            let host_e = model.host_process_energy_j(frame.len());
+            let filter = self.host_filter.lock().unwrap();
             for rx_node in view.within_range(tx_pos, max_range) {
                 if rx_node == node {
                     continue; // half-duplex: the transmitter is not receiving its own frame
                 }
+                // Radio RX energy is always charged (the front end hears every in-range frame). Host
+                // CPU energy is charged only when the frame reaches the host: promiscuous unless this
+                // node runs a hardware name-filter that this frame's group does not match (the offload).
+                let reaches_host = match (filter.as_ref().and_then(|f| f.get(&rx_node)), group) {
+                    (Some(reg), Some(g)) => *reg == g,
+                    _ => true,
+                };
                 let rx = acct.entry(rx_node).or_default();
                 rx.rx_j += rx_e;
                 rx.frames_rx += 1;
+                if reaches_host {
+                    rx.host_j += host_e;
+                    rx.frames_to_host += 1;
+                }
             }
         }
 

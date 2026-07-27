@@ -28,6 +28,12 @@ pub trait EnergyModel: Send + Sync {
     /// Baseline listen/idle draw (W) while the radio is on but not TX/RX — integrated over wall time
     /// by the caller (`idle_power_w() * run_seconds`).
     fn idle_power_w(&self) -> f64;
+    /// **Host** CPU energy (J) to process one frame that reaches the host — parse + name-hash +
+    /// FIB/PIT longest-prefix-match (and, past the PIT gate, verify). This is the cost the
+    /// mac-addressing-doctrine §3.1 "listen to everything" tax is really made of, and the cost a
+    /// hardware name-group filter **offloads** by dropping non-matching frames before waking the CPU.
+    /// It typically dwarfs the radio's per-frame RX energy — which is exactly why the offload matters.
+    fn host_process_energy_j(&self, frame_len: usize) -> f64;
 }
 
 /// A Wi-Fi-class energy model with order-of-magnitude-realistic front-end constants. Every field is
@@ -43,14 +49,28 @@ pub struct RadioEnergyModel {
     pub rx_active_w: f64,
     /// Baseline listen/idle draw (W) — the "radio on, hearing the channel" cost.
     pub idle_w: f64,
+    /// Host CPU draw (W) while processing a frame (the delta over idle for the core doing the work).
+    pub host_cpu_w: f64,
+    /// Host CPU time (s) to process one frame (parse + name-hash + LPM). Measured ~60–120 µs per
+    /// delivered frame on the real 8812au host path (mac-addressing-doctrine §3.1 / task #43).
+    pub host_process_s: f64,
 }
 
 impl Default for RadioEnergyModel {
     fn default() -> Self {
         // A commodity 2.4/5 GHz USB Wi-Fi front end, roughly: ~1.1 W of circuit draw during TX with
-        // a ~25%-efficient PA on top, ~0.9 W receiving, ~0.7 W just listening. Not a datasheet — an
-        // honest order of magnitude for relative comparisons (swap it for measured numbers).
-        Self { tx_baseline_w: 1.1, pa_efficiency: 0.25, rx_active_w: 0.9, idle_w: 0.7 }
+        // a ~25%-efficient PA on top, ~0.9 W receiving, ~0.7 W just listening. Host processing: ~2 W
+        // over ~90 µs of CPU per frame (parse + name-hash + LPM), i.e. ~180 µJ/frame — an order of
+        // magnitude above the ~7 µJ radio RX, so the host is where the "process everything" tax
+        // lands. Not a datasheet — an honest order of magnitude (swap it for measured numbers).
+        Self {
+            tx_baseline_w: 1.1,
+            pa_efficiency: 0.25,
+            rx_active_w: 0.9,
+            idle_w: 0.7,
+            host_cpu_w: 2.0,
+            host_process_s: 90e-6,
+        }
     }
 }
 
@@ -66,6 +86,9 @@ impl EnergyModel for RadioEnergyModel {
     fn idle_power_w(&self) -> f64 {
         self.idle_w
     }
+    fn host_process_energy_j(&self, _frame_len: usize) -> f64 {
+        self.host_cpu_w * self.host_process_s
+    }
 }
 
 /// Per-node running energy tally (active TX + RX; idle is added by the caller from wall time).
@@ -73,16 +96,21 @@ impl EnergyModel for RadioEnergyModel {
 pub struct EnergyAccount {
     pub tx_j: f64,
     pub rx_j: f64,
+    /// **Host** CPU energy processing frames that reached the host (the offloadable §3.1 cost).
+    pub host_j: f64,
     pub frames_tx: u64,
     pub frames_rx: u64,
+    /// Frames that reached the host CPU — all in-range frames when promiscuous; only name-group
+    /// matches when a hardware filter is installed (the MAC offload).
+    pub frames_to_host: u64,
     /// Payload bits this node put on air (for energy-per-offered-bit).
     pub bits_tx: u64,
 }
 
 impl EnergyAccount {
-    /// Active energy (TX + RX), excluding the time-based idle baseline.
+    /// Active energy (TX + RX radio + host CPU), excluding the time-based idle baseline.
     pub fn active_j(&self) -> f64 {
-        self.tx_j + self.rx_j
+        self.tx_j + self.rx_j + self.host_j
     }
     /// Total energy including `run_seconds` of idle draw at `idle_power_w`.
     pub fn total_j(&self, idle_power_w: f64, run_seconds: f64) -> f64 {
@@ -117,8 +145,17 @@ mod tests {
 
     #[test]
     fn account_total_adds_idle_over_time() {
-        let a = EnergyAccount { tx_j: 1.0, rx_j: 2.0, ..Default::default() };
-        assert_eq!(a.active_j(), 3.0);
-        assert_eq!(a.total_j(0.7, 10.0), 3.0 + 7.0); // + idle 0.7 W · 10 s
+        let a = EnergyAccount { tx_j: 1.0, rx_j: 2.0, host_j: 4.0, ..Default::default() };
+        assert_eq!(a.active_j(), 7.0); // tx + rx + host
+        assert_eq!(a.total_j(0.7, 10.0), 7.0 + 7.0); // + idle 0.7 W · 10 s
+    }
+
+    #[test]
+    fn host_energy_dwarfs_radio_rx_per_frame() {
+        // The doctrine's point: processing a frame on the host costs far more than the radio's RX —
+        // which is why offloading the drop to a hardware name-filter matters.
+        let m = RadioEnergyModel::default();
+        let air = Duration::from_micros(9); // a short frame's airtime
+        assert!(m.host_process_energy_j(200) > 10.0 * m.rx_energy_j(air, 5));
     }
 }

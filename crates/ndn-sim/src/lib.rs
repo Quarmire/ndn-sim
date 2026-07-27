@@ -284,8 +284,8 @@ pub use validate::{
     ValidationReport, ValidationSpec, run_validation, run_validation_against,
 };
 pub use world::{
-    Environment, FreeSpace, LinearMobility, MobilityModel, Position, StaticMobility,
-    UniformAttenuation, WaypointMobility, World, WorldView,
+    Environment, FreeSpace, LinearMobility, MobilityModel, Position, RandomWaypointMobility,
+    StaticMobility, UniformAttenuation, WaypointMobility, World, WorldView,
 };
 
 /// The live fabric handle (alias for [`RunningSimulation`]) — the ndn-lab name.

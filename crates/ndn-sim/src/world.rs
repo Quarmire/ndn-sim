@@ -116,6 +116,60 @@ impl MobilityModel for WaypointMobility {
     }
 }
 
+/// **Random-waypoint mobility** — the MANET-evaluation standard, made DETERMINISTIC so a snapshot at
+/// any time stays pure/reproducible (the whole sim depends on that). Waypoints are generated on demand
+/// from `seed` by a splitmix64 stream — each a uniform point in the disc of `radius` about the origin —
+/// and [`position`](MobilityModel::position) walks the legs (each traversed at `speed_mps`) up to `t`
+/// and interpolates. No pause time (constant motion); raise `speed_mps` for vehicular, lower for
+/// pedestrian. Same `seed` ⇒ identical track; vary it per node for an independent ensemble.
+pub struct RandomWaypointMobility {
+    pub radius: f64,
+    pub speed_mps: f64,
+    pub seed: u64,
+}
+
+impl RandomWaypointMobility {
+    /// The next waypoint in the deterministic stream (uniform in the disc), advancing `state`.
+    fn next_point(state: &mut u64, radius: f64) -> Position {
+        let mut draw = || {
+            *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = *state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 // uniform [0,1)
+        };
+        let r = radius * draw().sqrt(); // sqrt ⇒ uniform over area
+        let th = draw() * std::f64::consts::TAU;
+        Position::xy(r * th.cos(), r * th.sin())
+    }
+}
+
+impl MobilityModel for RandomWaypointMobility {
+    fn position(&self, t: f64) -> Position {
+        let mut state = self.seed;
+        let mut cur = Self::next_point(&mut state, self.radius);
+        if t <= 0.0 || self.speed_mps <= 0.0 {
+            return cur;
+        }
+        let mut elapsed = 0.0;
+        for _ in 0..1_000_000 {
+            let nxt = Self::next_point(&mut state, self.radius);
+            let leg = cur.distance(nxt) / self.speed_mps;
+            if elapsed + leg >= t {
+                let frac = if leg > 0.0 { (t - elapsed) / leg } else { 0.0 };
+                return Position {
+                    x: cur.x + (nxt.x - cur.x) * frac,
+                    y: cur.y + (nxt.y - cur.y) * frac,
+                    z: 0.0,
+                };
+            }
+            elapsed += leg;
+            cur = nxt;
+        }
+        cur
+    }
+}
+
 /// What lies between two points: extra attenuation from walls / terrain (dB), on top of the
 /// propagation model's free-space loss.
 pub trait Environment: Send + Sync {
@@ -347,6 +401,26 @@ impl SpatialGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_waypoint_is_deterministic_bounded_and_moves() {
+        let m = RandomWaypointMobility { radius: 100.0, speed_mps: 10.0, seed: 42 };
+        // Deterministic: same seed/time ⇒ same position.
+        assert_eq!(m.position(3.0), m.position(3.0));
+        // Moves over time (not static).
+        assert_ne!(m.position(0.0), m.position(5.0));
+        // Stays within the disc (both waypoints in it, motion is a convex interpolation).
+        for i in 0..200 {
+            let p = m.position(i as f64 * 0.37);
+            assert!(p.x.hypot(p.y) <= 100.0 + 1e-6, "escaped the disc at t={}", i);
+        }
+        // A different node (seed) follows a different track.
+        let other = RandomWaypointMobility { radius: 100.0, speed_mps: 10.0, seed: 43 };
+        assert_ne!(m.position(2.0), other.position(2.0));
+        // Faster node travels farther by the same time (vehicular vs pedestrian).
+        let fast = RandomWaypointMobility { radius: 100.0, speed_mps: 30.0, seed: 42 };
+        assert_ne!(m.position(1.0), fast.position(1.0));
+    }
 
     #[test]
     fn linear_mobility_is_deterministic_fn_of_time() {

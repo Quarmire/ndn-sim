@@ -1,0 +1,297 @@
+<title>Named-Data Radio · Mesh Telemetry</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #0a0e15; --panel: #111a27; --panel2: #0d141f; --border: #1f2c3f;
+    --ink: #d6e1ee; --muted: #7a8ca4; --faint: #46566e;
+    --signal: #2dd4bf; --good: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --producer: #2dd4bf; --relay: #a78bfa; --consumer: #60a5fa; --bandit: #c084fc;
+    --grid: rgba(120,140,170,.10);
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f6fa; --panel: #ffffff; --panel2: #eef2f7; --border: #d9e1ec;
+    --ink: #16202e; --muted: #5a6b82; --faint: #9aabc0;
+    --signal: #0d9488; --good: #16a34a; --warn: #d97706; --bad: #dc2626;
+    --producer: #0d9488; --relay: #7c3aed; --consumer: #2563eb; --bandit: #7c3aed;
+    --grid: rgba(60,80,110,.10);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #f4f6fa; --panel: #ffffff; --panel2: #eef2f7; --border: #d9e1ec;
+      --ink: #16202e; --muted: #5a6b82; --faint: #9aabc0;
+      --signal: #0d9488; --good: #16a34a; --warn: #d97706; --bad: #dc2626;
+      --producer: #0d9488; --relay: #7c3aed; --consumer: #2563eb; --bandit: #7c3aed;
+      --grid: rgba(60,80,110,.10);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; line-height: 1.5;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 24px 72px; }
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 8px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: .18em; font-size: 11px; color: var(--signal); font-weight: 600; }
+  h1 { font-size: clamp(26px, 4vw, 38px); margin: 6px 0 4px; letter-spacing: -.02em; text-wrap: balance; }
+  .sub { color: var(--muted); max-width: 62ch; font-size: 14px; }
+  .stats { display: flex; gap: 26px; flex-wrap: wrap; }
+  .stat .v { font-size: 26px; font-weight: 650; letter-spacing: -.01em; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 26px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 20px; min-width: 0; }
+  .panel.wide { grid-column: 1 / -1; }
+  .ptitle { font-size: 14px; font-weight: 650; margin: 0 0 2px; }
+  .pdesc { font-size: 12px; color: var(--muted); margin: 0 0 16px; }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .bar-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  /* heatmap */
+  .hm { overflow-x: auto; }
+  .hmrow { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px; margin-bottom: 3px; }
+  .hmlabel { font-size: 11px; color: var(--muted); text-align: right; }
+  .hmcells { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; height: 15px; }
+  .hmcell { border-radius: 2px; min-width: 0; }
+  /* energy */
+  .erow { display: grid; grid-template-columns: 74px 1fr 64px; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .elabel { font-size: 12px; }
+  .ebar { display: flex; height: 16px; border-radius: 4px; overflow: hidden; background: var(--panel2); }
+  .eseg { height: 100%; }
+  .etotal { font-size: 12px; text-align: right; color: var(--muted); }
+  /* decisions */
+  .armstrip { display: flex; height: 30px; border-radius: 5px; overflow: hidden; margin-bottom: 4px; border: 1px solid var(--border); }
+  .armcell { flex: 1 1 0; min-width: 0; }
+  .axis { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--faint); margin-bottom: 18px; }
+  .ucb { display: grid; grid-template-columns: 92px 1fr 48px; gap: 8px; align-items: center; margin-bottom: 7px; font-size: 12px; }
+  .ucbbar { height: 12px; background: var(--panel2); border-radius: 3px; position: relative; overflow: hidden; }
+  .ucbfill { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+  .tip { position: fixed; pointer-events: none; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; opacity: 0; transition: opacity .1s; z-index: 20; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 22px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .note b { color: var(--ink); font-weight: 600; }
+  .toggle { background: var(--panel); border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+  .toggle:hover { color: var(--ink); }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">ndn-sim · broadcast mesh</div>
+      <h1>Named-Data Radio — Mesh Telemetry</h1>
+      <div class="sub">A 7-node broadcast NDN mesh over the real <span class="mono">RadioBus</span>. Every transmission is heard by every node in range with its own outcome; a contextual bandit on the producer adapts the rate/power/FEC for the far consumer. All numbers are from one simulated run.</div>
+    </div>
+    <button class="toggle" id="themeBtn">◐ theme</button>
+  </header>
+  <div class="stats mono" id="stats"></div>
+
+  <div class="grid">
+    <div class="panel wide">
+      <p class="ptitle">Broadcast fan-out</p>
+      <p class="pdesc">Nodes at their positions; each edge is a heard link, colored by delivery rate. Hover a node to isolate what it reaches — the shared medium means one transmission fans out to everyone in range.</p>
+      <svg id="topo" viewBox="0 0 900 380" role="img" aria-label="mesh topology"></svg>
+      <div class="legend">
+        <span class="chip"><span class="dot" style="background:var(--producer)"></span>producer</span>
+        <span class="chip"><span class="dot" style="background:var(--relay)"></span>relay</span>
+        <span class="chip"><span class="dot" style="background:var(--consumer)"></span>consumer</span>
+        <span class="chip" style="margin-left:auto"><span class="bar-swatch" style="background:var(--bad)"></span>&lt;70%</span>
+        <span class="chip"><span class="bar-swatch" style="background:var(--warn)"></span>~85%</span>
+        <span class="chip"><span class="bar-swatch" style="background:var(--good)"></span>100% delivered</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="ptitle">Per-link delivery over time</p>
+      <p class="pdesc">Each row a directed link, each column a time slice — delivery fraction. Distance sets the floor; the far links (→6) stay marginal, the near ones near-perfect.</p>
+      <div class="hm" id="heat"></div>
+    </div>
+
+    <div class="panel">
+      <p class="ptitle">Energy per node</p>
+      <p class="pdesc">TX + RX + host-CPU + idle joules. Host processing dominates (every heard frame), and a pure listener with no TX still pays the full listen tax.</p>
+      <div id="energy"></div>
+      <div class="legend">
+        <span class="chip"><span class="bar-swatch" style="background:var(--signal)"></span>TX</span>
+        <span class="chip"><span class="bar-swatch" style="background:var(--consumer)"></span>RX</span>
+        <span class="chip"><span class="bar-swatch" style="background:var(--bandit)"></span>host CPU</span>
+        <span class="chip"><span class="bar-swatch" style="background:var(--faint)"></span>idle</span>
+      </div>
+    </div>
+
+    <div class="panel wide">
+      <p class="ptitle">Bandit decision trace <span class="mono" style="color:var(--muted);font-weight:400">— select_traced</span></p>
+      <p class="pdesc">The producer's contextual bandit exploring then committing, one cell per round. After trying each arm it converges on the robust choice for the marginal far link — the reasoning the live decision span now emits.</p>
+      <div class="armstrip mono" id="arms"></div>
+      <div class="axis"><span>round 0</span><span>exploration → exploitation</span><span id="lastRound">round N</span></div>
+      <p class="pdesc" style="margin-bottom:10px">Final per-arm value (learned UCB score — higher is better):</p>
+      <div id="ucb"></div>
+    </div>
+  </div>
+
+  <p class="note" id="note"></p>
+</div>
+
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = {"nodes":[{"id":0,"role":"producer","x":0,"y":0},{"id":1,"role":"relay","x":200,"y":90},{"id":2,"role":"relay","x":200,"y":-90},{"id":3,"role":"consumer","x":380,"y":150},{"id":4,"role":"consumer","x":380,"y":-150},{"id":5,"role":"consumer","x":300,"y":0},{"id":6,"role":"consumer","x":560,"y":20}],"edges":[{"from":0,"to":1,"total":401,"delivered":399,"collided":0,"rssi":-66.9,"dist":219,"bins":[1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.938,1.0,1.0,1.0,0.941,1.0,1.0,1.0,1.0,1.0]},{"from":0,"to":2,"total":401,"delivered":398,"collided":0,"rssi":-66.9,"dist":219,"bins":[0.889,1.0,1.0,1.0,1.0,1.0,1.0,0.941,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0]},{"from":0,"to":3,"total":401,"delivered":378,"collided":0,"rssi":-72.3,"dist":409,"bins":[0.944,0.941,1.0,0.941,0.882,0.875,0.941,0.882,1.0,0.941,0.882,0.938,0.941,0.941,0.875,0.882,1.0,0.938,1.0,1.0,1.0,0.941,1.0,0.938]},{"from":0,"to":4,"total":401,"delivered":372,"collided":0,"rssi":-72.3,"dist":409,"bins":[0.778,1.0,1.0,1.0,0.765,1.0,0.941,1.0,0.75,0.824,0.941,1.0,1.0,1.0,0.938,0.941,0.941,1.0,0.941,0.824,0.938,0.882,1.0,0.875]},{"from":0,"to":5,"total":401,"delivered":396,"collided":0,"rssi":-69.6,"dist":300,"bins":[1.0,1.0,1.0,0.941,0.941,1.0,1.0,0.941,1.0,1.0,1.0,1.0,0.941,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.938]},{"from":0,"to":6,"total":401,"delivered":338,"collided":0,"rssi":-75.0,"dist":560,"bins":[0.722,0.647,0.875,0.882,0.941,0.938,0.941,0.824,0.688,0.941,0.824,0.875,0.706,0.941,0.875,0.824,0.824,0.938,0.824,0.882,0.938,0.765,0.824,0.812]},{"from":1,"to":0,"total":400,"delivered":389,"collided":0,"rssi":-66.9,"dist":219,"bins":[1.0,1.0,1.0,1.0,0.938,1.0,1.0,0.938,1.0,0.941,1.0,0.941,0.941,1.0,1.0,0.824,1.0,1.0,1.0,0.938,1.0,1.0,1.0,0.882]},{"from":1,"to":2,"total":400,"delivered":394,"collided":0,"rssi":-65.2,"dist":180,"bins":[1.0,1.0,0.941,1.0,1.0,0.941,0.941,1.0,1.0,1.0,1.0,1.0,1.0,0.812,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0]},{"from":1,"to":3,"total":400,"delivered":396,"collided":0,"rssi":-65.6,"dist":190,"bins":[1.0,1.0,0.941,1.0,1.0,1.0,0.941,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.941,0.941,1.0,1.0,1.0,1.0,1.0]},{"from":1,"to":4,"total":400,"delivered":355,"collided":0,"rssi":-69.6,"dist":300,"bins":[1.0,0.75,0.941,0.941,0.812,0.941,0.706,1.0,0.824,0.824,0.875,0.882,0.882,0.938,1.0,0.824,1.0,0.765,0.824,0.938,0.882,0.882,0.875,1.0]},{"from":1,"to":5,"total":400,"delivered":398,"collided":0,"rssi":-62.6,"dist":135,"bins":[1.0,1.0,1.0,1.0,1.0,0.941,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.938,1.0,1.0,1.0,1.0,1.0,1.0,1.0]},{"from":1,"to":6,"total":400,"delivered":320,"collided":0,"rssi":-71.3,"dist":367,"bins":[0.824,0.75,0.765,0.706,0.875,0.765,0.882,0.812,0.765,0.824,0.75,0.765,0.824,0.938,0.882,0.941,0.688,0.824,0.882,0.75,0.706,0.706,0.688,0.882]},{"from":2,"to":0,"total":400,"delivered":387,"collided":0,"rssi":-66.9,"dist":219,"bins":[0.938,0.941,1.0,1.0,1.0,0.882,1.0,0.941,0.882,1.0,1.0,0.941,1.0,1.0,0.941,1.0,1.0,1.0,1.0,1.0,0.882,0.875,1.0,1.0]},{"from":2,"to":1,"total":400,"delivered":396,"collided":0,"rssi":-65.2,"dist":180,"bins":[1.0,1.0,0.941,0.938,1.0,1.0,1.0,1.0,0.941,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.941]},{"from":2,"to":3,"total":400,"delivered":363,"collided":0,"rssi":-69.6,"dist":300,"bins":[0.938,0.882,0.824,1.0,0.941,0.941,0.938,1.0,0.941,0.75,0.882,0.941,1.0,0.824,0.882,0.938,1.0,0.941,0.812,0.941,0.882,0.875,0.824,0.882]},{"from":2,"to":4,"total":400,"delivered":395,"collided":0,"rssi":-65.6,"dist":190,"bins":[1.0,1.0,1.0,1.0,1.0,1.0,0.938,1.0,1.0,1.0,1.0,1.0,0.938,1.0,1.0,1.0,0.941,1.0,1.0,1.0,1.0,0.938,1.0,0.941]},{"from":2,"to":5,"total":400,"delivered":399,"collided":0,"rssi":-62.6,"dist":135,"bins":[0.938,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0]},{"from":2,"to":6,"total":400,"delivered":306,"collided":0,"rssi":-71.6,"dist":376,"bins":[0.812,0.941,0.647,0.812,0.765,0.706,0.75,0.706,0.765,0.688,0.647,0.529,0.812,0.765,0.706,0.75,0.765,0.647,0.812,0.941,0.882,0.812,0.882,0.824]}],"energy":[{"id":0,"tx":0.027,"rx":0.0244,"host":0.144,"idle":0.0568},{"id":1,"tx":0.0203,"rx":0.0284,"host":0.1442,"idle":0.0568},{"id":2,"tx":0.0203,"rx":0.0284,"host":0.1442,"idle":0.0568},{"id":3,"tx":0.0,"rx":0.0406,"host":0.2162,"idle":0.0568},{"id":4,"tx":0.0,"rx":0.0406,"host":0.2162,"idle":0.0568},{"id":5,"tx":0.0,"rx":0.0406,"host":0.2162,"idle":0.0568},{"id":6,"tx":0.0,"rx":0.0406,"host":0.2162,"idle":0.0568}],"decisions":[{"arm":0,"scores":[null,null,null,null,null],"ok":true},{"arm":1,"scores":[-0.342,null,null,null,null],"ok":false},{"arm":2,"scores":[0.491,-4.217,null,null,null],"ok":false},{"arm":3,"scores":[0.706,-4.002,-3.988,null,null],"ok":true},{"arm":4,"scores":[0.836,-3.873,-3.858,0.893,null],"ok":true},{"arm":3,"scores":[0.927,-3.781,-3.767,0.984,0.869],"ok":false},{"arm":0,"scores":[0.997,-3.711,-3.697,-1.717,0.939],"ok":false},{"arm":4,"scores":[-1.705,-3.655,-3.641,-1.677,0.995],"ok":true},{"arm":4,"scores":[-1.672,-3.608,-3.594,-1.643,0.62],"ok":true},{"arm":4,"scores":[-1.644,-3.568,-3.553,-1.615,0.456],"ok":true},{"arm":4,"scores":[-1.619,-3.533,-3.518,-1.59,0.359],"ok":true},{"arm":4,"scores":[-1.597,-3.501,-3.487,-1.568,0.293],"ok":true},{"arm":4,"scores":[-1.577,-3.474,-3.459,-1.548,0.244],"ok":true},{"arm":4,"scores":[-1.559,-3.448,-3.434,-1.531,0.205],"ok":true},{"arm":4,"scores":[-1.543,-3.425,-3.411,-1.514,0.174],"ok":true},{"arm":4,"scores":[-1.528,-3.404,-3.39,-1.499,0.149],"ok":true},{"arm":4,"scores":[-1.514,-3.385,-3.371,-1.486,0.127],"ok":true},{"arm":4,"scores":[-1.501,-3.367,-3.352,-1.473,0.108],"ok":true},{"arm":4,"scores":[-1.49,-3.35,-3.336,-1.461,0.091],"ok":true},{"arm":4,"scores":[-1.478,-3.334,-3.32,-1.45,0.076],"ok":false},{"arm":4,"scores":[-1.468,-3.319,-3.305,-1.439,-0.273],"ok":true},{"arm":4,"scores":[-1.458,-3.305,-3.291,-1.429,-0.263],"ok":true},{"arm":4,"scores":[-1.448,-3.292,-3.278,-1.42,-0.254],"ok":true},{"arm":4,"scores":[-1.44,-3.279,-3.265,-1.411,-0.247],"ok":false},{"arm":4,"scores":[-1.431,-3.267,-3.253,-1.403,-0.502],"ok":true},{"arm":4,"scores":[-1.423,-3.256,-3.242,-1.394,-0.483],"ok":true},{"arm":4,"scores":[-1.415,-3.245,-3.231,-1.387,-0.466],"ok":true},{"arm":4,"scores":[-1.408,-3.235,-3.22,-1.379,-0.451],"ok":false},{"arm":4,"scores":[-1.401,-3.225,-3.21,-1.372,-0.652],"ok":true},{"arm":4,"scores":[-1.394,-3.215,-3.201,-1.366,-0.63],"ok":false},{"arm":4,"scores":[-1.388,-3.206,-3.191,-1.359,-0.807],"ok":true},{"arm":4,"scores":[-1.381,-3.197,-3.183,-1.353,-0.781],"ok":false},{"arm":4,"scores":[-1.375,-3.188,-3.174,-1.347,-0.939],"ok":true},{"arm":4,"scores":[-1.369,-3.18,-3.166,-1.341,-0.911],"ok":false},{"arm":4,"scores":[-1.364,-3.172,-3.158,-1.335,-1.052],"ok":false},{"arm":4,"scores":[-1.358,-3.164,-3.15,-1.33,-1.184],"ok":true},{"arm":4,"scores":[-1.353,-3.157,-3.143,-1.325,-1.151],"ok":true},{"arm":4,"scores":[-1.348,-3.15,-3.135,-1.319,-1.12],"ok":true},{"arm":4,"scores":[-1.343,-3.143,-3.128,-1.314,-1.091],"ok":true},{"arm":4,"scores":[-1.338,-3.136,-3.122,-1.31,-1.064],"ok":false},{"arm":4,"scores":[-1.334,-3.129,-3.115,-1.305,-1.176],"ok":true},{"arm":4,"scores":[-1.329,-3.123,-3.109,-1.3,-1.149],"ok":true},{"arm":4,"scores":[-1.325,-3.117,-3.102,-1.296,-1.122],"ok":true},{"arm":4,"scores":[-1.32,-3.111,-3.096,-1.292,-1.097],"ok":true},{"arm":4,"scores":[-1.316,-3.105,-3.09,-1.288,-1.074],"ok":true},{"arm":4,"scores":[-1.312,-3.099,-3.085,-1.283,-1.052],"ok":true},{"arm":4,"scores":[-1.308,-3.093,-3.079,-1.28,-1.031],"ok":true},{"arm":4,"scores":[-1.304,-3.088,-3.074,-1.276,-1.011],"ok":true},{"arm":4,"scores":[-1.3,-3.082,-3.068,-1.272,-0.992],"ok":true},{"arm":4,"scores":[-1.297,-3.077,-3.063,-1.268,-0.974],"ok":true},{"arm":4,"scores":[-1.293,-3.072,-3.058,-1.265,-0.956],"ok":true},{"arm":4,"scores":[-1.29,-3.067,-3.053,-1.261,-0.94],"ok":true},{"arm":4,"scores":[-1.286,-3.062,-3.048,-1.258,-0.924],"ok":true},{"arm":4,"scores":[-1.283,-3.057,-3.043,-1.254,-0.909],"ok":true},{"arm":4,"scores":[-1.279,-3.053,-3.038,-1.251,-0.895],"ok":true},{"arm":4,"scores":[-1.276,-3.048,-3.034,-1.248,-0.881],"ok":true},{"arm":4,"scores":[-1.273,-3.044,-3.029,-1.244,-0.868],"ok":true},{"arm":4,"scores":[-1.27,-3.039,-3.025,-1.241,-0.856],"ok":true},{"arm":4,"scores":[-1.267,-3.035,-3.021,-1.238,-0.844],"ok":false},{"arm":4,"scores":[-1.264,-3.031,-3.016,-1.235,-0.921],"ok":true},{"arm":4,"scores":[-1.261,-3.027,-3.012,-1.232,-0.908],"ok":true},{"arm":4,"scores":[-1.258,-3.022,-3.008,-1.229,-0.896],"ok":true},{"arm":4,"scores":[-1.255,-3.018,-3.004,-1.227,-0.884],"ok":true},{"arm":4,"scores":[-1.252,-3.015,-3.0,-1.224,-0.873],"ok":false},{"arm":4,"scores":[-1.25,-3.011,-2.996,-1.221,-0.943],"ok":true},{"arm":4,"scores":[-1.247,-3.007,-2.993,-1.218,-0.931],"ok":true},{"arm":4,"scores":[-1.244,-3.003,-2.989,-1.216,-0.919],"ok":true},{"arm":4,"scores":[-1.242,-2.999,-2.985,-1.213,-0.908],"ok":true},{"arm":4,"scores":[-1.239,-2.996,-2.982,-1.211,-0.897],"ok":false},{"arm":4,"scores":[-1.237,-2.992,-2.978,-1.208,-0.961],"ok":true},{"arm":4,"scores":[-1.234,-2.989,-2.975,-1.206,-0.95],"ok":true},{"arm":4,"scores":[-1.232,-2.985,-2.971,-1.203,-0.939],"ok":true},{"arm":4,"scores":[-1.229,-2.982,-2.968,-1.201,-0.929],"ok":true},{"arm":4,"scores":[-1.227,-2.979,-2.964,-1.198,-0.919],"ok":true},{"arm":4,"scores":[-1.225,-2.975,-2.961,-1.196,-0.909],"ok":true},{"arm":4,"scores":[-1.222,-2.972,-2.958,-1.194,-0.899],"ok":true},{"arm":4,"scores":[-1.22,-2.969,-2.955,-1.192,-0.89],"ok":true},{"arm":4,"scores":[-1.218,-2.966,-2.952,-1.189,-0.881],"ok":true},{"arm":4,"scores":[-1.216,-2.963,-2.948,-1.187,-0.872],"ok":true},{"arm":4,"scores":[-1.214,-2.96,-2.945,-1.185,-0.864],"ok":true},{"arm":4,"scores":[-1.211,-2.957,-2.942,-1.183,-0.855],"ok":true},{"arm":4,"scores":[-1.209,-2.954,-2.939,-1.181,-0.847],"ok":true},{"arm":4,"scores":[-1.207,-2.951,-2.936,-1.179,-0.839],"ok":true},{"arm":4,"scores":[-1.205,-2.948,-2.934,-1.177,-0.832],"ok":true},{"arm":4,"scores":[-1.203,-2.945,-2.931,-1.175,-0.824],"ok":true},{"arm":4,"scores":[-1.201,-2.942,-2.928,-1.173,-0.817],"ok":true},{"arm":4,"scores":[-1.199,-2.939,-2.925,-1.171,-0.81],"ok":true},{"arm":4,"scores":[-1.197,-2.937,-2.922,-1.169,-0.803],"ok":true},{"arm":4,"scores":[-1.195,-2.934,-2.92,-1.167,-0.797],"ok":true},{"arm":4,"scores":[-1.194,-2.931,-2.917,-1.165,-0.79],"ok":true},{"arm":4,"scores":[-1.192,-2.929,-2.914,-1.163,-0.784],"ok":true},{"arm":4,"scores":[-1.19,-2.926,-2.912,-1.161,-0.778],"ok":true},{"arm":4,"scores":[-1.188,-2.924,-2.909,-1.159,-0.772],"ok":true},{"arm":4,"scores":[-1.186,-2.921,-2.907,-1.158,-0.766],"ok":false},{"arm":4,"scores":[-1.184,-2.918,-2.904,-1.156,-0.814],"ok":true},{"arm":4,"scores":[-1.183,-2.916,-2.902,-1.154,-0.808],"ok":true},{"arm":4,"scores":[-1.181,-2.914,-2.899,-1.152,-0.801],"ok":true},{"arm":4,"scores":[-1.179,-2.911,-2.897,-1.151,-0.796],"ok":true},{"arm":4,"scores":[-1.178,-2.909,-2.894,-1.149,-0.79],"ok":true},{"arm":4,"scores":[-1.176,-2.906,-2.892,-1.147,-0.784],"ok":true},{"arm":4,"scores":[-1.174,-2.904,-2.89,-1.146,-0.779],"ok":true},{"arm":4,"scores":[-1.173,-2.902,-2.887,-1.144,-0.773],"ok":true},{"arm":4,"scores":[-1.171,-2.899,-2.885,-1.142,-0.768],"ok":true},{"arm":4,"scores":[-1.169,-2.897,-2.883,-1.141,-0.763],"ok":true},{"arm":4,"scores":[-1.168,-2.895,-2.881,-1.139,-0.758],"ok":true},{"arm":4,"scores":[-1.166,-2.893,-2.878,-1.138,-0.753],"ok":true},{"arm":4,"scores":[-1.165,-2.891,-2.876,-1.136,-0.748],"ok":true},{"arm":4,"scores":[-1.163,-2.888,-2.874,-1.135,-0.743],"ok":true},{"arm":4,"scores":[-1.162,-2.886,-2.872,-1.133,-0.739],"ok":false},{"arm":4,"scores":[-1.16,-2.884,-2.87,-1.132,-0.78],"ok":true},{"arm":4,"scores":[-1.159,-2.882,-2.868,-1.13,-0.775],"ok":true},{"arm":4,"scores":[-1.157,-2.88,-2.866,-1.129,-0.77],"ok":true},{"arm":4,"scores":[-1.156,-2.878,-2.864,-1.127,-0.765],"ok":true},{"arm":4,"scores":[-1.154,-2.876,-2.861,-1.126,-0.761],"ok":true},{"arm":4,"scores":[-1.153,-2.874,-2.859,-1.124,-0.756],"ok":true},{"arm":4,"scores":[-1.151,-2.872,-2.857,-1.123,-0.752],"ok":true},{"arm":4,"scores":[-1.15,-2.87,-2.855,-1.121,-0.748],"ok":true},{"arm":4,"scores":[-1.149,-2.868,-2.853,-1.12,-0.743],"ok":false},{"arm":4,"scores":[-1.147,-2.866,-2.852,-1.119,-0.781],"ok":true},{"arm":4,"scores":[-1.146,-2.864,-2.85,-1.117,-0.777],"ok":true},{"arm":4,"scores":[-1.144,-2.862,-2.848,-1.116,-0.772],"ok":true},{"arm":4,"scores":[-1.143,-2.86,-2.846,-1.115,-0.768],"ok":true},{"arm":4,"scores":[-1.142,-2.858,-2.844,-1.113,-0.764],"ok":true},{"arm":4,"scores":[-1.141,-2.856,-2.842,-1.112,-0.76],"ok":true},{"arm":4,"scores":[-1.139,-2.854,-2.84,-1.111,-0.756],"ok":true},{"arm":4,"scores":[-1.138,-2.853,-2.838,-1.109,-0.752],"ok":true},{"arm":4,"scores":[-1.137,-2.851,-2.837,-1.108,-0.748],"ok":true},{"arm":4,"scores":[-1.135,-2.849,-2.835,-1.107,-0.744],"ok":true},{"arm":4,"scores":[-1.134,-2.847,-2.833,-1.106,-0.74],"ok":false},{"arm":4,"scores":[-1.133,-2.846,-2.831,-1.104,-0.774],"ok":true},{"arm":4,"scores":[-1.132,-2.844,-2.829,-1.103,-0.77],"ok":true},{"arm":4,"scores":[-1.13,-2.842,-2.828,-1.102,-0.767],"ok":true},{"arm":4,"scores":[-1.129,-2.84,-2.826,-1.101,-0.763],"ok":false},{"arm":4,"scores":[-1.128,-2.839,-2.824,-1.099,-0.796],"ok":true},{"arm":4,"scores":[-1.127,-2.837,-2.823,-1.098,-0.792],"ok":true},{"arm":4,"scores":[-1.126,-2.835,-2.821,-1.097,-0.788],"ok":true},{"arm":4,"scores":[-1.124,-2.834,-2.819,-1.096,-0.784],"ok":true},{"arm":4,"scores":[-1.123,-2.832,-2.818,-1.095,-0.78],"ok":true},{"arm":4,"scores":[-1.122,-2.83,-2.816,-1.094,-0.776],"ok":false},{"arm":4,"scores":[-1.121,-2.829,-2.814,-1.092,-0.808],"ok":true},{"arm":4,"scores":[-1.12,-2.827,-2.813,-1.091,-0.804],"ok":false},{"arm":4,"scores":[-1.119,-2.825,-2.811,-1.09,-0.835],"ok":true},{"arm":4,"scores":[-1.118,-2.824,-2.81,-1.089,-0.831],"ok":false},{"arm":4,"scores":[-1.116,-2.822,-2.808,-1.088,-0.861],"ok":true},{"arm":4,"scores":[-1.115,-2.821,-2.806,-1.087,-0.857],"ok":false},{"arm":4,"scores":[-1.114,-2.819,-2.805,-1.086,-0.887],"ok":true},{"arm":4,"scores":[-1.113,-2.818,-2.803,-1.085,-0.883],"ok":false},{"arm":4,"scores":[-1.112,-2.816,-2.802,-1.083,-0.912],"ok":true},{"arm":4,"scores":[-1.111,-2.815,-2.8,-1.082,-0.907],"ok":true},{"arm":4,"scores":[-1.11,-2.813,-2.799,-1.081,-0.903],"ok":true},{"arm":4,"scores":[-1.109,-2.812,-2.797,-1.08,-0.899],"ok":true},{"arm":4,"scores":[-1.108,-2.81,-2.796,-1.079,-0.895],"ok":false},{"arm":4,"scores":[-1.107,-2.809,-2.794,-1.078,-0.923],"ok":true},{"arm":4,"scores":[-1.106,-2.807,-2.793,-1.077,-0.918],"ok":true},{"arm":4,"scores":[-1.105,-2.806,-2.791,-1.076,-0.914],"ok":true},{"arm":4,"scores":[-1.104,-2.804,-2.79,-1.075,-0.91],"ok":true},{"arm":4,"scores":[-1.103,-2.803,-2.789,-1.074,-0.906],"ok":true},{"arm":4,"scores":[-1.102,-2.801,-2.787,-1.073,-0.902],"ok":true},{"arm":4,"scores":[-1.101,-2.8,-2.786,-1.072,-0.898],"ok":true},{"arm":4,"scores":[-1.1,-2.799,-2.784,-1.071,-0.894],"ok":true},{"arm":4,"scores":[-1.099,-2.797,-2.783,-1.07,-0.89],"ok":true},{"arm":4,"scores":[-1.098,-2.796,-2.782,-1.069,-0.886],"ok":true},{"arm":4,"scores":[-1.097,-2.794,-2.78,-1.068,-0.882],"ok":true},{"arm":4,"scores":[-1.096,-2.793,-2.779,-1.067,-0.878],"ok":true},{"arm":4,"scores":[-1.095,-2.792,-2.777,-1.066,-0.875],"ok":true},{"arm":4,"scores":[-1.094,-2.79,-2.776,-1.065,-0.871],"ok":true},{"arm":4,"scores":[-1.093,-2.789,-2.775,-1.064,-0.868],"ok":true},{"arm":4,"scores":[-1.092,-2.788,-2.773,-1.063,-0.864],"ok":true},{"arm":4,"scores":[-1.091,-2.786,-2.772,-1.062,-0.86],"ok":true},{"arm":4,"scores":[-1.09,-2.785,-2.771,-1.062,-0.857],"ok":false},{"arm":4,"scores":[-1.089,-2.784,-2.769,-1.061,-0.882],"ok":false},{"arm":4,"scores":[-1.088,-2.782,-2.768,-1.06,-0.907],"ok":true},{"arm":4,"scores":[-1.087,-2.781,-2.767,-1.059,-0.903],"ok":true},{"arm":4,"scores":[-1.086,-2.78,-2.766,-1.058,-0.9],"ok":true},{"arm":4,"scores":[-1.086,-2.779,-2.764,-1.057,-0.896],"ok":true},{"arm":4,"scores":[-1.085,-2.777,-2.763,-1.056,-0.893],"ok":true},{"arm":4,"scores":[-1.084,-2.776,-2.762,-1.055,-0.889],"ok":false},{"arm":4,"scores":[-1.083,-2.775,-2.761,-1.054,-0.913],"ok":true},{"arm":4,"scores":[-1.082,-2.774,-2.759,-1.053,-0.91],"ok":true},{"arm":4,"scores":[-1.081,-2.772,-2.758,-1.053,-0.906],"ok":true},{"arm":4,"scores":[-1.08,-2.771,-2.757,-1.052,-0.903],"ok":true},{"arm":4,"scores":[-1.079,-2.77,-2.756,-1.051,-0.899],"ok":true},{"arm":4,"scores":[-1.079,-2.769,-2.754,-1.05,-0.896],"ok":true},{"arm":4,"scores":[-1.078,-2.768,-2.753,-1.049,-0.892],"ok":true},{"arm":4,"scores":[-1.077,-2.766,-2.752,-1.048,-0.889],"ok":true},{"arm":4,"scores":[-1.076,-2.765,-2.751,-1.047,-0.886],"ok":true},{"arm":4,"scores":[-1.075,-2.764,-2.75,-1.047,-0.882],"ok":false},{"arm":4,"scores":[-1.074,-2.763,-2.749,-1.046,-0.905],"ok":true},{"arm":4,"scores":[-1.074,-2.762,-2.747,-1.045,-0.902],"ok":true},{"arm":4,"scores":[-1.073,-2.761,-2.746,-1.044,-0.899],"ok":true},{"arm":4,"scores":[-1.072,-2.759,-2.745,-1.043,-0.895],"ok":true},{"arm":4,"scores":[-1.071,-2.758,-2.744,-1.043,-0.892],"ok":true},{"arm":4,"scores":[-1.07,-2.757,-2.743,-1.042,-0.889],"ok":true},{"arm":4,"scores":[-1.07,-2.756,-2.742,-1.041,-0.886],"ok":true},{"arm":4,"scores":[-1.069,-2.755,-2.741,-1.04,-0.883],"ok":true},{"arm":4,"scores":[-1.068,-2.754,-2.739,-1.039,-0.88],"ok":true},{"arm":4,"scores":[-1.067,-2.753,-2.738,-1.039,-0.876],"ok":true},{"arm":4,"scores":[-1.066,-2.751,-2.737,-1.038,-0.873],"ok":true},{"arm":4,"scores":[-1.066,-2.75,-2.736,-1.037,-0.87],"ok":false},{"arm":4,"scores":[-1.065,-2.749,-2.735,-1.036,-0.892],"ok":true},{"arm":4,"scores":[-1.064,-2.748,-2.734,-1.035,-0.889],"ok":false},{"arm":4,"scores":[-1.063,-2.747,-2.733,-1.035,-0.91],"ok":true},{"arm":4,"scores":[-1.063,-2.746,-2.732,-1.034,-0.907],"ok":true},{"arm":4,"scores":[-1.062,-2.745,-2.731,-1.033,-0.904],"ok":false},{"arm":4,"scores":[-1.061,-2.744,-2.73,-1.032,-0.924],"ok":false},{"arm":4,"scores":[-1.06,-2.743,-2.729,-1.032,-0.945],"ok":true},{"arm":4,"scores":[-1.06,-2.742,-2.727,-1.031,-0.942],"ok":true},{"arm":4,"scores":[-1.059,-2.741,-2.726,-1.03,-0.939],"ok":true},{"arm":4,"scores":[-1.058,-2.74,-2.725,-1.029,-0.935],"ok":true},{"arm":4,"scores":[-1.057,-2.739,-2.724,-1.029,-0.932],"ok":true},{"arm":4,"scores":[-1.057,-2.738,-2.723,-1.028,-0.929],"ok":true},{"arm":4,"scores":[-1.056,-2.737,-2.722,-1.027,-0.926],"ok":true},{"arm":4,"scores":[-1.055,-2.736,-2.721,-1.027,-0.923],"ok":false},{"arm":4,"scores":[-1.054,-2.735,-2.72,-1.026,-0.943],"ok":true},{"arm":4,"scores":[-1.054,-2.734,-2.719,-1.025,-0.94],"ok":false},{"arm":4,"scores":[-1.053,-2.733,-2.718,-1.024,-0.959],"ok":true},{"arm":4,"scores":[-1.052,-2.732,-2.717,-1.024,-0.956],"ok":true},{"arm":4,"scores":[-1.052,-2.731,-2.716,-1.023,-0.953],"ok":true},{"arm":4,"scores":[-1.051,-2.73,-2.715,-1.022,-0.95],"ok":true},{"arm":4,"scores":[-1.05,-2.729,-2.714,-1.022,-0.947],"ok":true},{"arm":4,"scores":[-1.049,-2.728,-2.713,-1.021,-0.944],"ok":true},{"arm":4,"scores":[-1.049,-2.727,-2.712,-1.02,-0.941],"ok":true},{"arm":4,"scores":[-1.048,-2.726,-2.711,-1.02,-0.938],"ok":true},{"arm":4,"scores":[-1.047,-2.725,-2.71,-1.019,-0.935],"ok":true},{"arm":4,"scores":[-1.047,-2.724,-2.709,-1.018,-0.932],"ok":true},{"arm":4,"scores":[-1.046,-2.723,-2.708,-1.017,-0.929],"ok":true},{"arm":4,"scores":[-1.045,-2.722,-2.708,-1.017,-0.927],"ok":true},{"arm":4,"scores":[-1.045,-2.721,-2.707,-1.016,-0.924],"ok":true},{"arm":4,"scores":[-1.044,-2.72,-2.706,-1.015,-0.921],"ok":true},{"arm":4,"scores":[-1.043,-2.719,-2.705,-1.015,-0.918],"ok":true},{"arm":4,"scores":[-1.043,-2.718,-2.704,-1.014,-0.916],"ok":true},{"arm":4,"scores":[-1.042,-2.717,-2.703,-1.013,-0.913],"ok":true},{"arm":4,"scores":[-1.041,-2.716,-2.702,-1.013,-0.91],"ok":false},{"arm":4,"scores":[-1.041,-2.715,-2.701,-1.012,-0.928],"ok":true},{"arm":4,"scores":[-1.04,-2.714,-2.7,-1.012,-0.926],"ok":true},{"arm":4,"scores":[-1.039,-2.713,-2.699,-1.011,-0.923],"ok":true},{"arm":4,"scores":[-1.039,-2.713,-2.698,-1.01,-0.92],"ok":true},{"arm":4,"scores":[-1.038,-2.712,-2.697,-1.01,-0.918],"ok":true},{"arm":4,"scores":[-1.038,-2.711,-2.696,-1.009,-0.915],"ok":false},{"arm":4,"scores":[-1.037,-2.71,-2.696,-1.008,-0.933],"ok":true},{"arm":4,"scores":[-1.036,-2.709,-2.695,-1.008,-0.93],"ok":true},{"arm":4,"scores":[-1.036,-2.708,-2.694,-1.007,-0.927],"ok":true},{"arm":4,"scores":[-1.035,-2.707,-2.693,-1.006,-0.925],"ok":false},{"arm":4,"scores":[-1.034,-2.706,-2.692,-1.006,-0.942],"ok":true},{"arm":4,"scores":[-1.034,-2.705,-2.691,-1.005,-0.939],"ok":true},{"arm":4,"scores":[-1.033,-2.705,-2.69,-1.005,-0.937],"ok":true},{"arm":4,"scores":[-1.033,-2.704,-2.689,-1.004,-0.934],"ok":true},{"arm":4,"scores":[-1.032,-2.703,-2.689,-1.003,-0.931],"ok":true},{"arm":4,"scores":[-1.031,-2.702,-2.688,-1.003,-0.929],"ok":true},{"arm":4,"scores":[-1.031,-2.701,-2.687,-1.002,-0.926],"ok":true},{"arm":4,"scores":[-1.03,-2.7,-2.686,-1.002,-0.924],"ok":true},{"arm":4,"scores":[-1.03,-2.699,-2.685,-1.001,-0.921],"ok":false},{"arm":4,"scores":[-1.029,-2.699,-2.684,-1.0,-0.938],"ok":false},{"arm":4,"scores":[-1.028,-2.698,-2.683,-1.0,-0.954],"ok":false},{"arm":4,"scores":[-1.028,-2.697,-2.683,-0.999,-0.971],"ok":true},{"arm":4,"scores":[-1.027,-2.696,-2.682,-0.999,-0.968],"ok":true},{"arm":4,"scores":[-1.027,-2.695,-2.681,-0.998,-0.965],"ok":true},{"arm":4,"scores":[-1.026,-2.694,-2.68,-0.997,-0.963],"ok":true},{"arm":4,"scores":[-1.025,-2.694,-2.679,-0.997,-0.96],"ok":true},{"arm":4,"scores":[-1.025,-2.693,-2.678,-0.996,-0.958],"ok":true},{"arm":4,"scores":[-1.024,-2.692,-2.678,-0.996,-0.955],"ok":true},{"arm":4,"scores":[-1.024,-2.691,-2.677,-0.995,-0.953],"ok":true},{"arm":4,"scores":[-1.023,-2.69,-2.676,-0.995,-0.95],"ok":true},{"arm":4,"scores":[-1.023,-2.689,-2.675,-0.994,-0.948],"ok":true},{"arm":4,"scores":[-1.022,-2.689,-2.674,-0.993,-0.945],"ok":true},{"arm":4,"scores":[-1.021,-2.688,-2.674,-0.993,-0.943],"ok":true},{"arm":4,"scores":[-1.021,-2.687,-2.673,-0.992,-0.94],"ok":true},{"arm":4,"scores":[-1.02,-2.686,-2.672,-0.992,-0.938],"ok":true},{"arm":4,"scores":[-1.02,-2.685,-2.671,-0.991,-0.936],"ok":true},{"arm":4,"scores":[-1.019,-2.685,-2.67,-0.991,-0.933],"ok":false},{"arm":4,"scores":[-1.019,-2.684,-2.67,-0.99,-0.949],"ok":true},{"arm":4,"scores":[-1.018,-2.683,-2.669,-0.989,-0.946],"ok":true},{"arm":4,"scores":[-1.017,-2.682,-2.668,-0.989,-0.944],"ok":true},{"arm":4,"scores":[-1.017,-2.682,-2.667,-0.988,-0.942],"ok":true},{"arm":4,"scores":[-1.016,-2.681,-2.667,-0.988,-0.939],"ok":true},{"arm":4,"scores":[-1.016,-2.68,-2.666,-0.987,-0.937],"ok":true},{"arm":4,"scores":[-1.015,-2.679,-2.665,-0.987,-0.935],"ok":true},{"arm":4,"scores":[-1.015,-2.678,-2.664,-0.986,-0.932],"ok":true},{"arm":4,"scores":[-1.014,-2.678,-2.663,-0.986,-0.93],"ok":true},{"arm":4,"scores":[-1.014,-2.677,-2.663,-0.985,-0.928],"ok":false},{"arm":4,"scores":[-1.013,-2.676,-2.662,-0.985,-0.943],"ok":true},{"arm":4,"scores":[-1.013,-2.675,-2.661,-0.984,-0.94],"ok":true},{"arm":4,"scores":[-1.012,-2.675,-2.66,-0.984,-0.938],"ok":true},{"arm":4,"scores":[-1.012,-2.674,-2.66,-0.983,-0.936],"ok":false},{"arm":4,"scores":[-1.011,-2.673,-2.659,-0.982,-0.951],"ok":false},{"arm":4,"scores":[-1.011,-2.673,-2.658,-0.982,-0.965],"ok":true},{"arm":4,"scores":[-1.01,-2.672,-2.657,-0.981,-0.963],"ok":true},{"arm":4,"scores":[-1.009,-2.671,-2.657,-0.981,-0.961],"ok":true},{"arm":4,"scores":[-1.009,-2.67,-2.656,-0.98,-0.958],"ok":true},{"arm":4,"scores":[-1.008,-2.67,-2.655,-0.98,-0.956],"ok":true},{"arm":4,"scores":[-1.008,-2.669,-2.655,-0.979,-0.954],"ok":true},{"arm":4,"scores":[-1.007,-2.668,-2.654,-0.979,-0.952],"ok":true},{"arm":4,"scores":[-1.007,-2.667,-2.653,-0.978,-0.949],"ok":true},{"arm":4,"scores":[-1.006,-2.667,-2.652,-0.978,-0.947],"ok":true},{"arm":4,"scores":[-1.006,-2.666,-2.652,-0.977,-0.945],"ok":true},{"arm":4,"scores":[-1.005,-2.665,-2.651,-0.977,-0.943],"ok":true},{"arm":4,"scores":[-1.005,-2.665,-2.65,-0.976,-0.941],"ok":true},{"arm":4,"scores":[-1.004,-2.664,-2.65,-0.976,-0.938],"ok":true},{"arm":4,"scores":[-1.004,-2.663,-2.649,-0.975,-0.936],"ok":true},{"arm":4,"scores":[-1.003,-2.662,-2.648,-0.975,-0.934],"ok":true},{"arm":4,"scores":[-1.003,-2.662,-2.647,-0.974,-0.932],"ok":false},{"arm":4,"scores":[-1.002,-2.661,-2.647,-0.974,-0.946],"ok":true},{"arm":4,"scores":[-1.002,-2.66,-2.646,-0.973,-0.944],"ok":true},{"arm":4,"scores":[-1.001,-2.66,-2.645,-0.973,-0.942],"ok":false},{"arm":4,"scores":[-1.001,-2.659,-2.645,-0.972,-0.955],"ok":true},{"arm":4,"scores":[-1.0,-2.658,-2.644,-0.972,-0.953],"ok":true},{"arm":4,"scores":[-1.0,-2.658,-2.643,-0.971,-0.951],"ok":true},{"arm":4,"scores":[-1.0,-2.657,-2.643,-0.971,-0.949],"ok":true},{"arm":4,"scores":[-0.999,-2.656,-2.642,-0.97,-0.947],"ok":true},{"arm":4,"scores":[-0.999,-2.656,-2.641,-0.97,-0.945],"ok":true},{"arm":4,"scores":[-0.998,-2.655,-2.641,-0.969,-0.943],"ok":true},{"arm":4,"scores":[-0.998,-2.654,-2.64,-0.969,-0.941],"ok":true},{"arm":4,"scores":[-0.997,-2.654,-2.639,-0.969,-0.939],"ok":true},{"arm":4,"scores":[-0.997,-2.653,-2.639,-0.968,-0.937],"ok":true},{"arm":4,"scores":[-0.996,-2.652,-2.638,-0.968,-0.935],"ok":true},{"arm":4,"scores":[-0.996,-2.652,-2.637,-0.967,-0.933],"ok":true},{"arm":4,"scores":[-0.995,-2.651,-2.637,-0.967,-0.931],"ok":false},{"arm":4,"scores":[-0.995,-2.65,-2.636,-0.966,-0.944],"ok":true},{"arm":4,"scores":[-0.994,-2.65,-2.635,-0.966,-0.942],"ok":true},{"arm":4,"scores":[-0.994,-2.649,-2.635,-0.965,-0.94],"ok":true},{"arm":4,"scores":[-0.993,-2.648,-2.634,-0.965,-0.938],"ok":false},{"arm":4,"scores":[-0.993,-2.648,-2.633,-0.964,-0.951],"ok":true},{"arm":4,"scores":[-0.992,-2.647,-2.633,-0.964,-0.949],"ok":true},{"arm":4,"scores":[-0.992,-2.646,-2.632,-0.963,-0.947],"ok":true},{"arm":4,"scores":[-0.992,-2.646,-2.631,-0.963,-0.945],"ok":true},{"arm":4,"scores":[-0.991,-2.645,-2.631,-0.963,-0.943],"ok":true},{"arm":4,"scores":[-0.991,-2.644,-2.63,-0.962,-0.941],"ok":true},{"arm":4,"scores":[-0.99,-2.644,-2.629,-0.962,-0.939],"ok":true},{"arm":4,"scores":[-0.99,-2.643,-2.629,-0.961,-0.937],"ok":true},{"arm":4,"scores":[-0.989,-2.642,-2.628,-0.961,-0.935],"ok":true},{"arm":4,"scores":[-0.989,-2.642,-2.628,-0.96,-0.933],"ok":true},{"arm":4,"scores":[-0.988,-2.641,-2.627,-0.96,-0.932],"ok":true},{"arm":4,"scores":[-0.988,-2.641,-2.626,-0.959,-0.93],"ok":false},{"arm":4,"scores":[-0.988,-2.64,-2.626,-0.959,-0.942],"ok":true},{"arm":4,"scores":[-0.987,-2.639,-2.625,-0.959,-0.94],"ok":true},{"arm":4,"scores":[-0.987,-2.639,-2.624,-0.958,-0.938],"ok":false},{"arm":4,"scores":[-0.986,-2.638,-2.624,-0.958,-0.951],"ok":true},{"arm":4,"scores":[-0.986,-2.638,-2.623,-0.957,-0.949],"ok":true},{"arm":4,"scores":[-0.985,-2.637,-2.623,-0.957,-0.947],"ok":true},{"arm":4,"scores":[-0.985,-2.636,-2.622,-0.956,-0.945],"ok":true},{"arm":4,"scores":[-0.984,-2.636,-2.621,-0.956,-0.943],"ok":true},{"arm":4,"scores":[-0.984,-2.635,-2.621,-0.955,-0.941],"ok":true},{"arm":4,"scores":[-0.984,-2.634,-2.62,-0.955,-0.94],"ok":true},{"arm":4,"scores":[-0.983,-2.634,-2.62,-0.955,-0.938],"ok":true},{"arm":4,"scores":[-0.983,-2.633,-2.619,-0.954,-0.936],"ok":true},{"arm":4,"scores":[-0.982,-2.633,-2.618,-0.954,-0.934],"ok":true},{"arm":4,"scores":[-0.982,-2.632,-2.618,-0.953,-0.932],"ok":true},{"arm":4,"scores":[-0.982,-2.631,-2.617,-0.953,-0.931],"ok":true},{"arm":4,"scores":[-0.981,-2.631,-2.617,-0.953,-0.929],"ok":true},{"arm":4,"scores":[-0.981,-2.63,-2.616,-0.952,-0.927],"ok":true},{"arm":4,"scores":[-0.98,-2.63,-2.615,-0.952,-0.925],"ok":true},{"arm":4,"scores":[-0.98,-2.629,-2.615,-0.951,-0.924],"ok":true},{"arm":4,"scores":[-0.979,-2.629,-2.614,-0.951,-0.922],"ok":false},{"arm":4,"scores":[-0.979,-2.628,-2.614,-0.95,-0.934],"ok":false},{"arm":4,"scores":[-0.979,-2.627,-2.613,-0.95,-0.945],"ok":true},{"arm":4,"scores":[-0.978,-2.627,-2.612,-0.95,-0.944],"ok":true},{"arm":4,"scores":[-0.978,-2.626,-2.612,-0.949,-0.942],"ok":true},{"arm":4,"scores":[-0.977,-2.626,-2.611,-0.949,-0.94],"ok":false},{"arm":3,"scores":[-0.977,-2.625,-2.611,-0.948,-0.952],"ok":false},{"arm":4,"scores":[-0.977,-2.624,-2.61,-2.056,-0.952],"ok":true},{"arm":4,"scores":[-0.976,-2.624,-2.61,-2.055,-0.95],"ok":true},{"arm":4,"scores":[-0.976,-2.623,-2.609,-2.055,-0.948],"ok":true},{"arm":4,"scores":[-0.975,-2.623,-2.608,-2.055,-0.946],"ok":true},{"arm":4,"scores":[-0.975,-2.622,-2.608,-2.054,-0.945],"ok":true},{"arm":4,"scores":[-0.975,-2.622,-2.607,-2.054,-0.943],"ok":true},{"arm":4,"scores":[-0.974,-2.621,-2.607,-2.054,-0.941],"ok":true},{"arm":4,"scores":[-0.974,-2.62,-2.606,-2.053,-0.939],"ok":true},{"arm":4,"scores":[-0.973,-2.62,-2.606,-2.053,-0.938],"ok":true},{"arm":4,"scores":[-0.973,-2.619,-2.605,-2.053,-0.936],"ok":true},{"arm":4,"scores":[-0.973,-2.619,-2.605,-2.052,-0.934],"ok":false},{"arm":4,"scores":[-0.972,-2.618,-2.604,-2.052,-0.946],"ok":false},{"arm":4,"scores":[-0.972,-2.618,-2.603,-2.052,-0.957],"ok":true},{"arm":4,"scores":[-0.971,-2.617,-2.603,-2.051,-0.955],"ok":true},{"arm":4,"scores":[-0.971,-2.617,-2.602,-2.051,-0.953],"ok":true},{"arm":4,"scores":[-0.971,-2.616,-2.602,-2.051,-0.952],"ok":true},{"arm":4,"scores":[-0.97,-2.615,-2.601,-2.05,-0.95],"ok":true},{"arm":4,"scores":[-0.97,-2.615,-2.601,-2.05,-0.948],"ok":true},{"arm":4,"scores":[-0.969,-2.614,-2.6,-2.05,-0.947],"ok":true},{"arm":4,"scores":[-0.969,-2.614,-2.6,-2.049,-0.945],"ok":true},{"arm":4,"scores":[-0.969,-2.613,-2.599,-2.049,-0.943],"ok":false},{"arm":4,"scores":[-0.968,-2.613,-2.598,-2.049,-0.954],"ok":true},{"arm":4,"scores":[-0.968,-2.612,-2.598,-2.048,-0.953],"ok":true},{"arm":4,"scores":[-0.968,-2.612,-2.597,-2.048,-0.951],"ok":true},{"arm":4,"scores":[-0.967,-2.611,-2.597,-2.048,-0.949],"ok":true},{"arm":4,"scores":[-0.967,-2.611,-2.596,-2.048,-0.948],"ok":true},{"arm":4,"scores":[-0.966,-2.61,-2.596,-2.047,-0.946],"ok":true},{"arm":4,"scores":[-0.966,-2.61,-2.595,-2.047,-0.944],"ok":true},{"arm":4,"scores":[-0.966,-2.609,-2.595,-2.047,-0.943],"ok":true},{"arm":4,"scores":[-0.965,-2.608,-2.594,-2.046,-0.941],"ok":true},{"arm":4,"scores":[-0.965,-2.608,-2.594,-2.046,-0.939],"ok":true},{"arm":4,"scores":[-0.965,-2.607,-2.593,-2.046,-0.938],"ok":true},{"arm":4,"scores":[-0.964,-2.607,-2.593,-2.045,-0.936],"ok":true},{"arm":4,"scores":[-0.964,-2.606,-2.592,-2.045,-0.935],"ok":false},{"arm":4,"scores":[-0.963,-2.606,-2.592,-2.045,-0.945],"ok":true},{"arm":4,"scores":[-0.963,-2.605,-2.591,-2.045,-0.944],"ok":true},{"arm":4,"scores":[-0.963,-2.605,-2.591,-2.044,-0.942],"ok":true},{"arm":4,"scores":[-0.962,-2.604,-2.59,-2.044,-0.941],"ok":true},{"arm":4,"scores":[-0.962,-2.604,-2.59,-2.044,-0.939],"ok":true},{"arm":4,"scores":[-0.962,-2.603,-2.589,-2.043,-0.937],"ok":false},{"arm":4,"scores":[-0.961,-2.603,-2.588,-2.043,-0.948],"ok":false}],"target":6,"rounds":400,"bins":24};
+const ARM_NAMES = ["baseline","rate −1","rate +1","power −6dB","FEC +1"];
+const ARM_COLORS = ["var(--muted)","var(--consumer)","var(--signal)","var(--warn)","var(--bandit)"];
+const $ = (s) => document.querySelector(s);
+const tip = $("#tip");
+function showTip(html, e){ tip.innerHTML = html; tip.style.opacity=1; tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY+14)+"px"; }
+function hideTip(){ tip.style.opacity=0; }
+
+// delivery → color (bad .5 → warn .85 → good 1.0)
+function deliverColor(f){
+  if (f===null||f===undefined) return "var(--panel2)";
+  const g = getComputedStyle(document.documentElement);
+  const bad=g.getPropertyValue('--bad').trim(), warn=g.getPropertyValue('--warn').trim(), good=g.getPropertyValue('--good').trim();
+  if (f>=0.97) return good;
+  const t = Math.max(0, Math.min(1,(f-0.5)/0.47));
+  return t<0.6 ? mix(bad,warn,t/0.6) : mix(warn,good,(t-0.6)/0.4);
+}
+function hex(c){ if(c[0]==='#'){return[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)];} const m=c.match(/\d+/g); return m?[+m[0],+m[1],+m[2]]:[128,128,128]; }
+function mix(a,b,t){ const A=hex(a),B=hex(b); return `rgb(${A.map((x,i)=>Math.round(x+(B[i]-x)*t)).join(",")})`; }
+
+// ---- stats ----
+(function(){
+  const edges = DATA.edges;
+  const totD = edges.reduce((s,e)=>s+e.delivered,0), totT = edges.reduce((s,e)=>s+e.total,0);
+  const en = DATA.energy.reduce((s,n)=>s+n.tx+n.rx+n.host+n.idle,0);
+  const s = [
+    ["nodes", DATA.nodes.length], ["heard links", edges.length],
+    ["mean delivery", (100*totD/totT).toFixed(1)+"%"],
+    ["system energy", (en*1000).toFixed(0)+" mJ"],
+    ["rounds", DATA.rounds],
+  ];
+  $("#stats").innerHTML = s.map(([k,v])=>`<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+})();
+
+// ---- topology ----
+(function(){
+  const svg = $("#topo"), W=900, H=380, pad=54;
+  const xs = DATA.nodes.map(n=>n.x), ys = DATA.nodes.map(n=>n.y);
+  const xmin=Math.min(...xs), xmax=Math.max(...xs), ymin=Math.min(...ys), ymax=Math.max(...ys);
+  const sx = x => pad + (x-xmin)/(xmax-xmin||1)*(W-2*pad);
+  const sy = y => pad + (y-ymin)/(ymax-ymin||1)*(H-2*pad);
+  const roleColor = r => ({producer:"var(--producer)",relay:"var(--relay)",consumer:"var(--consumer)"})[r];
+  const pos = {}; DATA.nodes.forEach(n=> pos[n.id]={x:sx(n.x),y:sy(n.y),role:n.role});
+  let ns = "";
+  // edges
+  DATA.edges.forEach((e,i)=>{
+    const a=pos[e.from], b=pos[e.to]; const f=e.delivered/e.total;
+    // nudge perpendicular so opposite directions don't overlap exactly
+    const dx=b.x-a.x, dy=b.y-a.y, L=Math.hypot(dx,dy)||1, off=3.5;
+    const ox=-dy/L*off, oy=dx/L*off;
+    ns += `<line class="edge" data-from="${e.from}" data-to="${e.to}" x1="${a.x+ox}" y1="${a.y+oy}" x2="${b.x+ox}" y2="${b.y+oy}" stroke="${deliverColor(f)}" stroke-width="${1.2+f*1.8}" opacity="0.5"
+      data-tip="${e.from}→${e.to} · ${(100*f).toFixed(1)}% delivered · ${e.rssi} dBm · ${e.dist} m"></line>`;
+  });
+  // nodes
+  DATA.nodes.forEach(n=>{
+    const p=pos[n.id];
+    ns += `<g class="node" data-id="${n.id}" style="cursor:pointer">
+      <circle cx="${p.x}" cy="${p.y}" r="15" fill="${roleColor(n.role)}" stroke="var(--bg)" stroke-width="2.5"></circle>
+      <text x="${p.x}" y="${p.y+4.5}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--bg)" style="font-family:ui-monospace,monospace">${n.id}</text>
+    </g>`;
+  });
+  svg.innerHTML = ns;
+  const edgeEls = [...svg.querySelectorAll(".edge")];
+  function isolate(id){
+    edgeEls.forEach(el=>{
+      const on = id===null || +el.dataset.from===id;
+      el.setAttribute("opacity", id===null?0.5:(on?0.95:0.06));
+    });
+  }
+  svg.querySelectorAll(".node").forEach(g=>{
+    const id=+g.dataset.id;
+    g.addEventListener("mouseenter",()=>isolate(id));
+    g.addEventListener("mouseleave",()=>isolate(null));
+  });
+  edgeEls.forEach(el=>{
+    el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));
+    el.addEventListener("mouseleave",hideTip);
+  });
+})();
+
+// ---- heatmap ----
+(function(){
+  const host = $("#heat");
+  let html = "";
+  DATA.edges.forEach(e=>{
+    const cells = e.bins.map((b,i)=>{
+      const t = b===null? "no frames" : (100*b).toFixed(0)+"%";
+      return `<div class="hmcell" style="background:${deliverColor(b)}" data-tip="${e.from}→${e.to} · slice ${i+1} · ${t}"></div>`;
+    }).join("");
+    html += `<div class="hmrow"><div class="hmlabel mono">${e.from}→${e.to}</div><div class="hmcells">${cells}</div></div>`;
+  });
+  host.innerHTML = html;
+  host.querySelectorAll(".hmcell").forEach(c=>{
+    c.addEventListener("mousemove",e=>showTip(c.dataset.tip,e));
+    c.addEventListener("mouseleave",hideTip);
+  });
+})();
+
+// ---- energy ----
+(function(){
+  const host = $("#energy");
+  const maxT = Math.max(...DATA.energy.map(n=>n.tx+n.rx+n.host+n.idle));
+  const roleOf = id => DATA.nodes.find(n=>n.id===id).role;
+  const cols = {tx:"var(--signal)",rx:"var(--consumer)",host:"var(--bandit)",idle:"var(--faint)"};
+  host.innerHTML = DATA.energy.map(n=>{
+    const tot=n.tx+n.rx+n.host+n.idle;
+    const segs = ["tx","rx","host","idle"].map(k=>`<div class="eseg" style="width:${100*n[k]/maxT}%;background:${cols[k]}" data-tip="node ${n.id} · ${k} ${(1000*n[k]).toFixed(1)} mJ"></div>`).join("");
+    return `<div class="erow"><div class="elabel mono">${n.id} · ${roleOf(n.id)}</div><div class="ebar">${segs}</div><div class="etotal mono">${(1000*tot).toFixed(0)} mJ</div></div>`;
+  }).join("");
+  host.querySelectorAll(".eseg").forEach(c=>{
+    c.addEventListener("mousemove",e=>showTip(c.dataset.tip,e));
+    c.addEventListener("mouseleave",hideTip);
+  });
+})();
+
+// ---- decisions ----
+(function(){
+  const dec = DATA.decisions;
+  $("#lastRound").textContent = "round "+dec.length;
+  $("#arms").innerHTML = dec.map((d,i)=>`<div class="armcell" style="background:${ARM_COLORS[d.arm]}" data-tip="round ${i+1} · ${ARM_NAMES[d.arm]}${d.ok?" · delivered":" · lost"}"></div>`).join("");
+  $("#arms").querySelectorAll(".armcell").forEach(c=>{
+    c.addEventListener("mousemove",e=>showTip(c.dataset.tip,e));
+    c.addEventListener("mouseleave",hideTip);
+  });
+  // final UCB scores
+  const last = dec[dec.length-1].scores.map(s=>s===null?-Infinity:s);
+  const finite = last.filter(Number.isFinite);
+  const lo = Math.min(...finite), hi = Math.max(...finite), rng = (hi-lo)||1;
+  const best = last.indexOf(Math.max(...last));
+  $("#ucb").innerHTML = last.map((s,i)=>{
+    const w = Number.isFinite(s) ? 6+94*(s-lo)/rng : 0;
+    const col = i===best ? ARM_COLORS[i] : "var(--faint)";
+    const val = Number.isFinite(s) ? s.toFixed(2) : "∞";
+    return `<div class="ucb"><span class="mono" style="color:${i===best?'var(--ink)':'var(--muted)'}">${i}·${ARM_NAMES[i]}</span><div class="ucbbar"><div class="ucbfill" style="width:${w}%;background:${col}"></div></div><span class="mono etotal">${val}</span></div>`;
+  }).join("");
+  // note
+  const counts = {}; dec.forEach(d=>counts[d.arm]=(counts[d.arm]||0)+1);
+  const share = (100*(counts[best]||0)/dec.length).toFixed(0);
+  $("#note").innerHTML = `<b>How to read it:</b> the far consumer (node ${DATA.target}) sits on a marginal link — the fan-out shows its edges in amber/red, the heatmap keeps its rows below the near links. The bandit tried every arm early, then committed to <b>${ARM_NAMES[best]}</b> for ${share}% of rounds — the robust choice that lifts delivery on a weak link without the wasted power of the baseline. Every value here comes from the real RadioBus + energy model + ContextualBandit in a single ndn-sim run.`;
+})();
+
+// ---- theme toggle ----
+// Delivery-scale colors (topology edges, heatmap cells) are resolved to rgb() at build time, so they
+// must be recomputed when the theme flips; everything else styles through var(--…) and updates itself.
+$("#themeBtn").addEventListener("click",()=>{
+  const r=document.documentElement, cur=r.getAttribute("data-theme");
+  const next = cur==="light" ? "dark" : (cur==="dark" ? "light" : (matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"));
+  r.setAttribute("data-theme", next);
+  document.querySelectorAll("#heat .hmrow").forEach((row,ri)=>{
+    row.querySelectorAll(".hmcell").forEach((c,ci)=> c.style.background = deliverColor(DATA.edges[ri].bins[ci]));
+  });
+  document.querySelectorAll("#topo .edge").forEach(el=>{
+    const e = DATA.edges.find(x=>x.from==el.dataset.from && x.to==el.dataset.to);
+    if(e) el.setAttribute("stroke", deliverColor(e.delivered/e.total));
+  });
+});
+</script>

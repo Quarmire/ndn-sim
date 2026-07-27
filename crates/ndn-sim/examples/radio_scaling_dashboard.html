@@ -1,0 +1,209 @@
+<title>Named-Data Radio · Scaling & Coding</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg:#0a0e15; --panel:#111a27; --panel2:#0d141f; --border:#1f2c3f;
+    --ink:#d6e1ee; --muted:#7a8ca4; --faint:#455771; --grid:#1a2637;
+    --c1:#2dd4bf; --c2:#f87171; --c3:#a78bfa; --c4:#fbbf24; --c5:#60a5fa; --good:#4ade80;
+  }
+  :root[data-theme="light"]{ color-scheme:light;
+    --bg:#f5f7fb; --panel:#fff; --panel2:#eef2f7; --border:#dbe3ee;
+    --ink:#16202e; --muted:#57687e; --faint:#95a6bc; --grid:#e6ecf4;
+    --c1:#0d9488; --c2:#dc2626; --c3:#7c3aed; --c4:#d97706; --c5:#2563eb; --good:#16a34a; }
+  @media (prefers-color-scheme:light){ :root:not([data-theme="dark"]){ color-scheme:light;
+    --bg:#f5f7fb; --panel:#fff; --panel2:#eef2f7; --border:#dbe3ee;
+    --ink:#16202e; --muted:#57687e; --faint:#95a6bc; --grid:#e6ecf4;
+    --c1:#0d9488; --c2:#dc2626; --c3:#7c3aed; --c4:#d97706; --c5:#2563eb; --good:#16a34a; } }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+  .mono{ font-family:ui-monospace,"SF Mono",Menlo,monospace; font-variant-numeric:tabular-nums; }
+  .wrap{ max-width:1120px; margin:0 auto; padding:34px 22px 80px; }
+  header{ display:flex; justify-content:space-between; align-items:flex-end; gap:18px; flex-wrap:wrap; }
+  .eyebrow{ text-transform:uppercase; letter-spacing:.18em; font-size:11px; color:var(--c1); font-weight:600; }
+  h1{ font-size:clamp(26px,4vw,40px); margin:6px 0 6px; letter-spacing:-.02em; text-wrap:balance; }
+  .sub{ color:var(--muted); max-width:64ch; font-size:14px; line-height:1.55; }
+  .toggle{ background:var(--panel); border:1px solid var(--border); color:var(--muted); border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer; }
+  .toggle:hover{ color:var(--ink); }
+  .cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:26px 0 8px; }
+  .card{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+  .card .v{ font-size:23px; font-weight:680; letter-spacing:-.01em; }
+  .card .k{ font-size:11px; color:var(--muted); margin-top:3px; line-height:1.35; }
+  .sect{ font-size:12px; text-transform:uppercase; letter-spacing:.16em; color:var(--muted); margin:38px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+  .grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .panel{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 18px 14px; min-width:0; }
+  .panel.wide{ grid-column:1/-1; }
+  .ptitle{ font-size:14px; font-weight:650; margin:0 0 2px; }
+  .pdesc{ font-size:12px; color:var(--muted); margin:0 0 12px; line-height:1.5; }
+  svg{ width:100%; height:auto; display:block; overflow:visible; }
+  .legend{ display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:10px; }
+  .chip{ display:inline-flex; align-items:center; gap:6px; }
+  .ln{ width:16px; height:3px; border-radius:2px; display:inline-block; }
+  .tip{ position:fixed; pointer-events:none; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:7px 10px; font-size:12px; opacity:0; transition:opacity .1s; z-index:20; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+  .note{ font-size:12px; color:var(--muted); margin-top:26px; border-top:1px solid var(--border); padding-top:16px; line-height:1.6; }
+  .note b{ color:var(--ink); font-weight:600; }
+  @media (max-width:760px){ .grid{ grid-template-columns:1fr; } .cards{ grid-template-columns:1fr 1fr; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">ndn-sim · scaling & coding</div>
+      <h1>Named-Data Radio — What Scales, What Codes</h1>
+      <div class="sub">Two axes where the broadcast named-data radio's behaviour actually bends: <b>network size</b> (3→100 nodes, uncoordinated access over the real collision model) and <b>network coding</b> (F1 end-to-end FEC vs F2 in-network recode vs F3 COPE). Every point is seed-averaged from the real ndn-sim RadioBus + energy model.</div>
+    </div>
+    <button class="toggle" id="themeBtn">◐ theme</button>
+  </header>
+
+  <div class="cards mono" id="cards"></div>
+
+  <div class="sect">Network size — contention & the listen tax</div>
+  <div class="grid">
+    <div class="panel">
+      <p class="ptitle">Channel throughput collapses</p>
+      <p class="pdesc">Successful (uncollided) airtime as a fraction of the channel. Uncoordinated access peaks early, then congestion collapse — the classic ALOHA curve, on the real medium.</p>
+      <svg id="c_thru" viewBox="0 0 460 260"></svg>
+    </div>
+    <div class="panel">
+      <p class="ptitle">Delivery falls as collisions rise</p>
+      <p class="pdesc">Per frame×receiver. As more nodes contend, the two curves cross and delivery caves — density, not distance, is the limit here.</p>
+      <svg id="c_deliv" viewBox="0 0 460 260"></svg>
+    </div>
+    <div class="panel wide">
+      <p class="ptitle">The listen tax is a monitor-mode artifact — and it widens with N</p>
+      <p class="pdesc">Host-CPU energy per node. A promiscuous host processes every neighbour's frames, so its cost grows with the network; a hardware name-filter wakes only for the node's own subscription, staying flat. The shaded gap is what the filter offloads — the doctrine's §3.1 claim, now a curve.</p>
+      <svg id="c_host" viewBox="0 0 940 280"></svg>
+      <div class="legend">
+        <span class="chip"><span class="ln" style="background:var(--c2)"></span>promiscuous (monitor mode)</span>
+        <span class="chip"><span class="ln" style="background:var(--c1)"></span>name-filtered (hardware offload)</span>
+        <span class="chip" style="margin-left:auto;color:var(--faint)">shaded = host CPU the filter spares</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="sect">Network coding — F1 vs F2 vs F3</div>
+  <div class="grid">
+    <div class="panel">
+      <p class="ptitle">2-hop delivery cost — recode pulls away</p>
+      <p class="pdesc">Transmissions to deliver a K=12 generation over source→relay→consumer, both hops lossy. F2 recodes at the relay (repairs hop-2 locally); F1 parity is minted at the source, so it re-crosses both hops; forward has no coding at all.</p>
+      <svg id="c_code" viewBox="0 0 460 260"></svg>
+      <div class="legend">
+        <span class="chip"><span class="ln" style="background:var(--c2)"></span>forward (no coding)</span>
+        <span class="chip"><span class="ln" style="background:var(--c4)"></span>F1 end-to-end</span>
+        <span class="chip"><span class="ln" style="background:var(--c1)"></span>F2 recode</span>
+      </div>
+    </div>
+    <div class="panel">
+      <p class="ptitle">F3 · COPE inter-flow gain</p>
+      <p class="pdesc">Two flows crossing a relay; it XORs one packet from each into a single broadcast both next-hops decode via overhearing. Savings rise with flow balance toward the 2→1 ceiling.</p>
+      <svg id="c_cope" viewBox="0 0 460 260"></svg>
+    </div>
+  </div>
+
+  <p class="note" id="note"></p>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const SCALING = {"sizes":[{"n":3,"offered":0.554,"throughput":0.3788,"delivery":0.684,"collision":0.316,"host_promisc":8.64,"host_filtered":4.32,"uj_per_bit":0.211},{"n":5,"offered":0.923,"throughput":0.425,"delivery":0.4604,"collision":0.5396,"host_promisc":17.28,"host_filtered":4.32,"uj_per_bit":0.298},{"n":8,"offered":1.477,"throughput":0.4038,"delivery":0.2734,"collision":0.7266,"host_promisc":30.24,"host_filtered":4.32,"uj_per_bit":0.49},{"n":12,"offered":2.215,"throughput":0.2971,"delivery":0.1341,"collision":0.8659,"host_promisc":47.52,"host_filtered":4.32,"uj_per_bit":0.987},{"n":18,"offered":3.323,"throughput":0.1452,"delivery":0.0437,"collision":0.9563,"host_promisc":73.44,"host_filtered":4.32,"uj_per_bit":3.01},{"n":27,"offered":4.985,"throughput":0.0423,"delivery":0.0085,"collision":0.9915,"host_promisc":112.32,"host_filtered":4.32,"uj_per_bit":15.424},{"n":40,"offered":7.385,"throughput":0.0115,"delivery":0.0016,"collision":0.9984,"host_promisc":168.48,"host_filtered":4.32,"uj_per_bit":83.55},{"n":60,"offered":11.077,"throughput":0.0077,"delivery":0.0007,"collision":0.9993,"host_promisc":254.88,"host_filtered":4.32,"uj_per_bit":187.627},{"n":80,"offered":14.769,"throughput":0.0077,"delivery":0.0005,"collision":0.9995,"host_promisc":341.28,"host_filtered":4.32,"uj_per_bit":249.932},{"n":100,"offered":18.461,"throughput":0.0077,"delivery":0.0004,"collision":0.9996,"host_promisc":427.68,"host_filtered":4.32,"uj_per_bit":312.237}]};
+const CODING = {"k":12,"twohop":[{"e":0,"forward":24.0,"f1":24.0,"f2":24.0},{"e":0.1,"forward":38.0,"f1":28.2,"f2":26.7},{"e":0.2,"forward":50.5,"f1":33.9,"f2":30.1},{"e":0.3,"forward":65.2,"f1":41.7,"f2":34.4},{"e":0.4,"forward":83.9,"f1":53.4,"f2":40.1},{"e":0.5,"forward":110.2,"f1":72.1,"f2":48.1},{"e":0.6,"forward":149.2,"f1":105.2,"f2":60.2},{"e":0.7,"forward":211.0,"f1":173.9,"f2":80.5}],"cope":[{"sym":0.1,"saved":0.0512},{"sym":0.25,"saved":0.1234},{"sym":0.4,"saved":0.199},{"sym":0.55,"saved":0.2693},{"sym":0.7,"saved":0.3474},{"sym":0.85,"saved":0.4255},{"sym":1,"saved":0.5}]};
+const $ = s => document.querySelector(s);
+const tip = $("#tip");
+const cvar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function showTip(h,e){ tip.innerHTML=h; tip.style.opacity=1; tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY+14)+"px"; }
+function hideTip(){ tip.style.opacity=0; }
+
+// ---- line chart ----
+// spec: { W,H, series:[{data:[[x,y]], color, area, dash}], x:{min,max,log,ticks,fmt}, y:{min,max,log,ticks,fmt}, tip:(s,i)=>str }
+function chart(sel, spec){
+  const svg=$(sel), W=spec.W||460, H=spec.H||260, m={l:46,r:14,t:12,b:34};
+  const iw=W-m.l-m.r, ih=H-m.t-m.b;
+  const X=spec.x, Y=spec.y;
+  const tx = v => X.log ? (Math.log10(v)-Math.log10(X.min))/(Math.log10(X.max)-Math.log10(X.min)) : (v-X.min)/(X.max-X.min);
+  const ty = v => Y.log ? (Math.log10(v)-Math.log10(Y.min))/(Math.log10(Y.max)-Math.log10(Y.min)) : (v-Y.min)/(Y.max-Y.min);
+  const px = v => m.l + tx(v)*iw, py = v => m.t + (1-ty(v))*ih;
+  let g="";
+  // gridlines + y ticks
+  Y.ticks.forEach(t=>{ const y=py(t); g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cvar('--grid')}" stroke-width="1"/><text x="${m.l-8}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cvar('--muted')}" class="mono">${Y.fmt(t)}</text>`; });
+  X.ticks.forEach(t=>{ const x=px(t); g+=`<text x="${x}" y="${m.t+ih+18}" text-anchor="middle" font-size="10" fill="${cvar('--muted')}" class="mono">${X.fmt(t)}</text>`; });
+  // axis labels
+  g+=`<text x="${m.l+iw/2}" y="${H-2}" text-anchor="middle" font-size="10.5" fill="${cvar('--faint')}">${X.label}</text>`;
+  g+=`<text transform="translate(11,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10.5" fill="${cvar('--faint')}">${Y.label}</text>`;
+  // series
+  spec.series.forEach(s=>{
+    const pts=s.data.map(([x,y])=>[px(x),py(y)]);
+    const d=pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+    if(s.area){
+      const base=py(Y.log?Y.min:Math.max(0,Y.min));
+      g+=`<path d="${d} L ${pts[pts.length-1][0].toFixed(1)} ${base} L ${pts[0][0].toFixed(1)} ${base} Z" fill="${s.color}" opacity="0.10"/>`;
+    }
+    g+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.2" ${s.dash?`stroke-dasharray="${s.dash}"`:""} stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach((p,i)=>{ g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.4" fill="${cvar('--panel')}" stroke="${s.color}" stroke-width="2" data-tip="${(spec.tipFn?spec.tipFn(s,i):'')}"/>`; });
+  });
+  // shaded gap between first two series (host chart)
+  if(spec.fill && spec.series.length>=2){
+    const a=spec.series[0].data, b=spec.series[1].data;
+    const top=a.map(([x,y])=>[px(x),py(y)]), bot=b.map(([x,y])=>[px(x),py(y)]);
+    const d="M"+top.map(p=>p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" L ")+" L "+bot.reverse().map(p=>p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" L ")+" Z";
+    g=`<path d="${d}" fill="${spec.fill}" opacity="0.09"/>`+g;
+  }
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.innerHTML=g;
+  svg.querySelectorAll("circle[data-tip]").forEach(c=>{
+    if(!c.dataset.tip) return;
+    c.addEventListener("mousemove",e=>showTip(c.dataset.tip,e));
+    c.addEventListener("mouseleave",hideTip);
+  });
+}
+
+function render(){
+  const S=SCALING.sizes, C=CODING;
+  // cards
+  const peak=S.reduce((a,b)=>b.throughput>a.throughput?b:a);
+  const big=S[S.length-1];
+  const worst=C.twohop[C.twohop.length-1];
+  const cope=C.cope[C.cope.length-1];
+  $("#cards").innerHTML=[
+    [`${peak.n} nodes`,"throughput peaks, then collapses"],
+    [`${(big.host_promisc/big.host_filtered).toFixed(0)}×`,`filter's host-energy saving at N=${big.n}`],
+    [`${(worst.forward/worst.f2).toFixed(1)}×`,"F2 recode vs forward @ 70% loss"],
+    [`${(100*cope.saved).toFixed(0)}%`,"COPE transmissions saved, balanced flows"],
+  ].map(([v,k])=>`<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  const Nx={min:S[0].n,max:S[S.length-1].n,log:true,label:"nodes (log)",ticks:[3,10,30,100],fmt:v=>v};
+  // throughput
+  chart("#c_thru",{ x:Nx,
+    y:{min:0,max:0.5,log:false,label:"channel throughput S",ticks:[0,0.1,0.2,0.3,0.4,0.5],fmt:v=>v.toFixed(1)},
+    series:[{data:S.map(r=>[r.n,r.throughput]),color:cvar('--c1'),area:true}],
+    tipFn:(s,i)=>`N=${S[i].n} · S=${S[i].throughput.toFixed(3)} · offered G=${S[i].offered.toFixed(1)}` });
+  // delivery + collision
+  chart("#c_deliv",{ x:Nx,
+    y:{min:0,max:1,log:false,label:"fraction",ticks:[0,0.25,0.5,0.75,1],fmt:v=>(v*100)+"%"},
+    series:[{data:S.map(r=>[r.n,r.delivery]),color:cvar('--good')},{data:S.map(r=>[r.n,r.collision]),color:cvar('--c2'),dash:"5 4"}],
+    tipFn:(s,i)=>`N=${S[i].n} · delivery ${(100*S[i].delivery).toFixed(0)}% · collision ${(100*S[i].collision).toFixed(0)}%` });
+  // host energy (log y)
+  const hmax=Math.max(...S.map(r=>r.host_promisc))*1.3;
+  chart("#c_host",{ W:940,H:280, x:Nx, fill:cvar('--c4'),
+    y:{min:1,max:hmax,log:true,label:"host CPU energy / node (mJ)",ticks:[1,3,10,30,100,300],fmt:v=>v},
+    series:[{data:S.map(r=>[r.n,r.host_promisc]),color:cvar('--c2'),area:false},{data:S.map(r=>[r.n,r.host_filtered]),color:cvar('--c1')}],
+    tipFn:(s,i)=>`N=${S[i].n} · ${s.color===cvar('--c2')?'promiscuous':'filtered'} ${(s.color===cvar('--c2')?S[i].host_promisc:S[i].host_filtered).toFixed(1)} mJ` });
+  // coding 2-hop (log y)
+  const cmax=Math.max(...C.twohop.map(r=>r.forward))*1.2;
+  chart("#c_code",{ x:{min:0,max:0.7,log:false,label:"per-hop erasure rate",ticks:[0,0.2,0.4,0.6],fmt:v=>(v*100)+"%"},
+    y:{min:20,max:cmax,log:true,label:"transmissions to decode",ticks:[20,50,100,200],fmt:v=>v},
+    series:[{data:C.twohop.map(r=>[r.e,r.forward]),color:cvar('--c2')},{data:C.twohop.map(r=>[r.e,r.f1]),color:cvar('--c4'),dash:"5 4"},{data:C.twohop.map(r=>[r.e,r.f2]),color:cvar('--c1')}],
+    tipFn:(s,i)=>{const r=C.twohop[i]; const which=s.color===cvar('--c2')?'forward '+r.forward:(s.color===cvar('--c4')?'F1 '+r.f1:'F2 '+r.f2); return `e=${(100*r.e).toFixed(0)}% · ${which} tx`;} });
+  // cope
+  chart("#c_cope",{ x:{min:0.1,max:1,log:false,label:"flow balance",ticks:[0.25,0.5,0.75,1],fmt:v=>v.toFixed(2)},
+    y:{min:0,max:0.5,log:false,label:"transmissions saved",ticks:[0,0.1,0.2,0.3,0.4,0.5],fmt:v=>(v*100)+"%"},
+    series:[{data:C.cope.map(r=>[r.sym,r.saved]),color:cvar('--c3'),area:true}],
+    tipFn:(s,i)=>`balance ${C.cope[i].sym} · saved ${(100*C.cope[i].saved).toFixed(0)}%` });
+
+  $("#note").innerHTML=`<b>Reading it:</b> uncoordinated access is throughput-optimal only around N=${peak.n}; past that the broadcast channel congestion-collapses (delivery → 0), which is exactly why the cognitive layer suppresses (CCLF) and schedules (time-slice). The host-energy gap is the case for the hardware name-filter — it grows to <b>${(big.host_promisc/big.host_filtered).toFixed(0)}×</b> by N=${big.n}. On coding, recode (F2) beats end-to-end FEC (F1) and no-coding on a lossy multi-hop path because it repairs each hop locally, and the gap widens with loss; COPE is a separate, inter-flow win that peaks at the 2→1 ceiling. All curves are seed-averaged over the real RadioBus.`;
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{
+  const r=document.documentElement, cur=r.getAttribute("data-theme");
+  r.setAttribute("data-theme", cur==="light"?"dark":(cur==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark")));
+  render();
+});
+</script>

@@ -12,6 +12,7 @@ classification = "research"
 [dependencies]
 ndn-transport = { workspace = true }
 ndn-engine    = { workspace = true }
+ndn-radio-cognition = { workspace = true }
 ndn-runtime   = { workspace = true }
 ndn-packet    = { workspace = true, features = ["std"] }
 ndn-store     = { workspace = true }

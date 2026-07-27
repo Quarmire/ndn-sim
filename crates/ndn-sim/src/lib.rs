@@ -158,6 +158,7 @@ pub mod ip;
 pub mod kernel;
 pub mod link_model;
 pub mod lora;
+pub mod cognition;
 #[cfg(feature = "mavlink")]
 pub mod mavlink;
 pub mod mcp;

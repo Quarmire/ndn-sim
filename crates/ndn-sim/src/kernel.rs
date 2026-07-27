@@ -58,6 +58,61 @@ impl SimKernel for WallClockKernel {
     }
 }
 
+// ---- Immediate runtime (synchronous batch experiments, no kernel) -------------------------
+
+/// A [`Runtime`] for **synchronous batch experiments** that drive a medium directly — e.g. a
+/// Monte-Carlo loop calling [`RadioBus::transmit`](crate::radio::RadioBus::transmit) thousands of
+/// times and reading its return value — *without* an event-driven kernel.
+///
+/// `sleep` is instantaneous and `spawn` polls the future to completion **inline**, so the bus's
+/// after-propagation-delay delivery collapses to an immediate synchronous channel send. The point
+/// is what it *avoids*: the default `TokioRuntime` turns each delayed delivery into a real
+/// `tokio::time::sleep` timer, and tens of thousands of them backlog the reactor and dominate a
+/// tight batch loop. With this runtime the delivery still happens (into the receiver channel, drain
+/// it right after the call if you consume it) but costs no timer.
+///
+/// Do **not** use it inside a fabric run: it models no timing, so any code that depends on virtual
+/// or real elapsed time (PIT expiry, retransmit timers) will misbehave. That is what
+/// [`WallClockKernel`] / `VirtualKernel` are for. This is strictly a no-kernel batch tool.
+pub struct ImmediateRuntime;
+
+impl ndn_runtime::Spawn for ImmediateRuntime {
+    fn spawn(&self, mut fut: ndn_runtime::BoxFuture) {
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        // A no-op waker: this runtime provides no reactor, so nothing is ever rescheduled — every
+        // future handed here awaits only our instantaneous `sleep`, so it is Ready within a poll or
+        // two. The bounded loop is a guard against a future that genuinely needs a reactor (which
+        // would be a misuse of this runtime, per the doc above).
+        const VT: RawWakerVTable =
+            RawWakerVTable::new(|_| RawWaker::new(std::ptr::null(), &VT), |_| {}, |_| {}, |_| {});
+        let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VT)) };
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..64 {
+            if fut.as_mut().poll(&mut cx) == Poll::Ready(()) {
+                return;
+            }
+        }
+        debug_assert!(false, "ImmediateRuntime: future did not complete inline — needs a reactor");
+    }
+}
+
+impl ndn_runtime::Sleep for ImmediateRuntime {
+    fn sleep(&self, _dur: std::time::Duration) -> ndn_runtime::BoxFuture {
+        Box::pin(async {}) // instantaneous — timing is not modelled in batch mode
+    }
+}
+
+impl ndn_runtime::Now for ImmediateRuntime {
+    fn now(&self) -> ndn_runtime::Instant {
+        ndn_runtime::Instant::now()
+    }
+    fn unix_nanos(&self) -> u64 {
+        0 // no logical clock — batch experiments read `transmit`'s return, not wall time
+    }
+}
+
+impl Runtime for ImmediateRuntime {}
+
 // ---- Real-time governor (the sim↔emulation continuum bridge) ------------------------------
 
 /// **Real-time governor**: runs on a normal (non-paused) Tokio runtime — real time, real I/O, so

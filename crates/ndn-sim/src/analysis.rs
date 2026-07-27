@@ -28,6 +28,43 @@ pub struct RadioDelivery {
     pub reason: DeliveryReason,
     pub rssi_dbm: f64,
     pub distance_m: f64,
+    /// Frame length in bytes — carried so the log can produce delivered-bits/s (goodput), not just
+    /// a delivery fraction. Without it the quantitative side of the log is blind to throughput.
+    pub frame_len: usize,
+}
+
+/// Aggregate throughput/goodput over a window of the log, in bits per second, plus the delivery
+/// fraction the goodput is a fraction of. `offered` is every attempted frame's bits; `goodput` is
+/// only the delivered ones. Computed over the `[first_t, last_t]` span the records actually cover.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Throughput {
+    pub offered_bps: f64,
+    pub goodput_bps: f64,
+    pub delivery_fraction: f64,
+    pub span_ns: u64,
+}
+
+/// Compute [`Throughput`] over a filtered set of records (e.g. one `(from,to)` pair, or all of them).
+/// Returns `None` if fewer than two records (no time span to divide by).
+pub fn throughput(recs: &[RadioDelivery]) -> Option<Throughput> {
+    if recs.len() < 2 {
+        return None;
+    }
+    let first = recs.iter().map(|r| r.t_ns).min()?;
+    let last = recs.iter().map(|r| r.t_ns).max()?;
+    let span_ns = last.saturating_sub(first).max(1);
+    let secs = span_ns as f64 / 1e9;
+    let offered_bits: u64 = recs.iter().map(|r| r.frame_len as u64 * 8).sum();
+    let delivered_bits: u64 =
+        recs.iter().filter(|r| r.delivered).map(|r| r.frame_len as u64 * 8).sum();
+    let attempts = recs.len() as f64;
+    let delivered = recs.iter().filter(|r| r.delivered).count() as f64;
+    Some(Throughput {
+        offered_bps: offered_bits as f64 / secs,
+        goodput_bps: delivered_bits as f64 / secs,
+        delivery_fraction: delivered / attempts,
+        span_ns,
+    })
 }
 
 /// An append-only log of radio delivery decisions. Attach it to a running fabric via
@@ -410,7 +447,26 @@ mod tests {
             reason,
             rssi_dbm: -70.0,
             distance_m: 50.0,
+            frame_len: 100,
         }
+    }
+
+    #[test]
+    fn throughput_splits_offered_from_goodput() {
+        // Four 100-byte frames over a 3 ms span; two delivered. Offered counts all, goodput only the
+        // delivered half, and the delivery fraction ties them together.
+        let recs = vec![
+            RadioDelivery { t_ns: 0, frame_len: 100, delivered: true, ..rec(1, 2, true, DeliveryReason::Delivered) },
+            RadioDelivery { t_ns: 1_000_000, frame_len: 100, delivered: false, ..rec(1, 2, false, DeliveryReason::Collision) },
+            RadioDelivery { t_ns: 2_000_000, frame_len: 100, delivered: true, ..rec(1, 2, true, DeliveryReason::Delivered) },
+            RadioDelivery { t_ns: 3_000_000, frame_len: 100, delivered: false, ..rec(1, 2, false, DeliveryReason::Erased) },
+        ];
+        let t = throughput(&recs).expect("span");
+        assert_eq!(t.span_ns, 3_000_000);
+        assert_eq!(t.delivery_fraction, 0.5);
+        // offered = 4·100·8 bits / 3 ms = 1.0667 Mb/s; goodput = half that.
+        assert!((t.offered_bps - 1_066_666.6).abs() < 1.0, "offered={}", t.offered_bps);
+        assert!((t.goodput_bps - t.offered_bps / 2.0).abs() < 1.0);
     }
 
     #[test]

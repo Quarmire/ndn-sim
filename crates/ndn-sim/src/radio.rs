@@ -133,6 +133,20 @@ impl RadioBus {
         )
     }
 
+    /// [`with_interference`](Self::with_interference) but on a specific [`Runtime`] — delivery
+    /// timing rides it. Pass [`ImmediateRuntime`](crate::ImmediateRuntime) for a synchronous batch
+    /// Monte-Carlo (no kernel, no real timers); pass a kernel's runtime for an event-driven run.
+    pub fn with_interference_on(
+        world: Arc<World>,
+        propagation: Arc<dyn PropagationModel>,
+        epoch_ns: u64,
+        seed: u64,
+        interference: Arc<dyn InterferenceModel>,
+        runtime: Arc<dyn Runtime>,
+    ) -> Arc<Self> {
+        Self::build(world, propagation, epoch_ns, seed, interference, runtime)
+    }
+
     /// [`new`](Self::new) but on a specific [`Runtime`] — delivery timing rides it, so the radio
     /// medium runs on whatever kernel drives the fabric (this is what the fabric uses).
     pub fn new_on(
@@ -334,6 +348,7 @@ impl RadioBus {
                             reason,
                             rssi_dbm: rssi,
                             distance_m: dist,
+                            frame_len: frame.len(),
                         });
                     }
                 };

@@ -308,17 +308,33 @@ impl SpatialGrid {
         // Cells the radius can reach in each axis (round up).
         let reach = (radius / self.cell).ceil() as i64 + 1;
         let mut out = Vec::new();
-        for i in (cx - reach)..=(cx + reach) {
-            for j in (cy - reach)..=(cy + reach) {
-                for k in (cz - reach)..=(cz + reach) {
-                    let Some(bucket) = self.cells.get(&(i, j, k)) else {
-                        continue;
-                    };
-                    for id in bucket {
-                        if let Some(p) = positions.get(id)
-                            && p.distance(center) <= radius
-                        {
-                            out.push(*id);
+        let push_near = |bucket: &Vec<NodeId>, out: &mut Vec<NodeId>| {
+            for id in bucket {
+                if let Some(p) = positions.get(id)
+                    && p.distance(center) <= radius
+                {
+                    out.push(*id);
+                }
+            }
+        };
+        // Scan whichever set is smaller: the reach box, or the occupied cells. This keeps a range
+        // query O(min(box_volume, occupied_cells)) — so a wide `radius` over a sparse world (radius ≫
+        // cell, the common case when `max_range` is km but nodes cluster) no longer scans millions of
+        // empty cells. Without this, cost is (2·radius/cell + 1)³ regardless of how few nodes exist.
+        let span = (2 * reach + 1) as u128;
+        let box_volume = span.saturating_mul(span).saturating_mul(span);
+        if box_volume > self.cells.len() as u128 {
+            for (&(i, j, k), bucket) in &self.cells {
+                if (i - cx).abs() <= reach && (j - cy).abs() <= reach && (k - cz).abs() <= reach {
+                    push_near(bucket, &mut out);
+                }
+            }
+        } else {
+            for i in (cx - reach)..=(cx + reach) {
+                for j in (cy - reach)..=(cy + reach) {
+                    for k in (cz - reach)..=(cz + reach) {
+                        if let Some(bucket) = self.cells.get(&(i, j, k)) {
+                            push_near(bucket, &mut out);
                         }
                     }
                 }

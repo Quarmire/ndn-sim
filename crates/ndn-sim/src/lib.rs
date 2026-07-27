@@ -197,7 +197,7 @@ pub mod world;
 
 pub use analysis::{
     AppDelta, Explanation, LinkDelta, LinkVerdict, MetricDelta, RadioDelivery, RadioLog,
-    RunCapture, RunDiff, diff_runs, explain_link,
+    RunCapture, RunDiff, Throughput, diff_runs, explain_link, throughput,
 };
 pub use app::{AppHandle, AppId, AppSpec, FlowStats, TrafficPattern};
 #[cfg(not(target_arch = "wasm32"))]
@@ -224,7 +224,7 @@ pub use routing::{
 pub use kernel::{
     DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,
 };
-pub use kernel::{RealTimeKernel, SimKernel, WallClockKernel};
+pub use kernel::{ImmediateRuntime, RealTimeKernel, SimKernel, WallClockKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use lora::{
     CodingRate, DeviceClass, DutyCycle, LoraConfig, LoraLinkConfig, SpreadingFactor, adr_select,

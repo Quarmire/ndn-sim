@@ -135,20 +135,21 @@
   <header>
     <div class="top">
       <div>
-        <div class="eyebrow"><span class="dot"></span> ndn-sim · cognitive radio · deterministic run</div>
+        <div class="eyebrow"><span class="dot"></span> ndn-sim · cognitive radio · 20 seeds · 250 m marginal link</div>
         <h1>Listen-before-talk, under contention</h1>
-        <p class="lede">Two simulated NDN nodes run the real <code>RadioPolicy</code> over a shared radio medium.
-          The same experiment the tied-up hardware owed us — now in software.</p>
+        <p class="lede">Two simulated NDN nodes run the real <code>RadioPolicy</code> over a shared medium with a probabilistic
+          per-frame erasure model. Delivery is noisy, MCS-adapted, averaged over 20 seeds — the experiment the
+          tied-up hardware owed us, in software.</p>
       </div>
       <button class="toggle" id="themeBtn" aria-label="Toggle color theme">Theme</button>
     </div>
   </header>
 
   <div class="verdict">
-    <span class="big" id="vBig">LBT recovers B: 0 → 60</span>
+    <span class="big" id="vBig">LBT recovers B: 0 → ~52 of 60</span>
     <p>On a <b>clean</b> N=2 channel carrier-sense is useless (the on-air lesson). But add a co-band interferer that
-      actually collides, and <b>listen-before-talk earns its keep</b> — node B goes from fully starved to fully
-      delivered by sensing the jammer and transmitting in the gap.</p>
+      actually collides, and <b>listen-before-talk earns its keep</b> — node B goes from fully starved back to the link's natural ~87% by sensing the jammer and
+      transmitting in the clear gap. The residual ~13% loss is the marginal link itself, not the interferer.</p>
   </div>
 
   <div class="cards" id="cards"></div>
@@ -173,18 +174,26 @@
           fed the RSSI it hears off the bus. The sim decides exactly as the metal would, so N-large studies need no more antennas.</p>
       </div>
     </div>
+    <div class="note" style="border-left:3px solid var(--warn)">
+      <h4>Fidelity &amp; what this does not yet model</h4>
+      <p>The medium is honest — a probabilistic per-frame erasure against a logistic PER curve (delivery falls
+        as MCS is pushed past its SNR threshold), plus a deterministic hidden-terminal collision model.
+        This scenario is <b>link-level</b>: it drives the bus directly with a scheduled turn-taking loop, not
+        the full <code>ForwarderEngine</code> Interest→Data round-trip. So it faithfully models rate adaptation,
+        contention, and carrier-sense — but not PIT aggregation, retransmission, or multi-hop forwarding. Those
+        need the DES + real forwarder path (next). Numbers are averages over 20 seeds; the residual ~13% baseline
+        loss is cognition's rate table sitting ~1 MCS above the sim PHY's optimum — a delivery-feedback learning
+        loop would close it.</p>
+    </div>
   </section>
 
   <footer>
-    ndn-sim · <code>examples/cognitive_radio_sim.rs</code> · CarrierSenseInterference · FreeSpacePathLoss · seed 7 · 60 rounds · deterministic
+    ndn-sim · <code>examples/cognitive_radio_sim.rs</code> · CarrierSenseInterference · FreeSpacePathLoss · 20 seeds averaged · 250 m · marginal SNR · probabilistic per-frame erasure
   </footer>
 </div>
 
 <script>
-const DATA = {"rounds":60,"conditions":[{"label":"baseline (clean channel)","interferer":false,"lbt":false,"a_total":60,"b_total":60,"samples":GEN(60,60)},{"label":"co-band interferer, LBT off","interferer":true,"lbt":false,"a_total":60,"b_total":0,"samples":GEN(60,0)},{"label":"co-band interferer, LBT on","interferer":true,"lbt":true,"a_total":60,"b_total":60,"samples":GEN(60,60)}]};
-// The run is exactly linear (1 delivery/round when the direction is clear, 0 when starved), so we
-// regenerate the identical series compactly rather than embed 180 duplicate points.
-function GEN(a, b){const s=[];for(let r=0;r<60;r++)s.push({r,ad:r+1,bd:b?r+1:0,am:7,bm:7});return s;}
+const DATA = {"rounds":60,"seeds":20,"dist_m":250,"conditions":[{"label":"baseline (clean channel)","interferer":false,"lbt":false,"a_total":52.15,"b_total":51.95,"samples":[{"r":0,"ad":1.00,"bd":0.75,"am":7.0,"bm":6.0},{"r":1,"ad":1.90,"bd":1.65,"am":6.0,"bm":6.0},{"r":2,"ad":2.65,"bd":2.55,"am":6.0,"bm":6.0},{"r":3,"ad":3.55,"bd":3.35,"am":6.0,"bm":6.0},{"r":4,"ad":4.40,"bd":4.30,"am":6.0,"bm":6.0},{"r":5,"ad":5.30,"bd":5.10,"am":6.0,"bm":6.0},{"r":6,"ad":6.05,"bd":5.80,"am":6.0,"bm":6.0},{"r":7,"ad":6.85,"bd":6.60,"am":6.0,"bm":6.0},{"r":8,"ad":7.80,"bd":7.45,"am":6.0,"bm":6.0},{"r":9,"ad":8.70,"bd":8.15,"am":6.0,"bm":6.0},{"r":10,"ad":9.45,"bd":9.05,"am":6.0,"bm":6.0},{"r":11,"ad":10.30,"bd":9.90,"am":6.0,"bm":6.0},{"r":12,"ad":11.25,"bd":10.70,"am":6.0,"bm":6.0},{"r":13,"ad":12.15,"bd":11.55,"am":6.0,"bm":6.0},{"r":14,"ad":13.00,"bd":12.40,"am":6.0,"bm":6.0},{"r":15,"ad":13.65,"bd":13.20,"am":6.0,"bm":6.0},{"r":16,"ad":14.65,"bd":14.00,"am":6.0,"bm":6.0},{"r":17,"ad":15.65,"bd":14.85,"am":6.0,"bm":6.0},{"r":18,"ad":16.50,"bd":15.80,"am":6.0,"bm":6.0},{"r":19,"ad":17.45,"bd":16.80,"am":6.0,"bm":6.0},{"r":20,"ad":18.30,"bd":17.80,"am":6.0,"bm":6.0},{"r":21,"ad":19.10,"bd":18.75,"am":6.0,"bm":6.0},{"r":22,"ad":20.00,"bd":19.65,"am":6.0,"bm":6.0},{"r":23,"ad":20.80,"bd":20.55,"am":6.0,"bm":6.0},{"r":24,"ad":21.65,"bd":21.50,"am":6.0,"bm":6.0},{"r":25,"ad":22.50,"bd":22.40,"am":6.0,"bm":6.0},{"r":26,"ad":23.25,"bd":23.15,"am":6.0,"bm":6.0},{"r":27,"ad":24.05,"bd":24.00,"am":6.0,"bm":6.0},{"r":28,"ad":24.90,"bd":24.90,"am":6.0,"bm":6.0},{"r":29,"ad":25.85,"bd":25.75,"am":6.0,"bm":6.0},{"r":30,"ad":26.75,"bd":26.60,"am":6.0,"bm":6.0},{"r":31,"ad":27.55,"bd":27.50,"am":6.0,"bm":6.0},{"r":32,"ad":28.35,"bd":28.40,"am":6.0,"bm":6.0},{"r":33,"ad":29.30,"bd":29.35,"am":6.0,"bm":6.0},{"r":34,"ad":30.15,"bd":30.15,"am":6.0,"bm":6.0},{"r":35,"ad":31.05,"bd":31.05,"am":6.0,"bm":6.0},{"r":36,"ad":32.00,"bd":31.95,"am":6.0,"bm":6.0},{"r":37,"ad":32.80,"bd":32.70,"am":6.0,"bm":6.0},{"r":38,"ad":33.75,"bd":33.65,"am":6.0,"bm":6.0},{"r":39,"ad":34.75,"bd":34.60,"am":6.0,"bm":6.0},{"r":40,"ad":35.55,"bd":35.45,"am":6.0,"bm":6.0},{"r":41,"ad":36.55,"bd":36.30,"am":6.0,"bm":6.0},{"r":42,"ad":37.20,"bd":37.15,"am":6.0,"bm":6.0},{"r":43,"ad":38.05,"bd":38.05,"am":6.0,"bm":6.0},{"r":44,"ad":39.00,"bd":38.90,"am":6.0,"bm":6.0},{"r":45,"ad":40.00,"bd":39.80,"am":6.0,"bm":6.0},{"r":46,"ad":40.95,"bd":40.75,"am":6.0,"bm":6.0},{"r":47,"ad":41.80,"bd":41.60,"am":6.0,"bm":6.0},{"r":48,"ad":42.75,"bd":42.55,"am":6.0,"bm":6.0},{"r":49,"ad":43.55,"bd":43.50,"am":6.0,"bm":6.0},{"r":50,"ad":44.50,"bd":44.25,"am":6.0,"bm":6.0},{"r":51,"ad":45.45,"bd":45.00,"am":6.0,"bm":6.0},{"r":52,"ad":46.40,"bd":45.85,"am":6.0,"bm":6.0},{"r":53,"ad":47.25,"bd":46.75,"am":6.0,"bm":6.0},{"r":54,"ad":48.05,"bd":47.60,"am":6.0,"bm":6.0},{"r":55,"ad":48.90,"bd":48.55,"am":6.0,"bm":6.0},{"r":56,"ad":49.80,"bd":49.40,"am":6.0,"bm":6.0},{"r":57,"ad":50.55,"bd":50.20,"am":6.0,"bm":6.0},{"r":58,"ad":51.30,"bd":51.00,"am":6.0,"bm":6.0},{"r":59,"ad":52.15,"bd":51.95,"am":6.0,"bm":6.0}]},{"label":"co-band interferer, LBT off","interferer":true,"lbt":false,"a_total":53.05,"b_total":0.00,"samples":[{"r":0,"ad":0.90,"bd":0.00,"am":7.0,"bm":6.0},{"r":1,"ad":1.65,"bd":0.00,"am":6.0,"bm":6.0},{"r":2,"ad":2.60,"bd":0.00,"am":6.0,"bm":6.0},{"r":3,"ad":3.50,"bd":0.00,"am":6.0,"bm":6.0},{"r":4,"ad":4.30,"bd":0.00,"am":6.0,"bm":6.0},{"r":5,"ad":5.25,"bd":0.00,"am":6.0,"bm":6.0},{"r":6,"ad":6.15,"bd":0.00,"am":6.0,"bm":6.0},{"r":7,"ad":7.00,"bd":0.00,"am":6.0,"bm":6.0},{"r":8,"ad":7.85,"bd":0.00,"am":6.0,"bm":6.0},{"r":9,"ad":8.70,"bd":0.00,"am":6.0,"bm":6.0},{"r":10,"ad":9.50,"bd":0.00,"am":6.0,"bm":6.0},{"r":11,"ad":10.50,"bd":0.00,"am":6.0,"bm":6.0},{"r":12,"ad":11.50,"bd":0.00,"am":6.0,"bm":6.0},{"r":13,"ad":12.35,"bd":0.00,"am":6.0,"bm":6.0},{"r":14,"ad":13.25,"bd":0.00,"am":6.0,"bm":6.0},{"r":15,"ad":14.05,"bd":0.00,"am":6.0,"bm":6.0},{"r":16,"ad":14.95,"bd":0.00,"am":6.0,"bm":6.0},{"r":17,"ad":15.70,"bd":0.00,"am":6.0,"bm":6.0},{"r":18,"ad":16.60,"bd":0.00,"am":6.0,"bm":6.0},{"r":19,"ad":17.55,"bd":0.00,"am":6.0,"bm":6.0},{"r":20,"ad":18.45,"bd":0.00,"am":6.0,"bm":6.0},{"r":21,"ad":19.25,"bd":0.00,"am":6.0,"bm":6.0},{"r":22,"ad":20.05,"bd":0.00,"am":6.0,"bm":6.0},{"r":23,"ad":20.95,"bd":0.00,"am":6.0,"bm":6.0},{"r":24,"ad":21.70,"bd":0.00,"am":6.0,"bm":6.0},{"r":25,"ad":22.65,"bd":0.00,"am":6.0,"bm":6.0},{"r":26,"ad":23.50,"bd":0.00,"am":6.0,"bm":6.0},{"r":27,"ad":24.50,"bd":0.00,"am":6.0,"bm":6.0},{"r":28,"ad":25.40,"bd":0.00,"am":6.0,"bm":6.0},{"r":29,"ad":26.35,"bd":0.00,"am":6.0,"bm":6.0},{"r":30,"ad":27.30,"bd":0.00,"am":6.0,"bm":6.0},{"r":31,"ad":28.15,"bd":0.00,"am":6.0,"bm":6.0},{"r":32,"ad":29.10,"bd":0.00,"am":6.0,"bm":6.0},{"r":33,"ad":30.05,"bd":0.00,"am":6.0,"bm":6.0},{"r":34,"ad":30.90,"bd":0.00,"am":6.0,"bm":6.0},{"r":35,"ad":31.75,"bd":0.00,"am":6.0,"bm":6.0},{"r":36,"ad":32.70,"bd":0.00,"am":6.0,"bm":6.0},{"r":37,"ad":33.60,"bd":0.00,"am":6.0,"bm":6.0},{"r":38,"ad":34.40,"bd":0.00,"am":6.0,"bm":6.0},{"r":39,"ad":35.25,"bd":0.00,"am":6.0,"bm":6.0},{"r":40,"ad":36.20,"bd":0.00,"am":6.0,"bm":6.0},{"r":41,"ad":37.00,"bd":0.00,"am":6.0,"bm":6.0},{"r":42,"ad":37.95,"bd":0.00,"am":6.0,"bm":6.0},{"r":43,"ad":38.80,"bd":0.00,"am":6.0,"bm":6.0},{"r":44,"ad":39.60,"bd":0.00,"am":6.0,"bm":6.0},{"r":45,"ad":40.50,"bd":0.00,"am":6.0,"bm":6.0},{"r":46,"ad":41.35,"bd":0.00,"am":6.0,"bm":6.0},{"r":47,"ad":42.30,"bd":0.00,"am":6.0,"bm":6.0},{"r":48,"ad":43.10,"bd":0.00,"am":6.0,"bm":6.0},{"r":49,"ad":44.00,"bd":0.00,"am":6.0,"bm":6.0},{"r":50,"ad":45.00,"bd":0.00,"am":6.0,"bm":6.0},{"r":51,"ad":45.85,"bd":0.00,"am":6.0,"bm":6.0},{"r":52,"ad":46.70,"bd":0.00,"am":6.0,"bm":6.0},{"r":53,"ad":47.65,"bd":0.00,"am":6.0,"bm":6.0},{"r":54,"ad":48.55,"bd":0.00,"am":6.0,"bm":6.0},{"r":55,"ad":49.45,"bd":0.00,"am":6.0,"bm":6.0},{"r":56,"ad":50.25,"bd":0.00,"am":6.0,"bm":6.0},{"r":57,"ad":51.20,"bd":0.00,"am":6.0,"bm":6.0},{"r":58,"ad":52.10,"bd":0.00,"am":6.0,"bm":6.0},{"r":59,"ad":53.05,"bd":0.00,"am":6.0,"bm":6.0}]},{"label":"co-band interferer, LBT on","interferer":true,"lbt":true,"a_total":52.40,"b_total":51.60,"samples":[{"r":0,"ad":0.90,"bd":0.70,"am":7.0,"bm":6.0},{"r":1,"ad":1.80,"bd":1.50,"am":6.0,"bm":6.0},{"r":2,"ad":2.70,"bd":2.30,"am":6.0,"bm":6.0},{"r":3,"ad":3.50,"bd":3.10,"am":6.0,"bm":6.0},{"r":4,"ad":4.40,"bd":3.80,"am":6.0,"bm":6.0},{"r":5,"ad":5.25,"bd":4.65,"am":6.0,"bm":6.0},{"r":6,"ad":6.15,"bd":5.50,"am":6.0,"bm":6.0},{"r":7,"ad":6.80,"bd":6.30,"am":6.0,"bm":6.0},{"r":8,"ad":7.80,"bd":7.15,"am":6.0,"bm":6.0},{"r":9,"ad":8.75,"bd":8.15,"am":6.0,"bm":6.0},{"r":10,"ad":9.55,"bd":9.10,"am":6.0,"bm":6.0},{"r":11,"ad":10.35,"bd":10.00,"am":6.0,"bm":6.0},{"r":12,"ad":11.20,"bd":10.90,"am":6.0,"bm":6.0},{"r":13,"ad":12.00,"bd":11.75,"am":6.0,"bm":6.0},{"r":14,"ad":12.95,"bd":12.60,"am":6.0,"bm":6.0},{"r":15,"ad":13.75,"bd":13.50,"am":6.0,"bm":6.0},{"r":16,"ad":14.70,"bd":14.45,"am":6.0,"bm":6.0},{"r":17,"ad":15.60,"bd":15.35,"am":6.0,"bm":6.0},{"r":18,"ad":16.40,"bd":16.10,"am":6.0,"bm":6.0},{"r":19,"ad":17.40,"bd":17.05,"am":6.0,"bm":6.0},{"r":20,"ad":18.40,"bd":17.90,"am":6.0,"bm":6.0},{"r":21,"ad":19.25,"bd":18.80,"am":6.0,"bm":6.0},{"r":22,"ad":20.25,"bd":19.70,"am":6.0,"bm":6.0},{"r":23,"ad":21.10,"bd":20.55,"am":6.0,"bm":6.0},{"r":24,"ad":21.90,"bd":21.50,"am":6.0,"bm":6.0},{"r":25,"ad":22.85,"bd":22.25,"am":6.0,"bm":6.0},{"r":26,"ad":23.70,"bd":23.15,"am":6.0,"bm":6.0},{"r":27,"ad":24.55,"bd":24.10,"am":6.0,"bm":6.0},{"r":28,"ad":25.30,"bd":24.90,"am":6.0,"bm":6.0},{"r":29,"ad":26.15,"bd":25.85,"am":6.0,"bm":6.0},{"r":30,"ad":27.15,"bd":26.80,"am":6.0,"bm":6.0},{"r":31,"ad":28.05,"bd":27.60,"am":6.0,"bm":6.0},{"r":32,"ad":28.90,"bd":28.50,"am":6.0,"bm":6.0},{"r":33,"ad":29.65,"bd":29.30,"am":6.0,"bm":6.0},{"r":34,"ad":30.40,"bd":30.25,"am":6.0,"bm":6.0},{"r":35,"ad":31.35,"bd":31.20,"am":6.0,"bm":6.0},{"r":36,"ad":32.25,"bd":32.00,"am":6.0,"bm":6.0},{"r":37,"ad":33.00,"bd":32.90,"am":6.0,"bm":6.0},{"r":38,"ad":33.85,"bd":33.60,"am":6.0,"bm":6.0},{"r":39,"ad":34.80,"bd":34.45,"am":6.0,"bm":6.0},{"r":40,"ad":35.75,"bd":35.20,"am":6.0,"bm":6.0},{"r":41,"ad":36.65,"bd":36.05,"am":6.0,"bm":6.0},{"r":42,"ad":37.60,"bd":36.85,"am":6.0,"bm":6.0},{"r":43,"ad":38.60,"bd":37.65,"am":6.0,"bm":6.0},{"r":44,"ad":39.55,"bd":38.40,"am":6.0,"bm":6.0},{"r":45,"ad":40.40,"bd":39.25,"am":6.0,"bm":6.0},{"r":46,"ad":41.25,"bd":40.00,"am":6.0,"bm":6.0},{"r":47,"ad":42.10,"bd":40.90,"am":6.0,"bm":6.0},{"r":48,"ad":42.95,"bd":41.80,"am":6.0,"bm":6.0},{"r":49,"ad":43.80,"bd":42.65,"am":6.0,"bm":6.0},{"r":50,"ad":44.75,"bd":43.60,"am":6.0,"bm":6.0},{"r":51,"ad":45.65,"bd":44.45,"am":6.0,"bm":6.0},{"r":52,"ad":46.65,"bd":45.45,"am":6.0,"bm":6.0},{"r":53,"ad":47.60,"bd":46.35,"am":6.0,"bm":6.0},{"r":54,"ad":48.40,"bd":47.25,"am":6.0,"bm":6.0},{"r":55,"ad":49.40,"bd":48.20,"am":6.0,"bm":6.0},{"r":56,"ad":50.05,"bd":48.95,"am":6.0,"bm":6.0},{"r":57,"ad":50.70,"bd":49.90,"am":6.0,"bm":6.0},{"r":58,"ad":51.50,"bd":50.80,"am":6.0,"bm":6.0},{"r":59,"ad":52.40,"bd":51.60,"am":6.0,"bm":6.0}]}]};
 
 const state = (cond) => cond.b_total === 0 ? "starved" : (cond.interferer ? "recovered" : "clean");
 const stColor = { clean: "var(--good)", starved: "var(--loss)", recovered: "var(--good)" };
@@ -200,8 +209,8 @@ DATA.conditions.forEach((c, i) => {
     <div class="lbl">${i + 1} · ${c.label}</div>
     <div class="pill">${stLabel[st]}</div>
     <div class="rows">
-      <div class="row"><span class="who"><span class="swatch" style="background:var(--a)"></span>node <i>A</i> ← B</span><span class="val">${c.a_total}/60</span></div>
-      <div class="row"><span class="who"><span class="swatch" style="background:var(--b)"></span>node <i>B</i> ← A</span><span class="val" style="color:${c.b_total?'var(--ink)':'var(--loss)'}">${c.b_total}/60</span></div>
+      <div class="row"><span class="who"><span class="swatch" style="background:var(--a)"></span>node <i>A</i> ← B</span><span class="val">${c.a_total.toFixed(0)}/60</span></div>
+      <div class="row"><span class="who"><span class="swatch" style="background:var(--b)"></span>node <i>B</i> ← A</span><span class="val" style="color:${c.b_total?'var(--ink)':'var(--loss)'}">${c.b_total.toFixed(0)}/60</span></div>
       <div class="row"><span class="who">delivery</span><span class="val">${Math.round((c.a_total+c.b_total)/120*100)}%</span></div>
     </div>`;
   cards.appendChild(el);
@@ -251,7 +260,7 @@ DATA.conditions.forEach((c, i) => {
       <span><span class="swatch" style="background:var(--a)"></span>A ← B  ·  ${c.a_total}/60</span>
       <span><span class="swatch" style="background:${bColor}"></span>B ← A  ·  ${c.b_total}/60</span>
       <span style="color:${stColor[st]}">● ${stLabel[st]}</span>
-      <span style="margin-left:auto;color:var(--ink-3)">rate: cognition held MCS 7 (strong 5&nbsp;m link)</span>
+      <span style="margin-left:auto;color:var(--ink-3)">cognition adapted to MCS ${Math.round(c.samples[c.samples.length-1].bm)} (250&nbsp;m link)</span>
     </div>`;
   panels.appendChild(el);
 });

@@ -32,6 +32,10 @@ const MAX_MCS: u8 = 7;
 const PAYLOAD: usize = 40;
 const TICK_NS: u64 = 200_000_000; // 200 ms per round
 const ROUNDS: u64 = 60;
+const SEEDS: u64 = 20; // average the probabilistic per-frame erasure over independent draws
+/// A→B separation. ~360 m puts SNR near the middle MCS thresholds, so delivery is genuinely
+/// probabilistic and cognition's rate choice actually matters (5 m was a saturated, perfect link).
+const DIST_M: f64 = 250.0;
 
 fn fnv1a64(s: &[u8]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -82,41 +86,56 @@ fn main() {
 }
 
 fn real_main() {
-    println!("=== cognitive-radio sim: N=2 nodes + co-band interferer, LBT off vs on ===\n");
+    if std::env::var("PROBE").is_ok() {
+        probe_link();
+        return;
+    }
+    println!("=== cognitive-radio sim: N=2 @ {DIST_M:.0} m (marginal SNR), {SEEDS} seeds averaged ===\n");
     let conditions = [
         ("baseline (clean channel)", false, false),
         ("co-band interferer, LBT off", true, false),
         ("co-band interferer, LBT on", true, true),
     ];
-    let mut json = String::from("{\"rounds\":");
-    json.push_str(&ROUNDS.to_string());
-    json.push_str(",\"conditions\":[");
+    let nr = ROUNDS as usize;
+    let mut json = format!("{{\"rounds\":{ROUNDS},\"seeds\":{SEEDS},\"dist_m\":{DIST_M},\"conditions\":[");
     for (ci, (label, interferer, lbt)) in conditions.iter().enumerate() {
-        let (a_del, a_sent, b_del, b_sent, recs) = run(*interferer, *lbt);
-        let per = |d: u32, s: u32| if s == 0 { 1.0 } else { 1.0 - d as f32 / s as f32 };
-        println!(
-            "{}. {label}\n   A: {a_del}/{a_sent} delivered (PER {:.2})   B: {b_del}/{b_sent} delivered (PER {:.2})\n",
-            ci + 1,
-            per(a_del, a_sent),
-            per(b_del, b_sent),
-        );
-        if ci > 0 {
-            json.push(',');
-        }
-        json.push_str(&format!(
-            "{{\"label\":\"{label}\",\"interferer\":{interferer},\"lbt\":{lbt},\"a_total\":{a_del},\"b_total\":{b_del},\"samples\":["
-        ));
-        for (ri, r) in recs.iter().enumerate() {
-            if ri > 0 {
-                json.push(',');
+        // Aggregate the probabilistic per-frame draws over independent seeds.
+        let (mut aC, mut bC) = (vec![0f64; nr], vec![0f64; nr]); // per-round cumulative delivered
+        let (mut aM, mut bM) = (vec![0f64; nr], vec![0f64; nr]); // per-round chosen MCS
+        let (mut ta, mut tb, mut sent) = (0f64, 0f64, 0u32);
+        for seed in 0..SEEDS {
+            let (a_del, a_sent, b_del, _b_sent, recs) = run(*interferer, *lbt, seed);
+            ta += a_del as f64;
+            tb += b_del as f64;
+            sent = a_sent;
+            for (r, rec) in recs.iter().enumerate() {
+                aC[r] += rec.a_deliv as f64;
+                bC[r] += rec.b_deliv as f64;
+                aM[r] += rec.a_mcs.max(0) as f64;
+                bM[r] += rec.b_mcs.max(0) as f64;
             }
+        }
+        let s = SEEDS as f64;
+        ta /= s; tb /= s;
+        let per = |d: f64| if sent == 0 { 1.0 } else { 1.0 - d / sent as f64 };
+        println!(
+            "{}. {label}\n   A←B {ta:5.1}/{sent} (PER {:.2})   B←A {tb:5.1}/{sent} (PER {:.2})",
+            ci + 1, per(ta), per(tb),
+        );
+        if ci > 0 { json.push(','); }
+        json.push_str(&format!(
+            "{{\"label\":\"{label}\",\"interferer\":{interferer},\"lbt\":{lbt},\"a_total\":{ta:.2},\"b_total\":{tb:.2},\"samples\":["
+        ));
+        for r in 0..nr {
+            if r > 0 { json.push(','); }
             json.push_str(&format!(
-                "{{\"r\":{},\"ad\":{},\"bd\":{},\"am\":{},\"bm\":{},\"def\":{}}}",
-                r.round, r.a_deliv, r.b_deliv, r.a_mcs, r.b_mcs, r.deferrals
+                "{{\"r\":{r},\"ad\":{:.2},\"bd\":{:.2},\"am\":{:.1},\"bm\":{:.1}}}",
+                aC[r] / s, bC[r] / s, aM[r] / s, bM[r] / s
             ));
         }
         json.push_str("]}");
     }
+    println!();
     json.push_str("]}");
     // Telemetry time-series for the dashboard (examples/cognitive_radio_dashboard.html renders it).
     let path = std::env::temp_dir().join("cognitive_radio_telemetry.json");
@@ -125,14 +144,47 @@ fn real_main() {
     }
 }
 
+/// Diagnostic: sweep distance, measure the bus's EMPIRICAL per-frame delivery + cognition's rate pick.
+/// Shows the probabilistic model only bites at marginal SNR — 5m is a saturated (trivially perfect)
+/// link, which is why the headline scenario's curves were perfectly linear.
+fn probe_link() {
+    println!("dist_m   rssi   snr   deliv@mcs7  deliv@mcs0   cog_mcs");
+    for d in [5.0, 50.0, 100.0, 300.0, 600.0, 1000.0, 1500.0, 2000.0, 3000.0] {
+        let world = Arc::new(World::new());
+        world.place(NodeId(0), Position::xy(0.0, 0.0));
+        world.place(NodeId(1), Position::xy(d, 0.0));
+        let bus = RadioBus::new(world.clone(), Arc::new(FreeSpacePathLoss::default()), 0, 7);
+        let _rx = [bus.attach(NodeId(0)), bus.attach(NodeId(1))];
+        let rssi = bus.link_rssi(Position::xy(0.0, 0.0), Position::xy(d, 0.0)).unwrap_or(-200.0);
+        let snr = rssi + 95.0; // noise floor -95 dBm
+        let measure = |mcs: u8| {
+            let (mut ok, n) = (0u32, 300u64);
+            for i in 0..n {
+                let rx = bus.transmit(NodeId(0), mcs, Bytes::from(vec![0u8; 40]), i * 10_000_000);
+                if rx.iter().any(|(to, _, del)| *to == NodeId(1) && *del) {
+                    ok += 1;
+                }
+            }
+            ok as f64 / n as f64
+        };
+        let (d7, d0) = (measure(7), measure(0));
+        // Wi-Fi capability so cognition's MCS scale matches the sim's Wi-Fi PHY (both key on RSSI/SNR
+        // in the same units) — a LoRa capability disagrees on what -70 dBm means and never adapts.
+        let mut cog = SimCognition::new(RadioId(0), RadioCapability::wifi_monitor_2ghz(vec![6]), MAX_MCS);
+        cog.observe(0, rssi, 0);
+        let cm = cog.decide_mcs(123, Priority::Normal, 100).map(|m| m as i32).unwrap_or(-1);
+        println!("{d:6.0}  {rssi:6.0}  {snr:5.0}   {d7:8.2}   {d0:8.2}   {cm:6}");
+    }
+}
+
 /// Returns (A delivered, A sent, B delivered, B sent, per-round telemetry).
-fn run(interferer: bool, lbt: bool) -> (u32, u32, u32, u32, Vec<Rec>) {
+fn run(interferer: bool, lbt: bool, seed: u64) -> (u32, u32, u32, u32, Vec<Rec>) {
     // Static positions — track locally so we don't need a WorldView snapshot for LBT sensing.
     let posof = |id: NodeId| -> Position {
         match id.0 {
-            0 => Position::xy(0.0, 0.0),  // A
-            1 => Position::xy(5.0, 0.0),  // B
-            _ => Position::xy(2.5, 2.0),  // co-band interferer, between them
+            0 => Position::xy(0.0, 0.0),           // A
+            1 => Position::xy(DIST_M, 0.0),        // B — marginal SNR, so delivery is probabilistic
+            _ => Position::xy(DIST_M - 40.0, 30.0), // co-band interferer, near B (jams the A→B receiver)
         }
     };
     let world = Arc::new(World::new());
@@ -147,13 +199,13 @@ fn run(interferer: bool, lbt: bool) -> (u32, u32, u32, u32, Vec<Rec>) {
         world.clone(),
         Arc::new(FreeSpacePathLoss::default()),
         0,
-        7,
+        seed,
         Arc::new(CarrierSenseInterference),
     );
     // Attach nodes so the bus delivers to them (hold the RX handles alive for the run).
     let _rx = [bus.attach(NodeId(0)), bus.attach(NodeId(1))];
 
-    let cap = || RadioCapability::lora(vec![65]);
+    let cap = || RadioCapability::wifi_monitor_2ghz(vec![6]);
     let mut nodes = [
         Node { id: NodeId(0), cog: SimCognition::new(RadioId(0), cap(), MAX_MCS), name: "A", offset: 0, delivered: 0, sent: 0 },
         Node { id: NodeId(1), cog: SimCognition::new(RadioId(0), cap(), MAX_MCS), name: "B", offset: 1, delivered: 0, sent: 0 },

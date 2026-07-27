@@ -65,6 +65,16 @@ fn airtime_ms(mcs: u8, bytes: usize) -> f32 {
     (bytes as f32 * 8.0) / rate_kbps
 }
 
+/// Per-round telemetry sample (the observability time-series the dashboard renders).
+struct Rec {
+    round: u64,
+    a_deliv: u32,
+    b_deliv: u32,
+    a_mcs: i16, // -1 = LBT-deferred this round
+    b_mcs: i16,
+    deferrals: u32, // cumulative LBT backoff deferrals this condition
+}
+
 fn main() {
     // The RadioBus delivery timing rides ndn_runtime (tokio), so run inside a runtime context.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -73,23 +83,50 @@ fn main() {
 
 fn real_main() {
     println!("=== cognitive-radio sim: N=2 nodes + co-band interferer, LBT off vs on ===\n");
-    for (label, interferer, lbt) in [
-        ("1. baseline (no interferer)", false, false),
-        ("2. co-band interferer, LBT OFF", true, false),
-        ("3. co-band interferer, LBT ON", true, true),
-    ] {
-        let (a_del, a_sent, b_del, b_sent) = run(interferer, lbt);
+    let conditions = [
+        ("baseline (clean channel)", false, false),
+        ("co-band interferer, LBT off", true, false),
+        ("co-band interferer, LBT on", true, true),
+    ];
+    let mut json = String::from("{\"rounds\":");
+    json.push_str(&ROUNDS.to_string());
+    json.push_str(",\"conditions\":[");
+    for (ci, (label, interferer, lbt)) in conditions.iter().enumerate() {
+        let (a_del, a_sent, b_del, b_sent, recs) = run(*interferer, *lbt);
         let per = |d: u32, s: u32| if s == 0 { 1.0 } else { 1.0 - d as f32 / s as f32 };
         println!(
-            "{label}\n   A: {a_del}/{a_sent} delivered (PER {:.2})   B: {b_del}/{b_sent} delivered (PER {:.2})\n",
+            "{}. {label}\n   A: {a_del}/{a_sent} delivered (PER {:.2})   B: {b_del}/{b_sent} delivered (PER {:.2})\n",
+            ci + 1,
             per(a_del, a_sent),
             per(b_del, b_sent),
         );
+        if ci > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            "{{\"label\":\"{label}\",\"interferer\":{interferer},\"lbt\":{lbt},\"a_total\":{a_del},\"b_total\":{b_del},\"samples\":["
+        ));
+        for (ri, r) in recs.iter().enumerate() {
+            if ri > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(
+                "{{\"r\":{},\"ad\":{},\"bd\":{},\"am\":{},\"bm\":{},\"def\":{}}}",
+                r.round, r.a_deliv, r.b_deliv, r.a_mcs, r.b_mcs, r.deferrals
+            ));
+        }
+        json.push_str("]}");
+    }
+    json.push_str("]}");
+    // Telemetry time-series for the dashboard (examples/cognitive_radio_dashboard.html renders it).
+    let path = std::env::temp_dir().join("cognitive_radio_telemetry.json");
+    if std::fs::write(&path, &json).is_ok() {
+        println!("telemetry → {} ({} bytes)", path.display(), json.len());
     }
 }
 
-/// Returns (A delivered, A sent, B delivered, B sent).
-fn run(interferer: bool, lbt: bool) -> (u32, u32, u32, u32) {
+/// Returns (A delivered, A sent, B delivered, B sent, per-round telemetry).
+fn run(interferer: bool, lbt: bool) -> (u32, u32, u32, u32, Vec<Rec>) {
     // Static positions — track locally so we don't need a WorldView snapshot for LBT sensing.
     let posof = |id: NodeId| -> Position {
         match id.0 {
@@ -136,8 +173,11 @@ fn run(interferer: bool, lbt: bool) -> (u32, u32, u32, u32) {
         })
     };
 
+    let mut recs: Vec<Rec> = Vec::with_capacity(ROUNDS as usize);
+    let mut deferrals = 0u32;
     for round in 0..ROUNDS {
         let rstart = round * TICK_NS;
+        let mut mcs_used = [-1i16, -1i16]; // per-node this round; -1 = LBT-deferred
         in_air.retain(|(_, e, _)| *e > rstart); // prune finished
         // Co-band interferer: a burst covering [+20ms, +80ms] of the round — overlaps A's slot,
         // leaves a clear gap after 80ms that a listening node can find.
@@ -177,12 +217,14 @@ fn run(interferer: bool, lbt: bool) -> (u32, u32, u32, u32) {
                     t += 15_000_000;
                 }
                 if !found {
+                    deferrals += 1;
                     continue; // deferred, no clear slot this round → a failed attempt
                 }
                 tx_ns = t;
             }
 
             let mcs = nodes[i].cog.decide_mcs(pfx, prio, tx_ns / 1_000_000).unwrap_or(0);
+            mcs_used[i] = mcs as i16;
             let end = tx_ns + (airtime_ms(mcs, PAYLOAD) as u64) * 1_000_000;
             in_air.push((tx_ns, end, nodes[i].id));
             nodes[i].cog.record_tx(airtime_ms(mcs, PAYLOAD), tx_ns / 1_000_000);
@@ -197,6 +239,14 @@ fn run(interferer: bool, lbt: bool) -> (u32, u32, u32, u32) {
                 }
             }
         }
+        recs.push(Rec {
+            round,
+            a_deliv: nodes[0].delivered,
+            b_deliv: nodes[1].delivered,
+            a_mcs: mcs_used[0],
+            b_mcs: mcs_used[1],
+            deferrals,
+        });
     }
-    (nodes[0].delivered, nodes[0].sent, nodes[1].delivered, nodes[1].sent)
+    (nodes[0].delivered, nodes[0].sent, nodes[1].delivered, nodes[1].sent, recs)
 }

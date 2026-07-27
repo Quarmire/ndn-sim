@@ -32,6 +32,7 @@ struct Row {
     delivery: f64,
     rtt_ms: f64,
     tx_per_fetch: f64,
+    warm_tx: f64,
 }
 
 async fn run_chain(n: usize) -> Row {
@@ -63,7 +64,13 @@ async fn run_chain(n: usize) -> Row {
     let serve = tokio::spawn(async move {
         let _ = prod
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"payload")).await;
+                // Stamp a FreshnessPeriod so intermediate Content Stores actually admit + cache it
+                // (the DefaultAdmissionPolicy treats freshness=0 as non-cacheable) — the caching axis.
+                let content = bytes::Bytes::from_static(b"payload");
+                let wire = ndn_packet::encode::DataBuilder::new((*i.name).clone(), &content)
+                    .freshness(Duration::from_secs(30))
+                    .build();
+                let _ = r.respond_bytes(wire).await;
             })
             .await;
     });
@@ -83,12 +90,19 @@ async fn run_chain(n: usize) -> Row {
         }
     }
 
-    // Overhead: distinct (transmitter, instant) pairs on the medium = total radio transmissions.
-    let tx = log
-        .map(|l| {
-            l.records().iter().map(|r| (r.from.0, r.t_ns)).collect::<HashSet<_>>().len()
-        })
-        .unwrap_or(0);
+    // Cold overhead so far: distinct (transmitter, instant) pairs on the medium = radio transmissions.
+    let tx_set = |l: &Arc<ndn_sim::RadioLog>| -> HashSet<(usize, u64)> {
+        l.records().iter().map(|r| (r.from.0, r.t_ns)).collect()
+    };
+    let cold_set = log.as_ref().map(tx_set).unwrap_or_default();
+
+    // CACHING axis: re-fetch an already-delivered name. Now that the Data carries freshness, an
+    // in-network Content Store serves it — a full N-hop fetch collapses to a near-local cache hit, so
+    // the warm cost is ~0 regardless of chain length. The saving IS the cold multi-hop overhead.
+    let mut warm = eng_c.app_consumer(CancellationToken::new());
+    let wb = InterestBuilder::new("/mesh/seg0".parse::<Name>().unwrap()).lifetime(Duration::from_secs(2));
+    let _ = tokio::time::timeout(Duration::from_millis(1500), warm.fetch_with(wb)).await;
+    let warm_tx = log.as_ref().map(|l| tx_set(l).difference(&cold_set).count()).unwrap_or(0);
 
     serve.abort();
     fabric.shutdown().await;
@@ -98,20 +112,21 @@ async fn run_chain(n: usize) -> Row {
         hops: n - 1,
         delivery: ok as f64 / FETCHES as f64,
         rtt_ms: if ok > 0 { rtt_sum / ok as f64 } else { f64::NAN },
-        tx_per_fetch: if ok > 0 { tx as f64 / ok as f64 } else { f64::NAN },
+        tx_per_fetch: if ok > 0 { cold_set.len() as f64 / ok as f64 } else { f64::NAN },
+        warm_tx: warm_tx as f64,
     }
 }
 
 #[tokio::main]
 async fn main() {
     println!("real-forwarder multi-hop scaling — a chain of N engines, BroadcastStrategy relays\n");
-    println!("  N   hops   delivery   RTT(ms)   radio-tx / delivered fetch");
+    println!("  N   hops   delivery   RTT(ms)   cold-tx/fetch   warm-tx (cached)");
     let mut rows = Vec::new();
     for n in [2usize, 3, 4, 5, 7, 9, 12] {
         let r = run_chain(n).await;
         println!(
-            "  {:>2}   {:>3}    {:>5.0}%   {:>6.1}    {:>6.1}",
-            r.n, r.hops, r.delivery * 100.0, r.rtt_ms, r.tx_per_fetch
+            "  {:>2}   {:>3}    {:>5.0}%   {:>6.1}    {:>9.1}    {:>10.0}",
+            r.n, r.hops, r.delivery * 100.0, r.rtt_ms, r.tx_per_fetch, r.warm_tx
         );
         rows.push(r);
     }
@@ -121,11 +136,12 @@ async fn main() {
             j.push(',');
         }
         j.push_str(&format!(
-            "{{\"n\":{},\"hops\":{},\"delivery\":{:.3},\"rtt_ms\":{:.2},\"tx_per_fetch\":{:.2}}}",
+            "{{\"n\":{},\"hops\":{},\"delivery\":{:.3},\"rtt_ms\":{:.2},\"tx_per_fetch\":{:.2},\"warm_tx\":{:.1}}}",
             r.n, r.hops,
             if r.delivery.is_nan() { 0.0 } else { r.delivery },
             if r.rtt_ms.is_nan() { 0.0 } else { r.rtt_ms },
-            if r.tx_per_fetch.is_nan() { 0.0 } else { r.tx_per_fetch }
+            if r.tx_per_fetch.is_nan() { 0.0 } else { r.tx_per_fetch },
+            r.warm_tx
         ));
     }
     j.push_str("]}");

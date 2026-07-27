@@ -1,0 +1,158 @@
+<title>Measured Wi-Fi — Single vs Multi-Radio Multi-Hop</title>
+<style>
+  :root{ color-scheme:dark light;
+    --bg:#0a0e15; --panel:#111a27; --panel2:#0d141f; --border:#1f2c3f;
+    --ink:#d6e1ee; --muted:#7a8ca4; --faint:#455771; --grid:#1a2637;
+    --base:#3b6ea8; --hop2:#e08a3c; --hop3:#2f8f5b; --max:#5fb0e8;
+    --single:#f87171; --multi:#2dd4bf; }
+  :root[data-theme="light"]{ color-scheme:light;
+    --bg:#f5f7fb; --panel:#fff; --panel2:#eef2f7; --border:#dbe3ee;
+    --ink:#16202e; --muted:#57687e; --faint:#95a6bc; --grid:#e6ecf4;
+    --base:#2c5c93; --hop2:#c9741f; --hop3:#1f7a49; --max:#2563eb;
+    --single:#dc2626; --multi:#0d9488; }
+  @media (prefers-color-scheme:light){ :root:not([data-theme="dark"]){ color-scheme:light;
+    --bg:#f5f7fb; --panel:#fff; --panel2:#eef2f7; --border:#dbe3ee;
+    --ink:#16202e; --muted:#57687e; --faint:#95a6bc; --grid:#e6ecf4;
+    --base:#2c5c93; --hop2:#c9741f; --hop3:#1f7a49; --max:#2563eb;
+    --single:#dc2626; --multi:#0d9488; } }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+  .mono{ font-family:ui-monospace,"SF Mono",Menlo,monospace; font-variant-numeric:tabular-nums; }
+  .wrap{ max-width:1120px; margin:0 auto; padding:34px 22px 80px; }
+  header{ display:flex; justify-content:space-between; align-items:flex-end; gap:18px; flex-wrap:wrap; }
+  .eyebrow{ text-transform:uppercase; letter-spacing:.18em; font-size:11px; color:var(--multi); font-weight:600; }
+  h1{ font-size:clamp(25px,4vw,38px); margin:6px 0 6px; letter-spacing:-.02em; text-wrap:balance; }
+  .sub{ color:var(--muted); max-width:66ch; font-size:14px; line-height:1.55; }
+  .toggle{ background:var(--panel); border:1px solid var(--border); color:var(--muted); border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer; }
+  .toggle:hover{ color:var(--ink); }
+  .cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:26px 0 8px; }
+  .card{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+  .card .v{ font-size:23px; font-weight:680; }
+  .card .k{ font-size:11px; color:var(--muted); margin-top:3px; line-height:1.35; }
+  .grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:22px; }
+  .panel{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; min-width:0; }
+  .panel.wide{ grid-column:1/-1; }
+  .ptitle{ font-size:14px; font-weight:650; margin:0 0 2px; }
+  .pdesc{ font-size:12px; color:var(--muted); margin:0 0 14px; line-height:1.5; }
+  svg{ width:100%; height:auto; display:block; overflow:visible; }
+  .legend{ display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:10px; }
+  .chip{ display:inline-flex; align-items:center; gap:6px; }
+  .sw{ width:12px; height:12px; border-radius:3px; display:inline-block; }
+  .ln{ width:16px; height:3px; border-radius:2px; display:inline-block; }
+  .tip{ position:fixed; pointer-events:none; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:7px 10px; font-size:12px; opacity:0; transition:opacity .1s; z-index:20; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+  .note{ font-size:12px; color:var(--muted); margin-top:24px; border-top:1px solid var(--border); padding-top:16px; line-height:1.6; }
+  .note b{ color:var(--ink); font-weight:600; }
+  @media (max-width:760px){ .grid{ grid-template-columns:1fr; } .cards{ grid-template-columns:1fr 1fr; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">measured · RTL8812AU · 120 m · 20 dBm</div>
+      <h1>Real Wi-Fi: Multi-Radio Nearly Erases the Multi-Hop Penalty</h1>
+      <div class="sub">On-air throughput vs MCS for a 120 m base link relayed 2 and 3 hops. Single-radio relaying collapses (each hop roughly halves — worse than 1/hops); multi-radio relaying holds throughput at ~90% of the base link. These are measured bitrates, not a model — the case for MRMC / ndnpipes, on real hardware.</div>
+    </div>
+    <button class="toggle" id="themeBtn">◐ theme</button>
+  </header>
+  <div class="cards mono" id="cards"></div>
+
+  <div class="grid">
+    <div class="panel wide">
+      <p class="ptitle">3-hop throughput retained — single vs multi radio (÷ base 120 m link)</p>
+      <p class="pdesc">The headline: over 3 hops (360 m), a single radio keeps only ~1/5 of the base rate; multiple radios keep ~9/10. Same distance, same MCS — the difference is the spectrum/radios.</p>
+      <svg id="c_ret"></svg>
+      <div class="legend">
+        <span class="chip"><span class="ln" style="background:var(--single)"></span>single-radio 3-hop</span>
+        <span class="chip"><span class="ln" style="background:var(--multi)"></span>multi-radio 3-hop</span>
+        <span class="chip"><span class="ln" style="background:var(--faint)"></span>naive 1/3 reference</span>
+      </div>
+    </div>
+    <div class="panel">
+      <p class="ptitle">Single-radio — the collapse</p>
+      <p class="pdesc">Base (120 m) vs 2-hop (240 m) vs 3-hop (360 m), per MCS. Each relay hop roughly halves the rate.</p>
+      <svg id="c_single"></svg>
+    </div>
+    <div class="panel">
+      <p class="ptitle">Multi-radio — the hold</p>
+      <p class="pdesc">Same relays, multiple radios: 2-hop and 3-hop sit almost on top of the base link.</p>
+      <svg id="c_multi"></svg>
+    </div>
+  </div>
+  <div class="legend" style="margin-top:14px;justify-content:center">
+    <span class="chip"><span class="sw" style="background:var(--base)"></span>base (120 m, 1 hop)</span>
+    <span class="chip"><span class="sw" style="background:var(--hop2)"></span>2-hop (240 m)</span>
+    <span class="chip"><span class="sw" style="background:var(--hop3)"></span>3-hop (360 m)</span>
+  </div>
+  <p class="note" id="note"></p>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const D = {"site":"120 m link, 20 dBm, 8812au (measured)","mcs":[0,1,2,3,4,5,6,7],"single_radio":{"max20":[6.0,12.3,17.6,24.6,36.0,49.8,55.7,61.1],"base120":[6.1,12.2,17.3,24.6,35.8,49.1,51.8,40.9],"hop2":[2.4,4.5,6.0,8.0,12.0,15.0,15.5,19.5],"hop3":[1.5,2.4,3.5,5.0,6.8,9.3,11.0,12.0]},"multi_radio":{"max20":[6.0,12.3,17.6,24.6,36.0,49.8,55.7,61.1],"base120":[6.1,12.2,17.3,24.6,35.8,49.1,51.8,40.9],"hop2":[5.7,10.6,15.2,24.3,35.4,48.6,50.2,36.8],"hop3":[4.9,9.7,14.6,23.0,33.4,46.3,49.2,29.5]}};
+const $ = s => document.querySelector(s);
+const tip = $("#tip");
+const cvar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function showTip(h,e){ tip.innerHTML=h; tip.style.opacity=1; tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY+14)+"px"; }
+function hideTip(){ tip.style.opacity=0; }
+
+// grouped bar chart: series = [{key,color}], data indexed by mcs
+function bars(sel, group, keys, ymax){
+  const svg=$(sel), W=460, H=250, m={l:40,r:10,t:12,b:32};
+  const iw=W-m.l-m.r, ih=H-m.t-m.b, n=D.mcs.length, gw=iw/n, bw=gw/(keys.length+0.6);
+  let g="";
+  [0,10,20,30,40,50,60].forEach(t=>{ if(t>ymax)return; const y=m.t+ih*(1-t/ymax); g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cvar('--grid')}"/><text x="${m.l-6}" y="${y+3.5}" text-anchor="end" font-size="9.5" fill="${cvar('--muted')}" class="mono">${t}</text>`; });
+  D.mcs.forEach((mc,i)=>{
+    const x0=m.l+i*gw+gw*0.15;
+    keys.forEach((k,j)=>{
+      const v=group[k.key][i], h=ih*v/ymax, x=x0+j*bw, y=m.t+ih-h;
+      g+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw*0.86).toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="${cvar(k.color)}" data-tip="MCS ${mc} · ${k.label} · ${v} Mbps"/>`;
+    });
+    g+=`<text x="${(m.l+i*gw+gw/2).toFixed(1)}" y="${m.t+ih+16}" text-anchor="middle" font-size="9.5" fill="${cvar('--muted')}" class="mono">${mc}</text>`;
+  });
+  g+=`<text x="${m.l+iw/2}" y="${H-1}" text-anchor="middle" font-size="10" fill="${cvar('--faint')}">MCS index</text>`;
+  g+=`<text transform="translate(10,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10" fill="${cvar('--faint')}">Mbps</text>`;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.innerHTML=g;
+  svg.querySelectorAll("rect[data-tip]").forEach(c=>{ c.addEventListener("mousemove",e=>showTip(c.dataset.tip,e)); c.addEventListener("mouseleave",hideTip); });
+}
+// line chart for the retention ratios
+function lines(sel, series){
+  const svg=$(sel), W=940, H=250, m={l:44,r:14,t:12,b:34}, iw=W-m.l-m.r, ih=H-m.t-m.b, n=D.mcs.length;
+  const px=i=> m.l+ (n===1?0.5: i/(n-1))*iw, py=v=> m.t+ih*(1-v);
+  let g="";
+  [0,0.25,0.5,0.75,1].forEach(t=>{ const y=py(t); g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cvar('--grid')}"/><text x="${m.l-8}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cvar('--muted')}" class="mono">${(t*100)|0}%</text>`; });
+  D.mcs.forEach((mc,i)=> g+=`<text x="${px(i)}" y="${m.t+ih+18}" text-anchor="middle" font-size="10" fill="${cvar('--muted')}" class="mono">${mc}</text>`);
+  g+=`<text x="${m.l+iw/2}" y="${H-2}" text-anchor="middle" font-size="10.5" fill="${cvar('--faint')}">MCS index</text>`;
+  series.forEach(s=>{
+    const pts=s.data.map((v,i)=>[px(i),py(v)]);
+    g+=`<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cvar(s.color)}" stroke-width="${s.dash?1.8:2.4}" ${s.dash?`stroke-dasharray="${s.dash}"`:''} stroke-linejoin="round"/>`;
+    if(!s.dash) pts.forEach((p,i)=> g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.4" fill="${cvar('--panel')}" stroke="${cvar(s.color)}" stroke-width="2" data-tip="MCS ${D.mcs[i]} · ${s.label} · ${(s.data[i]*100).toFixed(0)}%"/>`);
+  });
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.innerHTML=g;
+  svg.querySelectorAll("circle[data-tip]").forEach(c=>{ c.addEventListener("mousemove",e=>showTip(c.dataset.tip,e)); c.addEventListener("mouseleave",hideTip); });
+}
+
+function render(){
+  const s=D.single_radio, m=D.multi_radio;
+  const ratio=(a,b)=> a.map((x,i)=> x/b[i]);
+  const s3=ratio(s.hop3,s.base120), m3=ratio(m.hop3,m.base120);
+  const avg=a=> a.reduce((x,y)=>x+y,0)/a.length;
+  $("#cards").innerHTML=[
+    [(100*avg(s3)).toFixed(0)+"%","single-radio 3-hop throughput kept"],
+    [(100*avg(m3)).toFixed(0)+"%","multi-radio 3-hop throughput kept"],
+    [(avg(m3)/avg(s3)).toFixed(1)+"×","multi-radio gain at 3 hops"],
+    ["measured","on-air, RTL8812AU @ 120 m"],
+  ].map(([v,k])=>`<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  lines("#c_ret",[
+    {data:s3,color:'--single',label:'single 3-hop'},
+    {data:m3,color:'--multi',label:'multi 3-hop'},
+    {data:D.mcs.map(()=>1/3),color:'--faint',label:'1/3',dash:'5 4'}]);
+  const ymax=65;
+  bars("#c_single", s, [{key:'base120',color:'--base',label:'base'},{key:'hop2',color:'--hop2',label:'2-hop'},{key:'hop3',color:'--hop3',label:'3-hop'}], ymax);
+  bars("#c_multi", m, [{key:'base120',color:'--base',label:'base'},{key:'hop2',color:'--hop2',label:'2-hop'},{key:'hop3',color:'--hop3',label:'3-hop'}], ymax);
+
+  $("#note").innerHTML=`<b>What this changes:</b> a single-radio broadcast chain really does collapse — worse than 1/hops (measured ~${(100*avg(ratio(s.hop2,s.base120))).toFixed(0)}% at 2 hops, ~${(100*avg(s3)).toFixed(0)}% at 3), which corrected my earlier over-optimistic sim. But multi-radio multi-channel relaying holds ~${(100*avg(m3)).toFixed(0)}% of the base link across 3 hops — it nearly erases the penalty, far more than the ~2× my model showed. This is the empirical anchor the simulator is now being calibrated to; measurement beats the model. (Source: on-air RTL8812AU tests, 120 m base, 20 dBm.)`;
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{ const r=document.documentElement,c=r.getAttribute("data-theme"); r.setAttribute("data-theme", c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"))); render(); });
+</script>

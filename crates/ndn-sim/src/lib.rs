@@ -233,9 +233,9 @@ pub use lora::{
 };
 pub use mcp::SimMcp;
 pub use medium::{
-    CarrierSenseInterference, Delivery, DeliveryReason, FreeSpacePathLoss, InterferenceModel,
-    NoInterference, PerfectPropagation, PropagationModel, RangeThreshold, ReceivedFrame, TxContext,
-    WirelessMedium,
+    AdjacentLeakChannel, CarrierSenseInterference, ChannelModel, Delivery, DeliveryReason,
+    FreeSpacePathLoss, InterferenceModel, NoInterference, OrthogonalChannels, PerfectPropagation,
+    PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
 };
 pub use otel_export::OtlpExporter;
 // NB: `phy::FreeSpace` (a PropagationBackend) is intentionally not re-exported at the crate root —

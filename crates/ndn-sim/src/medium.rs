@@ -85,6 +85,9 @@ pub enum DeliveryReason {
     Collision,
     /// Detectable but lost to per-frame erasure at that SNR — set by the [`RadioBus`](crate::RadioBus).
     Erased,
+    /// The receiver was itself transmitting when the frame arrived — a half-duplex radio cannot
+    /// receive while it transmits. Set by the [`RadioBus`](crate::RadioBus).
+    HalfDuplex,
 }
 
 impl DeliveryReason {
@@ -97,6 +100,7 @@ impl DeliveryReason {
             DeliveryReason::Obstructed => "line of sight blocked by an obstacle",
             DeliveryReason::Collision => "collided with a concurrent transmission",
             DeliveryReason::Erased => "lost to per-frame erasure at low SNR",
+            DeliveryReason::HalfDuplex => "receiver was transmitting (half-duplex)",
         }
     }
 }
@@ -277,6 +281,48 @@ pub struct CarrierSenseInterference;
 impl InterferenceModel for CarrierSenseInterference {
     fn collides(&self, _rx: NodeId, concurrent_senders: &[NodeId]) -> bool {
         !concurrent_senders.is_empty()
+    }
+}
+
+/// How much a transmitter on one channel interferes with a signal on another — a **pluggable**
+/// channel model (like [`PropagationModel`]/[`InterferenceModel`]) so the fidelity can grow over
+/// time (measured ACLR masks, guard bands, overlapping-but-not-adjacent DSSS/OFDM spectra, …).
+/// Returns a coupling in `[0, 1]`: `1.0` = co-channel (full collision), `0.0` = fully orthogonal,
+/// in between = **side-band leakage** — because real channels are not perfectly orthogonal.
+pub trait ChannelModel: Send + Sync {
+    fn coupling(&self, interferer_ch: u8, signal_ch: u8) -> f64;
+}
+
+/// The naive default: perfectly orthogonal channels (co-channel = 1, everything else = 0). Real
+/// radios do not behave like this — use it only as a baseline.
+pub struct OrthogonalChannels;
+impl ChannelModel for OrthogonalChannels {
+    fn coupling(&self, a: u8, b: u8) -> f64 {
+        if a == b { 1.0 } else { 0.0 }
+    }
+}
+
+/// Adjacent-channel leakage: co-channel interferes fully; a neighbour ±1 leaks at `adjacent`; ±2 at
+/// `adjacent²`; beyond that, negligible. A crude but honest side-band model — raise `adjacent` for
+/// poorly-filtered front ends / narrow guard bands, lower it for well-separated channels. The point
+/// is that "put the flows on different channels" is not a free 1/K: adjacent channels still couple.
+pub struct AdjacentLeakChannel {
+    /// Coupling to an immediately-adjacent channel (≈ the inverse adjacent-channel rejection ratio).
+    pub adjacent: f64,
+}
+impl Default for AdjacentLeakChannel {
+    fn default() -> Self {
+        Self { adjacent: 0.2 } // ~ −7 dB ACLR — deliberately pessimistic; tune per radio
+    }
+}
+impl ChannelModel for AdjacentLeakChannel {
+    fn coupling(&self, a: u8, b: u8) -> f64 {
+        match a.abs_diff(b) {
+            0 => 1.0,
+            1 => self.adjacent,
+            2 => self.adjacent * self.adjacent,
+            _ => 0.0,
+        }
     }
 }
 

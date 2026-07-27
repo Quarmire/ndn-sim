@@ -26,6 +26,8 @@ const SPACING_M: f64 = 130.0; // neighbours in range (~200 m), next-neighbours o
 const SENSITIVITY_DBM: f64 = -66.0;
 const FETCHES: usize = 8;
 
+const BATCH: usize = 24; // concurrent fetches for the saturated-throughput measurement
+
 struct Row {
     n: usize,
     hops: usize,
@@ -33,6 +35,7 @@ struct Row {
     rtt_ms: f64,
     tx_per_fetch: f64,
     warm_tx: f64,
+    tput: f64, // saturated fetches/sec through the chain (half-duplex + interference throttle it)
 }
 
 async fn run_chain(n: usize) -> Row {
@@ -46,6 +49,12 @@ async fn run_chain(n: usize) -> Row {
         .map(|i| sim.add_radio_node(EngineConfig::default(), Position::xy(i as f64 * SPACING_M, 0.0)))
         .collect();
     let fabric = sim.start().await.unwrap();
+    // Realistic physics: half-duplex is on by default (a relay can't RX while it TXes); widen the
+    // interference range past the decode range so concurrent hops beyond the next neighbour still
+    // clash (why a single-radio chain falls below 1/hop).
+    if let Some(bus) = fabric.radio_bus() {
+        bus.set_interference_range_factor(1.8);
+    }
     let log = fabric.capture_radio();
 
     let prefix: Name = "/mesh".parse().unwrap();
@@ -104,6 +113,29 @@ async fn run_chain(n: usize) -> Row {
     let _ = tokio::time::timeout(Duration::from_millis(1500), warm.fetch_with(wb)).await;
     let warm_tx = log.as_ref().map(|l| tx_set(l).difference(&cold_set).count()).unwrap_or(0);
 
+    // SATURATED throughput: fire BATCH fetches concurrently so consecutive packets' hops overlap in
+    // the chain. Half-duplex (a relay can't RX packet k+1 while TXing packet k) + the wide
+    // interference range then throttle the pipeline — the reason a single-radio chain's throughput
+    // falls off *faster* than 1/hop.
+    let t0 = Instant::now();
+    let mut handles = Vec::new();
+    for k in 0..BATCH {
+        let eng = eng_c.clone();
+        handles.push(tokio::spawn(async move {
+            let mut c = eng.app_consumer(CancellationToken::new());
+            let b = InterestBuilder::new(format!("/mesh/tput{k}").parse::<Name>().unwrap())
+                .lifetime(Duration::from_secs(3));
+            matches!(tokio::time::timeout(Duration::from_millis(3000), c.fetch_with(b)).await, Ok(Ok(_)))
+        }));
+    }
+    let mut done = 0usize;
+    for h in handles {
+        if h.await.unwrap_or(false) {
+            done += 1;
+        }
+    }
+    let tput = done as f64 / t0.elapsed().as_secs_f64();
+
     serve.abort();
     fabric.shutdown().await;
 
@@ -114,19 +146,20 @@ async fn run_chain(n: usize) -> Row {
         rtt_ms: if ok > 0 { rtt_sum / ok as f64 } else { f64::NAN },
         tx_per_fetch: if ok > 0 { cold_set.len() as f64 / ok as f64 } else { f64::NAN },
         warm_tx: warm_tx as f64,
+        tput,
     }
 }
 
 #[tokio::main]
 async fn main() {
     println!("real-forwarder multi-hop scaling — a chain of N engines, BroadcastStrategy relays\n");
-    println!("  N   hops   delivery   RTT(ms)   cold-tx/fetch   warm-tx (cached)");
+    println!("  N   hops   delivery   RTT(ms)   cold-tx/fetch   warm-tx   sat-tput(/s)");
     let mut rows = Vec::new();
     for n in [2usize, 3, 4, 5, 7, 9, 12] {
         let r = run_chain(n).await;
         println!(
-            "  {:>2}   {:>3}    {:>5.0}%   {:>6.1}    {:>9.1}    {:>10.0}",
-            r.n, r.hops, r.delivery * 100.0, r.rtt_ms, r.tx_per_fetch, r.warm_tx
+            "  {:>2}   {:>3}    {:>5.0}%   {:>6.1}    {:>9.1}    {:>6.0}    {:>9.1}",
+            r.n, r.hops, r.delivery * 100.0, r.rtt_ms, r.tx_per_fetch, r.warm_tx, r.tput
         );
         rows.push(r);
     }
@@ -136,12 +169,12 @@ async fn main() {
             j.push(',');
         }
         j.push_str(&format!(
-            "{{\"n\":{},\"hops\":{},\"delivery\":{:.3},\"rtt_ms\":{:.2},\"tx_per_fetch\":{:.2},\"warm_tx\":{:.1}}}",
+            "{{\"n\":{},\"hops\":{},\"delivery\":{:.3},\"rtt_ms\":{:.2},\"tx_per_fetch\":{:.2},\"warm_tx\":{:.1},\"tput\":{:.2}}}",
             r.n, r.hops,
             if r.delivery.is_nan() { 0.0 } else { r.delivery },
             if r.rtt_ms.is_nan() { 0.0 } else { r.rtt_ms },
             if r.tx_per_fetch.is_nan() { 0.0 } else { r.tx_per_fetch },
-            r.warm_tx
+            r.warm_tx, r.tput
         ));
     }
     j.push_str("]}");

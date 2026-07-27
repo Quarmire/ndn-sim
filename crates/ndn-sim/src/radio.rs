@@ -104,6 +104,18 @@ pub struct RadioBus {
     /// sets it here; `transmit` then uses it for BOTH propagation (RSSI → delivery) and energy, so
     /// the power dial is a real trade-off. Unset nodes fall back to the bus-wide `tx_power_dbm`.
     tx_power: Mutex<HashMap<NodeId, f64>>,
+    /// Per-node channel (unset = 0). With a `channel_model`, a concurrent transmitter only interferes
+    /// per the channels' coupling — orthogonal channels don't collide, adjacent ones leak.
+    channels: Mutex<HashMap<NodeId, u8>>,
+    /// Pluggable channel-coupling model (side-band leakage). `None` = perfectly-orthogonal channels.
+    channel_model: Mutex<Option<Arc<dyn crate::medium::ChannelModel>>>,
+    /// Half-duplex: a radio mid-transmit cannot receive. Default ON (real broadcast radios are HD) —
+    /// this is what makes a single-radio multi-hop chain degrade *worse* than 1/hop.
+    half_duplex: std::sync::atomic::AtomicBool,
+    /// Interference range as a multiple of the delivery (`max_range`). Real interference range exceeds
+    /// the decode range (~1.5–2×), which limits spatial reuse and is *why* chains fall below 1/hop.
+    /// Default 1.0 (interference = decode range) to preserve existing scenarios; studies raise it.
+    interference_range_factor: Mutex<f64>,
 }
 
 impl RadioBus {
@@ -207,7 +219,55 @@ impl RadioBus {
             energy_acct: Mutex::new(HashMap::new()),
             host_filter: Mutex::new(None),
             tx_power: Mutex::new(HashMap::new()),
+            channels: Mutex::new(HashMap::new()),
+            channel_model: Mutex::new(None),
+            half_duplex: std::sync::atomic::AtomicBool::new(true),
+            interference_range_factor: Mutex::new(1.0),
         })
+    }
+
+    /// Assign a node's channel (default 0). Combined with [`set_channel_model`](Self::set_channel_model),
+    /// this makes multi-radio/multi-channel scenarios real: transmitters on orthogonal channels stop
+    /// colliding, adjacent channels still leak.
+    pub fn set_channel(&self, node: NodeId, channel: u8) {
+        self.channels.lock().unwrap().insert(node, channel);
+    }
+
+    /// Install a pluggable [`ChannelModel`](crate::medium::ChannelModel) (side-band leakage). Without
+    /// one, channels are treated as perfectly orthogonal (co-channel collides, else not).
+    pub fn set_channel_model(&self, model: Arc<dyn crate::medium::ChannelModel>) {
+        *self.channel_model.lock().unwrap() = Some(model);
+    }
+
+    /// Toggle the half-duplex constraint (a radio cannot receive while transmitting). Default ON.
+    pub fn set_half_duplex(&self, on: bool) {
+        self.half_duplex.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Set the interference range as a multiple of the decode range (default 1.0). Values >1 model the
+    /// real "interference range exceeds decode range" effect that drops multi-hop throughput below 1/hop.
+    pub fn set_interference_range_factor(&self, factor: f64) {
+        *self.interference_range_factor.lock().unwrap() = factor.max(1.0);
+    }
+
+    fn channel_of(&self, node: NodeId) -> u8 {
+        self.channels.lock().unwrap().get(&node).copied().unwrap_or(0)
+    }
+
+    /// Coupling between an interferer node and a signal on `signal_ch`, via the channel model
+    /// (or perfectly-orthogonal if none installed).
+    fn channel_coupling(&self, interferer: NodeId, signal_ch: u8) -> f64 {
+        let ich = self.channel_of(interferer);
+        match self.channel_model.lock().unwrap().as_ref() {
+            Some(m) => m.coupling(ich, signal_ch),
+            None => {
+                if ich == signal_ch {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
     }
 
     /// Override one node's TX power (dBm). Used for BOTH propagation (RSSI → delivery) and energy, so
@@ -357,6 +417,9 @@ impl RadioBus {
         // Used for BOTH this frame's RSSI (delivery) and its energy — so the power dial trades reach
         // against joules honestly.
         let tx_dbm = self.tx_power.lock().unwrap().get(&node).copied().unwrap_or(self.tx_power_dbm);
+        let signal_ch = self.channel_of(node);
+        let half_duplex = self.half_duplex.load(std::sync::atomic::Ordering::Relaxed);
+        let irange_factor = *self.interference_range_factor.lock().unwrap();
 
         // This frame's airtime (bits / PHY rate) → its on-air window. Snapshot the *other*
         // frames overlapping the start instant (concurrent transmitters) before recording ours.
@@ -457,10 +520,26 @@ impl RadioBus {
                 log_delivery(false, d.reason, d.rssi_dbm);
                 continue; // below receiver sensitivity / obstructed — not even detectable
             }
-            // Concurrent (in-range) transmitters this receiver also hears (hidden-terminal set).
+            // Half-duplex: if this receiver is itself transmitting right now, it cannot hear the frame
+            // at all. This is the single most important reason a one-radio multi-hop chain falls below
+            // 1/hop — a relay busy forwarding drops the next frame headed for it.
+            if half_duplex && concurrent.iter().any(|(s, _)| *s == rx_node) {
+                out.push((rx_node, d.rssi_dbm, false));
+                log_delivery(false, crate::medium::DeliveryReason::HalfDuplex, d.rssi_dbm);
+                continue;
+            }
+            // Concurrent transmitters this receiver hears as INTERFERENCE: within the interference
+            // range (which exceeds the decode range) AND coupling on the channel (co-channel fully,
+            // adjacent channels leak, orthogonal not at all). Excludes the receiver itself (half-duplex
+            // handled above).
+            let irange = max_range * irange_factor;
             let clashers: Vec<(NodeId, Position)> = concurrent
                 .iter()
-                .filter(|(_, p)| p.distance(rx_pos) <= max_range)
+                .filter(|(s, p)| {
+                    *s != rx_node
+                        && p.distance(rx_pos) <= irange
+                        && self.channel_coupling(*s, signal_ch) > 0.1
+                })
                 .map(|(s, p)| (*s, *p))
                 .collect();
             // Without SINR modelling, any in-range concurrent transmitter is a hard collision.

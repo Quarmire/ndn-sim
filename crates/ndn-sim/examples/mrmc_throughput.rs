@@ -159,4 +159,29 @@ fn main() {
     println!("and capacity climbs back toward the single-hop rate. Leakage claws some back (adjacent hops");
     println!("aren't perfectly orthogonal). Stock IP/802.11s can't do this natively — the fair MRMC");
     println!("comparison must be against the research multi-radio routing schemes (#69).");
+
+    // JSON (stderr) for the dashboard.
+    let pipes: Vec<String> = [1usize, 2, 3, 4, 6, 8]
+        .iter()
+        .map(|&c| {
+            format!(
+                "{{\"c\":{c},\"ortho\":{:.2},\"leaky\":{:.2}}}",
+                parallel_pipes(8, c, &ortho),
+                parallel_pipes(8, c, &leaky)
+            )
+        })
+        .collect();
+    let chain: Vec<String> = [2i64, 3, 4, 6, 8]
+        .iter()
+        .map(|&h| {
+            format!(
+                "{{\"hops\":{h},\"r1\":{:.3},\"r2o\":{:.3},\"r2l\":{:.3},\"r3o\":{:.3}}}",
+                chain_mrmc(h, 1, 1, 4, &ortho) / base,
+                chain_mrmc(h, 2, 2, 4, &ortho) / base,
+                chain_mrmc(h, 2, 2, 4, &leaky) / base,
+                chain_mrmc(h, 3, 3, 4, &ortho) / base
+            )
+        })
+        .collect();
+    eprintln!("{{\"pipes\":[{}],\"chain\":[{}]}}", pipes.join(","), chain.join(","));
 }

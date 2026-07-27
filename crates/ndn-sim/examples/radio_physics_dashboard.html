@@ -1,0 +1,167 @@
+<title>Named-Data Radio · Physics</title>
+<style>
+  :root{ color-scheme:dark light;
+    --bg:#0a0e15; --panel:#111a27; --panel2:#0d141f; --border:#1f2c3f;
+    --ink:#d6e1ee; --muted:#7a8ca4; --faint:#455771; --grid:#1a2637;
+    --c1:#2dd4bf; --c2:#f87171; --c3:#a78bfa; --c4:#fbbf24; --c5:#60a5fa; --good:#4ade80; }
+  :root[data-theme="light"]{ color-scheme:light;
+    --bg:#f5f7fb; --panel:#fff; --panel2:#eef2f7; --border:#dbe3ee;
+    --ink:#16202e; --muted:#57687e; --faint:#95a6bc; --grid:#e6ecf4;
+    --c1:#0d9488; --c2:#dc2626; --c3:#7c3aed; --c4:#d97706; --c5:#2563eb; --good:#16a34a; }
+  @media (prefers-color-scheme:light){ :root:not([data-theme="dark"]){ color-scheme:light;
+    --bg:#f5f7fb; --panel:#fff; --panel2:#eef2f7; --border:#dbe3ee;
+    --ink:#16202e; --muted:#57687e; --faint:#95a6bc; --grid:#e6ecf4;
+    --c1:#0d9488; --c2:#dc2626; --c3:#7c3aed; --c4:#d97706; --c5:#2563eb; --good:#16a34a; } }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+  .mono{ font-family:ui-monospace,"SF Mono",Menlo,monospace; font-variant-numeric:tabular-nums; }
+  .wrap{ max-width:1120px; margin:0 auto; padding:34px 22px 80px; }
+  header{ display:flex; justify-content:space-between; align-items:flex-end; gap:18px; flex-wrap:wrap; }
+  .eyebrow{ text-transform:uppercase; letter-spacing:.18em; font-size:11px; color:var(--c1); font-weight:600; }
+  h1{ font-size:clamp(26px,4vw,40px); margin:6px 0 6px; letter-spacing:-.02em; text-wrap:balance; }
+  .sub{ color:var(--muted); max-width:66ch; font-size:14px; line-height:1.55; }
+  .toggle{ background:var(--panel); border:1px solid var(--border); color:var(--muted); border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer; }
+  .toggle:hover{ color:var(--ink); }
+  .cards{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:26px 0 8px; }
+  .card{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+  .card .v{ font-size:23px; font-weight:680; letter-spacing:-.01em; }
+  .card .k{ font-size:11px; color:var(--muted); margin-top:3px; line-height:1.35; }
+  .grid{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:22px; }
+  .panel{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 18px 14px; min-width:0; }
+  .ptitle{ font-size:14px; font-weight:650; margin:0 0 2px; }
+  .pdesc{ font-size:12px; color:var(--muted); margin:0 0 12px; line-height:1.5; }
+  svg{ width:100%; height:auto; display:block; overflow:visible; }
+  .legend{ display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:10px; }
+  .chip{ display:inline-flex; align-items:center; gap:6px; }
+  .ln{ width:16px; height:3px; border-radius:2px; display:inline-block; }
+  .tip{ position:fixed; pointer-events:none; background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:7px 10px; font-size:12px; opacity:0; transition:opacity .1s; z-index:20; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+  .note{ font-size:12px; color:var(--muted); margin-top:24px; border-top:1px solid var(--border); padding-top:16px; line-height:1.6; }
+  .note b{ color:var(--ink); font-weight:600; }
+  @media (max-width:760px){ .grid{ grid-template-columns:1fr; } .cards{ grid-template-columns:1fr 1fr; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">ndn-sim · radio physics</div>
+      <h1>Named-Data Radio — The Physics That Bites</h1>
+      <div class="sub">The honest capacity story of a single-radio broadcast mesh, and what multi-radio / multi-channel and network coding do about it. Every curve is from a parameterised model with half-duplex, interference range beyond decode range, carrier-sense defer-waste, and measured adjacent-channel leakage.</div>
+    </div>
+    <button class="toggle" id="themeBtn">◐ theme</button>
+  </header>
+  <div class="cards mono" id="cards"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <p class="ptitle">Single-radio multi-hop collapses</p>
+      <p class="pdesc">Saturated Interest→Data throughput ÷ single-hop channel capacity. Half-duplex + wide interference + carrier-sense + the contending return path put 4 hops near 1/8 — far below the naive 1/hops (dashed).</p>
+      <svg id="c_cap"></svg>
+      <div class="legend">
+        <span class="chip"><span class="ln" style="background:var(--c2)"></span>real single-radio</span>
+        <span class="chip"><span class="ln" style="background:var(--faint)"></span>naive 1/hops</span>
+      </div>
+    </div>
+    <div class="panel">
+      <p class="ptitle">MRMC lifts it — if channels are spaced</p>
+      <p class="pdesc">Two radios on two alternating channels let a relay RX+TX at once and stop adjacent hops interfering — the chain pipelines back up (~2×). But on <i>adjacent</i> channels the sideband leakage collapses it right back to single-radio.</p>
+      <svg id="c_mrmc"></svg>
+      <div class="legend">
+        <span class="chip"><span class="ln" style="background:var(--c2)"></span>1 radio</span>
+        <span class="chip"><span class="ln" style="background:var(--c1)"></span>2r/2ch orthogonal</span>
+        <span class="chip"><span class="ln" style="background:var(--c4)"></span>2r/2ch leaky</span>
+        <span class="chip"><span class="ln" style="background:var(--good)"></span>3r/3ch</span>
+      </div>
+    </div>
+    <div class="panel">
+      <p class="ptitle">Parallel pipes — not a free K×</p>
+      <p class="pdesc">8 named flows over C channels. Orthogonal channels give the full C×; adjacent-channel leakage taxes it ~50% (neighbouring channels still collide). The honest ndnpipes-on-channels gain.</p>
+      <svg id="c_pipes"></svg>
+      <div class="legend">
+        <span class="chip"><span class="ln" style="background:var(--c1)"></span>orthogonal</span>
+        <span class="chip"><span class="ln" style="background:var(--c4)"></span>adjacent-leak</span>
+      </div>
+    </div>
+    <div class="panel">
+      <p class="ptitle">Coding repairs the lossy multi-hop path</p>
+      <p class="pdesc">Transmissions to deliver a K=12 generation over a 2-hop lossy path. In-network recode (F2) repairs each hop locally; end-to-end FEC (F1) re-crosses both; forward has no coding. The gap widens with loss.</p>
+      <svg id="c_code"></svg>
+      <div class="legend">
+        <span class="chip"><span class="ln" style="background:var(--c2)"></span>forward</span>
+        <span class="chip"><span class="ln" style="background:var(--c4)"></span>F1 end-to-end</span>
+        <span class="chip"><span class="ln" style="background:var(--c1)"></span>F2 recode</span>
+      </div>
+    </div>
+  </div>
+  <p class="note" id="note"></p>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const D = {"capacity":[{"hops":1,"norm":0.5,"naive":1.0},{"hops":2,"norm":0.2485,"naive":0.5},{"hops":3,"norm":0.1658,"naive":0.3333},{"hops":4,"norm":0.1242,"naive":0.25},{"hops":5,"norm":0.0993,"naive":0.2},{"hops":6,"norm":0.0821,"naive":0.1667},{"hops":8,"norm":0.0767,"naive":0.125}],"pipes":[{"c":1,"ortho":1.0,"leaky":1.0},{"c":2,"ortho":2.0,"leaky":1.0},{"c":3,"ortho":3.0,"leaky":1.62},{"c":4,"ortho":4.0,"leaky":2.0},{"c":6,"ortho":6.0,"leaky":3.0},{"c":8,"ortho":8.0,"leaky":4.0}],"mrmc_chain":[{"hops":2,"r1":0.497,"r2o":1.0,"r2l":0.497,"r3o":1.0},{"hops":3,"r1":0.332,"r2o":0.5,"r2l":0.332,"r3o":1.0},{"hops":4,"r1":0.248,"r2o":0.499,"r2l":0.248,"r3o":0.5},{"hops":6,"r1":0.164,"r2o":0.33,"r2l":0.164,"r3o":0.498},{"hops":8,"r1":0.153,"r2o":0.33,"r2l":0.153,"r3o":0.497}],"coding":{"k":12,"twohop":[{"e":0,"forward":24.0,"f1":24.0,"f2":24.0},{"e":0.1,"forward":38.0,"f1":28.2,"f2":26.7},{"e":0.2,"forward":50.5,"f1":33.9,"f2":30.1},{"e":0.3,"forward":65.2,"f1":41.7,"f2":34.4},{"e":0.4,"forward":83.9,"f1":53.4,"f2":40.1},{"e":0.5,"forward":110.2,"f1":72.1,"f2":48.1},{"e":0.6,"forward":149.2,"f1":105.2,"f2":60.2},{"e":0.7,"forward":211.0,"f1":173.9,"f2":80.5}],"cope":[{"sym":0.1,"saved":0.0512},{"sym":0.25,"saved":0.1234},{"sym":0.4,"saved":0.199},{"sym":0.55,"saved":0.2693},{"sym":0.7,"saved":0.3474},{"sym":0.85,"saved":0.4255},{"sym":1,"saved":0.5}]}};
+const $ = s => document.querySelector(s);
+const tip = $("#tip");
+const cvar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function showTip(h,e){ tip.innerHTML=h; tip.style.opacity=1; tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY+14)+"px"; }
+function hideTip(){ tip.style.opacity=0; }
+
+function chart(sel, spec){
+  const svg=$(sel), W=460, H=250, m={l:48,r:14,t:12,b:34};
+  const iw=W-m.l-m.r, ih=H-m.t-m.b, X=spec.x, Y=spec.y;
+  const tx=v=> X.log? (Math.log10(v)-Math.log10(X.min))/(Math.log10(X.max)-Math.log10(X.min)) : (v-X.min)/(X.max-X.min);
+  const ty=v=> Y.log? (Math.log10(v)-Math.log10(Y.min))/(Math.log10(Y.max)-Math.log10(Y.min)) : (v-Y.min)/(Y.max-Y.min);
+  const px=v=> m.l+tx(v)*iw, py=v=> m.t+(1-ty(v))*ih;
+  let g="";
+  Y.ticks.forEach(t=>{ const y=py(t); g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cvar('--grid')}"/><text x="${m.l-8}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cvar('--muted')}" class="mono">${Y.fmt(t)}</text>`; });
+  X.ticks.forEach(t=>{ g+=`<text x="${px(t)}" y="${m.t+ih+18}" text-anchor="middle" font-size="10" fill="${cvar('--muted')}" class="mono">${X.fmt(t)}</text>`; });
+  g+=`<text x="${m.l+iw/2}" y="${H-2}" text-anchor="middle" font-size="10.5" fill="${cvar('--faint')}">${X.label}</text>`;
+  g+=`<text transform="translate(11,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10.5" fill="${cvar('--faint')}">${Y.label}</text>`;
+  spec.series.forEach(s=>{
+    const pts=s.data.map(([x,y])=>[px(x),py(y)]);
+    const d=pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+    g+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.2" ${s.dash?`stroke-dasharray="${s.dash}"`:""} stroke-linejoin="round"/>`;
+    pts.forEach((p,i)=> g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.3" fill="${cvar('--panel')}" stroke="${s.color}" stroke-width="2" data-tip="${s.tip?s.tip(i):''}"/>`);
+  });
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.innerHTML=g;
+  svg.querySelectorAll("circle[data-tip]").forEach(c=>{ if(!c.dataset.tip)return; c.addEventListener("mousemove",e=>showTip(c.dataset.tip,e)); c.addEventListener("mouseleave",hideTip); });
+}
+
+function render(){
+  const cap=D.capacity, mr=D.mrmc_chain, pp=D.pipes, cd=D.coding.twohop;
+  const cap4=cap.find(r=>r.hops===4), mr4=mr.find(r=>r.hops===4), c7=cd[cd.length-1];
+  $("#cards").innerHTML=[
+    ["1/8","single-radio throughput at 4 hops (of 1-hop)"],
+    [(mr4.r2o/mr4.r1).toFixed(1)+"×","MRMC lift (2 radios, spaced channels)"],
+    ["~50%","adjacent-channel leak tax on parallel pipes"],
+    [(c7.forward/c7.f2).toFixed(1)+"×","F2 recode vs forward @ 70% loss"],
+  ].map(([v,k])=>`<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  const HopX={min:1,max:8,log:true,label:"hops (log)",ticks:[1,2,4,8],fmt:v=>v};
+  chart("#c_cap",{ x:HopX, y:{min:0.05,max:1,log:true,label:"÷ single-hop",ticks:[0.05,0.1,0.25,0.5,1],fmt:v=>v},
+    series:[
+      {data:cap.map(r=>[r.hops,r.norm]),color:cvar('--c2'),tip:i=>`${cap[i].hops} hops · ${cap[i].norm.toFixed(3)} (${cap[i].hops===4?'≈1/8':''})`},
+      {data:cap.map(r=>[r.hops,r.naive]),color:cvar('--faint'),dash:"5 4",tip:i=>`naive 1/hops = ${cap[i].naive.toFixed(3)}`}]});
+  chart("#c_mrmc",{ x:{min:2,max:8,log:true,label:"hops (log)",ticks:[2,4,8],fmt:v=>v},
+    y:{min:0.1,max:1,log:true,label:"÷ single-hop",ticks:[0.1,0.25,0.5,1],fmt:v=>v},
+    series:[
+      {data:mr.map(r=>[r.hops,r.r1]),color:cvar('--c2'),tip:i=>`1 radio · ${mr[i].r1.toFixed(3)}`},
+      {data:mr.map(r=>[r.hops,r.r2o]),color:cvar('--c1'),tip:i=>`2r/2ch ortho · ${mr[i].r2o.toFixed(3)}`},
+      {data:mr.map(r=>[r.hops,r.r2l]),color:cvar('--c4'),dash:"5 4",tip:i=>`2r/2ch LEAKY · ${mr[i].r2l.toFixed(3)} (back to 1-radio)`},
+      {data:mr.map(r=>[r.hops,r.r3o]),color:cvar('--good'),tip:i=>`3r/3ch · ${mr[i].r3o.toFixed(3)}`}]});
+  chart("#c_pipes",{ x:{min:1,max:8,log:false,label:"channels",ticks:[1,2,4,6,8],fmt:v=>v},
+    y:{min:0,max:8,log:false,label:"aggregate ×",ticks:[0,2,4,6,8],fmt:v=>v+"×"},
+    series:[
+      {data:pp.map(r=>[r.c,r.ortho]),color:cvar('--c1'),tip:i=>`${pp[i].c} ch orthogonal · ${pp[i].ortho}×`},
+      {data:pp.map(r=>[r.c,r.leaky]),color:cvar('--c4'),tip:i=>`${pp[i].c} ch leaky · ${pp[i].leaky}× (leakage tax)`}]});
+  const cmax=Math.max(...cd.map(r=>r.forward))*1.1;
+  chart("#c_code",{ x:{min:0,max:0.7,log:false,label:"per-hop erasure",ticks:[0,0.2,0.4,0.6],fmt:v=>(v*100)+"%"},
+    y:{min:20,max:cmax,log:true,label:"transmissions",ticks:[20,50,100,200],fmt:v=>v},
+    series:[
+      {data:cd.map(r=>[r.e,r.forward]),color:cvar('--c2'),tip:i=>`forward ${cd[i].forward}`},
+      {data:cd.map(r=>[r.e,r.f1]),color:cvar('--c4'),dash:"5 4",tip:i=>`F1 ${cd[i].f1}`},
+      {data:cd.map(r=>[r.e,r.f2]),color:cvar('--c1'),tip:i=>`F2 recode ${cd[i].f2}`}]});
+
+  $("#note").innerHTML=`<b>The through-line:</b> a single-radio broadcast chain collapses to ~1/8 of one-hop throughput by 4 hops — the classic capacity limit, not a bug. Multi-radio/multi-channel can pipeline it back up, but only if the channels are far enough apart that the sideband doesn't leak (the leaky curve falls right back). Where you can't add radios, network coding buys back the loss on lossy paths (F2 recode ${(c7.forward/c7.f2).toFixed(1)}× at 70% loss). These are the levers — half-duplex, spectrum, coding — the cognitive layer trades off, all from parameterised models the fidelity of which can grow.`;
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{ const r=document.documentElement,c=r.getAttribute("data-theme"); r.setAttribute("data-theme", c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark"))); render(); });
+</script>

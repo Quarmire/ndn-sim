@@ -163,4 +163,17 @@ fn main() {
     println!("throughput and 3 hops near 1/6 — the classic collapse, well below the naive 1/hops. The");
     println!("contending return path costs ~2× (one-way is {:.3}); wide interference + carrier-sense", no_rt);
     println!("defer-waste do the rest. All of it is parameterised (cs_range / half_duplex / round_trip).");
+
+    // JSON (stderr) for the dashboard: normalized capacity vs hops, plus the naive-1/hops reference.
+    let cap: Vec<String> = [1i64, 2, 3, 4, 5, 6, 8]
+        .iter()
+        .map(|&h| {
+            format!(
+                "{{\"hops\":{h},\"norm\":{:.4},\"naive\":{:.4}}}",
+                chain_tput(h, cs, true, true) / base,
+                1.0 / h as f64
+            )
+        })
+        .collect();
+    eprintln!("{{\"capacity\":[{}]}}", cap.join(","));
 }

@@ -100,6 +100,10 @@ pub struct RadioBus {
     /// accounting: a listed node pays host-processing energy only for `transmit_named` frames whose
     /// group matches its key; unlisted nodes (or unnamed frames) are promiscuous — the host sees all.
     host_filter: Mutex<Option<HashMap<NodeId, u64>>>,
+    /// Per-node TX power override (dBm). A cognitive policy that trims power (spatial reuse / energy)
+    /// sets it here; `transmit` then uses it for BOTH propagation (RSSI → delivery) and energy, so
+    /// the power dial is a real trade-off. Unset nodes fall back to the bus-wide `tx_power_dbm`.
+    tx_power: Mutex<HashMap<NodeId, f64>>,
 }
 
 impl RadioBus {
@@ -202,7 +206,15 @@ impl RadioBus {
             energy_model: Mutex::new(None),
             energy_acct: Mutex::new(HashMap::new()),
             host_filter: Mutex::new(None),
+            tx_power: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Override one node's TX power (dBm). Used for BOTH propagation (RSSI → delivery) and energy, so
+    /// a policy that trims power really trades reach for joules. Clears back to the bus default with
+    /// the bus-wide value. This is the actuator the cognitive power arm drives in the sim.
+    pub fn set_tx_power(&self, node: NodeId, dbm: f64) {
+        self.tx_power.lock().unwrap().insert(node, dbm);
     }
 
     /// Install a pluggable [`EnergyModel`](crate::energy::EnergyModel). Once set, `transmit` tallies
@@ -341,6 +353,10 @@ impl RadioBus {
         let env = self.world.environment();
         let mode = *self.mac_mode.lock().unwrap();
         let sinr_on = self.sinr_interference.load(std::sync::atomic::Ordering::Relaxed);
+        // The sender's TX power: a per-node override (a policy trimming power) or the bus default.
+        // Used for BOTH this frame's RSSI (delivery) and its energy — so the power dial trades reach
+        // against joules honestly.
+        let tx_dbm = self.tx_power.lock().unwrap().get(&node).copied().unwrap_or(self.tx_power_dbm);
 
         // This frame's airtime (bits / PHY rate) → its on-air window. Snapshot the *other*
         // frames overlapping the start instant (concurrent transmitters) before recording ours.
@@ -372,7 +388,7 @@ impl RadioBus {
             let airtime = std::time::Duration::from_nanos(airtime_ns);
             let mut acct = self.energy_acct.lock().unwrap();
             let tx = acct.entry(node).or_default();
-            tx.tx_j += model.tx_energy_j(airtime, self.tx_power_dbm, mcs_index);
+            tx.tx_j += model.tx_energy_j(airtime, tx_dbm, mcs_index);
             tx.frames_tx += 1;
             tx.bits_tx += (frame.len() as u64) * 8;
             let rx_e = model.rx_energy_j(airtime, mcs_index);
@@ -416,7 +432,7 @@ impl RadioBus {
             let ctx = TxContext {
                 tx_pos,
                 rx_pos,
-                tx_power_dbm: self.tx_power_dbm,
+                tx_power_dbm: tx_dbm,
                 environment: env.as_ref(),
                 frame_len: frame.len(),
             };

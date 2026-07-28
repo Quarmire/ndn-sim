@@ -1,0 +1,199 @@
+<title>Mobility study — statelessness vs route repair</title>
+<style>
+  :root{
+    --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad;
+    --line:#e4e0d6; --grid:#eae7de;
+    --ip:#c9803a; --named:#7161c9; --lam:#1f9a94;
+    --shadow:0 1px 2px rgba(30,34,42,.05),0 6px 20px rgba(30,34,42,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f;
+      --line:#272c35; --grid:#20252d; --ip:#e0954a; --named:#9384e0; --lam:#3bbdb5;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.35);}
+  }
+  :root[data-theme="light"]{ --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad; --line:#e4e0d6; --grid:#eae7de; --ip:#c9803a; --named:#7161c9; --lam:#1f9a94; }
+  :root[data-theme="dark"]{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f; --line:#272c35; --grid:#20252d; --ip:#e0954a; --named:#9384e0; --lam:#3bbdb5; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 24px 72px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--named);font-weight:600}
+  h1{font-size:30px;line-height:1.12;margin:10px 0 8px;letter-spacing:-.02em;text-wrap:balance;max-width:22ch}
+  .thesis{color:var(--muted);max-width:74ch;font-size:15.5px}
+  .thesis b{color:var(--ink);font-weight:600}
+  .themebtn{position:fixed;top:16px;right:16px;background:var(--panel);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;box-shadow:var(--shadow)}
+  .cards{display:flex;gap:14px;flex-wrap:wrap;margin:22px 0 4px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow);min-width:150px}
+  .card .v{font-size:24px;font-weight:680;letter-spacing:-.02em}
+  .card .k{font-size:12px;color:var(--muted);margin-top:2px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+  @media (max-width:860px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px;box-shadow:var(--shadow)}
+  .span2{grid-column:1 / -1}
+  .plabel{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .plabel .ax{color:var(--named)}
+  .ptitle{font-size:17px;font-weight:650;margin:5px 0 3px;letter-spacing:-.01em}
+  .pdesc{font-size:13px;color:var(--muted);margin:0 0 12px;max-width:58ch}
+  svg{width:100%;height:auto;display:block;overflow:visible}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:12px;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:13px;height:3px;border-radius:2px;display:inline-block}
+  .take{font-size:12.5px;color:var(--muted);margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+  .take b{color:var(--ink)}
+  .note{margin-top:24px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--named);border-radius:10px;padding:16px 18px;font-size:13.5px;color:var(--muted)}
+  .note b{color:var(--ink)}
+  .foot{margin-top:20px;font-size:12px;color:var(--faint)}
+  #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--ink);color:var(--bg);padding:6px 9px;border-radius:6px;font-size:11.5px;z-index:9;box-shadow:var(--shadow)}
+</style>
+
+<button class="themebtn" id="themeBtn">◐ theme</button>
+<div id="tip" class="mono"></div>
+
+<div class="wrap">
+  <div class="eyebrow">ndn-sim · mobility study #70</div>
+  <h1>Statelessness vs route repair, under motion</h1>
+  <p class="thesis">N nodes roam a disc under RandomWaypoint; each half-second we rebuild the in-range
+  graph and forward between the same pairs two ways. <b>NDN</b> delivers whenever <i>any</i> path
+  exists right now — every Interest re-finds one. <b>IP</b> commits to a path and goes dark for a
+  rediscovery interval each time a hop on it breaks. Both need connectivity to exist; the difference is
+  what happens to the path that does. This is Panel C of #69 turned from a model into a measurement —
+  including the real route-break rate λ it had only assumed.</p>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="plabel"><span class="ax">A</span> delivery vs velocity · N=40</div>
+      <div class="ptitle">NDN is flat; IP melts with speed</div>
+      <p class="pdesc">Pedestrian (0.5) to vehicular (20 m/s). NDN holds ~95% at every speed. IP loses
+      every epoch it sits in repair on a stale route. The measured break rate λ (teal) is the honest
+      version of #69's swept axis.</p>
+      <svg id="cA"></svg>
+      <div class="legend" id="lA"></div>
+      <div class="take" id="tA"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plabel"><span class="ax">B</span> delivery vs scale · v=5 m/s</div>
+      <div class="ptitle">Density feeds both — NDN converts it faster</div>
+      <p class="pdesc">At 12 nodes the graph is partitioned and both deliver ~⅓ — no discipline invents
+      a path that isn't there. As density climbs, alternate paths appear; NDN uses each the instant it
+      forms, IP still pays a rediscovery round-trip.</p>
+      <svg id="cB"></svg>
+      <div class="legend" id="lB"></div>
+      <div class="take" id="tB"></div>
+    </div>
+
+    <div class="panel span2">
+      <div class="plabel"><span class="ax">C</span> NDN − IP delivery gap · velocity × scale</div>
+      <div class="ptitle">Where statelessness pays most</div>
+      <p class="pdesc">The advantage is largest where paths <i>exist but churn fast</i> — high speed, high
+      density (bottom-right). At low density (left column) both are partition-limited, so the gap is
+      small: NDN's edge is conditional on there being connectivity to track.</p>
+      <svg id="cC"></svg>
+      <div class="legend" id="lC"></div>
+      <div class="take" id="tC"></div>
+    </div>
+  </div>
+
+  <div class="note" id="note"></div>
+  <div class="foot mono">RandomWaypoint, disc r=120m, comm r=45m, IP repair=1.5s, 180s × 8 pairs · ndn-sim/examples/mobility_study.rs</div>
+</div>
+
+<script>
+const D = {"A":[{"v":0.5,"ndn":0.9583,"ip":0.9125,"lam":0.0306,"hops":2.53},{"v":1,"ndn":0.9771,"ip":0.8788,"lam":0.0667,"hops":2.61},{"v":2,"ndn":0.9556,"ip":0.7556,"lam":0.1382,"hops":2.98},{"v":5,"ndn":0.9462,"ip":0.6174,"lam":0.2285,"hops":2.93},{"v":10,"ndn":0.9549,"ip":0.5292,"lam":0.2986,"hops":2.77},{"v":20,"ndn":0.9573,"ip":0.4212,"lam":0.3764,"hops":2.89}],"B":[{"n":12,"ndn":0.3347,"ip":0.2861,"lam":0.0685},{"n":25,"ndn":0.6920,"ip":0.4948,"lam":0.1694},{"n":50,"ndn":0.9580,"ip":0.6233,"lam":0.2313},{"n":100,"ndn":1.0000,"ip":0.6465,"lam":0.2361}],"C":[{"v":0.5,"n":12,"gap":0.7},{"v":0.5,"n":25,"gap":3.3},{"v":0.5,"n":50,"gap":3.6},{"v":0.5,"n":100,"gap":3.9},{"v":1,"n":12,"gap":1.0},{"v":1,"n":25,"gap":9.1},{"v":1,"n":50,"gap":9.9},{"v":1,"n":100,"gap":9.3},{"v":2,"n":12,"gap":1.5},{"v":2,"n":25,"gap":14.8},{"v":2,"n":50,"gap":17.0},{"v":2,"n":100,"gap":18.9},{"v":5,"n":12,"gap":4.9},{"v":5,"n":25,"gap":19.7},{"v":5,"n":50,"gap":33.5},{"v":5,"n":100,"gap":35.3},{"v":10,"n":12,"gap":8.4},{"v":10,"n":25,"gap":29.1},{"v":10,"n":50,"gap":44.2},{"v":10,"n":100,"gap":47.4},{"v":20,"n":12,"gap":10.6},{"v":20,"n":25,"gap":37.6},{"v":20,"n":50,"gap":56.0},{"v":20,"n":100,"gap":58.3}],"repair":1.5};
+const scales=[12,25,50,100], vels=D.A.map(d=>d.v);
+
+const $=s=>document.querySelector(s);
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tip=$("#tip");
+const showTip=(h,e)=>{tip.innerHTML=h;tip.style.opacity=1;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";};
+const hideTip=()=>tip.style.opacity=0;
+const mount=(sel,W,H,g)=>{const s=$(sel);s.setAttribute("viewBox",`0 0 ${W} ${H}`);s.innerHTML=g;
+  s.querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});};
+
+// A: delivery (left %) + λ (right) vs velocity — log-ish x by index
+function drawA(){
+  const W=500,H=280,m={l:42,r:40,t:14,b:36},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const px=i=>m.l+i/(vels.length-1)*iw, py=v=>m.t+ih*(1-v), lamMax=0.4, pyl=v=>m.t+ih*(1-v/lamMax);
+  let g="";
+  [0,.25,.5,.75,1].forEach(t=>{const y=py(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cv('--muted')}" class="mono">${(t*100)|0}%</text>`;});
+  vels.forEach((v,i)=>g+=`<text x="${px(i)}" y="${H-m.b+16}" text-anchor="middle" font-size="10" fill="${cv('--muted')}" class="mono">${v}</text>`);
+  g+=`<text x="${m.l+iw/2}" y="${H-1}" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">node speed (m/s)</text>`;
+  // right axis λ
+  [0,.2,.4].forEach(t=>{const y=pyl(t);g+=`<text x="${m.l+iw+7}" y="${y+3.5}" text-anchor="start" font-size="9.5" fill="${cv('--lam')}" class="mono">${t.toFixed(1)}</text>`;});
+  g+=`<text transform="translate(${W-3},${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10" fill="${cv('--lam')}">λ breaks/s</text>`;
+  // λ area
+  const lp=D.A.map((d,i)=>[px(i),pyl(d.lam)]);
+  g+=`<path d="M${lp[0][0]} ${m.t+ih} ${lp.map(p=>'L'+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')} L${lp[lp.length-1][0]} ${m.t+ih} Z" fill="${cv('--lam')}" opacity="0.10"/>`;
+  g+=`<path d="${lp.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv('--lam')}" stroke-width="1.6" stroke-dasharray="4 3"/>`;
+  // delivery lines
+  [["ndn","--named",2.8],["ip","--ip",2.6]].forEach(([k,c,w])=>{const pts=D.A.map((d,i)=>[px(i),py(d[k])]);
+    g+=`<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv(c)}" stroke-width="${w}" stroke-linejoin="round"/>`;
+    pts.forEach((p,i)=>g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="${cv(c)}" data-tip="v=${D.A[i].v} · ${k.toUpperCase()} ${(D.A[i][k]*100).toFixed(0)}% · λ ${D.A[i].lam.toFixed(2)}"/>`);});
+  g+=`<text x="${px(5)-3}" y="${py(0.957)-8}" text-anchor="end" font-size="10.5" fill="${cv('--named')}" font-weight="600">NDN</text>`;
+  g+=`<text x="${px(5)-3}" y="${py(0.421)+14}" text-anchor="end" font-size="10.5" fill="${cv('--ip')}" font-weight="600">IP</text>`;
+  mount("#cA",W,H,g);
+  $("#lA").innerHTML=[["--named","NDN (stateless)"],["--ip","IP (route + repair)"],["--lam","measured λ (breaks/s)"]].map(([c,t])=>`<span><i class="sw" style="background:${cv(c)}"></i>${t}</span>`).join("");
+  $("#tA").innerHTML="<b>At 20 m/s, NDN delivers 96% vs IP's 42% — a 54pp gap.</b> The measured λ tops out at 0.38 breaks/s, so #69's λ=8 sweep was far past real mobility — the true cost here is repair downtime, not control floods.";
+}
+
+// B: delivery vs scale
+function drawB(){
+  const W=500,H=280,m={l:42,r:14,t:14,b:36},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const px=i=>m.l+i/(scales.length-1)*iw, py=v=>m.t+ih*(1-v);
+  let g="";
+  [0,.25,.5,.75,1].forEach(t=>{const y=py(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cv('--muted')}" class="mono">${(t*100)|0}%</text>`;});
+  scales.forEach((n,i)=>g+=`<text x="${px(i)}" y="${H-m.b+16}" text-anchor="middle" font-size="10" fill="${cv('--muted')}" class="mono">${n}</text>`);
+  g+=`<text x="${m.l+iw/2}" y="${H-1}" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">nodes (density)</text>`;
+  [["ndn","--named",2.8],["ip","--ip",2.6]].forEach(([k,c,w])=>{const pts=D.B.map((d,i)=>[px(i),py(d[k])]);
+    // shade the gap between the two on the ndn pass
+    if(k==="ndn"){const ipts=D.B.map((d,i)=>[px(i),py(d.ip)]);
+      g+=`<path d="M${pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L')} L${ipts.slice().reverse().map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L')} Z" fill="${cv('--named')}" opacity="0.09"/>`;}
+    g+=`<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv(c)}" stroke-width="${w}" stroke-linejoin="round"/>`;
+    pts.forEach((p,i)=>g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="${cv(c)}" data-tip="N=${D.B[i].n} · ${k.toUpperCase()} ${(D.B[i][k]*100).toFixed(0)}%"/>`);});
+  g+=`<text x="${px(3)-3}" y="${py(1.0)-7}" text-anchor="end" font-size="10.5" fill="${cv('--named')}" font-weight="600">NDN</text>`;
+  g+=`<text x="${px(3)-3}" y="${py(0.646)+14}" text-anchor="end" font-size="10.5" fill="${cv('--ip')}" font-weight="600">IP</text>`;
+  mount("#cB",W,H,g);
+  $("#lB").innerHTML=[["--named","NDN (stateless)"],["--ip","IP (route + repair)"]].map(([c,t])=>`<span><i class="sw" style="background:${cv(c)}"></i>${t}</span>`).join("");
+  $("#tB").innerHTML="<b>Below ~25 nodes the disc partitions and both fail — the honest floor.</b> NDN reaches 100% by N=100 while IP plateaus at ~65%: adding paths only helps a route protocol between its rediscovery windows.";
+}
+
+// C: heatmap gap over velocity × scale
+function drawC(){
+  const W=960,H=250,m={l:56,r:16,t:14,b:40}, iw=W-m.l-m.r, ih=H-m.t-m.b;
+  const cw=iw/scales.length, chh=ih/vels.length, gmax=60;
+  const get=(v,n)=>D.C.find(d=>d.v===v&&d.n===n).gap;
+  let g="";
+  vels.forEach((v,r)=>{
+    scales.forEach((n,c)=>{
+      const gap=get(v,n), x=m.l+c*cw, y=m.t+r*chh, a=Math.max(0.06,Math.min(1,gap/gmax));
+      g+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(cw-2).toFixed(1)}" height="${(chh-2).toFixed(1)}" rx="3" fill="${cv('--named')}" opacity="${a.toFixed(3)}" data-tip="v=${v} m/s · N=${n} · gap ${gap.toFixed(0)}pp"/>`;
+      g+=`<text x="${(x+cw/2-1).toFixed(1)}" y="${(y+chh/2+4).toFixed(1)}" text-anchor="middle" font-size="12" class="mono" fill="${a>0.5?cv('--panel'):cv('--ink')}" font-weight="600">${gap.toFixed(0)}</text>`;
+    });
+    g+=`<text x="${m.l-9}" y="${(m.t+r*chh+chh/2+4).toFixed(1)}" text-anchor="end" font-size="10.5" fill="${cv('--muted')}" class="mono">${v} m/s</text>`;
+  });
+  scales.forEach((n,c)=>g+=`<text x="${(m.l+c*cw+cw/2).toFixed(1)}" y="${H-m.b+18}" text-anchor="middle" font-size="10.5" fill="${cv('--muted')}" class="mono">N=${n}</text>`);
+  g+=`<text x="${m.l+iw/2}" y="${H-2}" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">density →</text>`;
+  g+=`<text transform="translate(13,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">← speed</text>`;
+  mount("#cC",W,H,g);
+  $("#lC").innerHTML=`<span style="color:var(--muted)">cell = NDN−IP delivery gap in percentage points; darker = larger advantage</span>`;
+  $("#tC").innerHTML="<b>The corner tells the story:</b> bottom-right (fast + dense) is where paths exist but reshuffle constantly — 56–58pp for NDN. Top-left (slow + dense) barely differs because a committed route rarely breaks; left column stays small because there's often no path for either.";
+}
+
+function render(){
+  const a=D.A, worst=a[a.length-1];
+  $("#cards").innerHTML=[
+    [(100*worst.ndn).toFixed(0)+"%","NDN delivery @ 20 m/s"],
+    [(100*worst.ip).toFixed(0)+"%","IP delivery @ 20 m/s"],
+    ["+"+(100*(worst.ndn-worst.ip)).toFixed(0)+"pp","gap at vehicular speed"],
+    [worst.lam.toFixed(2),"measured λ breaks/s (real, not assumed)"],
+  ].map(([v,k])=>`<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  drawA();drawB();drawC();
+  $("#note").innerHTML="<b>What this measures, and what it doesn't.</b> It isolates one thing: what happens to a path under motion when you commit to it versus re-find it. NDN wins by never holding a stale route — but only where connectivity exists to be tracked, which is why the sparse cases collapse for both. It does <i>not</i> yet charge NDN the airtime of its broadcast re-expression or model interference under load — that couples to the calibrated throughput substrate and is the next refinement. The headline correction for #69: the realistic route-break rate is λ ≈ 0.03–0.38 breaks/s, an order of magnitude below the sweep there, so the mobility cost is dominated by <b>repair downtime</b> (delivery loss), not control-flood overhead. The RandomWaypoint tracks are deterministic (seeded), so every number here reproduces exactly.";
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{const r=document.documentElement,c=r.getAttribute("data-theme");
+  r.setAttribute("data-theme",c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark")));render();});
+</script>

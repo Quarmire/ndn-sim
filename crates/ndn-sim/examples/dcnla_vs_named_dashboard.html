@@ -1,0 +1,195 @@
+<title>DCNLA vs named-data radio — two floors for the same pipe</title>
+<style>
+  :root{
+    --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad;
+    --line:#e4e0d6; --grid:#eae7de;
+    --dcnla:#c9803a; --named:#1f9a94; --accent:#7161c9; --good:#2f8f5b; --bad:#c0503f;
+    --shadow:0 1px 2px rgba(30,34,42,.05),0 6px 20px rgba(30,34,42,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f;
+      --line:#272c35; --grid:#20252d; --dcnla:#e0954a; --named:#3bbdb5; --accent:#9384e0; --good:#48b878; --bad:#e06a55;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.35);}
+  }
+  :root[data-theme="light"]{ --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad; --line:#e4e0d6; --grid:#eae7de; --dcnla:#c9803a; --named:#1f9a94; --accent:#7161c9; --good:#2f8f5b; --bad:#c0503f; }
+  :root[data-theme="dark"]{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f; --line:#272c35; --grid:#20252d; --dcnla:#e0954a; --named:#3bbdb5; --accent:#9384e0; --good:#48b878; --bad:#e06a55; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 72px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  h1{font-size:29px;line-height:1.13;margin:10px 0 8px;letter-spacing:-.02em;text-wrap:balance;max-width:26ch}
+  .thesis{color:var(--muted);max-width:80ch;font-size:15.5px}
+  .thesis b{color:var(--ink);font-weight:600}
+  .themebtn{position:fixed;top:16px;right:16px;background:var(--panel);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;box-shadow:var(--shadow)}
+  .heads{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:22px}
+  @media (max-width:760px){.heads{grid-template-columns:1fr}}
+  .head{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px 18px;box-shadow:var(--shadow)}
+  .head.d{border-top:3px solid var(--dcnla)} .head.n{border-top:3px solid var(--named)}
+  .head h3{margin:2px 0 4px;font-size:16px;letter-spacing:-.01em}
+  .head .sub{font-size:12px;color:var(--faint);margin-bottom:8px}
+  .head p{font-size:13px;color:var(--muted);margin:0}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px;box-shadow:var(--shadow);margin-top:20px}
+  .plabel{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .plabel .ax{color:var(--accent)}
+  .ptitle{font-size:17px;font-weight:650;margin:5px 0 3px;letter-spacing:-.01em}
+  .pdesc{font-size:13px;color:var(--muted);margin:0 0 12px;max-width:70ch}
+  svg{width:100%;height:auto;display:block;overflow:visible}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  @media (max-width:820px){.two{grid-template-columns:1fr}}
+  .take{font-size:12.5px;color:var(--muted);margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+  .take b{color:var(--ink)}
+  table.m{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  table.m th,table.m td{padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+  table.m th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  table.m td:first-child{font-weight:600;color:var(--ink);width:20%}
+  .win{color:var(--good);font-weight:700} .lose{color:var(--bad);font-weight:700} .tie{color:var(--muted);font-weight:700}
+  .q{font-size:10px;letter-spacing:.04em;text-transform:uppercase;padding:1px 5px;border-radius:4px;border:1px solid var(--line);color:var(--faint);margin-left:6px}
+  .note{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:16px 18px;font-size:13.5px;color:var(--muted)}
+  .note b{color:var(--ink)} .note code{font-family:ui-monospace,Menlo,monospace;color:var(--accent);font-size:12.5px}
+  .foot{margin-top:20px;font-size:12px;color:var(--faint)}
+  #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--ink);color:var(--bg);padding:6px 9px;border-radius:6px;font-size:11.5px;z-index:9;box-shadow:var(--shadow)}
+</style>
+
+<button class="themebtn" id="themeBtn">◐ theme</button>
+<div id="tip" class="mono"></div>
+
+<div class="wrap">
+  <div class="eyebrow">ndn-pipes · #66 · thesis vs redesign</div>
+  <h1>DCNLA vs named-data radio: two floors for the same pipe</h1>
+  <p class="thesis">The NDN-Pipes thesis (Le 2025) and the v2 redesign share a protocol — same messages,
+  trust, teardown, and MRMC goal. They differ in the <b>floor</b> they build on, and only because the
+  floor changed: <b>named-data radio over monitor-mode Wi-Fi didn't exist when the thesis was written.</b>
+  So DCNLA got data-centric association the only way then available — by <i>retooling</i> host-centric
+  Wi-Fi (IBSS, managed+hidden MAC/IP, coordinated channels). The redesign <i>eliminates</i> host identity
+  outright. This compares what each floor buys and costs — quantified on the thesis's own MT7612U data.</p>
+
+  <div class="heads">
+    <div class="head d">
+      <div class="sub">THESIS · 2025</div>
+      <h3>DCNLA — retool the host stack</h3>
+      <p>Data-centric <i>association</i> layered on unmodified Wi-Fi: unicast over IBSS couplings, MAC/IP
+      managed and hidden behind the name, per-segment channels coordinated by the LINK exchange, over NFD.
+      "Does not modify how Wi-Fi works; retools its host-centric mechanisms."</p>
+    </div>
+    <div class="head n">
+      <div class="sub">REDESIGN · 2026</div>
+      <h3>Named-data radio — remove the host</h3>
+      <p>No association at all: monitor-mode broadcast, name-group hash as the L2 filter, ephemeral source
+      nonce, channel = H(name). Nothing below the network layer holds a host identity; L2 is soft-state
+      the forwarder can recompile.</p>
+    </div>
+  </div>
+
+  <div class="two">
+    <div class="panel" style="margin-top:20px">
+      <div class="plabel"><span class="ax">A</span> channel diversity · the MRMC crux</div>
+      <div class="ptitle">Guaranteed vs probabilistic</div>
+      <p class="pdesc">Both need adjacent hops on different channels (the thesis's whole point, Fig. 16).
+      DCNLA's LINK <i>coordinates</i> it — adjacent segments are guaranteed to differ, so you always get
+      the orthogonal case. Named-data's H(name) is stateless but only diverse <i>in expectation</i>; #71
+      measured the price when names collide onto adjacent channels.</p>
+      <svg id="cA"></svg>
+      <div class="take" id="tA"></div>
+    </div>
+    <div class="panel" style="margin-top:20px">
+      <div class="plabel"><span class="ax">B</span> pipe setup cost</div>
+      <div class="ptitle">A handshake, or nothing</div>
+      <p class="pdesc">DCNLA stands a pipe up with a control handshake (SEEK→JOIN→CONTEXT→LINK→PIPE→CHECK)
+      plus one IBSS association, then holds per-segment/coupling state. Named-data radio has no setup: the
+      first Interest is broadcast on the name-group and forwarded by breadcrumb. State is the price of the
+      guarantee.</p>
+      <svg id="cB"></svg>
+      <div class="take" id="tB"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="plabel"><span class="ax">▦</span> the tradeoff, axis by axis</div>
+    <div class="ptitle">What each floor wins — and where the numbers come from</div>
+    <table class="m" id="matrix"></table>
+  </div>
+
+  <div class="note" id="note"></div>
+  <div class="foot mono">grounds: NDNPIPES.pdf (Le 2025) design + Figs 24/25 · #71 mrmc_pipes (real ForwarderEngine) · #69 caching · #70 mobility</div>
+</div>
+
+<script>
+// #71 measured goodput (seg/s), real ForwarderEngine, 8 pipes one domain
+const MRMC = {c1:16.7, c8_ortho:610.8, c8_leaky:65.0, c2_leaky:12.5};
+const $=s=>document.querySelector(s);
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tip=$("#tip");
+const showTip=(h,e)=>{tip.innerHTML=h;tip.style.opacity=1;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";};
+const hideTip=()=>tip.style.opacity=0;
+const mount=(sel,W,H,g)=>{const s=$(sel);s.setAttribute("viewBox",`0 0 ${W} ${H}`);s.innerHTML=g;
+  s.querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});};
+
+// A: channel diversity — DCNLA(guaranteed=ortho) vs H(name) best/worst
+function drawA(){
+  const W=470,H=250,m={l:44,r:14,t:14,b:52},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const bars=[
+    {l:"DCNLA",s:"LINK-coordinated",v:MRMC.c8_ortho,c:'--dcnla',tip:"coordinated → always orthogonal → guaranteed diversity"},
+    {l:"H(name)",s:"lucky (spread)",v:MRMC.c8_ortho,c:'--named',tip:"names hash to well-separated channels → matches DCNLA"},
+    {l:"H(name)",s:"unlucky (adjacent)",v:MRMC.c8_leaky,c:'--named',tip:"names collide onto adjacent channels → leak tax (#71)"},
+  ];
+  const ymax=680, bw=iw/bars.length, py=v=>m.t+ih*(1-v/ymax);
+  let g="";
+  [0,170,340,510,680].forEach(t=>{const y=py(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="9.5" fill="${cv('--muted')}" class="mono">${t}</text>`;});
+  bars.forEach((b,i)=>{const x=m.l+i*bw+bw*0.22,w=bw*0.56,y=py(b.v),h=m.t+ih-y;
+    g+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${cv(b.c)}" opacity="${b.s.includes('unlucky')?0.55:1}" data-tip="${b.tip} · ${b.v.toFixed(0)} seg/s"/>`;
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${(y-6).toFixed(1)}" text-anchor="middle" font-size="11" class="mono" font-weight="700" fill="${cv('--ink')}">${b.v.toFixed(0)}</text>`;
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${H-m.b+16}" text-anchor="middle" font-size="11" font-weight="600" fill="${cv(b.c)}">${b.l}</text>`;
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${H-m.b+29}" text-anchor="middle" font-size="9.5" fill="${cv('--faint')}">${b.s}</text>`;});
+  g+=`<text transform="translate(11,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10" fill="${cv('--faint')}">goodput seg/s (#71)</text>`;
+  mount("#cA",W,H,g);
+  $("#tA").innerHTML="<b>DCNLA guarantees the 610; H(name) gets it only when the hash spreads.</b> When names land adjacent, #71 measured the collapse to ~65 (even below some single-channel cases). The thesis's LINK coordination exists precisely to forbid that — the one thing statelessness gives up.";
+}
+
+// B: setup cost — control exchanges
+function drawB(){
+  const W=470,H=250,m={l:130,r:20,t:14,b:34},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const rows=[
+    {l:"DCNLA",steps:["SEEK","JOIN","CONTEXT","LINK","PIPE","CHECK"],assoc:true,c:'--dcnla'},
+    {l:"named-data",steps:[],assoc:false,c:'--named'},
+  ];
+  const rh=ih/rows.length, u=Math.min(46,(iw-70)/6);
+  let g="";
+  rows.forEach((r,ri)=>{const y=m.t+ri*rh+rh/2;
+    g+=`<text x="${m.l-12}" y="${y-4}" text-anchor="end" font-size="13" font-weight="600" fill="${cv(r.c)}">${r.l}</text>`;
+    if(r.steps.length===0){
+      g+=`<text x="${m.l}" y="${y+4}" font-size="12" fill="${cv('--good')}" font-weight="600">— no setup —</text>`;
+      g+=`<text x="${m.l-12}" y="${y+13}" text-anchor="end" font-size="9.5" fill="${cv('--faint')}" class="mono">0 exchanges</text>`;
+    } else {
+      r.steps.forEach((s,si)=>{const x=m.l+si*(u+8);
+        g+=`<rect x="${x}" y="${y-22}" width="${u}" height="18" rx="3" fill="${cv(r.c)}" opacity="0.85" data-tip="${s} exchange"/>`;
+        g+=`<text x="${x+u/2}" y="${y-9}" text-anchor="middle" font-size="8.5" fill="${cv('--bg')}" font-weight="700">${s}</text>`;});
+      g+=`<text x="${m.l-12}" y="${y+13}" text-anchor="end" font-size="9.5" fill="${cv('--faint')}" class="mono">6 exch + IBSS assoc</text>`;
+      g+=`<text x="${m.l}" y="${y+13}" font-size="9.5" fill="${cv('--muted')}">+ per-segment / coupling state held</text>`;
+    }
+  });
+  mount("#cB",W,H,g);
+  $("#tB").innerHTML="<b>DCNLA pays a 6-message handshake + one IBSS association per pipe, then holds hard state</b> (pipe / segment / coupling info bases). Named-data radio pays nothing up front and holds only soft state — the forwarder can recompile it, so a lost node costs nothing (doctrine §7, and #70's mobility win).";
+}
+
+function render(){
+  drawA();drawB();
+  const rows=[
+    ["Channel diversity","<span class='win'>guaranteed</span> (LINK coordinates)","<span class='tie'>probabilistic</span> (H(name); leak tax)","<span class='q'>#71</span> DCNLA's edge — unless named-data hashes to separated classes"],
+    ["Point-to-point rate","<span class='win'>unicast</span> + ACK + rate-adapt","<span class='tie'>≈unicast on a chain</span> (1 rx/hop, monitor-rate)","<span class='q'>MT7612U</span> tie on a chain; DCNLA wins only where ACK matters"],
+    ["One-to-many","<span class='lose'>K unicast pipes</span>","<span class='win'>one broadcast</span> serves all","<span class='q'>#69·B</span> named-data wins multi-consumer (caching)"],
+    ["Setup cost","<span class='lose'>6-msg handshake + IBSS assoc</span>","<span class='win'>zero</span>","<span class='q'>thesis</span> first Interest just goes"],
+    ["State held","<span class='lose'>hard</span> (info bases, MAC/IP)","<span class='win'>soft-state only</span>","<span class='q'>doctrine §7</span> recomputable ⇒ losable"],
+    ["Mobility rebuild","<span class='tie'>re-associate + re-handshake</span>","<span class='win'>re-express Interest</span>","<span class='q'>#70</span> named-data ~95% vs route-repair 42% @20m/s"],
+    ["Host namelessness","<span class='lose'>addresses managed+hidden</span>","<span class='win'>none exist</span>","<span class='q'>—</span> the philosophical payoff"],
+    ["Reliability (no-ARQ)","<span class='lose'>none in thesis</span>","<span class='win'>ndn-coding FEC</span>","<span class='q'>#68</span> coding pays on a path — the pipe is one"],
+  ];
+  $("#matrix").innerHTML="<tr><th>axis</th><th style='color:var(--dcnla)'>DCNLA (thesis)</th><th style='color:var(--named)'>named-data (v2)</th><th>basis / note</th></tr>"+
+    rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td style='color:var(--muted)'>${r[3]}</td></tr>`).join("");
+  $("#note").innerHTML="<b>The verdict — and the one thing to port back.</b> Eliminating host identity wins almost everywhere the redesign was aimed: zero setup, soft-state mobility, true namelessness, one-broadcast multicast, and FEC the thesis lacked. It gives up exactly one guarantee DCNLA had: <b>coordinated channel diversity.</b> The thesis's LINK exchange <i>guarantees</i> adjacent segments differ; H(name) only manages it in expectation, and #71 measured the collapse when it doesn't. So the design move isn't "which floor" — it's clear the named-data floor is the right one now that it exists. It's: <b>recover the one guarantee statelessness dropped</b> — hash names into <i>well-separated</i> channel classes (never adjacent bins), or add a soft-state name→channel agreement that stays recomputable (doctrine §7), or sense-and-avoid via cognition. Everything else DCNLA did to keep host identity was a cost the 2025 floor forced, not a feature to preserve.";
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{const r=document.documentElement,c=r.getAttribute("data-theme");
+  r.setAttribute("data-theme",c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark")));render();});
+</script>

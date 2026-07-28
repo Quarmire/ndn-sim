@@ -1,0 +1,241 @@
+<title>Named-data radio vs IP MANET — a fair comparison</title>
+<style>
+  :root{
+    --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad;
+    --line:#e4e0d6; --grid:#eae7de;
+    --single:#c9803a;   /* single-radio family — warm (collapse) */
+    --single2:#dba86f;
+    --mrmc:#1f9a94;     /* research IP-MRMC — cool (retention) */
+    --named:#7161c9;    /* named-data (NDN / ndnpipes) */
+    --named2:#a394e6;
+    --good:#2f8f5b; --bad:#c0503f;
+    --shadow:0 1px 2px rgba(30,34,42,.05),0 6px 20px rgba(30,34,42,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#666e7d;
+      --line:#272c35; --grid:#20252d;
+      --single:#e0954a; --single2:#c78d55;
+      --mrmc:#3bbdb5; --named:#9384e0; --named2:#6c5cc0; --good:#48b878; --bad:#e06a55;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.35);}
+  }
+  :root[data-theme="light"]{ --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad; --line:#e4e0d6; --grid:#eae7de; --single:#c9803a; --single2:#dba86f; --mrmc:#1f9a94; --named:#7161c9; --named2:#a394e6; --good:#2f8f5b; --bad:#c0503f; }
+  :root[data-theme="dark"]{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#666e7d; --line:#272c35; --grid:#20252d; --single:#e0954a; --single2:#c78d55; --mrmc:#3bbdb5; --named:#9384e0; --named2:#6c5cc0; --good:#48b878; --bad:#e06a55; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    line-height:1.5;-webkit-font-smoothing:antialiased}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 72px}
+  header{margin-bottom:8px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--mrmc);font-weight:600}
+  h1{font-size:30px;line-height:1.12;margin:10px 0 8px;letter-spacing:-.02em;text-wrap:balance;max-width:20ch}
+  .thesis{color:var(--muted);max-width:74ch;font-size:15.5px}
+  .thesis b{color:var(--ink);font-weight:600}
+  .themebtn{position:fixed;top:16px;right:16px;background:var(--panel);border:1px solid var(--line);
+    color:var(--muted);border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;box-shadow:var(--shadow)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:26px}
+  @media (max-width:840px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px;box-shadow:var(--shadow)}
+  .plabel{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600;
+    display:flex;align-items:baseline;gap:8px}
+  .plabel .ax{color:var(--mrmc)}
+  .ptitle{font-size:17px;font-weight:650;margin:5px 0 3px;letter-spacing:-.01em}
+  .pdesc{font-size:13px;color:var(--muted);margin:0 0 12px;max-width:52ch}
+  svg{width:100%;height:auto;display:block;overflow:visible}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:12px;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:13px;height:3px;border-radius:2px;display:inline-block}
+  .dot{width:9px;height:9px;border-radius:50%}
+  .take{font-size:12.5px;color:var(--muted);margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+  .take b{color:var(--ink)}
+  .note{margin-top:24px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--mrmc);
+    border-radius:10px;padding:16px 18px;font-size:13.5px;color:var(--muted);max-width:none}
+  .note b{color:var(--ink)}
+  .foot{margin-top:20px;font-size:12px;color:var(--faint)}
+  #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--ink);color:var(--bg);
+    padding:6px 9px;border-radius:6px;font-size:11.5px;z-index:9;box-shadow:var(--shadow)}
+  .mono.tip{font-family:ui-monospace,Menlo,monospace}
+</style>
+
+<button class="themebtn" id="themeBtn">◐ theme</button>
+<div id="tip" class="mono tip"></div>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">ndn-sim · comparative eval #69</div>
+    <h1>Named-data radio vs IP MANET protocols</h1>
+    <p class="thesis">Every protocol here runs on the <b>same calibrated PHY/MAC</b> — anchored to real
+    MT7612U 802.11s mesh measurements. So the headline is a warning against the easy claim:
+    <b>throughput-over-hops is a substrate story (single-radio collapse vs MRMC retention), not an
+    L3-protocol story.</b> Named-data's real advantages appear on three <i>other</i> axes — caching,
+    mobility overhead, and combining MRMC with caching. Fairness: stock IP/802.11s can't do MRMC
+    natively, so they get one radio; only research IP-MRMC (WCETT/MIC) gets multiple.</p>
+  </header>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="plabel"><span class="ax">A</span> single flow · throughput vs hops</div>
+      <div class="ptitle">The substrate decides, not the protocol</div>
+      <p class="pdesc">Retention ÷ the 1-hop link. Four IP protocols and single-radio NDN sit on one
+      curve; the two MRMC protocols sit on another. The lines barely separate within a family.</p>
+      <svg id="cA"></svg>
+      <div class="legend" id="lA"></div>
+      <div class="take" id="tA"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plabel"><span class="ax">B</span> multi-consumer · caching</div>
+      <div class="ptitle">Routing moves packets; naming holds content</div>
+      <p class="pdesc">Cost (hop-transmissions) to serve K consumers the same content over 4 hops. IP
+      re-fetches end-to-end every time; NDN relays cache, so later consumers hit a copy ~1 hop away.</p>
+      <svg id="cB"></svg>
+      <div class="legend" id="lB"></div>
+      <div class="take" id="tB"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plabel"><span class="ax">C</span> mobility · control overhead</div>
+      <div class="ptitle">No route object means nothing to repair</div>
+      <p class="pdesc">Control transmissions/sec vs route-break rate λ (N=20). Reactive floods climb with
+      churn; batman is flat-but-stale; stateless NDN sheds route repair entirely.</p>
+      <svg id="cC"></svg>
+      <div class="legend" id="lC"></div>
+      <div class="take" id="tC"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plabel"><span class="ax">D</span> MRMC + caching · combined</div>
+      <div class="ptitle">Where the two ideas compound</div>
+      <p class="pdesc">3-hop, 8-consumer repeated content. IP-MRMC wins throughput back but still
+      re-fetches per consumer. ndnpipes matches the throughput <i>and</i> caches — effective score =
+      throughput ÷ serve-cost.</p>
+      <svg id="cD"></svg>
+      <div class="legend" id="lD"></div>
+      <div class="take" id="tD"></div>
+    </div>
+  </div>
+
+  <div class="note" id="note"></div>
+  <div class="foot mono">substrate calibrated to real MT7612U 802.11s mesh (iperf3 UDP) · first-order L3 model, assumptions in-source · ndn-sim/examples/manet_compare.rs</div>
+</div>
+
+<script>
+const DATA = {"hops":[1,2,3,4,5],"A":[{"name":"AODV","mrmc":false,"caches":false,"tput":[1.000,0.360,0.173,0.093,0.067]},{"name":"DSR","mrmc":false,"caches":false,"tput":[1.000,0.360,0.173,0.093,0.067]},{"name":"802.11s HWMP","mrmc":false,"caches":false,"tput":[1.000,0.360,0.173,0.093,0.067]},{"name":"batman-adv","mrmc":false,"caches":false,"tput":[1.000,0.360,0.173,0.093,0.067]},{"name":"NDN (bcast)","mrmc":false,"caches":true,"tput":[0.970,0.349,0.168,0.091,0.065]},{"name":"IP-MRMC(WCETT)","mrmc":true,"caches":false,"tput":[1.000,0.930,0.865,0.402,0.374]},{"name":"ndnpipes","mrmc":true,"caches":true,"tput":[0.970,0.902,0.839,0.390,0.363]}],"B":[{"k":1,"ip":4,"ndn":4},{"k":2,"ip":8,"ndn":5},{"k":4,"ip":16,"ndn":7},{"k":8,"ip":32,"ndn":11},{"k":16,"ip":64,"ndn":19},{"k":32,"ip":128,"ndn":35}],"C":[{"lam":0,"aodv":0.0,"dsr":0.0,"hwmp":6.0,"batman":20.0,"ndn":0.0},{"lam":0.5,"aodv":10.0,"dsr":6.0,"hwmp":11.0,"batman":20.0,"ndn":0.0},{"lam":1,"aodv":20.0,"dsr":12.0,"hwmp":16.0,"batman":20.0,"ndn":0.0},{"lam":2,"aodv":40.0,"dsr":24.0,"hwmp":26.0,"batman":20.0,"ndn":0.0},{"lam":4,"aodv":80.0,"dsr":48.0,"hwmp":46.0,"batman":20.0,"ndn":0.0},{"lam":8,"aodv":160.0,"dsr":96.0,"hwmp":86.0,"batman":20.0,"ndn":0.0}],"D":[{"name":"802.11s HWMP","tput":0.173,"cost":24,"eff":0.0072},{"name":"batman-adv","tput":0.173,"cost":24,"eff":0.0072},{"name":"IP-MRMC(WCETT)","tput":0.865,"cost":24,"eff":0.0360},{"name":"ndnpipes","tput":0.865,"cost":10,"eff":0.0865}]};
+
+const $=s=>document.querySelector(s);
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tip=$("#tip");
+const showTip=(h,e)=>{tip.innerHTML=h;tip.style.opacity=1;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";};
+const hideTip=()=>tip.style.opacity=0;
+
+// colour + style by protocol
+function styleOf(name){
+  if(name==="ndnpipes") return {c:'--named',w:2.6,dash:''};
+  if(name==="NDN (bcast)") return {c:'--named2',w:2.2,dash:'1 0'};
+  if(name==="IP-MRMC(WCETT)") return {c:'--mrmc',w:2.6,dash:''};
+  // single-radio IP family — warm, thin, slightly varied dash so the overlap is visible
+  const d={"AODV":'',"DSR":'2 3',"802.11s HWMP":'6 3',"batman-adv":'1 4'}[name]||'';
+  return {c:name==="AODV"?'--single':'--single2',w:1.8,dash:d};
+}
+
+function axes(svg,W,H,m,xt,yt,xlab,ylab,ymax){
+  let g="";
+  yt.forEach(t=>{const y=m.t+(H-m.t-m.b)*(1-t/ymax);
+    g+=`<line x1="${m.l}" y1="${y}" x2="${W-m.r}" y2="${y}" stroke="${cv('--grid')}"/>`+
+       `<text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cv('--muted')}" class="mono">${t}</text>`;});
+  xt.forEach(t=>{g+=`<text x="${t.x}" y="${H-m.b+16}" text-anchor="middle" font-size="10" fill="${cv('--muted')}" class="mono">${t.l}</text>`;});
+  g+=`<text x="${m.l+(W-m.l-m.r)/2}" y="${H-1}" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">${xlab}</text>`;
+  g+=`<text transform="translate(11,${m.t+(H-m.t-m.b)/2}) rotate(-90)" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">${ylab}</text>`;
+  return g;
+}
+
+// ---- A: retention vs hops (multi-line) ----
+function drawA(){
+  const W=500,H=270,m={l:42,r:14,t:12,b:34}, iw=W-m.l-m.r, ih=H-m.t-m.b;
+  const hs=DATA.hops, px=i=>m.l+i/(hs.length-1)*iw, py=v=>m.t+ih*(1-v);
+  const xt=hs.map((h,i)=>({x:px(i),l:h+"h"}));
+  let g=axes({},W,H,m,xt,[0,.25,.5,.75,1],"hops","throughput retention",1);
+  DATA.A.forEach(p=>{const s=styleOf(p.name);const col=cv(s.c);
+    const pts=p.tput.map((v,i)=>[px(i),py(v)]);
+    g+=`<path d="${pts.map((q,i)=>(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)).join(' ')}" fill="none" stroke="${col}" stroke-width="${s.w}" ${s.dash?`stroke-dasharray="${s.dash}"`:''} stroke-linejoin="round" opacity="${s.w>2?1:.9}"/>`;
+    pts.forEach((q,i)=>g+=`<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="${s.w>2?3:2.2}" fill="${col}" data-tip="${p.name} · ${hs[i]} hops · ${(p.tput[i]*100).toFixed(0)}%"/>`);
+  });
+  // regime brackets
+  g+=`<text x="${px(2)}" y="${py(.865)-8}" font-size="10.5" fill="${cv('--mrmc')}" text-anchor="middle" font-weight="600">MRMC ~86%</text>`;
+  g+=`<text x="${px(2)}" y="${py(.173)+16}" font-size="10.5" fill="${cv('--single')}" text-anchor="middle" font-weight="600">single-radio ~17%</text>`;
+  mount("#cA",W,H,g);
+  $("#lA").innerHTML=[["--mrmc","IP-MRMC (WCETT)"],["--named","ndnpipes"],["--single","AODV / DSR / 802.11s / batman"],["--named2","NDN single-radio"]]
+    .map(([c,t])=>`<span><i class="sw" style="background:${cv(c)}"></i>${t}</span>`).join("");
+  $("#tA").innerHTML="<b>The 4 IP protocols land on one line, the 2 MRMC on another.</b> Choosing AODV vs 802.11s vs NDN moves throughput by ~1%; adding a second radio moves it 5×. Past 3 hops even MRMC dips — 3 channels can't cover a 4-hop reuse distance (an honest MRMC limit).";
+}
+
+// ---- B: multi-consumer cost ----
+function drawB(){
+  const W=500,H=270,m={l:44,r:14,t:12,b:34}, iw=W-m.l-m.r, ih=H-m.t-m.b;
+  const ks=DATA.B.map(d=>d.k), ymax=130;
+  const px=i=>m.l+i/(ks.length-1)*iw, py=v=>m.t+ih*(1-v/ymax);
+  const xt=ks.map((k,i)=>({x:px(i),l:k}));
+  let g=axes({},W,H,m,xt,[0,32,64,96,128],"consumers (K)","hop-transmissions",ymax);
+  const line=(key,col,w)=>{const pts=DATA.B.map((d,i)=>[px(i),py(d[key])]);
+    g+=`<path d="${pts.map((q,i)=>(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv(col)}" stroke-width="${w}" stroke-linejoin="round"/>`;
+    pts.forEach((q,i)=>g+=`<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="3" fill="${cv(col)}" data-tip="K=${DATA.B[i].k} · ${key.toUpperCase()} ${DATA.B[i][key]} tx"/>`);};
+  line("ip","--single",2.6); line("ndn","--named",2.6);
+  g+=`<text x="${px(5)-4}" y="${py(128)+4}" text-anchor="end" font-size="10.5" fill="${cv('--single')}" font-weight="600">IP · linear</text>`;
+  g+=`<text x="${px(5)-4}" y="${py(35)+14}" text-anchor="end" font-size="10.5" fill="${cv('--named')}" font-weight="600">NDN · ~flat</text>`;
+  mount("#cB",W,H,g);
+  $("#lB").innerHTML=[["--single","IP (no relay cache)"],["--named","NDN (relay cache)"]].map(([c,t])=>`<span><i class="sw" style="background:${cv(c)}"></i>${t}</span>`).join("");
+  $("#tB").innerHTML="<b>At 32 consumers, NDN serves the content for ~3.7× fewer transmissions.</b> The gap widens with reuse — the more a name is requested, the more caching pays. No IP MANET protocol has an equivalent, because they route to hosts, not to named content.";
+}
+
+// ---- C: mobility overhead ----
+function drawC(){
+  const W=500,H=270,m={l:42,r:14,t:12,b:34}, iw=W-m.l-m.r, ih=H-m.t-m.b;
+  const ls=DATA.C.map(d=>d.lam), ymax=160;
+  const px=i=>m.l+i/(ls.length-1)*iw, py=v=>m.t+ih*(1-v/ymax);
+  const xt=ls.map((l,i)=>({x:px(i),l:l}));
+  let g=axes({},W,H,m,xt,[0,40,80,120,160],"route breaks / sec (λ)","control tx / sec",ymax);
+  const series=[["aodv","--single",2.4],["dsr","--single2",2.2],["hwmp","--mrmc",2.2],["batman","--muted",2.2],["ndn","--named",2.8]];
+  series.forEach(([k,c,w])=>{const pts=DATA.C.map((d,i)=>[px(i),py(d[k])]);
+    g+=`<path d="${pts.map((q,i)=>(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv(c)}" stroke-width="${w}" stroke-linejoin="round"/>`;
+    pts.forEach((q,i)=>g+=`<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="2.4" fill="${cv(c)}" data-tip="λ=${DATA.C[i].lam} · ${k.toUpperCase()} ${DATA.C[i][k]}/s"/>`);});
+  g+=`<text x="${px(5)-4}" y="${py(160)+2}" text-anchor="end" font-size="10.5" fill="${cv('--single')}" font-weight="600">AODV</text>`;
+  g+=`<text x="${px(5)-4}" y="${py(0)+2}" text-anchor="end" font-size="10.5" fill="${cv('--named')}" font-weight="600">NDN · 0</text>`;
+  mount("#cC",W,H,g);
+  $("#lC").innerHTML=[["--single","AODV"],["--single2","DSR"],["--mrmc","802.11s HWMP"],["--muted","batman-adv"],["--named","NDN stateless"]].map(([c,t])=>`<span><i class="sw" style="background:${cv(c)}"></i>${t}</span>`).join("");
+  $("#tC").innerHTML="<b>Reactive protocols pay a flood per break; NDN pays nothing.</b> A broken path isn't a repair event — the next Interest re-expression finds a new one over existing breadcrumbs. batman's cost is constant but its routes go stale between OGMs.";
+}
+
+// ---- D: combined effective score ----
+function drawD(){
+  const W=500,H=270,m={l:46,r:16,t:14,b:52}, iw=W-m.l-m.r, ih=H-m.t-m.b;
+  const d=DATA.D, ymax=0.1, bw=iw/d.length;
+  const py=v=>m.t+ih*(1-v/ymax);
+  let g="";
+  [0,0.025,0.05,0.075,0.1].forEach(t=>{const y=py(t);
+    g+=`<line x1="${m.l}" y1="${y}" x2="${W-m.r}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cv('--muted')}" class="mono">${t.toFixed(3)}</text>`;});
+  d.forEach((p,i)=>{const x=m.l+i*bw+bw*0.2, w=bw*0.6, y=py(p.eff), h=m.t+ih-y;
+    const col=p.name==="ndnpipes"?'--named':(p.name==="IP-MRMC(WCETT)"?'--mrmc':'--single');
+    g+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${cv(col)}" data-tip="${p.name} · tput ${p.tput} · cost ${p.cost} · eff ${p.eff.toFixed(3)}"/>`;
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${(y-6).toFixed(1)}" text-anchor="middle" font-size="10.5" class="mono" fill="${cv('--ink')}" font-weight="600">${p.eff.toFixed(3)}</text>`;
+    const nm=p.name.replace("(WCETT)","").replace(" HWMP","");
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${H-m.b+15}" text-anchor="middle" font-size="10" fill="${cv('--muted')}">${nm}</text>`;
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${H-m.b+28}" text-anchor="middle" font-size="9" class="mono" fill="${cv('--faint')}">×${(p.eff/d[0].eff).toFixed(1)}</text>`;
+  });
+  g+=`<text transform="translate(12,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">effective = tput ÷ serve-cost</text>`;
+  mount("#cD",W,H,g);
+  $("#lD").innerHTML=[["--single","stock single-radio"],["--mrmc","IP-MRMC"],["--named","ndnpipes"]].map(([c,t])=>`<span><i class="sw" style="background:${cv(c)}"></i>${t}</span>`).join("");
+  $("#tD").innerHTML="<b>ndnpipes scores ~12× the stock stacks and ~2.4× IP-MRMC.</b> MRMC alone recovers throughput; caching alone cuts cost; only named-data-over-MRMC gets both at once. This is the ndnpipes case — quantified on a calibrated substrate.";
+}
+
+function mount(sel,W,H,g){const s=$(sel);s.setAttribute("viewBox",`0 0 ${W} ${H}`);s.innerHTML=g;
+  s.querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});}
+
+function render(){
+  drawA();drawB();drawC();drawD();
+  $("#note").innerHTML="<b>What to take from this — and what not to.</b> The honest result is a caution: it's tempting to claim named-data radio beats IP MANET protocols on throughput. On a fair substrate it doesn't — <b>single-radio is single-radio</b> whether the header says IP or NDN, and 802.11s HWMP forwarding a unicast chain is if anything leaner than broadcast NDN. The real, defensible wins are elsewhere and they're structural: <b>caching</b> (Panel B — routing protocols can't reuse content in-network), <b>mobility</b> (Panel C — no route object to repair), and <b>MRMC × caching together</b> (Panel D — the ndnpipes compound). The fairness split matters: stock IP and 802.11s get one radio because they can't do MRMC natively; only research IP-MRMC (WCETT/MIC) gets multiple, and it still can't cache. Everything above is a first-order model on measured PHY numbers — the substrate is real, the L3 layer is argued from protocol mechanics, and every assumption is in the source to be contested.";
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{const r=document.documentElement,c=r.getAttribute("data-theme");
+  r.setAttribute("data-theme",c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark")));render();});
+</script>

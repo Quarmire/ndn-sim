@@ -1,0 +1,152 @@
+<title>Channel-diversity guarantee — three ways to recover it</title>
+<style>
+  :root{
+    --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad;
+    --line:#e4e0d6; --grid:#eae7de; --cell:#ece8de;
+    --naive:#b0453a; --fix:#1f9a94; --fix2:#2f8f5b; --fix3:#7161c9; --link:#c9803a;
+    --shadow:0 1px 2px rgba(30,34,42,.05),0 6px 20px rgba(30,34,42,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f;
+      --line:#272c35; --grid:#20252d; --cell:#242a33;
+      --naive:#e06a55; --fix:#3bbdb5; --fix2:#48b878; --fix3:#9384e0; --link:#e0954a;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.35);}
+  }
+  :root[data-theme="light"]{ --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad; --line:#e4e0d6; --grid:#eae7de; --cell:#ece8de; --naive:#b0453a; --fix:#1f9a94; --fix2:#2f8f5b; --fix3:#7161c9; --link:#c9803a; }
+  :root[data-theme="dark"]{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f; --line:#272c35; --grid:#20252d; --cell:#242a33; --naive:#e06a55; --fix:#3bbdb5; --fix2:#48b878; --fix3:#9384e0; --link:#e0954a; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 24px 72px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--fix3);font-weight:600}
+  h1{font-size:29px;line-height:1.13;margin:10px 0 8px;letter-spacing:-.02em;text-wrap:balance;max-width:24ch}
+  .thesis{color:var(--muted);max-width:78ch;font-size:15.5px}
+  .thesis b{color:var(--ink);font-weight:600}
+  .themebtn{position:fixed;top:16px;right:16px;background:var(--panel);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;box-shadow:var(--shadow)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px;box-shadow:var(--shadow);margin-top:20px}
+  .plabel{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .plabel .ax{color:var(--fix3)}
+  .ptitle{font-size:17px;font-weight:650;margin:5px 0 3px;letter-spacing:-.01em}
+  .pdesc{font-size:13px;color:var(--muted);margin:0 0 12px;max-width:74ch}
+  svg{width:100%;height:auto;display:block;overflow:visible}
+  .legend{display:flex;flex-wrap:wrap;gap:9px 15px;margin-top:12px;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:13px;height:12px;border-radius:3px;display:inline-block}
+  .take{font-size:12.5px;color:var(--muted);margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+  .take b{color:var(--ink)}
+  .occ{margin-top:6px}
+  .orow{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:12px}
+  .orow .nm{width:120px;text-align:right;font-weight:600}
+  .cells{display:flex;gap:3px}
+  .cell{width:26px;height:22px;border-radius:4px;background:var(--cell);display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--faint);position:relative}
+  .cell .cnt{font-weight:700;font-size:11px}
+  .note{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--fix3);border-radius:10px;padding:16px 18px;font-size:13.5px;color:var(--muted)}
+  .note b{color:var(--ink)} .note code{font-family:ui-monospace,Menlo,monospace;color:var(--fix3);font-size:12.5px}
+  .foot{margin-top:20px;font-size:12px;color:var(--faint)}
+  #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--ink);color:var(--bg);padding:6px 9px;border-radius:6px;font-size:11.5px;z-index:9;box-shadow:var(--shadow)}
+</style>
+
+<button class="themebtn" id="themeBtn">◐ theme</button>
+<div id="tip" class="mono"></div>
+
+<div class="wrap">
+  <div class="eyebrow">ndn-pipes · #66 follow-on · the one gap, closed</div>
+  <h1>Recovering the channel-diversity guarantee — three ways</h1>
+  <p class="thesis">#66 found the single thing the named-data floor gives up vs the thesis's coordinated
+  LINK exchange: a <b>guarantee</b> that adjacent pipe channels differ. #71 measured the cost of not
+  having it. Here are the three proposed fixes — all host-free — built and raced on the real
+  <span class="mono">ForwarderEngine</span> under the adjacent-leak channel model, against the naive
+  <span class="mono">H(name)</span> baseline and the thesis's rigid LINK guarantee, in a clean field and
+  under external interference. <b>The result settles the fork — and it's not what I expected.</b></p>
+
+  <div class="panel">
+    <div class="plabel"><span class="ax">A</span> aggregate goodput · mean of 4 runs</div>
+    <div class="ptitle">All three fixes beat naive — and beat the rigid guarantee</div>
+    <p class="pdesc">8 named pipes, one collision domain, C=8 leaky channels. Left bar = clean field;
+    right = an external 3-flow interferer pinned to channel 3. Higher is better.</p>
+    <svg id="bars"></svg>
+    <div class="legend" id="legend"></div>
+    <div class="take" id="take"></div>
+  </div>
+
+  <div class="panel">
+    <div class="plabel"><span class="ax">B</span> why — channel occupancy</div>
+    <div class="ptitle">Where each strategy places the 8 pipes (C=8, under interference on ch3)</div>
+    <p class="pdesc">Cells are the 8 channels; the number is how many pipes sit there. Red = the jammed
+    channel (3) and its leaking neighbours (2, 4). A good layout keeps pipes ≥2 apart and off the red.</p>
+    <div class="occ" id="occ"></div>
+  </div>
+
+  <div class="note" id="note"></div>
+  <div class="foot mono">real ForwarderEngine + AdjacentLeakChannel · 8 pipes, C=8, jammer=3×3 flows · ±~12 wall-clock noise · ndn-sim/examples/channel_diversity.rs</div>
+</div>
+
+<script>
+const D = {"pipes":8,"C":8,"jam":3,"rows":[{"strat":"naive H(name)","sym":81.8,"jam":81.0},{"strat":"separated classes","sym":101.5,"jam":118.8},{"strat":"soft-state","sym":100.5,"jam":120.2},{"strat":"sense-avoid","sym":106.2,"jam":115.2},{"strat":"LINK-guarantee","sym":87.5,"jam":75.0}]};
+// representative assignments under interference (jammer on ch3)
+const ASSIGN = {
+  "naive H(name)":[5,2,7,4,1,6,3,0],
+  "separated classes":[2,4,6,0,2,4,6,0],
+  "soft-state":[0,5,7,1,5,7,0,5],
+  "sense-avoid":[0,5,7,1,5,7,0,5],
+  "LINK-guarantee":[0,6,0,6,0,6,0,6],
+};
+const COL = {"naive H(name)":'--naive',"separated classes":'--fix',"soft-state":'--fix2',"sense-avoid":'--fix3',"LINK-guarantee":'--link'};
+const $=s=>document.querySelector(s);
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tip=$("#tip");
+const showTip=(h,e)=>{tip.innerHTML=h;tip.style.opacity=1;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";};
+const hideTip=()=>tip.style.opacity=0;
+
+function drawBars(){
+  const W=940,H=300,m={l:44,r:16,t:16,b:60},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const n=D.rows.length, gw=iw/n, ymax=140, py=v=>m.t+ih*(1-v/ymax);
+  let g="";
+  [0,35,70,105,140].forEach(t=>{const y=py(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="10" fill="${cv('--muted')}" class="mono">${t}</text>`;});
+  D.rows.forEach((r,i)=>{const x0=m.l+i*gw, col=cv(COL[r.strat]);
+    [["sym",r.sym,0.55,"clean"],["jam",r.jam,1,"interfered"]].forEach(([k,v,op,lab],j)=>{
+      const bw=gw*0.3, x=x0+gw*0.13+j*(bw+gw*0.08), y=py(v), h=m.t+ih-y;
+      g+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${col}" opacity="${op}" data-tip="${r.strat} · ${lab} · ${v.toFixed(0)} seg/s"/>`;
+      g+=`<text x="${(x+bw/2).toFixed(1)}" y="${(y-5).toFixed(1)}" text-anchor="middle" font-size="10.5" class="mono" font-weight="700" fill="${cv('--ink')}">${v.toFixed(0)}</text>`;
+    });
+    const nm=r.strat.replace(" H(name)","").replace(" classes","").replace("-guarantee"," (LINK)");
+    g+=`<text x="${(x0+gw/2).toFixed(1)}" y="${H-m.b+18}" text-anchor="middle" font-size="11.5" font-weight="600" fill="${col}">${nm}</text>`;
+    const tag = i===0?"baseline":(r.strat==="LINK-guarantee"?"thesis guarantee":"proposed fix");
+    g+=`<text x="${(x0+gw/2).toFixed(1)}" y="${H-m.b+33}" text-anchor="middle" font-size="9.5" fill="${cv('--faint')}">${tag}</text>`;
+  });
+  g+=`<text transform="translate(11,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">goodput seg/s</text>`;
+  const svg=$("#bars");svg.setAttribute("viewBox",`0 0 ${W} ${H}`);svg.innerHTML=g;
+  svg.querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});
+  $("#legend").innerHTML=[["light","clean field"],["solid","under interference"]].map(([o,t])=>`<span><i class="sw" style="background:${cv('--muted')};opacity:${o==='light'?0.55:1}"></i>${t}</span>`).join("");
+  $("#take").innerHTML="<b>Naive H(name) is worst (82) — the leak tax is real.</b> All three fixes recover ~25–45%. The surprise: the thesis's <i>rigid LINK guarantee</i> (88 clean, 75 interfered) is the <b>worst of the diversity approaches</b> — under interference it's beaten even by naive, because guaranteeing non-adjacency + dodging the interferer strands it on too few channels.";
+}
+
+function drawOcc(){
+  let h="";
+  Object.keys(ASSIGN).forEach(name=>{
+    const a=ASSIGN[name], counts=Array(D.C).fill(0); a.forEach(c=>counts[c]++);
+    const col=cv(COL[name]);
+    let cells="";
+    for(let c=0;c<D.C;c++){
+      const jammed = Math.abs(c-D.jam)<=1;
+      const cnt=counts[c];
+      const bg = jammed?'var(--naive)':(cnt>0?col:cv('--cell'));
+      const op = jammed?0.28:(cnt>0?(cnt>=3?1:cnt>=2?0.75:0.5):1);
+      cells+=`<div class="cell" style="background:${bg};opacity:${op}" data-tip="ch${c}${jammed?' (jammed/adjacent)':''} · ${cnt} pipe${cnt===1?'':'s'}"><span class="cnt" style="color:${cnt>0&&!jammed?cv('--bg'):cv('--faint')}">${cnt||''}</span></div>`;
+    }
+    h+=`<div class="orow"><div class="nm" style="color:${col}">${name.replace(' H(name)','').replace(' classes','')}</div><div class="cells">${cells}</div></div>`;
+  });
+  h+=`<div class="orow"><div class="nm" style="color:var(--faint)">channel #</div><div class="cells">${Array.from({length:D.C},(_,c)=>`<div class="cell" style="background:transparent"><span style="color:var(--faint)">${c}</span></div>`).join("")}</div></div>`;
+  $("#occ").innerHTML=h;
+  $("#occ").querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});
+}
+
+function render(){
+  drawBars();drawOcc();
+  $("#note").innerHTML="<b>The fork is settled — and simpler wins.</b> #66 asked which of three fixes recovers the channel-diversity guarantee the named-data floor gave up. The answer: <b>you don't need the guarantee's rigid form back at all.</b> A <b>stateless <code>separated-class</code> hash</b> — <code>channel = (H(name) mod ⌈C/2⌉)·2</code>, i.e. hash into non-adjacent bins — recovers ~all of it with zero coordination and zero host state (occupancy row B: a clean {0,2,4,6} spread). <b>Soft-state</b> (a recomputable name→channel table, doctrine §7) and <b>sense-avoid</b> (per-node, reactive) match it but add machinery for no real gain in these regimes. Meanwhile the thesis's <b>coordinated LINK guarantee</b>, ported faithfully, is the <i>worst</i> diversity option: guaranteeing non-adjacency forces it onto too few channels (row B: everything crowded onto {0,6}) and it collapses under interference. So the one thing DCNLA held over named-data radio turns out to be recoverable — better — <b>without reintroducing host identity, coordination, or even state.</b> Default to the separated-class hash; reach for sense-avoid only when the spectrum is genuinely contended.";
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{const r=document.documentElement,c=r.getAttribute("data-theme");
+  r.setAttribute("data-theme",c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark")));render();});
+</script>

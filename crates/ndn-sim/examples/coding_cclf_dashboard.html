@@ -1,0 +1,206 @@
+<title>Coding × CCLF — a hypothesis that didn't survive</title>
+<style>
+  :root{
+    --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad;
+    --line:#e4e0d6; --grid:#eae7de;
+    --flood:#c9803a; --cclf:#1f9a94; --plain:#c9803a; --rlnc:#7161c9;
+    --good:#2f8f5b; --bad:#c0503f;
+    --shadow:0 1px 2px rgba(30,34,42,.05),0 6px 20px rgba(30,34,42,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f;
+      --line:#272c35; --grid:#20252d; --flood:#e0954a; --cclf:#3bbdb5; --plain:#e0954a; --rlnc:#9384e0;
+      --good:#48b878; --bad:#e06a55; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.35);}
+  }
+  :root[data-theme="light"]{ --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad; --line:#e4e0d6; --grid:#eae7de; --flood:#c9803a; --cclf:#1f9a94; --plain:#c9803a; --rlnc:#7161c9; --good:#2f8f5b; --bad:#c0503f; }
+  :root[data-theme="dark"]{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f; --line:#272c35; --grid:#20252d; --flood:#e0954a; --cclf:#3bbdb5; --plain:#e0954a; --rlnc:#9384e0; --good:#48b878; --bad:#e06a55; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1060px;margin:0 auto;padding:40px 24px 72px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--cclf);font-weight:600}
+  h1{font-size:30px;line-height:1.12;margin:10px 0 8px;letter-spacing:-.02em;text-wrap:balance;max-width:24ch}
+  .thesis{color:var(--muted);max-width:76ch;font-size:15.5px}
+  .thesis b{color:var(--ink);font-weight:600}
+  .themebtn{position:fixed;top:16px;right:16px;background:var(--panel);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;box-shadow:var(--shadow)}
+  .cards{display:flex;gap:14px;flex-wrap:wrap;margin:22px 0 4px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow);min-width:150px}
+  .card .v{font-size:23px;font-weight:680;letter-spacing:-.02em}
+  .card .k{font-size:12px;color:var(--muted);margin-top:2px}
+  .card.win{border-left:3px solid var(--cclf)} .card.null{border-left:3px solid var(--faint)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+  @media (max-width:860px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px;box-shadow:var(--shadow)}
+  .plabel{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .plabel .ax{color:var(--cclf)}
+  .ptitle{font-size:17px;font-weight:650;margin:5px 0 3px;letter-spacing:-.01em}
+  .pdesc{font-size:13px;color:var(--muted);margin:0 0 12px;max-width:54ch}
+  svg{width:100%;height:auto;display:block;overflow:visible}
+  .legend{display:flex;flex-wrap:wrap;gap:9px 15px;margin-top:12px;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:15px;height:0;border-top-width:2.5px;border-top-style:solid;display:inline-block}
+  .take{font-size:12.5px;color:var(--muted);margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+  .take b{color:var(--ink)}
+  .note{margin-top:24px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--rlnc);border-radius:10px;padding:16px 18px;font-size:13.5px;color:var(--muted)}
+  .note b{color:var(--ink)}
+  .note + .note{margin-top:12px;border-left-color:var(--cclf)}
+  .foot{margin-top:20px;font-size:12px;color:var(--faint)}
+  #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--ink);color:var(--bg);padding:6px 9px;border-radius:6px;font-size:11.5px;z-index:9;box-shadow:var(--shadow)}
+</style>
+
+<button class="themebtn" id="themeBtn">◐ theme</button>
+<div id="tip" class="mono"></div>
+
+<div class="wrap">
+  <div class="eyebrow">ndn-sim · comparative eval #68</div>
+  <h1>Coding × CCLF: a tidy hypothesis that didn't survive measurement</h1>
+  <p class="thesis">The expected story was a synergy: CCLF suppresses redundant rebroadcasts, coding
+  makes every surviving one any-K-of-N innovative, so <b>RLNC + CCLF</b> should be the sweet spot for
+  disseminating a generation across a field. It isn't. On a real GF(2)-basis model (fixed across four
+  debugging passes) the truth is blunter: <b>the two axes aren't the same kind of lever.</b> CCLF is
+  the win — it halves airtime at scale. Coding is ~neutral for whole-network flooding, because flooding
+  already gives every packet massive spatial redundancy. Coding's real payoff is a different problem
+  entirely (the lossy relay path). Keeping the negative result is the point.</p>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="plabel"><span class="ax">A</span> delivery vs loss · N=120</div>
+      <div class="ptitle">Coding buys no robustness here</div>
+      <p class="pdesc">All four configs track together as per-link erasure climbs to 50%. There's no
+      coupon wall for plain to hit — flood redundancy means every packet arrives by many paths. The
+      any-K-of-N property has nothing to repair.</p>
+      <svg id="cA"></svg>
+      <div class="legend" id="lA"></div>
+      <div class="take" id="tA"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plabel"><span class="ax">B</span> airtime vs density · e=0.2</div>
+      <div class="ptitle">CCLF is the whole story</div>
+      <p class="pdesc">Flood's transmissions blow up with density — the broadcast storm. CCLF stays flat
+      by overhearing that neighbours already covered the content. Coding barely shifts either curve.</p>
+      <svg id="cB"></svg>
+      <div class="legend" id="lB"></div>
+      <div class="take" id="tB"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plabel"><span class="ax">C</span> efficiency · N=120, e=0.3</div>
+      <div class="ptitle">The 3% that isn't a sweet spot</div>
+      <p class="pdesc">Delivered nodes per 1000 transmissions. CCLF lifts efficiency ~25%; adding coding
+      on top of CCLF moves it another ~3% — inside the margin. No synergy.</p>
+      <svg id="cC"></svg>
+      <div class="legend" id="lC"></div>
+      <div class="take" id="tC"></div>
+    </div>
+
+    <div class="panel">
+      <div class="plabel"><span class="ax">D</span> the model-debugging trail</div>
+      <div class="ptitle">How a wrong-direction result got fixed</div>
+      <p class="pdesc">The first runs showed coding <i>worse</i> under loss — backwards. Chasing that
+      (not forcing the narrative) is what produced the honest answer.</p>
+      <div id="trail" style="font-size:12.5px;color:var(--muted);margin-top:2px"></div>
+      <div class="take"><b>Lesson (again):</b> a wrong-direction result means the harness is wrong, not the world. Four fixes later, the world's answer was simply "coding doesn't help this workload."</div>
+    </div>
+  </div>
+
+  <div class="note" id="note1"></div>
+  <div class="note" id="note2"></div>
+  <div class="foot mono">GF(2) coding basis + Gaussian elimination, GF(256)-ideal reception · random geometric graph, 16 seeds · ndn-sim/examples/coding_cclf_scale.rs</div>
+</div>
+
+<script>
+const D = {"G":16,"budget":32,"eras":[0.1,0.2,0.3,0.4,0.5],"scales":[30,60,120,200],"A":[{"e":0.1,"cfg":"plain+flood","deliv":0.9932,"tx":1337.5},{"e":0.1,"cfg":"plain+CCLF","deliv":0.9932,"tx":855.4},{"e":0.1,"cfg":"RLNC+flood","deliv":0.9932,"tx":1367.6},{"e":0.1,"cfg":"RLNC+CCLF","deliv":0.9932,"tx":840.8},{"e":0.2,"cfg":"plain+flood","deliv":0.9932,"tx":1361.9},{"e":0.2,"cfg":"plain+CCLF","deliv":0.9932,"tx":978.1},{"e":0.2,"cfg":"RLNC+flood","deliv":0.9932,"tx":1420.4},{"e":0.2,"cfg":"RLNC+CCLF","deliv":0.9932,"tx":945.5},{"e":0.3,"cfg":"plain+flood","deliv":0.9932,"tx":1409.0},{"e":0.3,"cfg":"plain+CCLF","deliv":0.9927,"tx":1115.9},{"e":0.3,"cfg":"RLNC+flood","deliv":0.9932,"tx":1497.8},{"e":0.3,"cfg":"RLNC+CCLF","deliv":0.9911,"tx":1082.4},{"e":0.4,"cfg":"plain+flood","deliv":0.9911,"tx":1501.9},{"e":0.4,"cfg":"plain+CCLF","deliv":0.9875,"tx":1316.3},{"e":0.4,"cfg":"RLNC+flood","deliv":0.9932,"tx":1640.2},{"e":0.4,"cfg":"RLNC+CCLF","deliv":0.9917,"tx":1285.5},{"e":0.5,"cfg":"plain+flood","deliv":0.9833,"tx":1662.4},{"e":0.5,"cfg":"plain+CCLF","deliv":0.9682,"tx":1584.7},{"e":0.5,"cfg":"RLNC+flood","deliv":0.9865,"tx":1827.4},{"e":0.5,"cfg":"RLNC+CCLF","deliv":0.9646,"tx":1526.6}],"B":[{"n":30,"cfg":"plain+flood","tx":134.2},{"n":30,"cfg":"plain+CCLF","tx":131.9},{"n":30,"cfg":"RLNC+flood","tx":135.0},{"n":30,"cfg":"RLNC+CCLF","tx":127.8},{"n":60,"cfg":"plain+flood","tx":568.4},{"n":60,"cfg":"plain+CCLF","tx":521.2},{"n":60,"cfg":"RLNC+flood","tx":587.5},{"n":60,"cfg":"RLNC+CCLF","tx":511.1},{"n":120,"cfg":"plain+flood","tx":1361.9},{"n":120,"cfg":"plain+CCLF","tx":978.1},{"n":120,"cfg":"RLNC+flood","tx":1420.4},{"n":120,"cfg":"RLNC+CCLF","tx":945.5},{"n":200,"cfg":"plain+flood","tx":2346.8},{"n":200,"cfg":"plain+CCLF","tx":1192.9},{"n":200,"cfg":"RLNC+flood","tx":2407.2},{"n":200,"cfg":"RLNC+CCLF","tx":1185.9}],"C":[{"cfg":"plain+flood","eff":84.59},{"cfg":"plain+CCLF","eff":106.75},{"cfg":"RLNC+flood","eff":79.57},{"cfg":"RLNC+CCLF","eff":109.88}]};
+const CFGS=["plain+flood","plain+CCLF","RLNC+flood","RLNC+CCLF"];
+const styleOf=c=>({ "plain+flood":{col:'--plain',dash:''}, "plain+CCLF":{col:'--plain',dash:'5 4'}, "RLNC+flood":{col:'--rlnc',dash:''}, "RLNC+CCLF":{col:'--rlnc',dash:'5 4'} }[c]);
+
+const $=s=>document.querySelector(s);
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tip=$("#tip");
+const showTip=(h,e)=>{tip.innerHTML=h;tip.style.opacity=1;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";};
+const hideTip=()=>tip.style.opacity=0;
+const mount=(sel,W,H,g)=>{const s=$(sel);s.setAttribute("viewBox",`0 0 ${W} ${H}`);s.innerHTML=g;
+  s.querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});};
+const rows=(panel,cfg)=>D[panel].filter(r=>r.cfg===cfg);
+
+// A: delivery vs erasure
+function drawA(){
+  const W=500,H=270,m={l:44,r:14,t:14,b:34},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const es=D.eras, px=i=>m.l+i/(es.length-1)*iw;
+  const y0=0.9,y1=1.0, py=v=>m.t+ih*(1-(v-y0)/(y1-y0)); // zoomed 90–100% to show the near-overlap honestly
+  let g="";
+  [0.90,0.925,0.95,0.975,1.0].forEach(t=>{const y=py(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="9.5" fill="${cv('--muted')}" class="mono">${(t*100).toFixed(1)}%</text>`;});
+  es.forEach((e,i)=>g+=`<text x="${px(i)}" y="${H-m.b+16}" text-anchor="middle" font-size="10" fill="${cv('--muted')}" class="mono">${e}</text>`);
+  g+=`<text x="${m.l+iw/2}" y="${H-1}" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">per-link erasure e</text>`;
+  CFGS.forEach(c=>{const s=styleOf(c),pts=rows("A",c).map((r,i)=>[px(i),py(r.deliv)]);
+    g+=`<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv(s.col)}" stroke-width="2.2" ${s.dash?`stroke-dasharray="${s.dash}"`:''} stroke-linejoin="round"/>`;
+    pts.forEach((p,i)=>g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="${cv(s.col)}" data-tip="${c} · e=${D.eras[i]} · ${(rows('A',c)[i].deliv*100).toFixed(1)}%"/>`);});
+  g+=`<text x="${m.l+6}" y="${py(0.905)}" font-size="9.5" fill="${cv('--faint')}">y-axis zoomed 90–100% — the four lines really are this close</text>`;
+  mount("#cA",W,H,g);
+  $("#lA").innerHTML=CFGS.map(c=>{const s=styleOf(c);return `<span><i class="sw" style="border-top-color:${cv(s.col)};border-top-style:${s.dash?'dashed':'solid'}"></i>${c}</span>`;}).join("");
+  $("#tA").innerHTML="<b>Even at 50% loss the spread is ~3 points</b>, and it's plain+flood that's often on top — not the coded configs. The any-K-of-N advantage needs a bottleneck link to matter; a dense flood has none.";
+}
+
+// B: airtime vs scale
+function drawB(){
+  const W=500,H=270,m={l:46,r:14,t:14,b:34},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const ns=D.scales, px=i=>m.l+i/(ns.length-1)*iw, ymax=2600, py=v=>m.t+ih*(1-v/ymax);
+  let g="";
+  [0,650,1300,1950,2600].forEach(t=>{const y=py(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="9.5" fill="${cv('--muted')}" class="mono">${t}</text>`;});
+  ns.forEach((n,i)=>g+=`<text x="${px(i)}" y="${H-m.b+16}" text-anchor="middle" font-size="10" fill="${cv('--muted')}" class="mono">${n}</text>`);
+  g+=`<text x="${m.l+iw/2}" y="${H-1}" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">nodes (density)</text>`;
+  CFGS.forEach(c=>{const s=styleOf(c),pts=rows("B",c).map((r,i)=>[px(i),py(r.tx)]);
+    g+=`<path d="${pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv(s.col)}" stroke-width="2.2" ${s.dash?`stroke-dasharray="${s.dash}"`:''} stroke-linejoin="round"/>`;
+    pts.forEach((p,i)=>g+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="${cv(s.col)}" data-tip="${c} · N=${D.scales[i]} · ${rows('B',c)[i].tx.toFixed(0)} tx"/>`);});
+  g+=`<text x="${px(3)-4}" y="${py(2380)}" text-anchor="end" font-size="10" fill="${cv('--flood')}" font-weight="600">flood (storm)</text>`;
+  g+=`<text x="${px(3)-4}" y="${py(1120)}" text-anchor="end" font-size="10" fill="${cv('--cclf')}" font-weight="600">CCLF (flat)</text>`;
+  mount("#cB",W,H,g);
+  $("#lB").innerHTML=CFGS.map(c=>{const s=styleOf(c);return `<span><i class="sw" style="border-top-color:${cv(s.col)};border-top-style:${s.dash?'dashed':'solid'}"></i>${c}</span>`;}).join("");
+  $("#tB").innerHTML="<b>At 200 nodes CCLF spends ~half the airtime of flood</b> (1186–1193 vs 2347–2407), and the plain/RLNC pairs are nearly on top of each other within each discipline. Suppression is the lever; the field size isn't.";
+}
+
+// C: efficiency bars
+function drawC(){
+  const W=500,H=270,m={l:46,r:14,t:14,b:52},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const d=D.C, ymax=120, bw=iw/d.length, py=v=>m.t+ih*(1-v/ymax);
+  let g="";
+  [0,30,60,90,120].forEach(t=>{const y=py(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-7}" y="${y+3.5}" text-anchor="end" font-size="9.5" fill="${cv('--muted')}" class="mono">${t}</text>`;});
+  d.forEach((r,i)=>{const s=styleOf(r.cfg),x=m.l+i*bw+bw*0.2,w=bw*0.6,y=py(r.eff),h=m.t+ih-y;
+    g+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${cv(s.col)}" opacity="${s.dash?0.6:1}" data-tip="${r.cfg} · ${r.eff.toFixed(1)}"/>`;
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${(y-6).toFixed(1)}" text-anchor="middle" font-size="11" class="mono" fill="${cv('--ink')}" font-weight="600">${r.eff.toFixed(0)}</text>`;
+    const nm=r.cfg.split("+"); g+=`<text x="${(x+w/2).toFixed(1)}" y="${H-m.b+15}" text-anchor="middle" font-size="9.5" fill="${cv('--muted')}">${nm[0]}</text>`;
+    g+=`<text x="${(x+w/2).toFixed(1)}" y="${H-m.b+27}" text-anchor="middle" font-size="9.5" fill="${cv('--faint')}">+${nm[1]}</text>`;});
+  g+=`<text transform="translate(12,${m.t+ih/2}) rotate(-90)" text-anchor="middle" font-size="10.5" fill="${cv('--faint')}">delivered nodes / 1000 tx</text>`;
+  mount("#cC",W,H,g);
+  $("#lC").innerHTML=`<span style="color:var(--muted)">solid = flood · faded = CCLF · amber = plain · violet = RLNC</span>`;
+  $("#tC").innerHTML="<b>Rank them: the two CCLF bars lead (107, 110); the two flood bars trail (85, 80).</b> The discipline (flood→CCLF) is a ~25% jump; the coding (plain→RLNC) is ~3%, and it flips sign under flood. CCLF is the axis that matters.";
+}
+
+function drawTrail(){
+  const steps=[
+    ["1","strict d_i&gt;d_j rank rule","RLNC collapses at high loss — backwards"],
+    ["2","1−d_j/G innovation prob","invents a GF(2) coupon wall GF(256) doesn't have"],
+    ["3","real GF(2) basis + a subspace-containment want-gate","fixes the equal-rank/different-subspace stall"],
+    ["4","budget sweep","reveals it was budget-under-loss diffusion, not a coding win"],
+  ];
+  $("#trail").innerHTML=steps.map(([n,f,r])=>`<div style="display:flex;gap:9px;margin:7px 0"><span class="mono" style="color:var(--rlnc);font-weight:700">${n}</span><span><b style="color:var(--ink)">${f}</b> — ${r}</span></div>`).join("");
+}
+
+function render(){
+  $("#cards").innerHTML=[
+    ["win","~2×","airtime CCLF saves at N=200"],
+    ["null","~3%","efficiency coding adds over CCLF"],
+    ["null","~0 pp","delivery gap coding closes"],
+    ["win","~25%","efficiency lift from CCLF alone"],
+  ].map(([cl,v,k])=>`<div class="card ${cl}"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  drawA();drawB();drawC();drawTrail();
+  $("#note1").innerHTML="<b>Why coding is neutral HERE — and where it isn't.</b> In a dense broadcast flood every packet already reaches a node by many independent paths, so there's no single bottleneck link for the any-K-of-N property to protect; meanwhile coded rank has to diffuse hop-by-hop from one source, which under a tight generation budget is if anything <i>less</i> efficient than letting native packets spread independently. Coding's genuine win is a different topology — a lossy relay <i>path</i> (source→relay→sink), where a relay recodes to repair the second hop without re-crossing the first. That regime is measured separately in <span class='mono'>coding_compare.rs</span> (F1 vs F2), and there RLNC clearly pays off. Pairing it with CCLF on the field creates no synergy; asserting one would be the tidy lie.";
+  $("#note2").innerHTML="<b>The model is honest about coding, not rigged against it.</b> Coded state is a real GF(2) coefficient basis reduced by Gaussian elimination — subspace diversity and coupon-freeness fall out of the math, not a scalar-rank approximation. Reception uses the GF(256)-ideal rule (a packet is innovative whenever the sender holds a direction outside the receiver's subspace), so the comparison reflects the field real RLNC deploys. The result stands because the model was fixed until it stopped getting coding backwards — then reported whatever it said.";
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{const r=document.documentElement,c=r.getAttribute("data-theme");
+  r.setAttribute("data-theme",c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark")));render();});
+</script>

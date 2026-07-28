@@ -74,6 +74,10 @@ pub struct Simulation {
     world: Option<std::sync::Arc<World>>,
     /// Shared radio medium spec `(propagation, seed)` — built into a `RadioBus` at `start`.
     radio: Option<(std::sync::Arc<dyn crate::medium::PropagationModel>, u64)>,
+    /// Optional collision model for the radio medium (default `NoInterference`). Set via
+    /// [`with_radio_interference`](Self::with_radio_interference) to make concurrent same-channel
+    /// transmissions actually collide — needed for any contention/MRMC study.
+    radio_interference: Option<std::sync::Arc<dyn crate::medium::InterferenceModel>>,
     /// Nodes that get a `SimRadioFace` on the shared bus, with their world positions.
     radio_nodes: Vec<(NodeId, crate::world::Position)>,
     /// Apps to spawn on each node once its engine is up (declarative producers/consumers).
@@ -106,6 +110,7 @@ impl Simulation {
             kernel: std::sync::Arc::new(WallClockKernel::new()),
             world: None,
             radio: None,
+            radio_interference: None,
             radio_nodes: Vec::new(),
             pending_apps: Vec::new(),
             strategies: Vec::new(),
@@ -155,6 +160,19 @@ impl Simulation {
         seed: u64,
     ) -> Self {
         self.radio = Some((propagation, seed));
+        self
+    }
+
+    /// Install a collision model on the radio medium (e.g.
+    /// [`CarrierSenseInterference`](crate::medium::CarrierSenseInterference)) so concurrent
+    /// same-channel in-air frames actually collide. Without this the medium is `NoInterference` and
+    /// no contention (hence no multi-channel benefit) can ever appear. Requires
+    /// [`with_radio_medium`](Self::with_radio_medium).
+    pub fn with_radio_interference(
+        mut self,
+        interference: std::sync::Arc<dyn crate::medium::InterferenceModel>,
+    ) -> Self {
+        self.radio_interference = Some(interference);
         self
     }
 
@@ -429,19 +447,31 @@ impl Simulation {
         let mut radio_faces: HashMap<NodeId, FaceId> = HashMap::new();
         let kernel_runtime = self.kernel.runtime();
         let world_seed = self.seed;
+        let radio_interference = self.radio_interference.clone();
         let radio_bus = self.radio.map(|(propagation, seed)| {
             // Fold the world seed into the radio erasure seed so a sweep varies radio realizations
             // too (world_seed 0 leaves the declared radio seed untouched).
             let seed = seed ^ world_seed;
             // Build the bus on the fabric's kernel runtime so radio delivery timing rides the same
-            // clock/executor as the engines (including the discrete-event kernel).
-            let bus = RadioBus::new_on(
-                std::sync::Arc::clone(&world),
-                propagation,
-                epoch_ns,
-                seed,
-                std::sync::Arc::clone(&kernel_runtime),
-            );
+            // clock/executor as the engines (including the discrete-event kernel). With an explicit
+            // interference model, concurrent same-channel frames collide (contention/MRMC studies).
+            let bus = match radio_interference {
+                Some(interference) => RadioBus::with_interference_on(
+                    std::sync::Arc::clone(&world),
+                    propagation,
+                    epoch_ns,
+                    seed,
+                    interference,
+                    std::sync::Arc::clone(&kernel_runtime),
+                ),
+                None => RadioBus::new_on(
+                    std::sync::Arc::clone(&world),
+                    propagation,
+                    epoch_ns,
+                    seed,
+                    std::sync::Arc::clone(&kernel_runtime),
+                ),
+            };
             for (id, _pos) in &self.radio_nodes {
                 let Some(entry) = nodes.get(id) else { continue };
                 let face_id = entry.engine.faces().alloc_id();

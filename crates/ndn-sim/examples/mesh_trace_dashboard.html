@@ -1,0 +1,196 @@
+<title>Multi-node distributed trace — radio decisions inline</title>
+<style>
+  :root{
+    --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad;
+    --line:#e4e0d6; --grid:#eae7de; --lane:#f0ede4;
+    --interest:#5566cc; --data:#1f9a94; --retry:#c9803a; --decision:#7161c9; --stitch:#c3bfb2;
+    --shadow:0 1px 2px rgba(30,34,42,.05),0 6px 20px rgba(30,34,42,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f;
+      --line:#272c35; --grid:#20252d; --lane:#1c212a;
+      --interest:#7d8ee6; --data:#3bbdb5; --retry:#e0954a; --decision:#9384e0; --stitch:#3a404b;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.35);}
+  }
+  :root[data-theme="light"]{ --bg:#f4f2ec; --panel:#fbfaf6; --ink:#20242b; --muted:#6a7180; --faint:#9aa0ad; --line:#e4e0d6; --grid:#eae7de; --lane:#f0ede4; --interest:#5566cc; --data:#1f9a94; --retry:#c9803a; --decision:#7161c9; --stitch:#c3bfb2; }
+  :root[data-theme="dark"]{ --bg:#12151a; --panel:#191d24; --ink:#e7e9ee; --muted:#9aa1b0; --faint:#7a828f; --line:#272c35; --grid:#20252d; --lane:#1c212a; --interest:#7d8ee6; --data:#3bbdb5; --retry:#e0954a; --decision:#9384e0; --stitch:#3a404b; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1120px;margin:0 auto;padding:40px 24px 72px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--decision);font-weight:600}
+  h1{font-size:29px;line-height:1.13;margin:10px 0 8px;letter-spacing:-.02em;text-wrap:balance;max-width:24ch}
+  .thesis{color:var(--muted);max-width:78ch;font-size:15.5px}
+  .thesis b{color:var(--ink);font-weight:600}
+  .themebtn{position:fixed;top:16px;right:16px;background:var(--panel);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:7px 11px;font-size:12px;cursor:pointer;box-shadow:var(--shadow)}
+  .cards{display:flex;gap:14px;flex-wrap:wrap;margin:22px 0 4px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 17px;box-shadow:var(--shadow);min-width:140px}
+  .card .v{font-size:23px;font-weight:680;letter-spacing:-.02em}
+  .card .k{font-size:12px;color:var(--muted);margin-top:2px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px;box-shadow:var(--shadow);margin-top:20px}
+  .plabel{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  .plabel .ax{color:var(--decision)}
+  .ptitle{font-size:18px;font-weight:650;margin:5px 0 3px;letter-spacing:-.01em}
+  .pdesc{font-size:13px;color:var(--muted);margin:0 0 14px;max-width:74ch}
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+  svg{display:block}
+  .legend{display:flex;flex-wrap:wrap;gap:10px 18px;margin-top:13px;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:15px;height:11px;border-radius:3px;display:inline-block}
+  .sw.hollow{background:transparent!important;border:1.5px dashed var(--retry)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  @media (max-width:820px){.two{grid-template-columns:1fr}}
+  .note{margin-top:20px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--decision);border-radius:10px;padding:16px 18px;font-size:13.5px;color:var(--muted)}
+  .note b{color:var(--ink)} .note code,.note .mono{font-family:ui-monospace,Menlo,monospace;color:var(--decision);font-size:12.5px}
+  table.assess{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+  table.assess td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.assess td:first-child{color:var(--ink);font-weight:600;white-space:nowrap;width:1%}
+  .yes{color:var(--data);font-weight:700} .no{color:var(--retry);font-weight:700}
+  .foot{margin-top:20px;font-size:12px;color:var(--faint)}
+  #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .08s;background:var(--ink);color:var(--bg);padding:7px 10px;border-radius:6px;font-size:11.5px;z-index:9;box-shadow:var(--shadow);max-width:260px}
+  #tip b{color:#fff}
+</style>
+
+<button class="themebtn" id="themeBtn">◐ theme</button>
+<div id="tip" class="mono"></div>
+
+<div class="wrap">
+  <div class="eyebrow">ndn-sim · telemetry #65</div>
+  <h1>A multi-node trace, with the radio decision <span style="color:var(--decision)">inside</span> it</h1>
+  <p class="thesis">A distributed trace of 14 named fetches across a 4-node radio chain — each
+  request's Interest walks up to the producer and the Data walks back, every hop a span on its node's
+  lane, stitched to its causal parent. The point isn't just the waterfall: <b>each Data hop carries
+  the bandit's decision</b> — the arm, MCS and power it chose — so "why did this node send at this
+  rate" lives <i>in</i> the trace, not beside it. Hover any span.</p>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="panel">
+    <div class="plabel"><span class="ax">◈</span> distributed trace · swimlanes per node</div>
+    <div class="ptitle">Interest up, Data back — 14 requests pipelined</div>
+    <p class="pdesc">Time flows left→right (µs). Each request is a “V”: Interest descends consumer→producer,
+    Data climbs back. Grey lines are the causal stitch (span→parent). Hollow amber = a hop that collided
+    with a concurrent frame and was retried — clustered on the consumer, where request N's Interest meets
+    request N−1's returning Data. Data bars are labelled with the chosen MCS.</p>
+    <div class="scroll"><svg id="trace"></svg></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="two">
+    <div class="panel" style="margin-top:0">
+      <div class="plabel"><span class="ax">▲</span> decision observability</div>
+      <div class="ptitle">The rate the bandit chose, per request</div>
+      <p class="pdesc">Extracted from the same spans — the producer's Data-hop arm/MCS/power over the run.
+      The bandit explores arms (rate + power backoff), so MCS and dBm move; this is the "why" made visible.</p>
+      <svg id="decide"></svg>
+      <div class="legend" id="dlegend"></div>
+    </div>
+    <div class="panel" style="margin-top:0">
+      <div class="plabel"><span class="ax">✓</span> telemetry quality — honest assessment</div>
+      <div class="ptitle">What stitches, and where</div>
+      <p class="pdesc">What the sim can attribute and stitch, versus what only the real deployment does.</p>
+      <table class="assess" id="assess"></table>
+    </div>
+  </div>
+
+  <div class="note" id="note"></div>
+  <div class="foot mono">reconstructed from node-attributed RadioLog + bandit decisions · ndn-sim/examples/mesh_trace.rs</div>
+</div>
+
+<script>
+const D = {"lanes":[{"node":0,"label":"consumer"},{"node":1,"label":"relay-1"},{"node":2,"label":"relay-2"},{"node":3,"label":"producer"}],"spans":[{"id":1,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg0","t0":0,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":2,"parent":1,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg0","t0":39384,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":3,"parent":2,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg0","t0":78768,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":4,"parent":3,"node":3,"lane":"producer","kind":"data","name":"/clip/seg0","t0":118152,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":5,"parent":4,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg0","t0":157536,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":6,"parent":5,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg0","t0":196920,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":7,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg1","t0":236304,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":8,"parent":7,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg1","t0":275688,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":9,"parent":8,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg1","t0":315072,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":10,"parent":9,"node":3,"lane":"producer","kind":"data","name":"/clip/seg1","t0":354456,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":11,"parent":10,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg1","t0":406968,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":12,"parent":11,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg1","t0":459480,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":13,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg2","t0":472608,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":14,"parent":13,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg2","t0":511992,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":15,"parent":14,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg2","t0":551376,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":16,"parent":15,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg2","t0":590760,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":17,"parent":16,"node":3,"lane":"producer","kind":"data","name":"/clip/seg2","t0":630144,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":18,"parent":17,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg2","t0":665152,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":19,"parent":18,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg2","t0":700160,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":20,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg3","t0":708912,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":21,"parent":20,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg3","t0":748296,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":22,"parent":21,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg3","t0":787680,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":23,"parent":22,"node":1,"lane":"relay-1","kind":"retry","name":"/clip/seg3","t0":827064,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":24,"parent":23,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg3","t0":866448,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":25,"parent":24,"node":3,"lane":"producer","kind":"data","name":"/clip/seg3","t0":905832,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":26,"parent":25,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg3","t0":945216,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":27,"parent":26,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg3","t0":984600,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":28,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg4","t0":945216,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":29,"parent":28,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg4","t0":984600,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":30,"parent":29,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg4","t0":1023984,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":31,"parent":30,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg4","t0":1063368,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":32,"parent":31,"node":3,"lane":"producer","kind":"data","name":"/clip/seg4","t0":1102752,"dur":52512,"ok":true,"arm":4,"mcs":4,"dbm":20.0},{"id":33,"parent":32,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg4","t0":1155264,"dur":52512,"ok":true,"arm":4,"mcs":4,"dbm":20.0},{"id":34,"parent":33,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg4","t0":1207776,"dur":52512,"ok":true,"arm":4,"mcs":4,"dbm":20.0},{"id":35,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg5","t0":1181520,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":36,"parent":35,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg5","t0":1220904,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":37,"parent":36,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg5","t0":1260288,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":38,"parent":37,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg5","t0":1299672,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":39,"parent":38,"node":3,"lane":"producer","kind":"data","name":"/clip/seg5","t0":1339056,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":40,"parent":39,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg5","t0":1378440,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":41,"parent":40,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg5","t0":1417824,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":42,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg6","t0":1417824,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":43,"parent":42,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg6","t0":1457208,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":44,"parent":43,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg6","t0":1496592,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":45,"parent":44,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg6","t0":1535976,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":46,"parent":45,"node":3,"lane":"producer","kind":"data","name":"/clip/seg6","t0":1575360,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":47,"parent":46,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg6","t0":1610368,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":48,"parent":47,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg6","t0":1645376,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":49,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg7","t0":1654128,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":50,"parent":49,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg7","t0":1693512,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":51,"parent":50,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg7","t0":1732896,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":52,"parent":51,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg7","t0":1772280,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":53,"parent":52,"node":3,"lane":"producer","kind":"data","name":"/clip/seg7","t0":1811664,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":54,"parent":53,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg7","t0":1851048,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":55,"parent":54,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg7","t0":1890432,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":56,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg8","t0":1890432,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":57,"parent":56,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg8","t0":1929816,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":58,"parent":57,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg8","t0":1969200,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":59,"parent":58,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg8","t0":2008584,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":60,"parent":59,"node":3,"lane":"producer","kind":"data","name":"/clip/seg8","t0":2047968,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":61,"parent":60,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg8","t0":2100480,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":62,"parent":61,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg8","t0":2152992,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":63,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg9","t0":2126736,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":64,"parent":63,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg9","t0":2166120,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":65,"parent":64,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg9","t0":2205504,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":66,"parent":65,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg9","t0":2244888,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":67,"parent":66,"node":3,"lane":"producer","kind":"data","name":"/clip/seg9","t0":2284272,"dur":52512,"ok":true,"arm":4,"mcs":4,"dbm":20.0},{"id":68,"parent":67,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg9","t0":2336784,"dur":52512,"ok":true,"arm":4,"mcs":4,"dbm":20.0},{"id":69,"parent":68,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg9","t0":2389296,"dur":52512,"ok":true,"arm":4,"mcs":4,"dbm":20.0},{"id":70,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg10","t0":2363040,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":71,"parent":70,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg10","t0":2402424,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":72,"parent":71,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg10","t0":2441808,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":73,"parent":72,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg10","t0":2481192,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":74,"parent":73,"node":3,"lane":"producer","kind":"data","name":"/clip/seg10","t0":2520576,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":75,"parent":74,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg10","t0":2559960,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":76,"parent":75,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg10","t0":2599344,"dur":39384,"ok":true,"arm":3,"mcs":5,"dbm":14.0},{"id":77,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg11","t0":2599344,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":78,"parent":77,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg11","t0":2638728,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":79,"parent":78,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg11","t0":2678112,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":80,"parent":79,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg11","t0":2717496,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":81,"parent":80,"node":3,"lane":"producer","kind":"data","name":"/clip/seg11","t0":2756880,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":82,"parent":81,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg11","t0":2791888,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":83,"parent":82,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg11","t0":2826896,"dur":35008,"ok":true,"arm":2,"mcs":6,"dbm":20.0},{"id":84,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg12","t0":2835648,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":85,"parent":84,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg12","t0":2875032,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":86,"parent":85,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg12","t0":2914416,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":87,"parent":86,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg12","t0":2953800,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":88,"parent":87,"node":3,"lane":"producer","kind":"data","name":"/clip/seg12","t0":2993184,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":89,"parent":88,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg12","t0":3032568,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":90,"parent":89,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg12","t0":3071952,"dur":39384,"ok":true,"arm":0,"mcs":5,"dbm":20.0},{"id":91,"parent":null,"node":0,"lane":"consumer","kind":"interest","name":"/clip/seg13","t0":3071952,"dur":39384,"ok":false,"arm":null,"mcs":5,"dbm":null},{"id":92,"parent":91,"node":0,"lane":"consumer","kind":"retry","name":"/clip/seg13","t0":3111336,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":93,"parent":92,"node":1,"lane":"relay-1","kind":"interest","name":"/clip/seg13","t0":3150720,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":94,"parent":93,"node":2,"lane":"relay-2","kind":"interest","name":"/clip/seg13","t0":3190104,"dur":39384,"ok":true,"arm":null,"mcs":5,"dbm":null},{"id":95,"parent":94,"node":3,"lane":"producer","kind":"data","name":"/clip/seg13","t0":3229488,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":96,"parent":95,"node":2,"lane":"relay-2","kind":"data","name":"/clip/seg13","t0":3282000,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0},{"id":97,"parent":96,"node":1,"lane":"relay-1","kind":"data","name":"/clip/seg13","t0":3334512,"dur":52512,"ok":true,"arm":1,"mcs":4,"dbm":20.0}],"arms":5};
+
+const $=s=>document.querySelector(s);
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tip=$("#tip");
+const showTip=(h,e)=>{tip.innerHTML=h;tip.style.opacity=1;tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";};
+const hideTip=()=>tip.style.opacity=0;
+const byId=Object.fromEntries(D.spans.map(s=>[s.id,s]));
+const colOf=s=>s.kind==="interest"?'--interest':s.kind==="data"?'--data':'--retry';
+
+function drawTrace(){
+  const nlane=D.lanes.length, laneH=46, m={l:78,r:24,t:26,b:34};
+  const tmax=Math.max(...D.spans.map(s=>s.t0+s.dur));
+  const W=1560, H=m.t+nlane*laneH+m.b, iw=W-m.l-m.r;
+  const x=t=>m.l+t/tmax*iw, ly=n=>m.t+n*laneH;
+  let g="";
+  // lane bands + labels
+  D.lanes.forEach((L,i)=>{
+    g+=`<rect x="${m.l}" y="${ly(i)}" width="${iw}" height="${laneH-4}" fill="${cv('--lane')}" rx="4"/>`;
+    g+=`<text x="${m.l-10}" y="${ly(i)+laneH/2}" text-anchor="end" font-size="12" font-weight="600" fill="${cv('--ink')}">${L.label}</text>`;
+  });
+  // time gridlines
+  for(let t=0;t<=tmax;t+=500000){const xx=x(t);
+    g+=`<line x1="${xx}" y1="${m.t}" x2="${xx}" y2="${m.t+nlane*laneH-4}" stroke="${cv('--grid')}"/>`;
+    g+=`<text x="${xx}" y="${m.t-8}" text-anchor="middle" font-size="9.5" fill="${cv('--faint')}" class="mono">${(t/1000).toFixed(0)}µs</text>`;}
+  // causal stitch lines (span → parent)
+  D.spans.forEach(s=>{ if(s.parent==null) return; const p=byId[s.parent];
+    const x1=x(p.t0+p.dur), y1=ly(p.node)+(laneH-4)/2, x2=x(s.t0), y2=ly(s.node)+(laneH-4)/2;
+    g+=`<path d="M${x1.toFixed(1)} ${y1.toFixed(1)} C ${((x1+x2)/2).toFixed(1)} ${y1.toFixed(1)}, ${((x1+x2)/2).toFixed(1)} ${y2.toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}" fill="none" stroke="${cv('--stitch')}" stroke-width="1"/>`;});
+  // span bars
+  D.spans.forEach(s=>{
+    const bx=x(s.t0), bw=Math.max(3,x(s.t0+s.dur)-x(s.t0)-1.5), by=ly(s.node)+7, bh=laneH-18;
+    const col=cv(colOf(s));
+    const dec=s.arm!=null?` · arm ${s.arm} · MCS ${s.mcs} · ${s.dbm}dBm`:"";
+    const tipH=`<b>${s.name}</b> · ${s.kind}${s.ok?"":" (collided→retry)"}<br>${D.lanes[s.node].label} · t=${(s.t0/1000).toFixed(0)}µs · ${(s.dur/1000).toFixed(0)}µs${dec}`;
+    if(s.ok){
+      g+=`<rect x="${bx.toFixed(1)}" y="${by}" width="${bw.toFixed(1)}" height="${bh}" rx="3" fill="${col}" data-tip="${tipH}"/>`;
+    }else{
+      g+=`<rect x="${bx.toFixed(1)}" y="${by}" width="${bw.toFixed(1)}" height="${bh}" rx="3" fill="none" stroke="${cv('--retry')}" stroke-width="1.5" stroke-dasharray="3 2" data-tip="${tipH}"/>`;
+    }
+    // MCS label on data bars if wide enough
+    if(s.kind==="data" && bw>26){
+      g+=`<text x="${(bx+bw/2).toFixed(1)}" y="${by+bh/2+4}" text-anchor="middle" font-size="10" font-weight="700" fill="${cv('--bg')}" class="mono" style="pointer-events:none">M${s.mcs}</text>`;
+    }
+  });
+  const svg=$("#trace"); svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.setAttribute("width",W); svg.setAttribute("height",H); svg.innerHTML=g;
+  svg.querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});
+  $("#legend").innerHTML=[["--interest","Interest hop"],["--data","Data hop (MCS-labelled)"],["--retry","retry"]].map(([c,t])=>`<span><i class="sw" style="background:${cv(c)}"></i>${t}</span>`).join("")+`<span><i class="sw hollow"></i>collided (dashed)</span><span><i class="sw" style="background:${cv('--stitch')}"></i>causal stitch</span>`;
+}
+
+// decision observability: producer Data-hop MCS + power per request
+function drawDecide(){
+  const dec=D.spans.filter(s=>s.kind==="data" && s.node===3);
+  const W=470,H=220,m={l:38,r:38,t:14,b:32},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const px=i=>m.l+(dec.length<2?0.5:i/(dec.length-1))*iw;
+  const mcsY=v=>m.t+ih*(1-(v-3)/(7-3)), pwrY=v=>m.t+ih*(1-(v-10)/(22-10));
+  let g="";
+  [3,4,5,6,7].forEach(t=>{const y=mcsY(t);g+=`<line x1="${m.l}" y1="${y}" x2="${m.l+iw}" y2="${y}" stroke="${cv('--grid')}"/><text x="${m.l-6}" y="${y+3.5}" text-anchor="end" font-size="9.5" fill="${cv('--data')}" class="mono">M${t}</text>`;});
+  [14,20].forEach(t=>{const y=pwrY(t);g+=`<text x="${m.l+iw+6}" y="${y+3.5}" text-anchor="start" font-size="9.5" fill="${cv('--decision')}" class="mono">${t}dB</text>`;});
+  dec.forEach((s,i)=>g+=`<text x="${px(i)}" y="${H-m.b+15}" text-anchor="middle" font-size="9" fill="${cv('--faint')}" class="mono">${i}</text>`);
+  g+=`<text x="${m.l+iw/2}" y="${H-2}" text-anchor="middle" font-size="10" fill="${cv('--faint')}">request #</text>`;
+  // power line
+  const pp=dec.map((s,i)=>[px(i),pwrY(s.dbm)]);
+  g+=`<path d="${pp.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv('--decision')}" stroke-width="1.8" stroke-dasharray="4 3"/>`;
+  // mcs step markers
+  dec.forEach((s,i)=>{g+=`<circle cx="${px(i)}" cy="${mcsY(s.mcs).toFixed(1)}" r="4" fill="${cv('--data')}" data-tip="req ${i} · arm ${s.arm} · MCS ${s.mcs} · ${s.dbm}dBm"/>`;});
+  const mp=dec.map((s,i)=>[px(i),mcsY(s.mcs)]);
+  g+=`<path d="${mp.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${cv('--data')}" stroke-width="2.2" stroke-linejoin="round"/>`;
+  const svg=$("#decide");svg.setAttribute("viewBox",`0 0 ${W} ${H}`);svg.innerHTML=g;
+  svg.querySelectorAll("[data-tip]").forEach(el=>{el.addEventListener("mousemove",e=>showTip(el.dataset.tip,e));el.addEventListener("mouseleave",hideTip);});
+  $("#dlegend").innerHTML=[["--data","chosen MCS"],["--decision","TX power (dBm)"]].map(([c,t])=>`<span><i class="sw" style="background:${cv(c)};height:3px"></i>${t}</span>`).join("");
+}
+
+function render(){
+  const total=D.spans.length, ok=D.spans.filter(s=>s.ok).length, retry=D.spans.filter(s=>s.kind==="retry").length, dec=D.spans.filter(s=>s.kind==="data").length;
+  $("#cards").innerHTML=[
+    [total,"spans across 4 lanes"],
+    [dec,"decision-stamped Data hops"],
+    [retry,"collision retries"],
+    [(100*ok/total).toFixed(0)+"%","hops delivered"],
+  ].map(([v,k])=>`<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+  drawTrace();drawDecide();
+  $("#assess").innerHTML=[
+    ["in-node span tree","<span class='yes'>✓ sim</span>","`SpanLog` captures the engine's `#[instrument]` PIT/FIB/pipeline spans with parent links, on the virtual clock."],
+    ["node attribution","<span class='no'>✗ sim</span> · <span class='yes'>✓ real</span>","`CapturedSpan` has no node id; all engines share one in-process `tracing` dispatcher. Real nodes are separate processes with a node resource attribute."],
+    ["cross-node stitch","<span class='no'>✗ sim spans</span> · <span class='yes'>✓ real</span>","Span ids are per-registry, so they don't compose in-process. ndn-observability stitches via OTLP-in-Data carrying trace context on the wire."],
+    ["frame-level trace","<span class='yes'>✓ sim</span>","`RadioLog` is node-attributed (from/to/t/delivered) — the basis for THIS reconstructed trace."],
+    ["decision inline","<span class='yes'>✓ now</span>","`select_traced` → arm/MCS/power woven onto each Data span (was captured beside the trace, not in it)."],
+  ].map(([a,b,c])=>`<tr><td>${a}</td><td>${b}</td><td style="color:var(--muted)">${c}</td></tr>`).join("");
+  $("#note").innerHTML="<b>The honest telemetry story.</b> The engine already emits a rich in-node causal span tree, and the sim captures it — but a <i>multi-node</i> trace needs node attribution and cross-node stitching that an in-process shared <code>tracing</code> dispatcher can't provide (span ids are per-registry, no node tag). The production path solves exactly this: each node is its own process, and <b>ndn-observability ships spans as OTLP inside Data packets carrying trace context</b>, so a consumer's fetch and a producer's serve compose into one trace <i>on the wire</i> — the named-data-native version of distributed tracing. This dashboard reconstructs that trace from the sim's node-attributed <code>RadioLog</code> + decision stream, and closes the second gap directly: the bandit's rate/power choice now lives <b>inside</b> the span it explains, so an operator reading the trace sees not just <i>what</i> each hop did but <i>why</i> it picked that rate. That fusion — request causality and control decision in one view — is the visualization design worth carrying to the real OTLP pipeline.";
+}
+render();
+$("#themeBtn").addEventListener("click",()=>{const r=document.documentElement,c=r.getAttribute("data-theme");
+  r.setAttribute("data-theme",c==="light"?"dark":(c==="dark"?"light":(matchMedia("(prefers-color-scheme: dark)").matches?"light":"dark")));render();});
+</script>

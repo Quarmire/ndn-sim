@@ -1,0 +1,26 @@
+clock,residual_us,guard_us,delivery,goodput_mbps,lat_p99_us
+perfect,0,10,1.0000,24.96,143.8
+perfect,0,50,1.0000,8.10,423.8
+perfect,0,200,1.0000,2.29,1473.8
+perfect,0,1000,1.0000,0.48,7073.8
+perfect,0,5000,1.0000,0.10,35073.8
+air/shared 8-hop,3,10,1.0000,24.96,145.7
+air/shared 8-hop,3,50,1.0000,8.10,425.7
+air/shared 8-hop,3,200,1.0000,2.29,1475.7
+air/shared 8-hop,3,1000,1.0000,0.48,7075.7
+air/shared 8-hop,3,5000,1.0000,0.10,35075.7
+air/shared 1-hop,7,10,0.9531,23.79,149.5
+air/shared 1-hop,7,50,1.0000,8.10,429.5
+air/shared 1-hop,7,200,1.0000,2.29,1479.5
+air/shared 1-hop,7,1000,1.0000,0.48,7079.5
+air/shared 1-hop,7,5000,1.0000,0.10,35079.5
+calibrate,50,10,0.6421,16.03,185.4
+calibrate,50,50,0.9097,7.37,465.4
+calibrate,50,200,1.0000,2.29,1509.7
+calibrate,50,1000,1.0000,0.48,7109.7
+calibrate,50,5000,1.0000,0.10,35109.7
+software/build 1ms,1000,10,0.1954,4.88,1100.9
+software/build 1ms,1000,50,0.3068,2.49,1343.5
+software/build 1ms,1000,200,0.6726,1.54,2360.6
+software/build 1ms,1000,1000,0.9722,0.46,7918.8
+software/build 1ms,1000,5000,1.0000,0.10,35918.8

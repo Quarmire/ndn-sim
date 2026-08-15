@@ -1,0 +1,10 @@
+part,arm,x,burst_p99,quiet_reserved_frac,quiet_p99
+policy,always-contend,0,8.9,0.0000,2.0
+policy,always-reserve,0,0.0,0.5938,0.0
+policy,reactive (floor),0,6.0,0.1151,2.0
+policy,fused (+occupancy),0,6.0,0.1142,2.0
+policy,fused-misleading,0,6.0,0.1191,2.0
+diversity,replicas,1,0.3818,0,0
+diversity,replicas,2,0.2506,0,0
+diversity,replicas,3,0.1246,0,0
+diversity,replicas,4,0.0511,0,0

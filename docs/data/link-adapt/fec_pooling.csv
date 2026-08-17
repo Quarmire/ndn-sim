@@ -1,0 +1,17 @@
+part,arm,x,value,detail
+A,discount,1,1.0000,parity=14;N=46;deliver=0.597
+A,discount,2,0.7826,parity=4;N=36;deliver=0.780
+A,discount,3,0.7174,parity=1;N=33;deliver=0.776
+A,discount,4,0.7174,parity=1;N=33;deliver=0.971
+A,discount,5,0.7174,parity=1;N=33;deliver=0.997
+A,discount,6,0.6957,parity=0;N=32;deliver=0.977
+B,semantics,1,0.5969,anyof=0.597;allof_right=0.991
+B,semantics,2,0.0001,anyof=0.780;allof_right=0.982
+B,semantics,3,0.0000,anyof=0.776;allof_right=0.973
+B,semantics,4,0.0000,anyof=0.971;allof_right=0.964
+B,semantics,5,0.0000,anyof=0.997;allof_right=0.955
+B,semantics,6,0.0000,anyof=0.977;allof_right=0.946
+C,correlation,0,0.9707,p_pool=0.992
+C,correlation,0.05,0.4561,p_pool=0.945
+C,correlation,0.15,0.0311,p_pool=0.849
+C,correlation,0.3,0.0001,p_pool=0.700

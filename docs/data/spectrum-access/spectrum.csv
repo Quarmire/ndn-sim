@@ -1,0 +1,9 @@
+part,arm,x,agg_delivery_or_rdv,worst_name_delivery
+isolation,single (no spread),1,0.0999,0.0552
+isolation,static-spread,1,0.8530,0.0680
+isolation,fhss (fast retune),1,0.8501,0.8353
+isolation,static+avoid,1,1.0000,1.0000
+rendezvous,shared (agreed map),0,1.0000,0
+rendezvous,divergent, 5% sense error,0.05,0.8124,0
+rendezvous,divergent, 15% sense error,0.15,0.5878,0
+rendezvous,divergent, 30% sense error,0.3,0.4233,0

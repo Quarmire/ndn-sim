@@ -1,0 +1,11 @@
+part,x,value
+sensing,1,0.6571
+sensing,2,0.7084
+sensing,4,0.7776
+sensing,6,0.8964
+sensing,8,1.0000
+coverage,1,0.3576
+coverage,2,0.5084
+coverage,3,0.6210
+coverage,4,0.7164
+coverage,6,0.8793

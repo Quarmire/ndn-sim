@@ -1,0 +1,11 @@
+part,arm,x,delivered,efficiency
+A,fixed_8,8,0.0000,0.1427
+A,fixed_16,16,0.0000,0.4370
+A,fixed_32,32,0.2009,0.3695
+A,fixed_64,64,0.1192,0.2145
+A,fixed_128,128,0.0584,0.1351
+A,rate_derived,0,0.5491,0.9847
+B,desync_0,0,20.97,0
+B,desync_0.05,0.05,14.66,0
+B,desync_0.15,0.15,7.94,0
+B,desync_0.3,0.3,2.91,0

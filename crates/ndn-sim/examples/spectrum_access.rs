@@ -18,6 +18,13 @@
 //! `cargo run --example spectrum_access --release -p ndn-sim`. Writes CSV.
 
 use std::io::Write;
+use std::str::FromStr;
+use std::sync::Arc;
+
+use ndn_observability::{Attr, SpanKind, SpanPublisher, SpanRetention};
+use ndn_packet::Name;
+use ndn_sim::telemetry::SimSpanEmitter;
+use ndn_sim::ImmediateRuntime;
 
 const C: usize = 6; // channels
 const NAMES: usize = 300;
@@ -136,6 +143,11 @@ fn main() {
     let mut csv = std::fs::File::create(format!("{dir}/spectrum.csv")).unwrap();
     writeln!(csv, "part,arm,x,agg_delivery_or_rdv,worst_name_delivery").unwrap();
 
+    // Real OTLP-in-Data telemetry, virtual-clock-stamped (same wire as a live node).
+    let publisher = SpanPublisher::new(Name::from_str("/sim/mac/spectrum/traces").unwrap(), SpanRetention::default());
+    let otlp = SimSpanEmitter::new(Arc::clone(&publisher), Arc::new(ImmediateRuntime));
+    let mut vclock: u64 = 0;
+
     println!("PART A — {C} channels, 1 interfered channel (busy 90%). Aggregate delivery / worst-name delivery.\n");
     println!("{:<16}{:>18}{:>20}", "mode", "aggregate", "worst name (fairness)");
     for (nm, m) in [("single (no spread)", Mode::Single), ("static-spread", Mode::Static), ("fhss (fast retune)", Mode::Fhss), ("static+avoid", Mode::StaticAvoid)] {
@@ -144,6 +156,9 @@ fn main() {
         a /= 24.0; w /= 24.0;
         println!("{:<16}{:>17.0}%{:>19.0}%", nm, a * 100.0, w * 100.0);
         writeln!(csv, "isolation,{nm},1,{a:.4},{w:.4}").ok();
+        let start = vclock; vclock += 1000;
+        otlp.span("mac.spectrum.isolation", SpanKind::Internal, start, vclock,
+            vec![Attr::str("mode", nm), Attr::int("aggregate_pct", (a * 100.0) as i64), Attr::int("worst_name_pct", (w * 100.0) as i64)]);
     }
 
     println!("\nPART B — rendezvous under avoidance: does producer meet consumer after fleeing the bad channel?");
@@ -156,7 +171,9 @@ fn main() {
         writeln!(csv, "rendezvous,{nm},{err},{r:.4},0").ok();
     }
 
-    println!("\nA: single collapses; static-spread ISOLATES interference to 1/C of names but STARVES them");
+    // Drain the OTLP-in-Data spans (each a Data packet whose content is an OTLP trace.proto Span).
+    println!("\nOTLP-in-Data: {} spans emitted through ndn-observability.", publisher.len());
+    println!("A: single collapses; static-spread ISOLATES interference to 1/C of names but STARVES them");
     println!("   (worst-name ~0); fhss spreads the loss fairly but needs fast retune; static+avoid RECOVERS");
     println!("   the starved names retune-free — the COTS win. B: SHARED occupancy keeps rendezvous ~100%;");
     println!("   DIVERGENT avoidance breaks it (endpoints flee to different channels) — why the map must be shared.");

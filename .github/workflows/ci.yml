@@ -101,4 +101,6 @@ jobs:
         run: go build -o /tmp/ndnd ./cmd/ndnd
       - name: Interop suite
         working-directory: ndn-sim
-        run: NDND_BIN=/tmp/ndnd cargo test -p ndn-sim --test interop_ndnd -- --ignored --nocapture
+        # The interop tests live in the consolidated `suite` test binary
+        # (autotests=false); filter to the interop_ndnd module's ignored tests.
+        run: NDND_BIN=/tmp/ndnd cargo test -p ndn-sim --test suite -- interop_ndnd --ignored --nocapture

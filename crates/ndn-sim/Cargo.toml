@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "In-process NDN network simulation with configurable link properties"
+# P1 compile-cost: the tests/*.rs files are consolidated into the single
+# `suite` test binary below (one link instead of ~53).
+autotests = false
 
 [package.metadata.scope]
 classification = "research"
@@ -74,6 +77,12 @@ mavlink = ["dep:mavlink"]
 name = "ndn-lab"
 path = "src/bin/ndn-lab.rs"
 required-features = ["bin"]
+
+# One consolidated integration-test binary (see `autotests = false` above).
+# tests/suite.rs pulls every tests/*.rs file in as a `#[path]` module.
+[[test]]
+name = "suite"
+path = "tests/suite.rs"
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["full"] }

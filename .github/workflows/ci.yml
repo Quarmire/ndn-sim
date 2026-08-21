@@ -26,18 +26,18 @@ jobs:
       - uses: actions/checkout@v4
         with: { path: ndn-sim }
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: main, path: ndn-rs }
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: "445736a2dd8597be0e09b36a31abd15b21e673e3", path: ndn-rs } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: main, path: ndn-ext }
+        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: "f979cb8d638fb79af6019f3583e42b12d087e3e8", path: ndn-ext } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: main, path: ndn-radio-drivers }
+        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: "66e9097f98beaee5b0bf4d6c4dd371e78bdf0a99", path: ndn-radio-drivers } # pinned sibling; bump deliberately
       # flotilla is PRIVATE (the Keel/Waterline content-calculus ndn-sim consumes).
       # A cross-repo private checkout needs a token: create a fine-grained PAT with
       # read access to Quarmire/flotilla and add it as the FLOTILLA_TOKEN secret.
       - uses: actions/checkout@v4
         with:
           repository: "${{ github.repository_owner }}/flotilla"
-          ref: main
+          ref: "bf9cf23dd5d52becf0e0b10a7583122b0c8fc94a" # pinned sibling; bump deliberately
           path: flotilla
           token: ${{ secrets.FLOTILLA_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
@@ -80,15 +80,15 @@ jobs:
       - uses: actions/checkout@v4
         with: { path: ndn-sim }
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: main, path: ndn-rs }
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: "445736a2dd8597be0e09b36a31abd15b21e673e3", path: ndn-rs } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: main, path: ndn-ext }
+        with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: "f979cb8d638fb79af6019f3583e42b12d087e3e8", path: ndn-ext } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: main, path: ndn-radio-drivers }
+        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: "66e9097f98beaee5b0bf4d6c4dd371e78bdf0a99", path: ndn-radio-drivers } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
         with:
           repository: "${{ github.repository_owner }}/flotilla"
-          ref: main
+          ref: "bf9cf23dd5d52becf0e0b10a7583122b0c8fc94a" # pinned sibling; bump deliberately
           path: flotilla
           token: ${{ secrets.FLOTILLA_TOKEN }}
       - uses: actions/checkout@v4

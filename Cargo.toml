@@ -22,7 +22,8 @@ ndn-packet    = { path = "../ndn-rs/crates/core/ndn-packet", default-features = 
 ndn-transport = { path = "../ndn-rs/crates/core/ndn-transport" }
 ndn-runtime   = { path = "../ndn-rs/crates/core/ndn-runtime" }
 ndn-face      = { path = "../ndn-rs/crates/faces/ndn-face" }
-ndn-frame-io  = { path = "../ndn-rs/crates/core/ndn-frame-io" }
+# Relocated in P2/D5: the radio foundation crates live in ndn-radio-drivers now.
+ndn-frame-io  = { path = "../ndn-radio-drivers/crates/ndn-frame-io" }
 ndn-signals-core = { path = "../ndn-rs/crates/core/ndn-signals-core" }
 ndn-store     = { path = "../ndn-rs/crates/forwarding/ndn-store" }
 ndn-strategy  = { path = "../ndn-rs/crates/forwarding/ndn-strategy" }

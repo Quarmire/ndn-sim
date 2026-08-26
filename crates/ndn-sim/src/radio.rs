@@ -603,16 +603,20 @@ impl RadioBus {
                     mcs_index,
                     bytes: frame.clone(),
                 };
-                if d.delay.is_zero() {
+                // A frame is decodable only once FULLY received: the sender's airtime (last bit on air)
+                // plus propagation. Delivering after propagation ALONE lets a receiver act on the frame
+                // before the sender has finished transmitting it — so a causally-later reply is emitted
+                // *within* the request's still-open airtime window and the half-duplex check drops it.
+                // That artifact is invisible under a real/paused clock (processing burns wall/virtual
+                // time) but fatal under the discrete-event kernel, whose engine+app processing is
+                // instantaneous in virtual time. Airtime + propagation makes delivery causal on every
+                // kernel: any reply is necessarily emitted after the request's airtime ends.
+                let recv_delay = std::time::Duration::from_nanos(airtime_ns) + d.delay;
+                let rt = Arc::clone(&self.runtime);
+                self.runtime.spawn(Box::pin(async move {
+                    rt.sleep(recv_delay).await;
                     let _ = sender.send(rf);
-                } else {
-                    let delay = d.delay;
-                    let rt = Arc::clone(&self.runtime);
-                    self.runtime.spawn(Box::pin(async move {
-                        rt.sleep(delay).await;
-                        let _ = sender.send(rf);
-                    }));
-                }
+                }));
             } else {
                 trace!(
                     from = node.0,

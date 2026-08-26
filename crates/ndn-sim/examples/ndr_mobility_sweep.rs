@@ -24,6 +24,7 @@ use ndn_engine::builder::EngineConfig;
 use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{AppSpec, VirtualKernel, Position, RandomWaypointMobility, RangeThreshold, SimKernel, Simulation};
+use ndn_strategy_reach as _; // force-link so `soft-prefix-reach` is in the strategy registry (linkme)
 use tokio_util::sync::CancellationToken;
 
 const N: usize = 12; // nodes (1 producer + 11 consumers)
@@ -32,7 +33,10 @@ const COMM_R: f64 = 30.0; // radio range (m) — sub-diameter, so multi-hop matt
 const ROUNDS: usize = 40; // fetch rounds per run
 const ROUND_DT_MS: u64 = 500; // virtual time between rounds (nodes move)
 const FETCH_LIFETIME_MS: u64 = 400; // Interest lifetime (< ROUND_DT so a miss resolves before the move)
-const STRATEGY: &str = "broadcast"; // flooding baseline; swap for the reachability-prior strategy to A/B
+// A/B: `NDR_STRATEGY=broadcast` (flood baseline) vs `NDR_STRATEGY=soft-prefix-reach` (the reachability prior).
+fn strategy() -> String {
+    std::env::var("NDR_STRATEGY").unwrap_or_else(|_| "broadcast".into())
+}
 
 struct Row {
     speed: f64,
@@ -44,6 +48,7 @@ struct Row {
 fn run(speed: f64) -> Row {
     VirtualKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
         // `broadcast` (flood) self-registers via linkme at link time — `set_strategy("broadcast")` resolves.
+        let strat = strategy();
         let mut sim = Simulation::new()
             .kernel(k.clone())
             .with_radio_medium(Arc::new(RangeThreshold { range_m: COMM_R, tx_power_dbm: 20.0 }), 7);
@@ -68,7 +73,7 @@ fn run(speed: f64) -> Row {
             fabric.set_mobility(node, Arc::new(RandomWaypointMobility { radius: REGION_R, speed_mps: speed, seed }));
             if i != 0 {
                 fabric.route_over_radio(node, &svc).unwrap();
-                fabric.set_strategy(node, &svc, STRATEGY).unwrap();
+                fabric.set_strategy(node, &svc, &strat).unwrap();
             }
         }
 
@@ -104,7 +109,8 @@ fn run(speed: f64) -> Row {
 
 fn main() {
     println!(
-        "NDR mobility sweep — N={N}, disc r={REGION_R}m, comm r={COMM_R}m, strategy={STRATEGY}, {ROUNDS} rounds\n"
+        "NDR mobility sweep — N={N}, disc r={REGION_R}m, comm r={COMM_R}m, strategy={}, {ROUNDS} rounds\n",
+        strategy()
     );
     println!("{:>8}  {:>9}  {:>9}  {:>11}  {:>16}", "speed", "delivered", "attempts", "deliv-ratio", "airtime/deliv(ms)");
     for &speed in &[0.0, 1.0, 5.0, 15.0, 30.0] {

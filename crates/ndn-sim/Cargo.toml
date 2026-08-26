@@ -86,6 +86,9 @@ path = "tests/suite.rs"
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["full"] }
+# The soft-prefix-reach forwarding strategy — force-linked in the ndr_mobility_sweep example so its linkme
+# registration is included (so `set_strategy("soft-prefix-reach")` resolves for the flood-vs-prior A/B).
+ndn-strategy-reach = { path = "../../../ndn-ext/crates/strategies/ndn-strategy-reach" }
 # Sign control Interests in the authenticated-control-over-NDN test.
 ndn-security = { workspace = true }
 # tests/field_faults.rs: the D-42 history-serving gates drive a real ndn-repo (two-phase mode).

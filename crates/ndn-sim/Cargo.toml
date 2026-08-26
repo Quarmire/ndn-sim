@@ -102,3 +102,6 @@ ndn-coding       = { workspace = true }
 ndn-pipes        = { workspace = true }
 # tests/field_faults.rs: seed ndn-sync's thread-local suppression jitter for reproducible runs.
 fastrand         = "2"
+
+[[example]]
+name = "ndr_multiproducer"

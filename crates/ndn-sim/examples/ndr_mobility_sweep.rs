@@ -6,14 +6,9 @@
 //! soft-prefix-reach strategy (the reachability-prior design) must beat. Emits, per speed: delivery ratio,
 //! total airtime, and **airtime per satisfied Interest** — the metric a good prior should drive down.
 //!
-//! Deterministic (`VirtualKernel` paused clock + seeded mobility), so runs replay bit-for-bit. Swap
-//! `STRATEGY` (and later feed the new strategy) to A/B one axis at a time, per the doc's §7 protocol.
-//!
-//! NOTE: uses `VirtualKernel`, not `DesKernel` — radio delivery over the DES event queue is currently
-//! REGRESSED (the `des_radio` / `ndn_radio_mode` / `cosim` suite tests fail; only DES-kernel radio is
-//! affected — non-DES radio tests pass), most likely from a sibling-pin bump drifting engine/radio timing
-//! out from under the DES kernel. `VirtualKernel` is equally deterministic (it backs the determinism tests).
-//! Move back to `DesKernel` once that regression is fixed.
+//! Deterministic (`DesKernel` event queue + seeded mobility), so runs replay bit-for-bit at
+//! event granularity. Swap `STRATEGY` (env `NDR_STRATEGY`) to A/B one axis at a time, per the doc's §7
+//! protocol.
 //!
 //! Run: `cargo run -p ndn-sim --example ndr_mobility_sweep`
 use std::sync::Arc;
@@ -23,7 +18,7 @@ use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
-use ndn_sim::{AppSpec, VirtualKernel, Position, RandomWaypointMobility, RangeThreshold, SimKernel, Simulation};
+use ndn_sim::{AppSpec, DesKernel, Position, RandomWaypointMobility, RangeThreshold, SimKernel, Simulation};
 use ndn_strategy_reach as _; // force-link so `soft-prefix-reach` is in the strategy registry (linkme)
 use tokio_util::sync::CancellationToken;
 
@@ -46,7 +41,7 @@ struct Row {
 }
 
 fn run(speed: f64) -> Row {
-    VirtualKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
+    DesKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
         // `broadcast` (flood) self-registers via linkme at link time — `set_strategy("broadcast")` resolves.
         let strat = strategy();
         let mut sim = Simulation::new()

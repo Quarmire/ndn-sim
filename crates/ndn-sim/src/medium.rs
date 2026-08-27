@@ -103,6 +103,17 @@ impl DeliveryReason {
             DeliveryReason::HalfDuplex => "receiver was transmitting (half-duplex)",
         }
     }
+
+    /// Whether the receiver was a **decodable candidate** — the frame was detectable (in range, above
+    /// sensitivity, line-of-sight) and either landed or was lost to erasure/collision/half-duplex.
+    /// `OutOfRange`/`Weak`/`Obstructed` were never candidates, so they must not dilute a delivery-fraction
+    /// denominator (H3).
+    pub fn is_decodable_candidate(self) -> bool {
+        !matches!(
+            self,
+            DeliveryReason::OutOfRange | DeliveryReason::Weak | DeliveryReason::Obstructed
+        )
+    }
 }
 
 /// The outcome of propagation for one `(tx, rx)` pair.

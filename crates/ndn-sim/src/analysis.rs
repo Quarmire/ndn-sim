@@ -52,17 +52,34 @@ pub fn throughput(recs: &[RadioDelivery]) -> Option<Throughput> {
     }
     let first = recs.iter().map(|r| r.t_ns).min()?;
     let last = recs.iter().map(|r| r.t_ns).max()?;
-    let span_ns = last.saturating_sub(first).max(1);
+    // H4: a rate over a ZERO span is meaningless. In batch mode every record is stamped at the same
+    // transmit instant (all t_ns equal), and the old `.max(1)` turned that into a 1 ns span → astronomical
+    // goodput. Reject it rather than emit garbage. (Receipt-time stamping, H4b, gives a real span.)
+    if last == first {
+        return None;
+    }
+    let span_ns = last - first;
     let secs = span_ns as f64 / 1e9;
-    let offered_bits: u64 = recs.iter().map(|r| r.frame_len as u64 * 8).sum();
+    // H3: "offered" = bits actually put on the air, counted ONCE per transmission. A broadcast logs one
+    // record per receiver, so summing every record counts a single frame N times. Dedup by (sender, t_ns)
+    // — a transmission's identity while t_ns is transmit-stamped (carry a tx-seq if receipt-stamping lands).
+    let mut seen_tx = std::collections::HashSet::new();
+    let offered_bits: u64 = recs
+        .iter()
+        .filter(|r| seen_tx.insert((r.from, r.t_ns)))
+        .map(|r| r.frame_len as u64 * 8)
+        .sum();
     let delivered_bits: u64 =
         recs.iter().filter(|r| r.delivered).map(|r| r.frame_len as u64 * 8).sum();
-    let attempts = recs.len() as f64;
+    // H3: delivery fraction over DECODABLE candidates (detectable receivers), not every node inside the
+    // logging bound — OutOfRange/Obstructed nodes were never candidates and would dilute the ratio toward
+    // geometry (it would move just by adding a distant bystander).
+    let decodable = recs.iter().filter(|r| r.reason.is_decodable_candidate()).count() as f64;
     let delivered = recs.iter().filter(|r| r.delivered).count() as f64;
     Some(Throughput {
         offered_bps: offered_bits as f64 / secs,
         goodput_bps: delivered_bits as f64 / secs,
-        delivery_fraction: delivered / attempts,
+        delivery_fraction: if decodable > 0.0 { delivered / decodable } else { 0.0 },
         span_ns,
     })
 }

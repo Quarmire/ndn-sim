@@ -3,6 +3,12 @@
 //! iterated over time. Nothing here commits to one physics implementation: the traits are the
 //! contract; the bundled types are a *reference* baseline.
 //!
+//! **Scope note (F7):** the on-air Wi-Fi path — [`RadioBus`](crate::RadioBus) — computes propagation and
+//! SINR through [`crate::medium`]'s `PropagationModel`, **not** through this module's `RadioEnvironment` /
+//! antenna / self-interference composition. Today `phy` backs the **LoRa** propagation ([`crate::lora`]
+//! via `PropagationBackend`); the richer multi-radio/antenna model here is a reference not yet wired to
+//! `RadioBus`, so `medium.rs` is the single source of truth for the simulated Wi-Fi radio face.
+//!
 //! A node is a [`RadioPlatform`] carrying **several** [`Radio`]s (multi-radio, multi-channel), each
 //! with its own [`Channel`] and [`AntennaPlacement`]. A [`RadioEnvironment`] composes a
 //! [`PropagationBackend`] (path loss + antenna gains → received power) and an [`InterferenceBackend`]

@@ -116,8 +116,9 @@ pub enum KernelSpec {
     #[default]
     WallClock,
     Virtual {
-        #[serde(default)]
-        seed: u64,
+        // No per-kernel seed here: the scenario-level `seed` (ScenarioSpec::seed, applied at
+        // Simulation::seed) is the single source of randomness. A prior `seed` field on this variant was
+        // silently ignored (build never read it) — a reproducibility footgun — so it was removed.
         #[serde(default)]
         epoch_ns: Option<u64>,
     },

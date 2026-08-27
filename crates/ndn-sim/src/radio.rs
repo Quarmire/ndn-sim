@@ -72,8 +72,13 @@ pub struct RadioBus {
     runtime: Arc<dyn Runtime>,
     rng: Mutex<StdRng>,
     /// The world seed — mixed into the per-link erasure hash so each link's realization is fixed by its
-    /// own (tx, rx, instant) identity, independent of global draw order (see `erasure_roll`).
+    /// own (tx, rx, instant, frame#) identity, independent of global draw order (see `erasure_roll`).
     seed: u64,
+    /// Per-transmitter frame counter, mixed into the erasure hash so two distinct frames from the same
+    /// node at the SAME virtual instant draw independently (not an identical roll). It is local to the
+    /// sending node and advances in that node's own app-driven send order, so it stays independent of
+    /// any other link's activity — preserving the order-independence the hashed roll buys.
+    tx_seq: Mutex<HashMap<NodeId, u64>>,
     receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<RadioRx>>>,
     /// Frames currently on the air `(sender, start_ns, end_ns, collided_rx)` — for collision detection.
     /// `collided_rx` is the shared set of receivers a *later* overlapping frame has retro-collided this
@@ -213,6 +218,7 @@ impl RadioBus {
             runtime,
             rng: Mutex::new(StdRng::seed_from_u64(seed)),
             seed,
+            tx_seq: Mutex::new(HashMap::new()),
             receivers: Mutex::new(HashMap::new()),
             in_air: Mutex::new(Vec::new()),
             view_cache: Mutex::new(None),
@@ -345,13 +351,15 @@ impl RadioBus {
         slots.min(cw) * 9_000
     }
 
-    /// Order-independent per-link erasure draw in `[0, 1)`. Hashes `(seed, tx, rx, instant)` rather than
-    /// pulling from one shared RNG in global order — so a link's realization is fixed by its OWN identity,
-    /// and adding an unrelated (non-interfering) link no longer perturbs which frames this link erases.
-    /// The old shared `StdRng` coupled every link through draw order, which two executors need not match.
-    fn erasure_roll(&self, tx: NodeId, rx: NodeId, now_ns: u64) -> f64 {
+    /// Order-independent per-link erasure draw in `[0, 1)`. Hashes `(seed, tx, rx, instant, frame#)`
+    /// rather than pulling from one shared RNG in global order — so a link's realization is fixed by its
+    /// OWN identity, and adding an unrelated (non-interfering) link no longer perturbs which frames this
+    /// link erases. `frame_seq` (the sender's per-node counter) disambiguates distinct frames sent at the
+    /// same virtual instant, which would otherwise collapse to one identical roll. The old shared `StdRng`
+    /// coupled every link through draw order, which two executors need not match.
+    fn erasure_roll(&self, tx: NodeId, rx: NodeId, now_ns: u64, frame_seq: u64) -> f64 {
         let mut h = 0xcbf2_9ce4_8422_2325u64; // FNV-1a over the key words…
-        for w in [self.seed, tx.0 as u64, rx.0 as u64, now_ns] {
+        for w in [self.seed, tx.0 as u64, rx.0 as u64, now_ns, frame_seq] {
             h ^= w;
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         }
@@ -468,6 +476,15 @@ impl RadioBus {
         let view = self.view_at(now_ns);
         let Some(tx_pos) = view.position(node) else {
             return Vec::new();
+        };
+        // This frame's per-sender sequence number — advanced once per transmit, in `node`'s own send
+        // order — so same-instant frames from this node draw independent erasures (see `erasure_roll`).
+        let frame_seq = {
+            let mut seq = self.tx_seq.lock().unwrap();
+            let e = seq.entry(node).or_insert(0);
+            let s = *e;
+            *e += 1;
+            s
         };
         let env = self.world.environment();
         let mode = *self.mac_mode.lock().unwrap();
@@ -675,7 +692,7 @@ impl RadioBus {
                     (retries + 1) as f64
                 };
             }
-            let roll = self.erasure_roll(node, rx_node, now_ns);
+            let roll = self.erasure_roll(node, rx_node, now_ns, frame_seq);
             let survived = roll < p;
             out.push((rx_node, d.rssi_dbm, survived));
 

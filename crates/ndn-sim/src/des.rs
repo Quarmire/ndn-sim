@@ -228,10 +228,12 @@ impl ndn_runtime::Now for DesRuntime {
 }
 impl DesRuntime {
     fn base_plus(&self, ns: u64) -> Instant {
-        self.exec
-            .base
-            .checked_add(Duration::from_nanos(ns))
-            .unwrap_or(self.exec.base)
+        let t = self.exec.base.checked_add(Duration::from_nanos(ns));
+        // A run long enough to overflow the Instant base (~584 years of virtual ns) collapses now() to
+        // base — losing monotonicity while unix_nanos() keeps advancing. Never in a real run; assert so a
+        // test that somehow reaches it fails loudly instead of silently rewinding the Instant clock.
+        debug_assert!(t.is_some(), "virtual time {ns}ns overflowed the Instant base");
+        t.unwrap_or(self.exec.base)
     }
 }
 impl Runtime for DesRuntime {}

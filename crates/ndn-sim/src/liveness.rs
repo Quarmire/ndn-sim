@@ -249,7 +249,10 @@ pub async fn watch(
 
         if backlog == 0 {
             zero_streak += 1;
-            if zero_streak >= 2 {
+            // Min-progress floor: an EMPTY workload (or a publisher's inter-burst lull) has zero backlog
+            // from t0 and would otherwise report Converged with nothing delivered. Require some delivery
+            // (acks > 0) before calling it converged — a network that never did anything hasn't converged.
+            if zero_streak >= 2 && acks > 0 {
                 return LivenessVerdict::Converged;
             }
         } else {

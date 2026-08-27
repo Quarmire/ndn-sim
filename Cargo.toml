@@ -39,8 +39,8 @@ ndn-security  = { path = "../ndn-rs/crates/security/ndn-security" }
 ndn-time         = { path = "../ndn-rs/crates/core/ndn-time" }
 ndn-time-sources = { path = "../ndn-ext/crates/time/ndn-time-sources" }
 ndn-timekeeper   = { path = "../ndn-ext/crates/time/ndn-timekeeper" }
-ndn-coding       = { path = "../ndn-ext/crates/coding/ndn-coding" }
-ndn-radio-cognition = { path = "../ndn-ext/crates/faces/ndn-radio-cognition" }
+ndn-coding       = { path = "../ndn-radio/crates/coding/ndn-coding" }
+ndn-radio-cognition = { path = "../ndn-radio/crates/faces/ndn-radio-cognition" }
 ndn-pipes        = { path = "../ndn-ext/crates/pipes/ndn-pipes" }
 ndn-sync         = { path = "../ndn-rs/crates/protocols/ndn-sync" }
 # Test-only: the D-42 history-serving gates drive a real `ndn-repo` in two-phase mode.

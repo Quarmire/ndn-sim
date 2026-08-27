@@ -425,11 +425,13 @@ impl RadioBus {
         // frames overlapping the start instant (concurrent transmitters) before recording ours.
         // Collision model: the newcomer loses at any receiver that also hears a concurrent
         // in-range transmitter (hidden-terminal). Deterministic — no RNG.
-        let rate = mcs_phy_rate_bps(mcs_index).max(1) as u64;
-        let airtime_ns = (frame.len() as u64)
-            .saturating_mul(8)
-            .saturating_mul(1_000_000_000)
-            / rate;
+        // On-air signal time = HT preamble + framed payload (`wifi::frame_airtime`). This one value
+        // drives the collision-overlap window, the half-duplex busy window, AND the receive delay, so
+        // all three agree with the airtime *accounting* below (`broadcast_airtime` = DIFS + backoff +
+        // `frame_airtime`). The old `bytes·8/rate` omitted the ~36 µs HT preamble + MAC header — up to
+        // ~12× too short for a small frame — so overlapping preambles read as non-colliding and the
+        // delivery/half-duplex timing disagreed with the accounted airtime.
+        let airtime_ns = crate::wifi::frame_airtime(frame.len(), mcs_index).as_nanos() as u64;
         let end_ns = now_ns.saturating_add(airtime_ns);
         let concurrent: Vec<(NodeId, Position)> = {
             let mut in_air = self.in_air.lock().unwrap();

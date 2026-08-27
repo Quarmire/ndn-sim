@@ -291,13 +291,17 @@ impl Property {
         } else {
             held as f64 / total as f64
         };
-        let (observed_min, observed_max, observed_mean) = if values.is_empty() {
-            (None, None, None)
+        let (observed_min, observed_max, observed_mean, observed_stddev) = if values.is_empty() {
+            (None, None, None, None)
         } else {
             let min = values.iter().copied().fold(f64::INFINITY, f64::min);
             let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let mean = values.iter().sum::<f64>() / values.len() as f64;
-            (Some(min), Some(max), Some(mean))
+            // H6: the spread across the sampled runs (seeds × kernels). A metric expected to vary whose
+            // stddev is ~0 across a multi-seed sweep is a harness smell — contention/erasure likely never
+            // engaged ("a perfectly-linear result means the harness is wrong"). Surfaced, not auto-failed.
+            let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+            (Some(min), Some(max), Some(mean), Some(var.sqrt()))
         };
         PropertyResult {
             name: self.name.clone(),
@@ -309,6 +313,7 @@ impl Property {
             observed_min,
             observed_max,
             observed_mean,
+            observed_stddev,
             passed: ratio >= self.hold_ratio,
         }
     }
@@ -650,10 +655,20 @@ pub struct PropertyResult {
     pub observed_min: Option<f64>,
     pub observed_max: Option<f64>,
     pub observed_mean: Option<f64>,
+    /// Standard deviation of the probe across the sampled runs (seeds × kernels). ~0 on a metric that
+    /// should vary is a harness smell — see [`looks_invariant`](Self::looks_invariant) (H6).
+    pub observed_stddev: Option<f64>,
     pub passed: bool,
 }
 
 impl PropertyResult {
+    /// H6 guardrail: a metric sampled across more than one run whose spread is ~0 — contention/erasure
+    /// likely never engaged (the "perfectly-linear result means the harness is wrong" red flag). Advisory
+    /// only (a genuinely constant metric — a fixed config value — is fine); a runner should surface it.
+    pub fn looks_invariant(&self) -> bool {
+        self.total > 1 && self.observed_stddev.is_some_and(|s| s == 0.0)
+    }
+
     /// A one-line human summary. Single-seed reads `PASS  name (20 >= 20)`; a sweep reads
     /// `PASS  name (held 5/5; obs 42..53 mean 48.6 >= 42)`.
     pub fn summary(&self) -> String {

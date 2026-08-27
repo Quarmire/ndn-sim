@@ -614,15 +614,6 @@ impl RadioBus {
             let roll: f64 = self.rng.lock().unwrap().random();
             let survived = roll < p;
             out.push((rx_node, d.rssi_dbm, survived));
-            log_delivery(
-                survived,
-                if survived {
-                    crate::medium::DeliveryReason::Delivered
-                } else {
-                    crate::medium::DeliveryReason::Erased
-                },
-                d.rssi_dbm,
-            );
 
             if survived {
                 let rf = RadioRx {
@@ -640,20 +631,41 @@ impl RadioBus {
                 // instantaneous in virtual time. Airtime + propagation makes delivery causal on every
                 // kernel: any reply is necessarily emitted after the request's airtime ends.
                 let recv_delay = std::time::Duration::from_nanos(airtime_ns) + d.delay;
+                // H4b: log at RECEIPT time (now + airtime + propagation) and only as Delivered once the
+                // frame actually lands — a later frame may have F2-retro-collided us. Stamping at receipt
+                // (not the shared transmit instant) gives a real time span for throughput, and a
+                // retro-collided frame is logged as a Collision, never a phantom delivery.
+                let receipt_ns = now_ns.saturating_add(recv_delay.as_nanos() as u64);
                 let rt = Arc::clone(&self.runtime);
                 let collided = Arc::clone(&my_collided);
                 let rx_id = rx_node;
+                let log = self.radio_log.lock().unwrap().clone();
+                let (from_id, dist_m, flen, rssi) = (node, dist, frame.len(), d.rssi_dbm);
                 self.runtime.spawn(Box::pin(async move {
                     rt.sleep(recv_delay).await;
-                    // F2 both-lose: a later frame that started before ours ended may have retro-collided
-                    // us at this receiver — drop the delivery if so (the RadioLog's synchronous
-                    // delivered=true is corrected when receipt-time logging lands in H4).
-                    if collided.lock().unwrap().contains(&rx_id) {
-                        return;
+                    let collided = collided.lock().unwrap().contains(&rx_id);
+                    if let Some(log) = &log {
+                        log.record(crate::analysis::RadioDelivery {
+                            t_ns: receipt_ns,
+                            from: from_id,
+                            to: rx_id,
+                            delivered: !collided,
+                            reason: if collided {
+                                crate::medium::DeliveryReason::Collision
+                            } else {
+                                crate::medium::DeliveryReason::Delivered
+                            },
+                            rssi_dbm: rssi,
+                            distance_m: dist_m,
+                            frame_len: flen,
+                        });
                     }
-                    let _ = sender.send(rf);
+                    if !collided {
+                        let _ = sender.send(rf);
+                    }
                 }));
             } else {
+                log_delivery(false, crate::medium::DeliveryReason::Erased, d.rssi_dbm);
                 trace!(
                     from = node.0,
                     to = rx_node.0,

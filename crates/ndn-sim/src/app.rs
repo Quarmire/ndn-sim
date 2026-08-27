@@ -360,6 +360,8 @@ pub(crate) fn spawn_app(
                 pfx.clone(),
                 *count,
                 lifetime_ms.unwrap_or(4000),
+                8,     // pipeline depth: fetch up to 8 concurrently…
+                false, // …but closed-loop (backpressure) so every prefix/<i> is fetched, none dropped
                 move |_i, _rng| interval,
             );
             Ok(AppHandle { id, node, kind: "consumer", cancel, stats })
@@ -374,6 +376,8 @@ pub(crate) fn spawn_app(
                 pfx.clone(),
                 *count,
                 lifetime_ms.unwrap_or(4000),
+                64,   // up to 64 Interests outstanding…
+                true, // …open-loop: a full window DROPS the arrival (offered load exceeding capacity)
                 move |i, rng| pattern.next_delay(i, rng),
             );
             Ok(AppHandle { id, node, kind: "traffic_source", cancel, stats })
@@ -393,27 +397,56 @@ fn spawn_fetch_loop(
     prefix: String,
     count: u64,
     lifetime_ms: u64,
+    window: usize,
+    open_loop: bool,
     delay: impl Fn(u64, &mut SplitMix64) -> Duration + Send + 'static,
 ) {
-    let mut consumer = engine.app_consumer(cancel.clone());
     let lifetime = Duration::from_millis(lifetime_ms);
     // Seed the Poisson clock from the prefix so distinct sources draw distinct (reproducible) streams.
     let seed = prefix.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x1000_0000_01b3));
+    // H2: a bounded pool of `window` consumers lets up to `window` Interests be OUTSTANDING at once,
+    // fetched CONCURRENTLY — so real offered load, queueing, and contention can build. The old serial
+    // `.await` per Interest throttled the whole source to one-in-flight (≈1/RTT); no load could arise.
+    // `open_loop` decides what a full window means: an offered-load source (TrafficSource) DROPS the
+    // arrival (load exceeding capacity — the contention signal), a closed-loop Consumer BLOCKS for a free
+    // consumer (backpressure) so it still fetches every `prefix/<i>`.
+    let (avail_tx, mut avail_rx) = tokio::sync::mpsc::unbounded_channel();
+    for _ in 0..window.max(1) {
+        let _ = avail_tx.send(engine.app_consumer(cancel.clone()));
+    }
     ndn_app::rt::spawn(async move {
         let mut rng = SplitMix64::new(seed);
         let mut i = 0u64;
         while !cancel.is_cancelled() && (count == 0 || i < count) {
             if let Ok(name) = format!("{prefix}/{i}").parse::<Name>() {
                 let builder = InterestBuilder::new(name).lifetime(lifetime);
-                stats.on_sent();
-                let t0 = clock.unix_nanos();
-                match consumer.fetch_with(builder).await {
-                    Ok(data) => {
-                        let t1 = clock.unix_nanos();
-                        let bytes = data.content().map(|c| c.len()).unwrap_or(0);
-                        stats.on_recv(t1.saturating_sub(t0), bytes, t1);
+                let acquired = if open_loop {
+                    avail_rx.try_recv().ok() // window full ⇒ None ⇒ the arrival is lost
+                } else {
+                    avail_rx.recv().await // backpressure: wait for a free consumer
+                };
+                match acquired {
+                    Some(mut consumer) => {
+                        stats.on_sent();
+                        let (stats2, clock2, tx2) = (stats.clone(), clock.clone(), avail_tx.clone());
+                        ndn_app::rt::spawn(async move {
+                            let t0 = clock2.unix_nanos();
+                            match consumer.fetch_with(builder).await {
+                                Ok(data) => {
+                                    let t1 = clock2.unix_nanos();
+                                    let bytes = data.content().map(|c| c.len()).unwrap_or(0);
+                                    stats2.on_recv(t1.saturating_sub(t0), bytes, t1);
+                                }
+                                Err(_) => stats2.on_lost(),
+                            }
+                            let _ = tx2.send(consumer); // return the consumer to the pool
+                        });
                     }
-                    Err(_) => stats.on_lost(),
+                    None if open_loop => {
+                        stats.on_sent();
+                        stats.on_lost(); // window full — offered load exceeded capacity
+                    }
+                    None => break, // channel closed (shutdown)
                 }
             }
             i += 1;

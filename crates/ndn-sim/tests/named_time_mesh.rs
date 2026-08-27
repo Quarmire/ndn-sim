@@ -206,7 +206,7 @@ fn mesh_converges_with_bidirectional_svs_per_node() {
     let kernel = VirtualKernel::new();
     let (final_max, ingested) = kernel.run(|k| async move {
         // ---- one collision-free broadcast segment ---------------------------
-        let mut sim = Simulation::new().kernel(k.clone());
+        let mut sim = Simulation::new().without_radio_interference().kernel(k.clone());
         let nodes: Vec<_> = (0..NODES)
             .map(|_| sim.add_node(EngineConfig::default()))
             .collect();

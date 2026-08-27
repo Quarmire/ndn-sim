@@ -163,16 +163,24 @@ impl Simulation {
         self
     }
 
-    /// Install a collision model on the radio medium (e.g.
-    /// [`CarrierSenseInterference`](crate::medium::CarrierSenseInterference)) so concurrent
-    /// same-channel in-air frames actually collide. Without this the medium is `NoInterference` and
-    /// no contention (hence no multi-channel benefit) can ever appear. Requires
-    /// [`with_radio_medium`](Self::with_radio_medium).
+    /// Override the radio medium's collision model. The default is now
+    /// [`CarrierSenseInterference`](crate::medium::CarrierSenseInterference) — physics is ON (concurrent
+    /// same-channel in-air frames collide, F3). Pass a different model to change it; use
+    /// [`without_radio_interference`](Self::without_radio_interference) for the collision-free
+    /// idealization. Requires [`with_radio_medium`](Self::with_radio_medium).
     pub fn with_radio_interference(
         mut self,
         interference: std::sync::Arc<dyn crate::medium::InterferenceModel>,
     ) -> Self {
         self.radio_interference = Some(interference);
+        self
+    }
+
+    /// Opt OUT of contention: install [`NoInterference`](crate::medium::NoInterference) so concurrent
+    /// frames never collide. For mechanism/protocol tests that want a clean medium — realistic contention
+    /// is the default (F3) and is exercised by the ground-truth suite.
+    pub fn without_radio_interference(mut self) -> Self {
+        self.radio_interference = Some(std::sync::Arc::new(crate::medium::NoInterference));
         self
     }
 

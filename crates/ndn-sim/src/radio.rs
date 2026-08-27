@@ -134,7 +134,7 @@ impl RadioBus {
             propagation,
             epoch_ns,
             seed,
-            Arc::new(crate::medium::NoInterference),
+            Arc::new(crate::medium::CarrierSenseInterference), // F3: physics ON by default; opt OUT via with_interference(NoInterference)
             ndn_runtime::default_runtime(),
         )
     }
@@ -187,7 +187,7 @@ impl RadioBus {
             propagation,
             epoch_ns,
             seed,
-            Arc::new(crate::medium::NoInterference),
+            Arc::new(crate::medium::CarrierSenseInterference), // F3: physics ON by default; opt OUT via with_interference(NoInterference)
             runtime,
         )
     }
@@ -224,7 +224,9 @@ impl RadioBus {
             channels: Mutex::new(HashMap::new()),
             channel_model: Mutex::new(None),
             half_duplex: std::sync::atomic::AtomicBool::new(true),
-            interference_range_factor: Mutex::new(1.0),
+            // F3: interference range ≈ 1.8× decode range so a transmitter outside decode range still
+            // corrupts (hidden terminal) — the real CSMA failure mode. 1.0 hid all hidden-terminal loss.
+            interference_range_factor: Mutex::new(1.8),
         })
     }
 
@@ -931,22 +933,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_interference_lets_concurrent_frames_through() {
-        let bus = bus_with(
-            &[
-                (NodeId(0), Position::xy(0.0, 0.0)),
-                (NodeId(1), Position::xy(5.0, 0.0)),
-                (NodeId(2), Position::xy(5.0, 1.0)),
-            ],
+    async fn default_collides_and_no_interference_opts_out() {
+        // F3: physics is ON by default now. Two concurrent in-range same-channel frames collide at a
+        // shared receiver under the default (CarrierSenseInterference); the old collision-free
+        // idealization is still reachable by explicitly opting into NoInterference.
+        let positions = [
+            (NodeId(0), Position::xy(0.0, 0.0)),
+            (NodeId(1), Position::xy(5.0, 0.0)),
+            (NodeId(2), Position::xy(5.0, 1.0)),
+        ];
+        // Default bus: at least one of two concurrent frames must collide at the shared receiver.
+        let def = bus_with(&positions, 1);
+        def.attach(NodeId(0));
+        let d1 = def.transmit(NodeId(1), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        let d2 = def.transmit(NodeId(2), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        let d1_ok = d1.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok);
+        let d2_ok = d2.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok);
+        assert!(!(d1_ok && d2_ok), "default (physics ON) must collide concurrent frames");
+
+        // Explicit NoInterference opt-out: the idealization still lets both through.
+        let world = World::new();
+        for (id, p) in positions {
+            world.place(id, p);
+        }
+        let ideal = RadioBus::with_interference(
+            Arc::new(world),
+            Arc::new(FreeSpacePathLoss::default()),
+            0,
             1,
+            Arc::new(crate::medium::NoInterference),
         );
-        bus.attach(NodeId(0));
-        let r1 = bus.transmit(NodeId(1), 7, Bytes::from_static(b"aaaaaaaa"), 0);
-        let r2 = bus.transmit(NodeId(2), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        ideal.attach(NodeId(0));
+        let r1 = ideal.transmit(NodeId(1), 7, Bytes::from_static(b"aaaaaaaa"), 0);
+        let r2 = ideal.transmit(NodeId(2), 7, Bytes::from_static(b"aaaaaaaa"), 0);
         assert!(r1.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok));
         assert!(
             r2.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok),
-            "no collision without a model"
+            "explicit NoInterference opt-out lets concurrent frames through"
         );
     }
 

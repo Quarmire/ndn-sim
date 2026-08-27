@@ -110,7 +110,7 @@ async fn explain_route_reports_no_route() {
 /// `face_stats` exposes per-face counters classified by kind; `clock()` is a cheap virtual-time handle.
 #[tokio::test]
 async fn face_stats_and_clock_are_readable() {
-    let mut sim = Simulation::new();
+    let mut sim = Simulation::new().without_radio_interference();
     let a = sim.add_node(EngineConfig::default());
     let b = sim.add_node(EngineConfig::default());
     sim.link(a, b, ndn_sim::LinkConfig::lan());

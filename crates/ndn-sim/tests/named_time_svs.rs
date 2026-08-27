@@ -160,7 +160,7 @@ fn nodes_converge_over_real_svs_beacon_carriage() {
         // SVS wants an all-hear-all broadcast segment (a routed hub aggregates
         // concurrent sync Interests in the PIT; a mesh floods). A shared radio
         // medium is exactly that segment — every node's beacon broadcasts to all.
-        let mut sim = Simulation::new()
+        let mut sim = Simulation::new().without_radio_interference()
             .kernel(k.clone())
             .with_radio_medium(Arc::new(ndn_sim::FreeSpacePathLoss::default()), 7);
         let spokes: Vec<_> = (0..SPOKES)

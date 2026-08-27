@@ -89,7 +89,7 @@ async fn build_topology(
     topo: Topo,
     link: LinkConfig,
 ) -> (RunningSimulation, NodeId, Vec<NodeId>) {
-    let mut sim = Simulation::new().kernel(k).seed(seed);
+    let mut sim = Simulation::new().without_radio_interference().kernel(k).seed(seed);
     let a = sim.add_node(EngineConfig::default());
     match topo {
         Topo::Pair => {

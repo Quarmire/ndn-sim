@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 #[test]
 fn broadcast_segment_delivers_without_geometry() {
     let got = DesKernel::new().run(|k: Arc<dyn SimKernel>| async move {
-        let mut sim = Simulation::new().kernel(k);
+        let mut sim = Simulation::new().without_radio_interference().kernel(k);
         let a = sim.add_node(EngineConfig::default());
         let b = sim.add_node(EngineConfig::default());
         let c = sim.add_node(EngineConfig::default());

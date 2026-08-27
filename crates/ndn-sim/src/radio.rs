@@ -575,11 +575,14 @@ impl RadioBus {
             let snr = if sinr_on && !clashers.is_empty() {
                 let noise_floor = d.rssi_dbm - LinkModel::snr_db(d.rssi_dbm);
                 let mut interf_mw = 10f64.powf(noise_floor / 10.0);
-                for (_, p, _) in &clashers {
+                for (s, p, _) in &clashers {
                     let ictx = TxContext {
                         tx_pos: *p,
                         rx_pos,
-                        tx_power_dbm: self.tx_power_dbm,
+                        // F8: the interferer's per-node TX power (its override, not the bus default) —
+                        // mirrors the sender path, so trimming an interferer's power earns SINR/capture
+                        // credit (spatial reuse). Was `self.tx_power_dbm`, ignoring set_tx_power.
+                        tx_power_dbm: self.tx_power.lock().unwrap().get(s).copied().unwrap_or(self.tx_power_dbm),
                         environment: env.as_ref(),
                         frame_len: frame.len(),
                     };

@@ -455,16 +455,17 @@ impl WirelessMedium {
                 rssi_dbm: d.rssi_dbm,
                 bytes: frame.clone(),
             };
-            if d.delay.is_zero() {
+            // Deliver after airtime + propagation, NOT propagation alone. Under the DES kernel (zero
+            // virtual processing time) a receiver must not act on a frame before the sender's last bit is
+            // on air — else a causally-later reply is emitted inside this frame's still-open window (the
+            // exact regression fixed in RadioBus). WirelessMedium tracks no MCS, so charge a conservative
+            // MCS0 airtime; RadioBus is the airtime-accurate path — this is the legacy propagation model.
+            let recv_delay = crate::wifi::frame_airtime(frame.len(), 0) + d.delay;
+            let rt = Arc::clone(&self.runtime);
+            self.runtime.spawn(Box::pin(async move {
+                rt.sleep(recv_delay).await;
                 let _ = sender.send(rf);
-            } else {
-                let delay = d.delay;
-                let rt = Arc::clone(&self.runtime);
-                self.runtime.spawn(Box::pin(async move {
-                    rt.sleep(delay).await;
-                    let _ = sender.send(rf);
-                }));
-            }
+            }));
         }
         delivered.sort_by_key(|(n, _)| n.0);
         delivered

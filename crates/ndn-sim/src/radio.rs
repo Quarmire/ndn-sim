@@ -72,8 +72,10 @@ pub struct RadioBus {
     runtime: Arc<dyn Runtime>,
     rng: Mutex<StdRng>,
     receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<RadioRx>>>,
-    /// Frames currently on the air `(sender, start_ns, end_ns)` — for collision detection.
-    in_air: Mutex<Vec<(NodeId, u64, u64)>>,
+    /// Frames currently on the air `(sender, start_ns, end_ns, collided_rx)` — for collision detection.
+    /// `collided_rx` is the shared set of receivers a *later* overlapping frame has retro-collided this
+    /// one at, so both frames lose at a shared receiver (F2 both-lose, not first-caller-wins).
+    in_air: Mutex<Vec<(NodeId, u64, u64, Arc<Mutex<std::collections::HashSet<NodeId>>>)>>,
     /// Per-instant world-snapshot cache `(now_ns, world_generation, view)` — rebuild the
     /// spatial index once per instant, not per transmit.
     view_cache: Mutex<Option<(u64, u64, Arc<crate::world::WorldView>)>>,
@@ -433,15 +435,17 @@ impl RadioBus {
         // delivery/half-duplex timing disagreed with the accounted airtime.
         let airtime_ns = crate::wifi::frame_airtime(frame.len(), mcs_index).as_nanos() as u64;
         let end_ns = now_ns.saturating_add(airtime_ns);
-        let concurrent: Vec<(NodeId, Position)> = {
+        let my_collided: Arc<Mutex<std::collections::HashSet<NodeId>>> =
+            Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let concurrent: Vec<(NodeId, Position, Arc<Mutex<std::collections::HashSet<NodeId>>>)> = {
             let mut in_air = self.in_air.lock().unwrap();
-            in_air.retain(|(_, _, e)| *e > now_ns); // prune finished transmissions
-            let snapshot: Vec<(NodeId, Position)> = in_air
+            in_air.retain(|(_, _, e, _)| *e > now_ns); // prune finished transmissions
+            let snapshot = in_air
                 .iter()
-                .filter(|(s, _, _)| *s != node)
-                .filter_map(|(s, _, _)| view.position(*s).map(|p| (*s, p)))
+                .filter(|(s, _, _, _)| *s != node)
+                .filter_map(|(s, _, _, c)| view.position(*s).map(|p| (*s, p, Arc::clone(c))))
                 .collect();
-            in_air.push((node, now_ns, end_ns));
+            in_air.push((node, now_ns, end_ns, Arc::clone(&my_collided)));
             snapshot
         };
         let max_range = self.propagation.max_range_m();
@@ -525,7 +529,7 @@ impl RadioBus {
             // Half-duplex: if this receiver is itself transmitting right now, it cannot hear the frame
             // at all. This is the single most important reason a one-radio multi-hop chain falls below
             // 1/hop — a relay busy forwarding drops the next frame headed for it.
-            if half_duplex && concurrent.iter().any(|(s, _)| *s == rx_node) {
+            if half_duplex && concurrent.iter().any(|(s, _, _)| *s == rx_node) {
                 out.push((rx_node, d.rssi_dbm, false));
                 log_delivery(false, crate::medium::DeliveryReason::HalfDuplex, d.rssi_dbm);
                 continue;
@@ -535,19 +539,26 @@ impl RadioBus {
             // adjacent channels leak, orthogonal not at all). Excludes the receiver itself (half-duplex
             // handled above).
             let irange = max_range * irange_factor;
-            let clashers: Vec<(NodeId, Position)> = concurrent
-                .iter()
-                .filter(|(s, p)| {
-                    *s != rx_node
-                        && p.distance(rx_pos) <= irange
-                        && self.channel_coupling(*s, signal_ch) > 0.1
-                })
-                .map(|(s, p)| (*s, *p))
-                .collect();
+            let clashers: Vec<(NodeId, Position, Arc<Mutex<std::collections::HashSet<NodeId>>>)> =
+                concurrent
+                    .iter()
+                    .filter(|(s, p, _)| {
+                        *s != rx_node
+                            && p.distance(rx_pos) <= irange
+                            && self.channel_coupling(*s, signal_ch) > 0.1
+                    })
+                    .map(|(s, p, c)| (*s, *p, Arc::clone(c)))
+                    .collect();
             // Without SINR modelling, any in-range concurrent transmitter is a hard collision.
             if !sinr_on {
-                let clasher_ids: Vec<NodeId> = clashers.iter().map(|(s, _)| *s).collect();
+                let clasher_ids: Vec<NodeId> = clashers.iter().map(|(s, _, _)| *s).collect();
                 if self.interference.collides(rx_node, &clasher_ids) {
+                    // F2 both-lose: retro-collide the concurrent frames at this receiver too, so the
+                    // earlier transmitter's already-scheduled delivery to rx_node also drops. Without
+                    // this the first-by-call-order frame would win a simultaneous collision.
+                    for (_, _, c) in &clashers {
+                        c.lock().unwrap().insert(rx_node);
+                    }
                     out.push((rx_node, d.rssi_dbm, false));
                     log_delivery(false, crate::medium::DeliveryReason::Collision, d.rssi_dbm);
                     trace!(
@@ -564,7 +575,7 @@ impl RadioBus {
             let snr = if sinr_on && !clashers.is_empty() {
                 let noise_floor = d.rssi_dbm - LinkModel::snr_db(d.rssi_dbm);
                 let mut interf_mw = 10f64.powf(noise_floor / 10.0);
-                for (_, p) in &clashers {
+                for (_, p, _) in &clashers {
                     let ictx = TxContext {
                         tx_pos: *p,
                         rx_pos,
@@ -615,8 +626,16 @@ impl RadioBus {
                 // kernel: any reply is necessarily emitted after the request's airtime ends.
                 let recv_delay = std::time::Duration::from_nanos(airtime_ns) + d.delay;
                 let rt = Arc::clone(&self.runtime);
+                let collided = Arc::clone(&my_collided);
+                let rx_id = rx_node;
                 self.runtime.spawn(Box::pin(async move {
                     rt.sleep(recv_delay).await;
+                    // F2 both-lose: a later frame that started before ours ended may have retro-collided
+                    // us at this receiver — drop the delivery if so (the RadioLog's synchronous
+                    // delivered=true is corrected when receipt-time logging lands in H4).
+                    if collided.lock().unwrap().contains(&rx_id) {
+                        return;
+                    }
                     let _ = sender.send(rf);
                 }));
             } else {

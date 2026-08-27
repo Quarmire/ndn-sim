@@ -572,7 +572,7 @@ impl CheckKernel {
 }
 
 fn default_kernels() -> Vec<CheckKernel> {
-    vec![CheckKernel::Des]
+    vec![CheckKernel::Des, CheckKernel::Virtual]
 }
 
 /// A complete, serializable validation: a scenario + fault schedule + properties, run headless.
@@ -603,7 +603,7 @@ pub struct ValidationSpec {
 }
 
 fn default_seeds() -> Vec<u64> {
-    vec![0]
+    vec![0, 1, 2]
 }
 
 impl ValidationSpec {

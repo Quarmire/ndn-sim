@@ -136,6 +136,15 @@ pub struct IpNodeStats {
     pub tx_bytes: u64,
 }
 
+/// Per-node hook onto the shared [`LoraMedium`](crate::lora::LoraMedium): this node's index, the
+/// medium, and a face-index → neighbour-node map so [`Inner::send_on`] can name the receiver whose
+/// reception the medium must clear (collision + duty-cycle) before a frame is delivered.
+struct LoraNodeHandle {
+    medium: Arc<crate::lora::LoraMedium>,
+    node: usize,
+    face_neighbor: Vec<Option<usize>>,
+}
+
 struct Inner {
     addr: Ipv4,
     faces: Vec<Arc<SimFace>>,
@@ -148,6 +157,9 @@ struct Inner {
     tx_bytes: AtomicU64,
     /// Replies delivered to a local pinger: `(seq, recv_ns, payload_len)`.
     reply_tx: mpsc::UnboundedSender<(u32, u64, usize)>,
+    /// Set when this node rides the shared LoRa medium (F6): transmissions consult it for ALOHA
+    /// collisions + the duty-cycle regulator. Empty for wired / Wi-Fi faces.
+    lora: std::sync::OnceLock<LoraNodeHandle>,
 }
 
 impl Inner {
@@ -164,6 +176,26 @@ impl Inner {
     async fn send_on(&self, via: usize, pkt: &IpPacket) {
         if let Some(face) = self.faces.get(via) {
             let wire = pkt.encode();
+            // Shared LoRa medium (F6): a transmission occupies the air for its airtime and is delivered
+            // only if it clears the duty-cycle regulator and survives ALOHA collisions at the receiver.
+            if let Some(h) = self.lora.get()
+                && let Some(rx) = h.face_neighbor.get(via).copied().flatten()
+            {
+                let now = self.clock.unix_nanos();
+                match h.medium.begin_tx(h.node, now) {
+                    crate::lora::LoraTx::Gated => return, // duty-cycle gated: frame dropped
+                    crate::lora::LoraTx::OnAir { id, airtime } => {
+                        // The bytes go on the air (a collided frame still burned airtime).
+                        self.tx_bytes.fetch_add(wire.len() as u64, Ordering::Relaxed);
+                        self.clock.sleep(airtime).await; // half-duplex: occupy the radio for the airtime
+                        if !h.medium.resolve(id, h.node, rx) {
+                            return; // collided at the receiver: frame lost
+                        }
+                        let _ = face.send_bytes(wire).await;
+                    }
+                }
+                return;
+            }
             self.tx_bytes.fetch_add(wire.len() as u64, Ordering::Relaxed);
             let _ = face.send_bytes(wire).await;
         }
@@ -244,6 +276,7 @@ impl IpNode {
             dropped_ttl: AtomicU64::new(0),
             tx_bytes: AtomicU64::new(0),
             reply_tx,
+            lora: std::sync::OnceLock::new(),
         });
         for i in 0..inner.faces.len() {
             let face = Arc::clone(&inner.faces[i]);
@@ -483,6 +516,9 @@ pub struct IpNetwork {
     handoffs: std::sync::atomic::AtomicU64,
     /// Accumulated association-handshake time (ns) — scan+auth+assoc(+4-way) charged per handoff.
     assoc_overhead_ns: std::sync::atomic::AtomicU64,
+    /// The shared LoRa medium (F6), when this network runs IP over LoRa — the ALOHA-collision +
+    /// duty-cycle model every node's send path consults. `None` for wired / Wi-Fi fabrics.
+    lora_medium: Mutex<Option<Arc<crate::lora::LoraMedium>>>,
 }
 
 impl IpNetwork {
@@ -552,6 +588,7 @@ impl IpNetwork {
             associated: (0..n).map(|_| std::sync::atomic::AtomicBool::new(false)).collect(),
             handoffs: std::sync::atomic::AtomicU64::new(0),
             assoc_overhead_ns: std::sync::atomic::AtomicU64::new(0),
+            lora_medium: Mutex::new(None),
         }
     }
 
@@ -816,14 +853,31 @@ impl IpNetwork {
         net
     }
 
-    /// Build a mobile IP network **over LoRa**: like [`from_positions_wifi`](Self::from_positions_wifi)
-    /// but each in-range link's loss + latency come from the [`LoraLinkConfig`](crate::lora::LoraLinkConfig)
-    /// (SF demod curve + Semtech airtime). Long range, high per-frame latency — the sub-GHz counterpoint
-    /// to Wi-Fi, so a benchmark can run the *same* NDN/IP workload over LoRa.
+    /// Build a mobile IP network **over LoRa** on a **shared ALOHA medium** (F6): like
+    /// [`from_positions_wifi`](Self::from_positions_wifi) but every node rides ONE
+    /// [`LoraMedium`](crate::lora::LoraMedium), so concurrent same-SF, same-channel, overlapping
+    /// transmissions collide (capture-effect aside) on top of the per-link SNR loss + airtime latency.
+    /// Duty-cycle enforcement is off here (use [`from_positions_lora_shared`](Self::from_positions_lora_shared)
+    /// to turn it on). Long range, high per-frame latency — so a benchmark can run the *same* NDN/IP
+    /// workload over LoRa and see the collision collapse a dense deployment suffers.
     pub fn from_positions_lora(
         runtime: Arc<dyn Runtime>,
         positions: Vec<crate::world::Position>,
         cfg: &crate::lora::LoraLinkConfig,
+        algo: &dyn crate::routing::RoutingAlgorithm,
+    ) -> Self {
+        Self::from_positions_lora_shared(runtime, positions, cfg, false, algo)
+    }
+
+    /// As [`from_positions_lora`](Self::from_positions_lora), but `duty_enforced` selects whether the
+    /// duty-cycle regulator ([`DutyCycle::off_time`](crate::lora::DutyCycle::off_time)) gates a node
+    /// that would exceed its on-air budget (e.g. 1 % in EU868). The collision-free point-to-point
+    /// model is gone: LoRa is always on the shared medium; this only toggles the duty ceiling.
+    pub fn from_positions_lora_shared(
+        runtime: Arc<dyn Runtime>,
+        positions: Vec<crate::world::Position>,
+        cfg: &crate::lora::LoraLinkConfig,
+        duty_enforced: bool,
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) -> Self {
         let n = positions.len();
@@ -831,13 +885,37 @@ impl IpNetwork {
             (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
         let prof = FaceProfile::internal();
         let net = Self::from_links_with(runtime, n, &full, Some(positions.clone()), &prof, algo);
+        let medium =
+            Arc::new(crate::lora::LoraMedium::new(cfg.clone(), positions.clone(), duty_enforced));
+        net.attach_lora_medium(&medium);
         net.reconnect_lora(&positions, cfg, algo);
         net
     }
 
+    /// Attach a shared [`LoraMedium`](crate::lora::LoraMedium) to this network: store it (for the
+    /// [`lora_*`](Self::lora_collisions) counters + mobility position updates) and give each node the
+    /// per-node hook its send path consults. Called once at build.
+    fn attach_lora_medium(&self, medium: &Arc<crate::lora::LoraMedium>) {
+        *self.lora_medium.lock().unwrap() = Some(Arc::clone(medium));
+        for (u, node) in self.nodes.iter().enumerate() {
+            let nfaces = self.face_to[u].values().copied().max().map(|m| m + 1).unwrap_or(0);
+            let mut face_neighbor = vec![None; nfaces];
+            for (&nbr, &fidx) in &self.face_to[u] {
+                face_neighbor[fidx] = Some(nbr);
+            }
+            let _ = node.inner.lora.set(LoraNodeHandle {
+                medium: Arc::clone(medium),
+                node: u,
+                face_neighbor,
+            });
+        }
+    }
+
     /// Mobility + LoRa re-route: a link is up when the endpoints are within `cfg.range_m`, and each
-    /// up-link's drop probability + added latency come from the LoRa model at the link SNR. LoRa is a
-    /// shared ALOHA broadcast medium — no association, no operating modes.
+    /// up-link's per-frame drop probability comes from the LoRa SNR demod curve. LoRa is a shared
+    /// ALOHA broadcast medium — no association, no operating modes; the airtime + collisions +
+    /// duty-cycle are supplied by the shared [`LoraMedium`](crate::lora::LoraMedium), so the face
+    /// carries only the SNR loss (its airtime moves to the medium's in-air occupancy).
     pub fn reconnect_lora(
         &self,
         positions: &[crate::world::Position],
@@ -846,15 +924,22 @@ impl IpNetwork {
     ) {
         use std::sync::atomic::Ordering::Relaxed;
         *self.positions.lock().unwrap() = Some(positions.to_vec());
+        let medium = self.lora_medium.lock().unwrap().clone();
+        if let Some(m) = &medium {
+            m.set_positions(positions.to_vec());
+        }
         for (i, &(a, b)) in self.links.iter().enumerate() {
             let dist = positions[a].distance(positions[b]);
             let (sa, sb) = &self.link_states[i];
             if dist <= cfg.range_m {
                 let (loss, airtime) = cfg.link_cost(dist);
+                // With the shared medium, airtime is the in-air window (a half-duplex occupancy the
+                // send path sleeps through), not a per-link delay — so don't double-count it here.
+                let extra = if medium.is_some() { Duration::ZERO } else { airtime };
                 for s in [sa, sb] {
                     s.set_down(false);
                     s.set_loss(Some(loss));
-                    s.set_extra_delay(airtime);
+                    s.set_extra_delay(extra);
                 }
                 self.link_up[i].store(true, Relaxed);
             } else {
@@ -865,6 +950,21 @@ impl IpNetwork {
             }
         }
         self.reroute_with(algo);
+    }
+
+    /// Frames lost to LoRa ALOHA collisions across the shared medium (0 if not IP-over-LoRa).
+    pub fn lora_collisions(&self) -> u64 {
+        self.lora_medium.lock().unwrap().as_ref().map_or(0, |m| m.collisions())
+    }
+
+    /// Frames gated by the LoRa duty-cycle regulator across the shared medium (0 if none / disabled).
+    pub fn lora_duty_gated(&self) -> u64 {
+        self.lora_medium.lock().unwrap().as_ref().map_or(0, |m| m.duty_gated())
+    }
+
+    /// Frames that reached the air (were not duty-gated) across the shared LoRa medium.
+    pub fn lora_transmissions(&self) -> u64 {
+        self.lora_medium.lock().unwrap().as_ref().map_or(0, |m| m.transmissions())
     }
 
     /// **Hands-free mobility-driven routing.** Spawn a background loop that, every `interval`, reads

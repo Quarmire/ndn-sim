@@ -12,7 +12,11 @@
 //! (concurrent transmissions on different SFs don't collide). Richer capture-effect / imperfect-
 //! orthogonality models plug in behind the same API.
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+use crate::world::Position;
 
 /// A LoRa **spreading factor** (SF7…SF12): higher SF ⇒ more processing gain (longer range, decodes
 /// at lower SNR) but exponentially longer airtime (lower rate).
@@ -242,6 +246,210 @@ impl LoraLinkConfig {
     }
 }
 
+/// Default LoRa co-channel **capture** threshold (dB): a frame whose received power exceeds every
+/// overlapping interferer's by at least this margin is still demodulated despite the collision (the
+/// stronger signal "captures" the receiver). ~6 dB is the common SX127x figure.
+pub const LORA_CAPTURE_MARGIN_DB: f64 = 6.0;
+
+/// One in-air transmission window on the [`LoraMedium`].
+#[derive(Clone, Copy)]
+struct TxWindow {
+    id: u64,
+    node: usize,
+    start_ns: u64,
+    end_ns: u64,
+    sf: u32,
+    channel: u32,
+}
+
+struct MediumInner {
+    /// Live + recently-ended in-air windows (pruned lazily on [`LoraMedium::begin_tx`]).
+    windows: Vec<TxWindow>,
+    /// Per-node earliest next-transmit time (ns) under the duty-cycle regulator.
+    next_allowed_ns: Vec<u64>,
+    /// Node positions, for interferer-range + capture (RSSI) decisions. Updated on mobility.
+    positions: Vec<Position>,
+    next_id: u64,
+}
+
+/// The outcome of asking the [`LoraMedium`] to begin a transmission.
+pub enum LoraTx {
+    /// Duty-cycle budget exhausted — the frame is **gated** (dropped): offered load exceeding the
+    /// regulatory on-air limit. The mandatory off-time ([`DutyCycle::off_time`]) has not elapsed.
+    Gated,
+    /// Cleared to transmit: occupy the radio for `airtime`, then call [`LoraMedium::resolve`] with the
+    /// returned `id` to learn whether the frame survived (a collision may have destroyed it).
+    OnAir { id: u64, airtime: Duration },
+}
+
+/// A **shared ALOHA LoRa medium** (fidelity fix F6). The point-to-point `LoraLinkConfig` model gave
+/// every pair an independent link, so LoRa's dominant real-world capacity limiter — ALOHA collisions
+/// among same-SF, same-channel, overlapping transmissions — and its duty-cycle ceiling never engaged.
+/// This puts every node on ONE medium:
+///
+/// * **Collision.** A transmission occupies `[start, start+airtime)` on its (SF, channel). Any other
+///   node whose window overlaps and whose signal reaches the receiver interferes; both frames are lost
+///   unless one is `capture_margin_db` stronger at the receiver (co-channel capture). Because each
+///   frame independently [`resolve`](Self::resolve)s over its own window against every other window,
+///   two mutually-overlapping frames both lose — classic pure-ALOHA — deterministically (the outcome
+///   is a function of virtual-time windows + geometry, never lock/thread order).
+/// * **Duty cycle.** When `duty_enforced`, a node that transmits sets its next-allowed time to
+///   `end + `[`DutyCycle::off_time`]`(airtime)`; a frame offered before then is [`gated`](LoraTx::Gated).
+///
+/// SNR-based per-link loss and propagation latency stay on the [`SimFace`](crate::SimFace) as before;
+/// these effects compose on top.
+pub struct LoraMedium {
+    cfg: LoraLinkConfig,
+    channel: u32,
+    duty_enforced: bool,
+    capture_margin_db: f64,
+    inner: Mutex<MediumInner>,
+    collisions: AtomicU64,
+    duty_gated: AtomicU64,
+    transmissions: AtomicU64,
+}
+
+impl LoraMedium {
+    /// A medium over `positions.len()` nodes sharing `cfg`'s SF/channel. `duty_enforced` turns on the
+    /// duty-cycle regulator (off by default so a mechanism test can transmit freely).
+    pub fn new(cfg: LoraLinkConfig, positions: Vec<Position>, duty_enforced: bool) -> Self {
+        let n = positions.len();
+        LoraMedium {
+            cfg,
+            channel: 0,
+            duty_enforced,
+            capture_margin_db: LORA_CAPTURE_MARGIN_DB,
+            inner: Mutex::new(MediumInner {
+                windows: Vec::new(),
+                next_allowed_ns: vec![0; n],
+                positions,
+                next_id: 0,
+            }),
+            collisions: AtomicU64::new(0),
+            duty_gated: AtomicU64::new(0),
+            transmissions: AtomicU64::new(0),
+        }
+    }
+
+    /// Update node positions (mobility) — capture/range decisions use the latest geometry.
+    pub fn set_positions(&self, positions: Vec<Position>) {
+        let mut g = self.inner.lock().unwrap();
+        if g.next_allowed_ns.len() != positions.len() {
+            g.next_allowed_ns.resize(positions.len(), 0);
+        }
+        g.positions = positions;
+    }
+
+    /// The airtime of one frame at this medium's PHY config + payload.
+    fn airtime(&self) -> Duration {
+        self.cfg.cfg.airtime(self.cfg.payload_bytes)
+    }
+
+    /// Begin a transmission from `node` at virtual time `now_ns`. Gates when over the duty-cycle
+    /// budget; otherwise registers the in-air window and returns the airtime the radio must occupy.
+    pub fn begin_tx(&self, node: usize, now_ns: u64) -> LoraTx {
+        let air = self.airtime();
+        let air_ns = air.as_nanos() as u64;
+        let mut g = self.inner.lock().unwrap();
+        // Duty-cycle gate: the regulator's mandatory off-time must have elapsed since the last TX.
+        if self.duty_enforced
+            && node < g.next_allowed_ns.len()
+            && now_ns < g.next_allowed_ns[node]
+        {
+            drop(g);
+            self.duty_gated.fetch_add(1, Ordering::Relaxed);
+            return LoraTx::Gated;
+        }
+        // Prune windows that ended more than one airtime ago — they cannot overlap any live frame
+        // (any unresolved frame started no earlier than `now - airtime`).
+        let cutoff = now_ns.saturating_sub(air_ns);
+        g.windows.retain(|w| w.end_ns >= cutoff);
+        let id = g.next_id;
+        g.next_id += 1;
+        let end_ns = now_ns.saturating_add(air_ns);
+        let sf = self.cfg.cfg.sf.factor();
+        let channel = self.channel;
+        g.windows.push(TxWindow { id, node, start_ns: now_ns, end_ns, sf, channel });
+        if self.duty_enforced && node < g.next_allowed_ns.len() {
+            // Actuate DutyCycle::off_time: the radio must stay off until end + off_time(airtime).
+            let off = self.cfg.duty.off_time(air).as_nanos() as u64;
+            g.next_allowed_ns[node] = end_ns.saturating_add(off);
+        }
+        drop(g);
+        self.transmissions.fetch_add(1, Ordering::Relaxed);
+        LoraTx::OnAir { id, airtime: air }
+    }
+
+    /// Resolve whether frame `id` (from `node`) is decoded at receiver `rx`. Lost when an in-range,
+    /// same-SF, same-channel transmission overlapped its window and capture does not save it.
+    pub fn resolve(&self, id: u64, node: usize, rx: usize) -> bool {
+        let g = self.inner.lock().unwrap();
+        let me = match g.windows.iter().find(|w| w.id == id) {
+            Some(w) => *w,
+            None => return true, // pruned/absent — treat as a clear medium
+        };
+        let mut max_intf_rssi = f64::NEG_INFINITY;
+        let mut interfered = false;
+        for w in g.windows.iter() {
+            if w.id == id || w.node == node || w.sf != me.sf || w.channel != me.channel {
+                continue;
+            }
+            // Overlapping windows only.
+            if w.start_ns < me.end_ns && me.start_ns < w.end_ns {
+                let d = match g.positions.get(w.node).zip(g.positions.get(rx)) {
+                    Some((a, b)) => a.distance(*b),
+                    None => continue,
+                };
+                // The interferer must actually reach the receiver to corrupt its reception.
+                if d <= self.cfg.range_m {
+                    interfered = true;
+                    max_intf_rssi = max_intf_rssi.max(self.rssi_dbm(&g.positions, w.node, rx));
+                }
+            }
+        }
+        if !interfered {
+            return true;
+        }
+        // Capture: my frame survives iff it is at least capture_margin stronger than the loudest
+        // overlapping interferer at the receiver.
+        let survive = self.rssi_dbm(&g.positions, node, rx) >= max_intf_rssi + self.capture_margin_db;
+        drop(g);
+        if !survive {
+            self.collisions.fetch_add(1, Ordering::Relaxed);
+        }
+        survive
+    }
+
+    /// Received power (dBm) of `from`'s signal at `to`, via the config's propagation backend.
+    fn rssi_dbm(&self, positions: &[Position], from: usize, to: usize) -> f64 {
+        let d = match positions.get(from).zip(positions.get(to)) {
+            Some((a, b)) => a.distance(*b).max(1.0),
+            None => return f64::NEG_INFINITY,
+        };
+        let ctx = crate::phy::PathContext {
+            distance_m: d,
+            freq_hz: self.cfg.freq_hz,
+            tx_power_dbm: self.cfg.tx_power_dbm,
+            tx_gain_dbi: 0.0,
+            rx_gain_dbi: 0.0,
+        };
+        self.cfg.propagation.rx_power_dbm(&ctx)
+    }
+
+    /// Total frames lost to collision (no capture) since build.
+    pub fn collisions(&self) -> u64 {
+        self.collisions.load(Ordering::Relaxed)
+    }
+    /// Total frames gated by the duty-cycle regulator since build.
+    pub fn duty_gated(&self) -> u64 {
+        self.duty_gated.load(Ordering::Relaxed)
+    }
+    /// Total frames that reached the air (were not duty-gated) since build.
+    pub fn transmissions(&self) -> u64 {
+        self.transmissions.load(Ordering::Relaxed)
+    }
+}
+
 /// A LoRa channel (sub-GHz). The general [`Channel`](crate::phy::Channel) covers the spectral
 /// relationships; this is a convenience for the common bands.
 pub fn eu868_channel() -> crate::phy::Channel {
@@ -326,5 +534,75 @@ mod tests {
         let off = DutyCycle::EU868_1PCT.off_time(air);
         // At 1 %, off-time ≈ 99× the airtime.
         assert!(off > air * 90 && off < air * 110, "1% duty ⇒ ~99× off-time ({off:?} for {air:?})");
+    }
+
+    fn on_air(tx: LoraTx) -> u64 {
+        match tx {
+            LoraTx::OnAir { id, .. } => id,
+            LoraTx::Gated => panic!("expected OnAir, got Gated"),
+        }
+    }
+
+    #[test]
+    fn shared_medium_both_overlapping_equal_power_frames_collide() {
+        // Receiver (node 0) at origin; two senders equidistant ⇒ equal RSSI ⇒ no capture ⇒ BOTH lose
+        // (pure ALOHA). Deterministic — a pure function of the windows + geometry.
+        let positions =
+            vec![Position::xy(0.0, 0.0), Position::xy(-100.0, 0.0), Position::xy(100.0, 0.0)];
+        let m = LoraMedium::new(LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12), positions, false);
+        let a = on_air(m.begin_tx(1, 0)); // both start at t=0 ⇒ overlap
+        let b = on_air(m.begin_tx(2, 0));
+        assert!(!m.resolve(a, 1, 0), "overlapping equal-power frame is lost");
+        assert!(!m.resolve(b, 2, 0), "the other overlapping frame is also lost");
+        assert_eq!(m.collisions(), 2);
+    }
+
+    #[test]
+    fn shared_medium_capture_saves_the_much_stronger_frame() {
+        // A near (strong) and a far (weak) sender overlap at the receiver: capture demodulates the
+        // strong one, the weak one is lost.
+        let positions =
+            vec![Position::xy(0.0, 0.0), Position::xy(50.0, 0.0), Position::xy(4000.0, 0.0)];
+        let m = LoraMedium::new(LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12), positions, false);
+        let near = on_air(m.begin_tx(1, 0));
+        let far = on_air(m.begin_tx(2, 0));
+        assert!(m.resolve(near, 1, 0), "the much-stronger near frame captures the receiver");
+        assert!(!m.resolve(far, 2, 0), "the weak far frame loses the collision");
+        assert_eq!(m.collisions(), 1);
+    }
+
+    #[test]
+    fn shared_medium_non_overlapping_frames_do_not_collide() {
+        let positions =
+            vec![Position::xy(0.0, 0.0), Position::xy(-100.0, 0.0), Position::xy(100.0, 0.0)];
+        let cfg = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12);
+        let air_ns = cfg.cfg.airtime(cfg.payload_bytes).as_nanos() as u64;
+        let m = LoraMedium::new(cfg, positions, false);
+        let a = on_air(m.begin_tx(1, 0));
+        // node 2 transmits well after node 1's window has ended ⇒ no overlap ⇒ both delivered.
+        let b = on_air(m.begin_tx(2, air_ns * 4));
+        assert!(m.resolve(a, 1, 0));
+        assert!(m.resolve(b, 2, 0));
+        assert_eq!(m.collisions(), 0);
+    }
+
+    #[test]
+    fn shared_medium_duty_cycle_gates_over_budget() {
+        let positions = vec![Position::xy(0.0, 0.0), Position::xy(100.0, 0.0)];
+        let cfg = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12);
+        let air = cfg.cfg.airtime(cfg.payload_bytes);
+        let air_ns = air.as_nanos() as u64;
+        let m = LoraMedium::new(cfg, positions, true);
+        assert!(matches!(m.begin_tx(0, 0), LoraTx::OnAir { .. }), "first TX is within budget");
+        assert!(
+            matches!(m.begin_tx(0, air_ns), LoraTx::Gated),
+            "a second TX before the off-time is gated"
+        );
+        let off = DutyCycle::EU868_1PCT.off_time(air).as_nanos() as u64;
+        assert!(
+            matches!(m.begin_tx(0, air_ns + off + 1), LoraTx::OnAir { .. }),
+            "after the mandatory off-time, TX is allowed again"
+        );
+        assert_eq!(m.duty_gated(), 1);
     }
 }

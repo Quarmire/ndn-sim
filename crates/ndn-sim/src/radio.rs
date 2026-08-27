@@ -485,6 +485,7 @@ impl RadioBus {
         }
 
         let mut out = Vec::new();
+        let mut managed_attempts = 0f64; // F5: Σ expected transmissions across the managed unicasts
         let receivers = self.receivers.lock().unwrap();
         // NodeId-sorted (spatial index) ⇒ the erasure draws happen in a deterministic order.
         for rx_node in view.within_range(tx_pos, self.propagation.max_range_m()) {
@@ -594,10 +595,19 @@ impl RadioBus {
             };
             // Per-frame delivery. Managed Wi-Fi ACKs + retransmits, so a receiver's effective
             // delivery is retry-improved (1−(1−p)^(retry+1)); monitor injection has no ACK.
-            let mut p = self.link_model.frame_delivery(mcs_index, snr);
+            let base_p = self.link_model.frame_delivery(mcs_index, snr);
+            let mut p = base_p;
             if matches!(mode, crate::wifi::WifiMode::Managed) {
-                let retries = self.retry_limit.load(std::sync::atomic::Ordering::Relaxed);
-                p = 1.0 - (1.0 - p).powi(retries as i32 + 1);
+                let retries = self.retry_limit.load(std::sync::atomic::Ordering::Relaxed) as i32;
+                p = 1.0 - (1.0 - base_p).powi(retries + 1);
+                // F5: managed reliability (the retry lift above) is NOT free airtime. Accumulate this
+                // link's EXPECTED transmissions until success or exhausting retries — Σ_{k=0}^{R}(1-base_p)^k
+                // (base_p→0 ⇒ the full R+1 attempts) — and charge it below instead of a single unicast.
+                managed_attempts += if base_p > 1e-9 {
+                    (1.0 - (1.0 - base_p).powi(retries + 1)) / base_p
+                } else {
+                    (retries + 1) as f64
+                };
             }
             let roll: f64 = self.rng.lock().unwrap().random();
             let survived = roll < p;
@@ -658,8 +668,12 @@ impl RadioBus {
         let cost = match mode {
             crate::wifi::WifiMode::Monitor => crate::wifi::broadcast_airtime(frame.len(), mcs_index),
             crate::wifi::WifiMode::Managed => {
-                let n = out.len().max(1) as u32;
-                crate::wifi::unicast_airtime(frame.len(), mcs_index) * n
+                // F5: sum of EXPECTED attempts across the managed unicasts (retransmissions included),
+                // not one attempt per receiver — retries cost airtime. `wifi::link_cost` uses the same
+                // expected-attempts model; this is the per-transmission analog.
+                let ns = crate::wifi::unicast_airtime(frame.len(), mcs_index).as_nanos() as f64
+                    * managed_attempts.max(1.0);
+                std::time::Duration::from_nanos(ns as u64)
             }
         };
         self.airtime_ns.fetch_add(

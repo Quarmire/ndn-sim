@@ -247,7 +247,11 @@ impl FreeSpacePathLoss {
 impl PropagationModel for FreeSpacePathLoss {
     fn deliver(&self, ctx: &TxContext) -> Delivery {
         let d = ctx.distance();
-        let prx = self.tx_power_dbm
+        // H5: received power uses the SENDER's per-node TX power (`ctx.tx_power_dbm`, set from
+        // set_tx_power), not the model's fixed default — so the power dial actually moves RSSI / reach /
+        // delivery (was `self.tx_power_dbm`, which made a reach-vs-power study conclude "lowering power is
+        // free"). `self.tx_power_dbm` stays the widest-case anchor for `max_range_m`.
+        let prx = ctx.tx_power_dbm
             - self.fspl_db(d)
             - ctx.environment.attenuation(ctx.tx_pos, ctx.rx_pos);
         let delivered = prx >= self.rx_sensitivity_dbm;

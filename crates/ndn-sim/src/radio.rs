@@ -309,6 +309,38 @@ impl RadioBus {
         *self.mac_mode.lock().unwrap() = mode;
     }
 
+    /// Whether the medium is in managed (CSMA) mode — the discipline that listens before talking.
+    pub fn is_managed(&self) -> bool {
+        matches!(*self.mac_mode.lock().unwrap(), crate::wifi::WifiMode::Managed)
+    }
+
+    /// F4 carrier-sense: the instant the medium clears for `node` — the latest `end_ns` among frames
+    /// currently on the air within carrier-sense (interference) range on `node`'s channel. `None` if the
+    /// medium is idle. A managed sender uses this to DEFER (listen-before-talk) rather than fire and
+    /// collide, which is what actually serialises CSMA transmissions and yields its throughput advantage.
+    pub fn sense_busy_until(&self, node: NodeId, now_ns: u64) -> Option<u64> {
+        let view = self.view_at(now_ns);
+        let node_pos = view.position(node)?;
+        let node_ch = self.channel_of(node);
+        let cs_range = self.propagation.max_range_m() * *self.interference_range_factor.lock().unwrap();
+        let in_air = self.in_air.lock().unwrap();
+        in_air
+            .iter()
+            .filter(|(s, _, e, _)| *s != node && *e > now_ns && self.channel_coupling(*s, node_ch) > 0.1)
+            .filter_map(|(s, _, e, _)| view.position(*s).map(|p| (p, *e)))
+            .filter(|(p, _)| p.distance(node_pos) <= cs_range)
+            .map(|(_, e)| e)
+            .max()
+    }
+
+    /// F4 CSMA backoff: a random number of 9 µs slots in `[0, CW]`, CW doubling from 15 (CWmin) per retry
+    /// (capped at 1023, CWmax) — the exponential backoff that spreads simultaneous deferrers so one wins.
+    pub fn csma_backoff_ns(&self, attempt: u32) -> u64 {
+        let cw = (15u64 << attempt.min(6)).min(1023);
+        let slots = (self.rng.lock().unwrap().random::<f64>() * (cw + 1) as f64) as u64;
+        slots.min(cw) * 9_000
+    }
+
     /// Set the managed-mode retransmit budget (default 6).
     pub fn set_retry_limit(&self, retry_limit: u32) {
         self.retry_limit.store(retry_limit, std::sync::atomic::Ordering::Relaxed);
@@ -812,6 +844,26 @@ impl Transport for SimRadioFace {
     }
 
     async fn send_bytes(&self, wire: Bytes) -> Result<(), FaceError> {
+        // F4 CSMA carrier-sense: a managed node listens before talking. If the medium is busy with an
+        // in-range same-channel transmitter, defer past the busy period + a random backoff, so concurrent
+        // managed attempts SERIALISE instead of both firing and colliding — the deferral CSMA is built on,
+        // not just the collision outcome. Monitor injection (the named-data radio default) does not sense.
+        if self.bus.is_managed() {
+            let mut attempt = 0u32;
+            while attempt < 8 {
+                let now = self.clock.unix_nanos();
+                match self.bus.sense_busy_until(self.node, now) {
+                    Some(busy_until) if busy_until > now => {
+                        let backoff = self.bus.csma_backoff_ns(attempt);
+                        self.clock
+                            .sleep(std::time::Duration::from_nanos((busy_until - now) + backoff))
+                            .await;
+                        attempt += 1;
+                    }
+                    _ => break, // medium idle (or gave up after 8 backoffs — transmit anyway, as real CSMA)
+                }
+            }
+        }
         let now = self.clock.unix_nanos();
         let mcs = self.choose_mcs();
         self.bus.transmit(self.node, mcs, wire, now);

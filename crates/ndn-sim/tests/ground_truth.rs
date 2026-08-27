@@ -120,3 +120,18 @@ async fn lower_tx_power_shrinks_delivery() {
     let low = rate_at_power(8.0);
     assert!(full > low, "lower TX power must reduce delivery at the edge: full={full} low={low}");
 }
+
+#[tokio::test]
+async fn csma_sense_detects_busy_medium() {
+    // F4 primitive: while a frame is on the air, an in-range same-channel node senses the medium BUSY
+    // until that frame ends — the signal a managed (CSMA) sender defers on instead of firing and colliding.
+    let bus = strong_bus(&[(0, 0.0, 0.0), (1, 5.0, 0.0)]);
+    bus.attach(NodeId(1));
+    let _ = bus.transmit(NodeId(0), 7, bytes::Bytes::from_static(b"x"), 0);
+    let busy = bus.sense_busy_until(NodeId(1), 0);
+    assert!(busy.is_some_and(|b| b > 0), "in-range node must sense the medium busy during a frame");
+    assert!(
+        bus.sense_busy_until(NodeId(1), 1_000_000_000).is_none(),
+        "medium is idle long after the frame has ended"
+    );
+}

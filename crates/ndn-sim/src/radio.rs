@@ -71,6 +71,9 @@ pub struct RadioBus {
     /// (wall-clock, virtual, discrete-event), never `tokio::time` directly.
     runtime: Arc<dyn Runtime>,
     rng: Mutex<StdRng>,
+    /// The world seed — mixed into the per-link erasure hash so each link's realization is fixed by its
+    /// own (tx, rx, instant) identity, independent of global draw order (see `erasure_roll`).
+    seed: u64,
     receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<RadioRx>>>,
     /// Frames currently on the air `(sender, start_ns, end_ns, collided_rx)` — for collision detection.
     /// `collided_rx` is the shared set of receivers a *later* overlapping frame has retro-collided this
@@ -209,6 +212,7 @@ impl RadioBus {
             tx_power_dbm: 20.0,
             runtime,
             rng: Mutex::new(StdRng::seed_from_u64(seed)),
+            seed,
             receivers: Mutex::new(HashMap::new()),
             in_air: Mutex::new(Vec::new()),
             view_cache: Mutex::new(None),
@@ -339,6 +343,25 @@ impl RadioBus {
         let cw = (15u64 << attempt.min(6)).min(1023);
         let slots = (self.rng.lock().unwrap().random::<f64>() * (cw + 1) as f64) as u64;
         slots.min(cw) * 9_000
+    }
+
+    /// Order-independent per-link erasure draw in `[0, 1)`. Hashes `(seed, tx, rx, instant)` rather than
+    /// pulling from one shared RNG in global order — so a link's realization is fixed by its OWN identity,
+    /// and adding an unrelated (non-interfering) link no longer perturbs which frames this link erases.
+    /// The old shared `StdRng` coupled every link through draw order, which two executors need not match.
+    fn erasure_roll(&self, tx: NodeId, rx: NodeId, now_ns: u64) -> f64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64; // FNV-1a over the key words…
+        for w in [self.seed, tx.0 as u64, rx.0 as u64, now_ns] {
+            h ^= w;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        // …then a splitmix64 finalizer for good avalanche, mapped to a uniform [0,1) via the top 53 bits.
+        h ^= h >> 30;
+        h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h ^= h >> 27;
+        h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+        h ^= h >> 31;
+        (h >> 11) as f64 / (1u64 << 53) as f64
     }
 
     /// Set the managed-mode retransmit budget (default 6).
@@ -474,6 +497,15 @@ impl RadioBus {
         let concurrent: Vec<(NodeId, Position, Arc<Mutex<std::collections::HashSet<NodeId>>>)> = {
             let mut in_air = self.in_air.lock().unwrap();
             in_air.retain(|(_, _, e, _)| *e > now_ns); // prune finished transmissions
+            // Batch/instantaneous mode stamps every frame with the same `now_ns`, so `e > now_ns` never
+            // fires and the retain can't shrink — bound the live set (and the O(n) snapshot scan below)
+            // by evicting the oldest transmissions. Under a real DES clock `now_ns` advances and the
+            // retain reclaims first, so this cap only bites in the degenerate same-instant case.
+            const IN_AIR_CAP: usize = 4096;
+            if in_air.len() > IN_AIR_CAP {
+                let drop = in_air.len() - IN_AIR_CAP;
+                in_air.drain(0..drop);
+            }
             let snapshot = in_air
                 .iter()
                 .filter(|(s, _, _, _)| *s != node)
@@ -643,7 +675,7 @@ impl RadioBus {
                     (retries + 1) as f64
                 };
             }
-            let roll: f64 = self.rng.lock().unwrap().random();
+            let roll = self.erasure_roll(node, rx_node, now_ns);
             let survived = roll < p;
             out.push((rx_node, d.rssi_dbm, survived));
 

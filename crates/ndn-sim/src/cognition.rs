@@ -9,8 +9,24 @@
 //! rate-adaptation experiments in the sim when the radios are unavailable.
 
 use ndn_radio_cognition::{
-    MediumState, NameContext, Priority, RadioCapability, RadioId, RadioPolicy,
+    ClassAuthority, ClassCeiling, MediumState, NameContext, Priority, RadioCapability, RadioId,
+    RadioPolicy,
 };
+
+/// A sim-local [`ClassAuthority`] that grants exactly the priority the scenario asks for.
+///
+/// In production, a `priority` above [`Priority::Normal`] can be set only through
+/// [`ClassCeiling::authorised`] — an authority's verdict, not a struct literal (the invariant that
+/// stops a peer buying priority by marking a frame). A simulation is the trust domain for its own
+/// scenario, so the harness legitimately stands in as that authority to exercise the policy at each
+/// class. Replaces the old `NameContext { priority, .. }` literal, which no longer compiles now that
+/// `NameContext::ceiling` is private.
+struct SimClassAuthority(Priority);
+impl ClassAuthority for SimClassAuthority {
+    fn ceiling_for(&self, _prefix_hash: u64) -> Priority {
+        self.0
+    }
+}
 
 /// One node's cognition instance: measured medium + policy, mapping named demand → a sim MCS index.
 pub struct SimCognition {
@@ -52,7 +68,8 @@ impl SimCognition {
     /// a LoRa plan's spreading factor maps inverse-to-robustness (higher SF = more robust = lower
     /// index). Clamped to `max_mcs`. Returns `None` if the plan suppresses this transmission.
     pub fn decide_mcs(&mut self, prefix_hash: u64, priority: Priority, now_ms: u64) -> Option<u8> {
-        let ctx = NameContext { priority, ..NameContext::new(prefix_hash) };
+        let ceiling = ClassCeiling::authorised(&SimClassAuthority(priority), prefix_hash);
+        let ctx = NameContext::new(prefix_hash).with_ceiling(ceiling);
         let plan = self.policy.decide(&ctx, &self.medium, now_ms);
         if plan.suppress {
             return None;

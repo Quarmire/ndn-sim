@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_radio_cognition::{ARMS, Context, ContextualBandit, TxParams, WifiRate, apply_arm, reward};
+use ndn_radio_cognition::{ARMS, Context, ContextualBandit, NameContext, TxParams, WifiRate, apply_arm, reward};
 use ndn_sim::energy::RadioEnergyModel;
 use ndn_sim::link_model::mcs_phy_rate_bps;
 use ndn_sim::medium::{CarrierSenseInterference, DeliveryReason};
@@ -92,7 +92,7 @@ fn main() {
     bus.set_tx_power(NodeId(0), MAX_DBM);
     let probe = bus.transmit(NodeId(0), BASE_MCS, Bytes::from(vec![0u8; PAYLOAD]), 0);
     let rssi = probe.iter().find(|(to, _, _)| *to == NodeId(TARGET)).map(|(_, r, _)| *r).unwrap_or(-90.0);
-    let ctx = Context::new(rssi.round() as i8, 20, 4, 1);
+    let ctx = Context::new(rssi.round() as i8, 20, 4, &NameContext::new(0));
 
     // Per-round decisions: (arm, delivered_to_target).
     let mut decisions: Vec<(usize, [f32; ARMS.len()], bool)> = Vec::new();
@@ -103,7 +103,7 @@ fn main() {
         let choice = bandit.select_traced(&ctx);
         let arm = choice.arm;
         let mut p = base_params();
-        apply_arm(&ARMS[arm], &mut p, MAX_MCS, MAX_POWER_IDX);
+        apply_arm(&ARMS[arm], &mut p, MAX_MCS, MAX_POWER_IDX, Some(0.5), 0);
         let mcs = p.mcs().unwrap_or(BASE_MCS);
         bus.set_tx_power(NodeId(0), dbm_of(p.tx_power.unwrap_or(MAX_POWER_IDX)));
         let rx = bus.transmit(NodeId(0), mcs, Bytes::from(vec![0u8; PAYLOAD]), t);

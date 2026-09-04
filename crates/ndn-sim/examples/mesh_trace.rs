@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_radio_cognition::{apply_arm, reward, WifiRate, ARMS, Context, ContextualBandit, TxParams};
+use ndn_radio_cognition::{apply_arm, reward, WifiRate, ARMS, Context, ContextualBandit, NameContext, TxParams};
 use ndn_sim::link_model::mcs_phy_rate_bps;
 use ndn_sim::medium::CarrierSenseInterference;
 use ndn_sim::radio::RadioBus;
@@ -140,12 +140,12 @@ fn main() {
             // measure the downstream link RSSI WITHOUT emitting a frame (no probe → no extra collisions)
             let (fx, tx_x) = (PATH[hop + 1].2, PATH[hop].2);
             let rssi = bus.link_rssi(Position::xy(fx, 0.0), Position::xy(tx_x, 0.0)).unwrap_or(-90.0);
-            let ctx = Context::new(rssi.round() as i8, 20, 4, 1);
+            let ctx = Context::new(rssi.round() as i8, 20, 4, &NameContext::new(0));
             let choice = bandits[from].select_traced(&ctx);
             let arm = choice.arm;
             let mut p: TxParams = TxParams::wifi(WifiRate { mcs: Some(BASE_MCS), bw: Some(2), nss: Some(1), ..Default::default() });
             p.tx_power = Some(MAX_PIDX);
-            apply_arm(&ARMS[arm], &mut p, MAX_MCS, MAX_PIDX);
+            apply_arm(&ARMS[arm], &mut p, MAX_MCS, MAX_PIDX, Some(0.5), 0);
             let mcs = p.mcs().unwrap_or(BASE_MCS);
             let pidx = p.tx_power.unwrap_or(MAX_PIDX);
             bus.set_tx_power(NodeId(from), dbm_of(pidx));

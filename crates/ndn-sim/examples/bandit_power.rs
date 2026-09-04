@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_radio_cognition::{ARMS, Context, ContextualBandit, TxParams, WifiRate, apply_arm, reward};
+use ndn_radio_cognition::{ARMS, Context, ContextualBandit, NameContext, TxParams, WifiRate, apply_arm, reward};
 use ndn_sim::energy::RadioEnergyModel;
 use ndn_sim::link_model::mcs_phy_rate_bps;
 use ndn_sim::medium::CarrierSenseInterference;
@@ -102,13 +102,13 @@ fn run_bandit(dist: f64) -> (Run, ContextualBandit, Context) {
     bus.set_tx_power(NodeId(TX), MAX_DBM);
     let probe = bus.transmit(NodeId(TX), BASE_MCS, Bytes::from(vec![0u8; PAYLOAD]), 0);
     let rssi = probe.iter().find(|(to, _, _)| *to == NodeId(SINK)).map(|(_, r, _)| *r).unwrap_or(-95.0);
-    let ctx = Context::new(rssi.round() as i8, 0, 1, 1);
+    let ctx = Context::new(rssi.round() as i8, 0, 1, &NameContext::new(0));
 
     let (mut delivered, mut dbm_sum) = (0u64, 0.0);
     for r in 1..=ROUNDS {
         let arm = bandit.select(&ctx);
         let mut p = base_params();
-        apply_arm(&ARMS[arm], &mut p, MAX_MCS, MAX_POWER_IDX);
+        apply_arm(&ARMS[arm], &mut p, MAX_MCS, MAX_POWER_IDX, Some(0.5), 0);
         let mcs = p.mcs().unwrap_or(BASE_MCS);
         let dbm = dbm_of(p.tx_power.unwrap_or(MAX_POWER_IDX));
         dbm_sum += dbm;

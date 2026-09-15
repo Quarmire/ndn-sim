@@ -74,6 +74,8 @@ mod multihop;
 mod named_time_convergence;
 #[path = "named_time_mesh.rs"]
 mod named_time_mesh;
+#[path = "muas_mesh_svs.rs"]
+mod muas_mesh_svs;
 #[path = "named_time_svs.rs"]
 mod named_time_svs;
 #[path = "ndn_radio_mode.rs"]

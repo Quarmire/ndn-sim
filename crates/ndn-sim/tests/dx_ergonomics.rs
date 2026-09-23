@@ -107,34 +107,41 @@ async fn explain_route_reports_no_route() {
     fabric.shutdown().await;
 }
 
-/// `face_stats` exposes per-face counters classified by kind; `clock()` is a cheap virtual-time handle.
-#[tokio::test]
-async fn face_stats_and_clock_are_readable() {
-    let mut sim = Simulation::new().without_radio_interference();
-    let a = sim.add_node(EngineConfig::default());
-    let b = sim.add_node(EngineConfig::default());
-    sim.link(a, b, ndn_sim::LinkConfig::lan());
-    sim.add_route(a, "/demo", b);
-    let fabric = Arc::new(sim.start().await.unwrap());
+/// `face_stats` exposes per-face counters classified by kind; `clock()` is a cheap, clonable
+/// handle on the kernel's virtual time.
+///
+/// Runs on the VirtualKernel: under the default wall-clock kernel two successive reads differ by
+/// nanoseconds, which failed on Linux CI (coarser macOS clocks hid it).
+#[test]
+fn face_stats_and_clock_are_readable() {
+    ndn_sim::VirtualKernel::new().run(|k| async move {
+        let mut sim = Simulation::new().kernel(k).without_radio_interference();
+        let a = sim.add_node(EngineConfig::default());
+        let b = sim.add_node(EngineConfig::default());
+        sim.link(a, b, ndn_sim::LinkConfig::lan());
+        sim.add_route(a, "/demo", b);
+        let fabric = Arc::new(sim.start().await.unwrap());
 
-    // Node a has one link face toward b.
-    let stats = fabric.face_stats(a).unwrap();
-    assert!(
-        stats
-            .iter()
-            .any(|s| s.kind == FaceKind::Link { toward: b.0 }),
-        "a's face toward b is classified as a link: {stats:?}"
-    );
+        // Node a has one link face toward b.
+        let stats = fabric.face_stats(a).unwrap();
+        assert!(
+            stats
+                .iter()
+                .any(|s| s.kind == FaceKind::Link { toward: b.0 }),
+            "a's face toward b is classified as a link: {stats:?}"
+        );
 
-    // The clock handle is clone + reads virtual time.
-    let clock = fabric.clock();
-    let t = clock.now_ns();
-    assert!(t > 0, "the clock reads virtual time");
-    assert_eq!(
-        clock.clone().now_ns(),
-        clock.now_ns(),
-        "clone reads the same clock"
-    );
+        // A clone reads the same clock, and the handle advances exactly with simulated time.
+        let clock = fabric.clock();
+        let t0 = clock.now_ns();
+        assert_eq!(clock.clone().now_ns(), t0, "clone reads the same clock");
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert_eq!(
+            clock.now_ns() - t0,
+            250_000_000,
+            "the clock follows virtual time"
+        );
 
-    fabric.shutdown().await;
+        fabric.shutdown().await;
+    });
 }

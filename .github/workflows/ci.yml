@@ -30,15 +30,15 @@ jobs:
       - uses: actions/checkout@v4
         with: { path: ndn-sim }
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: "de09ff6ae8a77ae0f3ddf14d20c4ac4c6f169df8", path: ndn-rs } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: "2a5840be79098017965517e6c975874602d7f22a", path: ndn-rs } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
         with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: "27646a78bb0fd91a7f1fba1f295d5a9ad220fef6", path: ndn-ext } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: "05862c948e33f7e2ad8091d8729a5cee6fdfcba0", path: ndn-radio-drivers } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: "985cd9d70ce0664c6b622da29545c6aa2cd0448c", path: ndn-radio-drivers } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-radio", ref: "b4c3d96817ea4c8e50aaeeedca47462c5ac4054e", path: ndn-radio } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-radio", ref: "f03f96242b459b82f326d3ed23803a75afcfcc16", path: ndn-radio } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-repo", ref: "1350d96d7f3c2e9bae347112e4f1d33127e6681b", path: ndn-repo } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-repo", ref: "da945360361c57777e3eb7c0167df2b6f4d167c4", path: ndn-repo } # pinned sibling; bump deliberately
       # flotilla is PRIVATE (the Keel/Waterline content-calculus ndn-sim consumes).
       # A cross-repo private checkout needs a token: create a fine-grained PAT with
       # read access to Quarmire/flotilla and add it as the FLOTILLA_TOKEN secret.
@@ -95,15 +95,15 @@ jobs:
       - uses: actions/checkout@v4
         with: { path: ndn-sim }
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: "de09ff6ae8a77ae0f3ddf14d20c4ac4c6f169df8", path: ndn-rs } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-rs", ref: "2a5840be79098017965517e6c975874602d7f22a", path: ndn-rs } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
         with: { repository: "${{ github.repository_owner }}/ndn-ext", ref: "27646a78bb0fd91a7f1fba1f295d5a9ad220fef6", path: ndn-ext } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: "05862c948e33f7e2ad8091d8729a5cee6fdfcba0", path: ndn-radio-drivers } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-radio-drivers", ref: "985cd9d70ce0664c6b622da29545c6aa2cd0448c", path: ndn-radio-drivers } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-radio", ref: "b4c3d96817ea4c8e50aaeeedca47462c5ac4054e", path: ndn-radio } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-radio", ref: "f03f96242b459b82f326d3ed23803a75afcfcc16", path: ndn-radio } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
-        with: { repository: "${{ github.repository_owner }}/ndn-repo", ref: "1350d96d7f3c2e9bae347112e4f1d33127e6681b", path: ndn-repo } # pinned sibling; bump deliberately
+        with: { repository: "${{ github.repository_owner }}/ndn-repo", ref: "da945360361c57777e3eb7c0167df2b6f4d167c4", path: ndn-repo } # pinned sibling; bump deliberately
       - uses: actions/checkout@v4
         with:
           repository: "${{ github.repository_owner }}/flotilla"

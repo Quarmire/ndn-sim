@@ -1,39 +1,30 @@
-//! The wireless **medium** (ndn-lab slice 3): one `transmit` fans a frame out to every
-//! in-range receiver, and a [`PropagationModel`] decides per `(tx, rx)` pair whether it
-//! arrives, with what RSSI, after what delay.
+//! The wireless **physics seams** the named-radio face ([`RadioBus`](crate::RadioBus)) is built on:
+//! a [`PropagationModel`] decides per `(tx, rx)` pair whether a frame arrives, with what RSSI, after
+//! what delay; an [`InterferenceModel`] decides whether concurrent in-air frames collide; a
+//! [`ChannelModel`] says how much one channel leaks into another.
 //!
-//! This is the *physics* layer and it is **deterministic by construction** — given node
-//! positions it always delivers the same way. Randomness that belongs to the radio (per-MPDU
-//! erasure from `measure::LinkModel`, collisions) is layered on in slice 4 when the
-//! named-radio face plugs onto this medium; the medium keeps the seam open via
-//! [`InterferenceModel`] but defaults to none.
-//!
-//! Relationship to the wired path: [`SimLink`](crate::SimLink) is the degenerate *static
-//! channel* (a fixed P2P pipe); the [`WirelessMedium`] is the shared, position-driven one.
-//! Both deliver frames after a delay over Tokio channels, so both are virtual under a
-//! [`VirtualKernel`](crate::VirtualKernel).
+//! Propagation is **deterministic by construction** — given node positions it always answers the
+//! same way. Randomness that belongs to the radio (per-MPDU erasure from
+//! [`LinkModel`](crate::LinkModel), collisions) is layered on by the `RadioBus`.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
-use tokio::sync::mpsc;
-
 use crate::NodeId;
-use crate::world::{Environment, Position, World, WorldView};
+use crate::world::{Environment, Position};
 
 /// Speed of light, m/s — propagation delay is `distance / C`.
 const C: f64 = 299_792_458.0;
 
-/// A frame that survived propagation, handed to a receiver. In slice 4 the named-radio face
-/// enriches this into a `CapturedFrame { rssi, mcs, addr, group }`; here it carries the
-/// minimum the medium can know: who sent it and at what signal strength.
-#[derive(Clone, Debug)]
-pub struct ReceivedFrame {
-    pub from: NodeId,
-    pub rssi_dbm: f64,
-    pub bytes: Bytes,
+/// `20·log10(4π/c)` ≈ −147.55 dB — the constant term of the Friis free-space path loss.
+const FSPL_K: f64 = -147.55;
+
+/// Friis free-space path loss (dB) at `distance_m` and `freq_hz`:
+/// `20·log10(d) + 20·log10(f) − 147.55`, with `d` clamped to ≥ 1 m (no log singularity / negative
+/// loss at sub-metre range). The one FSPL formula in the tree — [`FreeSpacePathLoss`] and the
+/// studies crate's `PropagationBackend` both evaluate it, so the NDN radio and the IP plane cannot
+/// silently disagree on reach.
+pub fn free_space_path_loss_db(distance_m: f64, freq_hz: f64) -> f64 {
+    20.0 * distance_m.max(1.0).log10() + 20.0 * freq_hz.log10() + FSPL_K
 }
 
 /// Inputs to a propagation calculation for one `(tx, rx)` pair.
@@ -212,8 +203,8 @@ impl PropagationModel for RangeThreshold {
 }
 
 /// Textbook Friis free-space path loss. Received power
-/// `Prx = Ptx − FSPL(d, f) − env_attenuation`, delivered when `Prx ≥ sensitivity`.
-/// `FSPL_dB = 20·log10(d) + 20·log10(f) − 147.55`.
+/// `Prx = Ptx − FSPL(d, f) − env_attenuation`, delivered when `Prx ≥ sensitivity`, with FSPL from
+/// [`free_space_path_loss_db`].
 pub struct FreeSpacePathLoss {
     pub tx_power_dbm: f64,
     pub freq_hz: f64,
@@ -231,19 +222,6 @@ impl Default for FreeSpacePathLoss {
     }
 }
 
-impl FreeSpacePathLoss {
-    /// `20·log10(4π/c)` ≈ −147.55 dB.
-    const FSPL_K: f64 = -147.55;
-
-    fn fspl_db(&self, d: f64) -> f64 {
-        if d <= 1.0 {
-            // Avoid the log singularity / negative loss at sub-metre range.
-            return 20.0 * self.freq_hz.log10() + Self::FSPL_K;
-        }
-        20.0 * d.log10() + 20.0 * self.freq_hz.log10() + Self::FSPL_K
-    }
-}
-
 impl PropagationModel for FreeSpacePathLoss {
     fn deliver(&self, ctx: &TxContext) -> Delivery {
         let d = ctx.distance();
@@ -252,7 +230,7 @@ impl PropagationModel for FreeSpacePathLoss {
         // delivery (was `self.tx_power_dbm`, which made a reach-vs-power study conclude "lowering power is
         // free"). `self.tx_power_dbm` stays the widest-case anchor for `max_range_m`.
         let prx = ctx.tx_power_dbm
-            - self.fspl_db(d)
+            - free_space_path_loss_db(d, self.freq_hz)
             - ctx.environment.attenuation(ctx.tx_pos, ctx.rx_pos);
         let delivered = prx >= self.rx_sensitivity_dbm;
         Delivery {
@@ -269,23 +247,21 @@ impl PropagationModel for FreeSpacePathLoss {
 
     fn max_range_m(&self) -> f64 {
         // Solve Ptx − sens = 20·log10(d) + 20·log10(f) + K (env-free, the widest case).
-        let lhs = self.tx_power_dbm
-            - self.rx_sensitivity_dbm
-            - 20.0 * self.freq_hz.log10()
-            - Self::FSPL_K;
+        let lhs =
+            self.tx_power_dbm - self.rx_sensitivity_dbm - 20.0 * self.freq_hz.log10() - FSPL_K;
         10f64.powf(lhs / 20.0)
     }
 }
 
-/// Decides whether concurrent in-air frames collide at a receiver. Defaulted to none for
-/// slice 3; the named-radio face supplies a real one (CSMA/EDCCA) in a later slice.
+/// Decides whether concurrent in-air frames collide at a receiver. The [`RadioBus`](crate::RadioBus)
+/// consults it with its in-air tracking; the default there is [`CarrierSenseInterference`].
 pub trait InterferenceModel: Send + Sync {
     fn collides(&self, _rx: NodeId, _concurrent_senders: &[NodeId]) -> bool {
         false
     }
 }
 
-/// No collisions ever (the default).
+/// No collisions ever (the collision-free idealization).
 pub struct NoInterference;
 impl InterferenceModel for NoInterference {}
 
@@ -341,288 +317,65 @@ impl ChannelModel for AdjacentLeakChannel {
     }
 }
 
-/// A shared, position-driven broadcast medium. Radios [`attach`](Self::attach) to get a
-/// receiver; a [`transmit`](Self::transmit) fans the frame to every node the
-/// [`PropagationModel`] can reach (found via the world's spatial index), each after its own
-/// propagation delay.
-pub struct WirelessMedium {
-    world: Arc<World>,
-    propagation: Arc<dyn PropagationModel>,
-    #[allow(dead_code)] // seam for slice-4 collision modelling
-    interference: Arc<dyn InterferenceModel>,
-    /// World epoch in nanoseconds — `transmit`'s `now_ns` is converted to seconds-since-epoch
-    /// to query mobility. Matches the engine's `unix_nanos` clock.
-    epoch_ns: u64,
-    /// Clock + executor seam for delayed delivery (runs on any kernel, never `tokio::time`).
-    runtime: Arc<dyn ndn_runtime::Runtime>,
-    receivers: Mutex<HashMap<NodeId, mpsc::UnboundedSender<ReceivedFrame>>>,
-    /// Per-instant snapshot cache `(now_ns, world_generation, view)` — so a burst of transmits
-    /// at the same virtual instant rebuilds the `SpatialGrid` once, not per packet (the
-    /// "snapshot per tick" the design calls for; recovers O(local) range queries).
-    view_cache: Mutex<Option<(u64, u64, Arc<WorldView>)>>,
-}
-
-impl WirelessMedium {
-    /// A medium over `world` using `propagation`, with the world epoch set to `epoch_ns`
-    /// (the kernel's `unix_nanos` at t=0). Defaults to no interference + the Tokio runtime; use
-    /// [`new_on`](Self::new_on) to run delivery on a specific kernel.
-    pub fn new(world: Arc<World>, propagation: Arc<dyn PropagationModel>, epoch_ns: u64) -> Self {
-        Self::new_on(world, propagation, epoch_ns, ndn_runtime::default_runtime())
-    }
-
-    /// [`new`](Self::new) on a specific [`Runtime`](ndn_runtime::Runtime).
-    pub fn new_on(
-        world: Arc<World>,
-        propagation: Arc<dyn PropagationModel>,
-        epoch_ns: u64,
-        runtime: Arc<dyn ndn_runtime::Runtime>,
-    ) -> Self {
-        Self {
-            world,
-            propagation,
-            interference: Arc::new(NoInterference),
-            epoch_ns,
-            runtime,
-            receivers: Mutex::new(HashMap::new()),
-            view_cache: Mutex::new(None),
-        }
-    }
-
-    pub fn with_interference(mut self, model: Arc<dyn InterferenceModel>) -> Self {
-        self.interference = model;
-        self
-    }
-
-    /// Attach `node` as a radio on this medium; returns the channel its received frames land
-    /// on. Re-attaching replaces the previous receiver. The channel is **unbounded**: buffering
-    /// never drops or stalls, so loss is purely the propagation model — not consumer scheduling.
-    pub fn attach(&self, node: NodeId) -> mpsc::UnboundedReceiver<ReceivedFrame> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.receivers.lock().unwrap().insert(node, tx);
-        rx
-    }
-
-    /// Detach `node` (its sender is dropped; in-flight deliveries to it are discarded).
-    pub fn detach(&self, node: NodeId) {
-        self.receivers.lock().unwrap().remove(&node);
-    }
-
-    fn t_secs(&self, now_ns: u64) -> f64 {
-        now_ns.saturating_sub(self.epoch_ns) as f64 / 1e9
-    }
-
-    /// The world snapshot for `now_ns`, reusing the cached one when neither the instant nor the
-    /// world has changed (keyed on `(now_ns, world.generation())`).
-    fn view_at(&self, now_ns: u64) -> Arc<WorldView> {
-        let generation = self.world.generation();
-        let mut cache = self.view_cache.lock().unwrap();
-        if let Some((cn, cg, view)) = cache.as_ref()
-            && *cn == now_ns
-            && *cg == generation
-        {
-            return Arc::clone(view);
-        }
-        let view = Arc::new(self.world.snapshot(self.t_secs(now_ns)));
-        *cache = Some((now_ns, generation, Arc::clone(&view)));
-        view
-    }
-
-    /// Broadcast `frame` from `node` at virtual time `now_ns`. Returns the list of receivers
-    /// the frame was (or will be) delivered to, with their computed RSSI — useful for tests
-    /// and telemetry. Each delivery is scheduled after its own propagation delay (virtual
-    /// under a [`VirtualKernel`](crate::VirtualKernel)).
-    pub fn transmit(&self, node: NodeId, frame: Bytes, now_ns: u64) -> Vec<(NodeId, f64)> {
-        let view = self.view_at(now_ns);
-        let Some(tx_pos) = view.position(node) else {
-            return Vec::new(); // unplaced sender ⇒ heard by no one
-        };
-        let env = self.world.environment();
-
-        let mut delivered = Vec::new();
-        let receivers = self.receivers.lock().unwrap();
-        // Spatial index bounds this to nearby nodes (never the whole world).
-        for rx_node in view.within_range(tx_pos, self.propagation.max_range_m()) {
-            if rx_node == node {
-                continue; // a radio does not hear itself
-            }
-            let Some(rx_pos) = view.position(rx_node) else {
-                continue;
-            };
-            let Some(sender) = receivers.get(&rx_node).cloned() else {
-                continue;
-            };
-
-            let ctx = TxContext {
-                tx_pos,
-                rx_pos,
-                tx_power_dbm: 20.0,
-                environment: env.as_ref(),
-                frame_len: frame.len(),
-            };
-            let d = self.propagation.deliver(&ctx);
-            if !d.delivered {
-                continue;
-            }
-            delivered.push((rx_node, d.rssi_dbm));
-
-            let rf = ReceivedFrame {
-                from: node,
-                rssi_dbm: d.rssi_dbm,
-                bytes: frame.clone(),
-            };
-            // Deliver after airtime + propagation, NOT propagation alone. Under the DES kernel (zero
-            // virtual processing time) a receiver must not act on a frame before the sender's last bit is
-            // on air — else a causally-later reply is emitted inside this frame's still-open window (the
-            // exact regression fixed in RadioBus). WirelessMedium tracks no MCS, so charge a conservative
-            // MCS0 airtime; RadioBus is the airtime-accurate path — this is the legacy propagation model.
-            let recv_delay = crate::wifi::frame_airtime(frame.len(), 0) + d.delay;
-            let rt = Arc::clone(&self.runtime);
-            self.runtime.spawn(Box::pin(async move {
-                rt.sleep(recv_delay).await;
-                let _ = sender.send(rf);
-            }));
-        }
-        delivered.sort_by_key(|(n, _)| n.0);
-        delivered
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{LinearMobility, World};
+    use crate::world::FreeSpace;
 
-    fn medium_with(
-        positions: &[(NodeId, Position)],
-        prop: Arc<dyn PropagationModel>,
-    ) -> WirelessMedium {
-        let world = World::new();
-        for (id, p) in positions {
-            world.place(*id, *p);
-        }
-        WirelessMedium::new(Arc::new(world), prop, 0)
+    fn deliver(prop: &dyn PropagationModel, rx: Position) -> Delivery {
+        prop.deliver(&TxContext {
+            tx_pos: Position::xy(0.0, 0.0),
+            rx_pos: rx,
+            tx_power_dbm: 20.0,
+            environment: &FreeSpace,
+            frame_len: 100,
+        })
     }
 
-    #[tokio::test]
-    async fn range_threshold_fans_out_only_to_in_range() {
-        let medium = medium_with(
-            &[
-                (NodeId(0), Position::xy(0.0, 0.0)),
-                (NodeId(1), Position::xy(50.0, 0.0)), // in range
-                (NodeId(2), Position::xy(500.0, 0.0)), // out of range
-            ],
-            Arc::new(RangeThreshold {
-                range_m: 100.0,
-                tx_power_dbm: 20.0,
-            }),
-        );
-        let mut r1 = medium.attach(NodeId(1));
-        let mut r2 = medium.attach(NodeId(2));
-
-        let hit = medium.transmit(NodeId(0), Bytes::from_static(b"hi"), 0);
-        assert_eq!(
-            hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-            vec![NodeId(1)]
-        );
-
-        // Node 1 hears it; node 2 (out of range) gets nothing.
-        let got = tokio::time::timeout(Duration::from_millis(50), r1.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(got.bytes, &b"hi"[..]);
-        assert_eq!(got.from, NodeId(0));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), r2.recv())
-                .await
-                .is_err()
-        );
+    #[test]
+    fn range_threshold_delivers_only_inside_its_disc() {
+        let prop = RangeThreshold {
+            range_m: 100.0,
+            tx_power_dbm: 20.0,
+        };
+        let near = deliver(&prop, Position::xy(50.0, 0.0));
+        assert!(near.delivered);
+        assert_eq!(near.reason, DeliveryReason::Delivered);
+        let far = deliver(&prop, Position::xy(500.0, 0.0));
+        assert!(!far.delivered);
+        assert_eq!(far.reason, DeliveryReason::OutOfRange);
     }
 
-    #[tokio::test]
-    async fn fspl_rssi_decreases_with_distance_and_cuts_off() {
-        let prop = Arc::new(FreeSpacePathLoss::default());
+    #[test]
+    fn fspl_rssi_decreases_with_distance_and_cuts_off_at_max_range() {
+        let prop = FreeSpacePathLoss::default();
         let max = prop.max_range_m();
-        let medium = medium_with(
-            &[
-                (NodeId(0), Position::xy(0.0, 0.0)),
-                (NodeId(1), Position::xy(10.0, 0.0)),
-                (NodeId(2), Position::xy(100.0, 0.0)),
-                (NodeId(3), Position::xy(max * 2.0, 0.0)), // far beyond sensitivity
-            ],
-            prop,
-        );
-        medium.attach(NodeId(1));
-        medium.attach(NodeId(2));
-        medium.attach(NodeId(3));
-
-        let hit = medium.transmit(NodeId(0), Bytes::from_static(b"x"), 0);
-        let rssi: HashMap<NodeId, f64> = hit.iter().copied().collect();
-        assert!(rssi.contains_key(&NodeId(1)) && rssi.contains_key(&NodeId(2)));
+        let d10 = deliver(&prop, Position::xy(10.0, 0.0));
+        let d100 = deliver(&prop, Position::xy(100.0, 0.0));
+        assert!(d10.delivered && d100.delivered);
         assert!(
-            !rssi.contains_key(&NodeId(3)),
-            "node past max range is unreachable"
-        );
-        assert!(
-            rssi[&NodeId(1)] > rssi[&NodeId(2)],
+            d10.rssi_dbm > d100.rssi_dbm,
             "closer node has stronger RSSI"
         );
+        // max_range_m is the exact sensitivity crossing: just inside delivers, just past does not.
+        assert!(deliver(&prop, Position::xy(max * 0.99, 0.0)).delivered);
+        let past = deliver(&prop, Position::xy(max * 1.01, 0.0));
+        assert!(!past.delivered, "node past max range is unreachable");
+        assert_eq!(past.reason, DeliveryReason::Weak);
     }
 
-    /// The medium is deterministic by construction: identical positions ⇒ identical fan-out
-    /// and RSSI, every run.
-    #[tokio::test]
-    async fn transmit_is_reproducible() {
-        let positions = [
-            (NodeId(0), Position::xy(0.0, 0.0)),
-            (NodeId(1), Position::xy(30.0, 10.0)),
-            (NodeId(2), Position::xy(70.0, 40.0)),
-        ];
-        let run = || {
-            let m = medium_with(&positions, Arc::new(FreeSpacePathLoss::default()));
-            m.attach(NodeId(1));
-            m.attach(NodeId(2));
-            m.transmit(NodeId(0), Bytes::from_static(b"x"), 0)
-        };
-        assert_eq!(run(), run());
-    }
-
-    /// A moving node crosses into range over (virtual) time — the snapshot at `now_ns`
-    /// reflects the world at that instant.
-    #[tokio::test(start_paused = true)]
-    async fn mobility_brings_node_into_range() {
-        let world = World::new();
-        world.place(NodeId(0), Position::xy(0.0, 0.0));
-        // Node 1 starts 500 m away, approaches at 100 m/s along −x.
-        world.set_mobility(
-            NodeId(1),
-            Arc::new(LinearMobility {
-                start: Position::xy(500.0, 0.0),
-                velocity: (-100.0, 0.0, 0.0),
-            }),
-        );
-        let medium = WirelessMedium::new(
-            Arc::new(world),
-            Arc::new(RangeThreshold {
-                range_m: 100.0,
-                tx_power_dbm: 20.0,
-            }),
-            0,
-        );
-        medium.attach(NodeId(1));
-
-        // t = 0 s: 500 m away ⇒ out of range.
+    /// The Friis anchor: at 100 m / 2.4 GHz free space loses ≈ 80.05 dB (the textbook figure).
+    #[test]
+    fn free_space_path_loss_matches_friis() {
+        let loss = free_space_path_loss_db(100.0, 2.4e9);
         assert!(
-            medium
-                .transmit(NodeId(0), Bytes::from_static(b"a"), 0)
-                .is_empty()
+            (loss - 80.05).abs() < 0.05,
+            "FSPL(100 m, 2.4 GHz) = {loss} dB"
         );
-        // t = 4.5 s: 500 − 450 = 50 m ⇒ in range.
-        let now = 4_500_000_000u64;
-        let hit = medium.transmit(NodeId(0), Bytes::from_static(b"b"), now);
         assert_eq!(
-            hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-            vec![NodeId(1)]
+            free_space_path_loss_db(0.2, 2.4e9),
+            free_space_path_loss_db(1.0, 2.4e9),
+            "sub-metre distances clamp to the 1 m loss"
         );
     }
 }

@@ -22,7 +22,7 @@
 //!    are recorded; only the *bound* is CI-normative).
 //!
 //! Reuses instrument (c)'s [`Ledger`]/[`watch`](crate::liveness::watch)/[`Invariants`] and
-//! instrument (a)'s [`BoundCheck`](crate::ceiling::BoundCheck) rather than forking either — an
+//! instrument (a)'s [`BoundCheck`] rather than forking either — an
 //! [`AdversaryCell`] is a `liveness` verdict + `ceiling` bounds glued by a cost meter, with the
 //! same seed-per-cell + normative-projection determinism discipline.
 

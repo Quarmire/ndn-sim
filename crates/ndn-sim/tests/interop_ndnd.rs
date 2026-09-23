@@ -21,7 +21,7 @@
 //!
 //! All `#[ignore]` so CI without ndnd is unaffected. Run with a built ndnd:
 //!   go build -o /tmp/ndnd ./cmd/ndnd     (in the ndnd repo)
-//!   NDND_BIN=/tmp/ndnd cargo test -p ndn-sim --test interop_ndnd -- --ignored --nocapture
+//!   NDND_BIN=/tmp/ndnd cargo test -p ndn-sim --test suite -- interop_ndnd --ignored --nocapture
 //! or use `testbed/interop.sh`, which builds ndnd and runs the suite.
 
 use std::io::Write;

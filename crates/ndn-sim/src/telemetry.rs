@@ -11,10 +11,11 @@
 //! - [`MetricsSample`] + [`MetricsLog`] + the fabric's gauge emitter snapshot a node's live
 //!   engine counters (CS hit-rate, PIT depth, per-face throughput/drops) on a Runtime-driven
 //!   cadence — the pull-only NFD datasets turned into a virtual-time series.
-//! - [`IpMetricsSample`] does the same for the IP forwarding plane (forwarded / delivered / drops
-//!   / tx bytes), and [`FabricGauges`] covers the medium/network-wide scalars (shared-radio
-//!   airtime, AP handoffs, association overhead) — so IP-over-radio metrics export like the engine's
-//!   rather than living only behind ad-hoc accessors.
+//! - [`FabricGauges`] covers the medium/network-wide scalars (shared-radio airtime, AP handoffs,
+//!   association overhead) — so medium-level metrics export like the engine's rather than living
+//!   only behind ad-hoc accessors. (The IP plane in `ndn-sim-studies` builds its own per-node
+//!   sample on the same exporter envelope,
+//!   [`OtlpExporter::metrics_document`](crate::OtlpExporter::metrics_document).)
 //! - [`SimSpanEmitter`] builds [`ndn_observability::Span`]s (the workspace's hand-rolled OTLP
 //!   span, the same schema production emits) with virtual `start`/`end` timestamps and serves
 //!   them over NDN via [`SpanPublisher`]. The existing `NdnObservabilityLayer` can't be
@@ -114,34 +115,19 @@ pub fn sample_engine(node: NodeId, engine: &ForwarderEngine) -> MetricsSample {
     }
 }
 
-/// A point-in-time snapshot of one **IP node**'s forwarding counters, stamped with virtual time —
-/// the IP-plane analogue of [`MetricsSample`], so IP metrics ride the same [`MetricsLog`] +
-/// [`OtlpExporter`](crate::otel_export::OtlpExporter) path as the NDN engine's.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct IpMetricsSample {
-    pub node: NodeId,
-    pub virtual_time_ns: u64,
-    pub forwarded: u64,
-    pub delivered: u64,
-    pub dropped_no_route: u64,
-    pub dropped_ttl: u64,
-    pub tx_bytes: u64,
-}
-
+// The `///` text below is part of the Keel schema (the Manifest derive hashes it; the pin in
+// `keel::tests::derived_schema_is_deterministic_and_frozen` turns red on any edit), so it stays
+// verbatim. `IpNetwork` now lives in ndn-sim-studies, and it is the only producer of `handoffs` /
+// `association_overhead_ns` — the NDN radio face has no association model and leaves them zero.
 /// Medium/network-wide gauges that aren't per-node: the shared-radio airtime and the AP-mode
 /// roaming cost. One snapshot for a whole `RadioBus` / `IpNetwork` at a virtual instant, so these —
 /// previously only reachable via ad-hoc accessors — also flow to the OTLP exporter.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    manifest_derive::Manifest,
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "keel", derive(manifest_derive::Manifest))]
+#[cfg_attr(
+    feature = "keel",
+    manifest(ty = "fabric-gauges", describes = "ndn-lab/run/fabric-gauges")
 )]
-#[manifest(ty = "fabric-gauges", describes = "ndn-lab/run/fabric-gauges")]
 pub struct FabricGauges {
     /// Kernel-clock time of the sample (ns).
     pub virtual_time_ns: u64,
@@ -283,7 +269,7 @@ impl SimSpanEmitter {
 
     /// Build, publish, and return a completed span over the virtual interval
     /// `[start_ns, end_ns]`. Caller supplies virtual timestamps (e.g. captured around the
-    /// work via [`Runtime::unix_nanos`]).
+    /// work via [`Runtime::unix_nanos`](ndn_runtime::Now::unix_nanos)).
     pub fn span(
         &self,
         name: impl Into<String>,

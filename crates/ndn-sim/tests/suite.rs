@@ -28,12 +28,12 @@ mod bridge_flow;
 mod broadcast_segment;
 #[path = "ceiling_finder.rs"]
 mod ceiling_finder;
-#[path = "compare.rs"]
-mod compare;
 #[path = "control_plane.rs"]
 mod control_plane;
 #[path = "cosim.rs"]
 mod cosim;
+#[path = "data_path_security.rs"]
+mod data_path_security;
 #[path = "des_fabric.rs"]
 mod des_fabric;
 #[path = "des_link.rs"]
@@ -54,6 +54,8 @@ mod faults;
 mod feed;
 #[path = "field_faults.rs"]
 mod field_faults;
+#[path = "fleet.rs"]
+mod fleet;
 #[path = "geometry.rs"]
 mod geometry;
 mod ground_truth;
@@ -61,24 +63,12 @@ mod ground_truth;
 mod interop_ndnd;
 #[path = "interop_nfd.rs"]
 mod interop_nfd;
-#[path = "ip_mobility.rs"]
-mod ip_mobility;
-#[path = "ip_plane.rs"]
-mod ip_plane;
 #[path = "mavlink.rs"]
 mod mavlink;
 #[path = "mcp.rs"]
 mod mcp;
-#[path = "muas_mesh_svs.rs"]
-mod muas_mesh_svs;
 #[path = "multihop.rs"]
 mod multihop;
-#[path = "named_time_convergence.rs"]
-mod named_time_convergence;
-#[path = "named_time_mesh.rs"]
-mod named_time_mesh;
-#[path = "named_time_svs.rs"]
-mod named_time_svs;
 #[path = "ndn_radio_mode.rs"]
 mod ndn_radio_mode;
 #[path = "ns11_persistent_liveness.rs"]
@@ -115,8 +105,6 @@ mod telemetry;
 mod validation;
 #[path = "virtual_time.rs"]
 mod virtual_time;
-#[path = "wifi_modes.rs"]
-mod wifi_modes;
 #[path = "workload.rs"]
 mod workload;
 #[path = "world_medium.rs"]

@@ -15,7 +15,6 @@ classification = "research"
 [dependencies]
 ndn-transport = { workspace = true }
 ndn-engine    = { workspace = true }
-ndn-radio-cognition = { workspace = true }
 ndn-runtime   = { workspace = true }
 ndn-packet    = { workspace = true, features = ["std"] }
 ndn-store     = { workspace = true }
@@ -23,6 +22,8 @@ ndn-frame-io  = { workspace = true }
 ndn-signals-core = { workspace = true }
 ndn-strategy  = { workspace = true }
 ndn-mgmt      = { workspace = true }
+# Boot sim nodes from ndn-fwd TOML through the same code ndn-fwd runs (`ndn_config::boot`).
+ndn-config    = { workspace = true }
 ndn-observability = { workspace = true }
 # Real UDP transport for the interop bridge (slice 9).
 ndn-face      = { workspace = true }
@@ -34,15 +35,15 @@ ndn-security  = { workspace = true }
 # real sync layer — that's the point: they must exercise the STOCK channel geometry.
 ndn-sync      = { workspace = true }
 
-# The Keel: ndn-lab is the first real consumer of the manifest/render-contract
-# calculus. Zero-dep spec crates + the tool-tier `explain` micro-crate, pulled by
-# path from the sibling flotilla repo (they carry no transitive deps — C7,
-# which is what makes cross-workspace path deps painless).
-manifest              = { path = "../../../flotilla/crates/core/manifest" }
-render-contract       = { path = "../../../flotilla/crates/core/render-contract" }
-explain               = { path = "../../../flotilla/crates/tools/explain" }
-manifest-describe     = { path = "../../../flotilla/crates/tools/manifest-describe" }
-manifest-derive       = { path = "../../../flotilla/crates/tools/manifest-derive" }
+# The Keel (`keel` feature, off by default): ndn-lab as a consumer of the manifest/render-contract
+# calculus. Zero-dep spec crates + the tool-tier `explain` micro-crate, pulled by path from the
+# sibling flotilla repo (they carry no transitive deps — C7). Optional so the core simulator builds
+# and tests with no flotilla checkout at all.
+manifest              = { path = "../../../flotilla/crates/core/manifest", optional = true }
+render-contract       = { path = "../../../flotilla/crates/core/render-contract", optional = true }
+explain               = { path = "../../../flotilla/crates/tools/explain", optional = true }
+manifest-describe     = { path = "../../../flotilla/crates/tools/manifest-describe", optional = true }
+manifest-derive       = { path = "../../../flotilla/crates/tools/manifest-derive", optional = true }
 
 serde      = { workspace = true }
 serde_json = { workspace = true }
@@ -62,6 +63,7 @@ tracing-subscriber = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
 rand        = "0.9"
+parking_lot = "0.12"
 # CLI — only pulled in by the `bin` feature.
 clap        = { workspace = true, optional = true }
 # ArduPilot SITL co-sim — only pulled in by the `mavlink` feature (keeps the core build lean).
@@ -72,6 +74,15 @@ mavlink     = { version = "0.13", optional = true, default-features = false, fea
 bin = ["dep:clap", "tokio/rt-multi-thread", "tokio/signal"]
 # ArduPilot SITL (MAVLink) co-sim adapter + the `ndn-lab fly` command.
 mavlink = ["dep:mavlink"]
+# Self-describing telemetry through render contracts (`ndn_sim::keel`, `#[derive(Manifest)]` on
+# `FabricGauges` / the scene types). Requires the sibling `flotilla` checkout.
+keel = [
+    "dep:manifest",
+    "dep:render-contract",
+    "dep:explain",
+    "dep:manifest-describe",
+    "dep:manifest-derive",
+]
 
 [[bin]]
 name = "ndn-lab"
@@ -86,17 +97,10 @@ path = "tests/suite.rs"
 
 [dev-dependencies]
 tokio      = { workspace = true, features = ["full"] }
-# The soft-prefix-reach forwarding strategy — force-linked in the ndr_mobility_sweep example so its linkme
-# registration is included (so `set_strategy("soft-prefix-reach")` resolves for the flood-vs-prior A/B).
-ndn-strategy-reach = { path = "../../../ndn-radio/crates/strategies/ndn-strategy-reach" }
 # Sign control Interests in the authenticated-control-over-NDN test.
 ndn-security = { workspace = true }
 # tests/field_faults.rs: the D-42 history-serving gates drive a real ndn-repo (two-phase mode).
 ndn-repo     = { workspace = true }
-# Named-time multi-node convergence demo (tests/named_time_convergence.rs).
-ndn-time         = { workspace = true }
-ndn-time-sources = { workspace = true }
-ndn-timekeeper   = { workspace = true }
 # multihop.rs / relay_hops.rs: pipe relaying over a simulated multi-hop net.
 ndn-coding       = { workspace = true }
 ndn-pipes        = { workspace = true }
@@ -104,4 +108,9 @@ ndn-pipes        = { workspace = true }
 fastrand         = "2"
 
 [[example]]
-name = "ndr_multiproducer"
+name = "keel-telemetry"
+required-features = ["keel"]
+
+[[example]]
+name = "keel-live"
+required-features = ["keel"]

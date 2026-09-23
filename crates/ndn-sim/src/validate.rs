@@ -31,11 +31,13 @@
 //! value = 0
 //! ```
 //!
-//! Run it with `ndn-lab check spec.toml`, or from Rust via [`run_validation`].
+//! Run it with `ndn-lab check spec.toml`, or from Rust via [`ValidationSpec::from_file`] +
+//! [`run_validation`]. Relative paths inside a spec (the scenario's `mobility_trace`) resolve
+//! against the spec file's directory, never the working directory.
 //!
 //! ## What this layer guarantees
-//! - **Deterministic**: every run is on a [`DesKernel`](crate::DesKernel) /
-//!   [`VirtualKernel`](crate::VirtualKernel) — the same input yields the same verdict.
+//! - **Deterministic**: every run is on a [`DesKernel`] /
+//!   [`VirtualKernel`] — the same input yields the same verdict.
 //! - **Cross-executor agreement**: when more than one kernel is requested, the runner also checks
 //!   that the counters *agree* across executors (ignoring wall-of-virtual-time). A divergence there
 //!   is itself a finding — the two schedulers disagree about what the network did.
@@ -43,6 +45,7 @@
 //!   "kill the relay at t=1s" fault lands at the same logical instant on every run.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -619,6 +622,18 @@ fn default_seeds() -> Vec<u64> {
 impl ValidationSpec {
     pub fn from_toml(s: &str) -> Result<Self> {
         toml::from_str(s).context("parse validation spec TOML")
+    }
+
+    /// Load a spec file and resolve every relative path inside it (the scenario's
+    /// `mobility_trace`, …) against the **spec's own directory** — so `ndn-lab check <spec>` gives
+    /// the same verdict from any working directory, and a spec can sit next to its trace.
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read validation spec {}", path.display()))?;
+        let mut spec = Self::from_toml(&text).with_context(|| format!("in {}", path.display()))?;
+        spec.scenario
+            .resolve_paths(path.parent().unwrap_or_else(|| Path::new("")));
+        Ok(spec)
     }
 
     pub fn to_toml(&self) -> Result<String> {

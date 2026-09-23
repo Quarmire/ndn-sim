@@ -219,7 +219,7 @@ pub async fn latency_catchup(
     }
 }
 
-/// A percentile over an unsorted sample set (nearest-rank). `q` in [0,1].
+/// A percentile over an unsorted sample set (nearest-rank). `q` in `[0, 1]`.
 pub fn percentile(samples: &mut [f64], q: f64) -> f64 {
     if samples.is_empty() {
         return f64::NAN;

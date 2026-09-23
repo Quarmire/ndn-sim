@@ -1,6 +1,6 @@
 //! Session recording + replay (ndn-lab).
 //!
-//! A [`Scenario`](crate::Scenario) captures a sim's *initial* state; a [`Recording`] adds the
+//! A [`Scenario`] captures a sim's *initial* state; a [`Recording`] adds the
 //! **live command journal** — every [`SimCommand`] issued through the [`ControlPlane`], with its
 //! virtual timestamp — so a hand-driven (or MCP/GUI-driven) session is fully reproducible: build
 //! the scenario, replay the journal, get the same run back. Pairs with the determinism gate (a

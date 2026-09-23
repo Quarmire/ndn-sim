@@ -17,7 +17,7 @@
 //! `DYLD_FALLBACK_LIBRARY_PATH` for the child). Run with a built NFD:
 //!   NFD_BIN=/path/to/NFD/build/bin/nfd \
 //!   NDN_CXX_LIB=/path/to/ndn-cxx/build \
-//!   cargo test -p ndn-sim --test interop_nfd -- --ignored --nocapture
+//!   cargo test -p ndn-sim --test suite -- interop_nfd --ignored --nocapture
 //! or use `testbed/interop.sh` (which locates both).
 
 use std::io::Write;

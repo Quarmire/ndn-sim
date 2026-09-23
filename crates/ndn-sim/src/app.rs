@@ -41,6 +41,18 @@ pub struct FlowStats {
     /// Virtual-clock stamps of the first and last reply — the throughput measurement window.
     pub first_recv_ns: u64,
     pub last_recv_ns: u64,
+    /// Versioned (LatestConsumer) flows only: replies served past their own FreshnessPeriod —
+    /// a MustBeFresh Interest answered with a superseded sample.
+    #[serde(default)]
+    pub stale: u64,
+    /// Versioned flows only: replies that did not advance the version (a sample already seen).
+    #[serde(default)]
+    pub repeats: u64,
+    /// Versioned flows only: longest wait between consecutive NEW versions, including from the
+    /// app's start to the first one and from the latest one to the snapshot — a stall shows here
+    /// even if it never ends.
+    #[serde(default)]
+    pub max_gap_ns: u64,
 }
 
 impl FlowStats {
@@ -80,6 +92,14 @@ impl FlowStats {
             (self.bytes as f64 * 8.0) / (span as f64 / 1e9)
         }
     }
+    /// Versioned flows: replies that delivered a new sample.
+    pub fn new_versions(&self) -> u64 {
+        self.received - self.repeats
+    }
+    /// Versioned flows: the longest inter-arrival gap between new samples (ms).
+    pub fn max_gap_ms(&self) -> f64 {
+        self.max_gap_ns as f64 / 1e6
+    }
 }
 
 /// Atomic accumulator behind a live app; snapshot into a [`FlowStats`].
@@ -94,6 +114,19 @@ pub(crate) struct FlowStatsInner {
     rtt_sum_ns: AtomicU64,
     first_recv_ns: AtomicU64, // 0 sentinel = unset
     last_recv_ns: AtomicU64,
+    /// Set only for versioned (LatestConsumer) flows.
+    versions: parking_lot::Mutex<Option<VersionTrack>>,
+}
+
+/// Freshness bookkeeping for a versioned flow.
+#[derive(Default)]
+struct VersionTrack {
+    last_version: u64,
+    /// When the last NEW version arrived (or the flow started).
+    last_new_ns: u64,
+    max_gap_ns: u64,
+    stale: u64,
+    repeats: u64,
 }
 
 impl FlowStatsInner {
@@ -124,8 +157,32 @@ impl FlowStatsInner {
                 .compare_exchange(0, now_ns, Ordering::Relaxed, Ordering::Relaxed);
         self.last_recv_ns.store(now_ns, Ordering::Relaxed);
     }
-    fn snapshot(&self) -> FlowStats {
+    /// Start freshness bookkeeping at `now_ns` (the first gap runs from here).
+    fn start_version_tracking(&self, now_ns: u64) {
+        *self.versions.lock() = Some(VersionTrack {
+            last_new_ns: now_ns,
+            ..VersionTrack::default()
+        });
+    }
+    /// Fold one versioned reply in: `stale` if it was served past its freshness.
+    fn on_version(&self, version: u64, stale: bool, now_ns: u64) {
+        let mut guard = self.versions.lock();
+        let Some(t) = guard.as_mut() else { return };
+        t.stale += u64::from(stale);
+        if version <= t.last_version {
+            t.repeats += 1;
+            return;
+        }
+        t.last_version = version;
+        t.max_gap_ns = t.max_gap_ns.max(now_ns.saturating_sub(t.last_new_ns));
+        t.last_new_ns = now_ns;
+    }
+    fn snapshot(&self, now_ns: u64) -> FlowStats {
         let rtt_min = self.rtt_min_ns.load(Ordering::Relaxed);
+        let (stale, repeats, max_gap_ns) = self.versions.lock().as_ref().map_or((0, 0, 0), |t| {
+            let open_gap = now_ns.saturating_sub(t.last_new_ns);
+            (t.stale, t.repeats, t.max_gap_ns.max(open_gap))
+        });
         FlowStats {
             sent: self.sent.load(Ordering::Relaxed),
             received: self.received.load(Ordering::Relaxed),
@@ -136,6 +193,9 @@ impl FlowStatsInner {
             rtt_sum_ns: self.rtt_sum_ns.load(Ordering::Relaxed),
             first_recv_ns: self.first_recv_ns.load(Ordering::Relaxed),
             last_recv_ns: self.last_recv_ns.load(Ordering::Relaxed),
+            stale,
+            repeats,
+            max_gap_ns,
         }
     }
     fn received(&self) -> u64 {
@@ -195,6 +255,33 @@ impl TrafficPattern {
                 }
             }
         }
+    }
+
+    /// The pattern's inter-request delays in order (request 0, 1, …), with the Poisson draws
+    /// seeded by `seed` — public so a plane defined outside this crate (the studies IP plane)
+    /// drives the *identical* arrival process an NDN `TrafficSource` app would.
+    pub fn schedule(&self, seed: u64) -> TrafficSchedule {
+        TrafficSchedule {
+            pattern: *self,
+            rng: SplitMix64::new(seed),
+            i: 0,
+        }
+    }
+}
+
+/// The endless delay sequence of a [`TrafficPattern`] — see [`TrafficPattern::schedule`].
+pub struct TrafficSchedule {
+    pattern: TrafficPattern,
+    rng: SplitMix64,
+    i: u64,
+}
+
+impl Iterator for TrafficSchedule {
+    type Item = Duration;
+    fn next(&mut self) -> Option<Duration> {
+        let d = self.pattern.next_delay(self.i, &mut self.rng);
+        self.i += 1;
+        Some(d)
     }
 }
 
@@ -263,6 +350,42 @@ pub enum AppSpec {
         #[serde(default)]
         lifetime_ms: Option<u64>,
     },
+    /// The fleet's telemetry producer (a `LatestPublisher`): every `interval_ms` mint a new
+    /// version and serve it as `prefix/v=<mint ms>/seg=0` to any Interest it satisfies — the
+    /// CanBePrefix+MustBeFresh poll of `prefix`. Only the newest version is served. `sent` counts
+    /// versions minted, `received` replies served.
+    LatestPublisher {
+        prefix: String,
+        interval_ms: u64,
+        /// Content bytes per version (default 64; ~8000 for video-like load that the link must
+        /// fragment).
+        #[serde(default)]
+        size: Option<usize>,
+        /// FreshnessPeriod (ms) stamped on each version (default `interval_ms / 2`). A cache
+        /// counts freshness from when IT inserted the copy, a path delay after the mint — so with
+        /// `interval_ms` the poller's own forwarder, which cached version k an RTT after its poll,
+        /// still held k fresh at the next poll and answered every other poll with it (1.7 new
+        /// samples/s of 3.3 on the fleet run; NFD would do the same). With half the interval the
+        /// poller's cached copy is stale by its next poll whenever the fetch took under half.
+        #[serde(default)]
+        freshness_ms: Option<u64>,
+    },
+    /// The fleet's telemetry consumer: every `interval_ms` poll `prefix` with CanBePrefix +
+    /// MustBeFresh (open-loop, like a timer) — `count` polls (`0` = until stopped). Beyond the
+    /// usual [`FlowStats`], records per-sample freshness: [`stale`](FlowStats::stale) replies (older
+    /// than their FreshnessPeriod + `stale_slack_ms`, default 1000), [`repeats`](FlowStats::repeats),
+    /// and the [`max_gap_ns`](FlowStats::max_gap_ns) between new versions.
+    LatestConsumer {
+        prefix: String,
+        interval_ms: u64,
+        #[serde(default)]
+        count: u64,
+        /// Per-Interest lifetime (ms, default 1000).
+        #[serde(default)]
+        lifetime_ms: Option<u64>,
+        #[serde(default)]
+        stale_slack_ms: Option<u64>,
+    },
 }
 
 impl AppSpec {
@@ -271,13 +394,17 @@ impl AppSpec {
             AppSpec::Producer { .. } => "producer",
             AppSpec::Consumer { .. } => "consumer",
             AppSpec::TrafficSource { .. } => "traffic_source",
+            AppSpec::LatestPublisher { .. } => "latest_publisher",
+            AppSpec::LatestConsumer { .. } => "latest_consumer",
         }
     }
     pub fn prefix(&self) -> &str {
         match self {
             AppSpec::Producer { prefix, .. }
             | AppSpec::Consumer { prefix, .. }
-            | AppSpec::TrafficSource { prefix, .. } => prefix,
+            | AppSpec::TrafficSource { prefix, .. }
+            | AppSpec::LatestPublisher { prefix, .. }
+            | AppSpec::LatestConsumer { prefix, .. } => prefix,
         }
     }
 }
@@ -291,6 +418,8 @@ pub struct AppHandle {
     kind: &'static str,
     cancel: CancellationToken,
     stats: Arc<FlowStatsInner>,
+    /// The node's clock — a versioned flow's open gap runs to "now".
+    clock: Arc<dyn ndn_runtime::Runtime>,
 }
 
 impl AppHandle {
@@ -309,7 +438,7 @@ impl AppHandle {
     }
     /// The full protocol-neutral flow metrics (sent/received/lost/bytes/RTT/goodput).
     pub fn stats(&self) -> FlowStats {
-        self.stats.snapshot()
+        self.stats.snapshot(self.clock.unix_nanos())
     }
     /// Stop the app (cancels its tasks; the engine drops its app face).
     pub fn stop(&self) {
@@ -367,13 +496,6 @@ pub(crate) fn spawn_app(
                     })
                     .await;
             });
-            Ok(AppHandle {
-                id,
-                node,
-                kind: "producer",
-                cancel,
-                stats,
-            })
         }
         AppSpec::Consumer {
             prefix: pfx,
@@ -386,25 +508,21 @@ pub(crate) fn spawn_app(
                 (0, 0) => Duration::from_millis(50),
                 (ms, _) => Duration::from_millis(ms),
             };
+            let pfx = pfx.clone();
+            let lifetime = Duration::from_millis(lifetime_ms.unwrap_or(4000));
             spawn_fetch_loop(
                 engine,
                 cancel.clone(),
                 Arc::clone(&stats),
-                clock,
-                pfx.clone(),
+                clock.clone(),
+                seed_of(&pfx),
                 *count,
-                lifetime_ms.unwrap_or(4000),
                 8,     // pipeline depth: fetch up to 8 concurrently…
                 false, // …but closed-loop (backpressure) so every prefix/<i> is fetched, none dropped
+                move |i| numbered_interest(&pfx, i, lifetime),
+                |_, _| {},
                 move |_i, _rng| interval,
             );
-            Ok(AppHandle {
-                id,
-                node,
-                kind: "consumer",
-                cancel,
-                stats,
-            })
         }
         AppSpec::TrafficSource {
             prefix: pfx,
@@ -413,50 +531,200 @@ pub(crate) fn spawn_app(
             lifetime_ms,
         } => {
             let pattern = *pattern;
+            let pfx = pfx.clone();
+            let lifetime = Duration::from_millis(lifetime_ms.unwrap_or(4000));
             spawn_fetch_loop(
                 engine,
                 cancel.clone(),
                 Arc::clone(&stats),
-                clock,
-                pfx.clone(),
+                clock.clone(),
+                seed_of(&pfx),
                 *count,
-                lifetime_ms.unwrap_or(4000),
                 64,   // up to 64 Interests outstanding…
                 true, // …open-loop: a full window DROPS the arrival (offered load exceeding capacity)
+                move |i| numbered_interest(&pfx, i, lifetime),
+                |_, _| {},
                 move |i, rng| pattern.next_delay(i, rng),
             );
-            Ok(AppHandle {
-                id,
-                node,
-                kind: "traffic_source",
-                cancel,
-                stats,
-            })
+        }
+        AppSpec::LatestPublisher {
+            interval_ms,
+            size,
+            freshness_ms,
+            ..
+        } => spawn_latest_publisher(
+            engine,
+            &cancel,
+            &stats,
+            &clock,
+            prefix,
+            Duration::from_millis((*interval_ms).max(1)),
+            size.unwrap_or(64),
+            Duration::from_millis(freshness_ms.unwrap_or(*interval_ms / 2)),
+        ),
+        AppSpec::LatestConsumer {
+            prefix: pfx,
+            interval_ms,
+            count,
+            lifetime_ms,
+            stale_slack_ms,
+        } => {
+            stats.start_version_tracking(clock.unix_nanos());
+            let interval = Duration::from_millis((*interval_ms).max(1));
+            let lifetime = Duration::from_millis(lifetime_ms.unwrap_or(1000));
+            let slack_ns = stale_slack_ms.unwrap_or(1000) * 1_000_000;
+            let version_at = prefix.len();
+            let tracker = Arc::clone(&stats);
+            spawn_fetch_loop(
+                engine,
+                cancel.clone(),
+                Arc::clone(&stats),
+                clock.clone(),
+                seed_of(pfx),
+                *count,
+                4,    // a slow reply must not delay the next poll…
+                true, // …so the poller is open-loop, like a timer-driven telemetry client
+                move |_| {
+                    Some(
+                        InterestBuilder::new(prefix.clone())
+                            .can_be_prefix()
+                            .must_be_fresh()
+                            .lifetime(lifetime),
+                    )
+                },
+                move |data, now_ns| {
+                    let Some(version) = data
+                        .name
+                        .components()
+                        .get(version_at)
+                        .and_then(|c| c.as_version())
+                    else {
+                        return;
+                    };
+                    // The version IS the publisher's mint time (ms, same virtual clock), so a
+                    // MustBeFresh answer older than its own FreshnessPeriod (+ slack for the path
+                    // and any on-path cache's insert delay) was served past its freshness.
+                    let freshness = data
+                        .meta_info()
+                        .and_then(|m| m.freshness_period)
+                        .unwrap_or_default();
+                    let age_ns = now_ns.saturating_sub(version.saturating_mul(1_000_000));
+                    let stale = age_ns > freshness.as_nanos() as u64 + slack_ns;
+                    tracker.on_version(version, stale, now_ns);
+                },
+                move |_i, _rng| interval,
+            );
         }
     }
+    Ok(AppHandle {
+        id,
+        node,
+        kind: spec.kind(),
+        cancel,
+        stats,
+        clock,
+    })
 }
 
-/// The shared measured-fetch loop behind `Consumer` and `TrafficSource`: express `prefix/<i>`,
-/// time the round trip into `stats`, then wait `delay(i, rng)` before the next. `count == 0` runs
-/// until cancelled. Seeded PRNG (id-independent here; the pattern carries its own seed).
+/// Seed a source's arrival RNG from its prefix so distinct sources draw distinct (reproducible)
+/// streams.
+fn seed_of(prefix: &str) -> u64 {
+    prefix.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x1000_0000_01b3)
+    })
+}
+
+/// The `prefix/<i>` Interest the numbered-fetch apps express.
+fn numbered_interest(prefix: &str, i: u64, lifetime: Duration) -> Option<InterestBuilder> {
+    let name = format!("{prefix}/{i}").parse::<Name>().ok()?;
+    Some(InterestBuilder::new(name).lifetime(lifetime))
+}
+
+/// A LatestPublisher: mint `prefix/v=<ms>/seg=0` every `interval` (the version is the mint time on
+/// the kernel clock, strictly increasing) and answer any Interest the newest version satisfies —
+/// a CanBePrefix+MustBeFresh poll of `prefix`, or that exact name. Superseded versions are not
+/// served: only on-path caches can still hand them out, which is what the consumer's staleness
+/// accounting watches for.
+#[allow(clippy::too_many_arguments)]
+fn spawn_latest_publisher(
+    engine: &ForwarderEngine,
+    cancel: &CancellationToken,
+    stats: &Arc<FlowStatsInner>,
+    clock: &Arc<dyn ndn_runtime::Runtime>,
+    prefix: Name,
+    interval: Duration,
+    size: usize,
+    freshness: Duration,
+) {
+    let latest: Arc<parking_lot::Mutex<Option<(Name, Bytes)>>> = Arc::default();
+    let producer = engine.register_producer(prefix.clone(), cancel.clone());
+    {
+        let (latest, cancel, clock, minted) = (
+            Arc::clone(&latest),
+            cancel.clone(),
+            Arc::clone(clock),
+            Arc::clone(stats),
+        );
+        let content = Bytes::from(vec![0u8; size]);
+        ndn_app::rt::spawn(async move {
+            let mut last = 0u64;
+            while !cancel.is_cancelled() {
+                let version = (clock.unix_nanos() / 1_000_000).max(last + 1);
+                last = version;
+                let name = prefix.clone().append_version(version).append_segment(0);
+                let wire = ndn_packet::encode::DataBuilder::new(name.clone(), &content)
+                    .freshness(freshness)
+                    .build();
+                *latest.lock() = Some((name, wire));
+                minted.on_sent();
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = ndn_app::rt::sleep(interval) => {}
+                }
+            }
+        });
+    }
+    let (served, clock) = (Arc::clone(stats), Arc::clone(clock));
+    ndn_app::rt::spawn(async move {
+        let _ = producer
+            .serve(move |interest, responder| {
+                let reply = latest
+                    .lock()
+                    .as_ref()
+                    .filter(|(name, _)| name.has_prefix(&interest.name))
+                    .map(|(_, wire)| wire.clone());
+                let served = Arc::clone(&served);
+                let clock = Arc::clone(&clock);
+                async move {
+                    if let Some(wire) = reply
+                        && responder.respond_bytes(wire).await.is_ok()
+                    {
+                        served.on_served(size, clock.unix_nanos());
+                    }
+                }
+            })
+            .await;
+    });
+}
+
+/// The shared measured-fetch loop behind the fetching apps: express `interest(i)`, time the round
+/// trip into `stats` (then hand the Data to `on_reply` with its arrival time), and wait
+/// `delay(i, rng)` before the next. `count == 0` runs until cancelled. Seeded PRNG.
 #[allow(clippy::too_many_arguments)]
 fn spawn_fetch_loop(
     engine: &ForwarderEngine,
     cancel: CancellationToken,
     stats: Arc<FlowStatsInner>,
     clock: Arc<dyn ndn_runtime::Runtime>,
-    prefix: String,
+    seed: u64,
     count: u64,
-    lifetime_ms: u64,
     window: usize,
     open_loop: bool,
+    interest: impl Fn(u64) -> Option<InterestBuilder> + Send + 'static,
+    on_reply: impl Fn(&ndn_packet::Data, u64) + Send + Sync + 'static,
     delay: impl Fn(u64, &mut SplitMix64) -> Duration + Send + 'static,
 ) {
-    let lifetime = Duration::from_millis(lifetime_ms);
-    // Seed the Poisson clock from the prefix so distinct sources draw distinct (reproducible) streams.
-    let seed = prefix.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
-        (h ^ b as u64).wrapping_mul(0x1000_0000_01b3)
-    });
+    let on_reply = Arc::new(on_reply);
     // H2: a bounded pool of `window` consumers lets up to `window` Interests be OUTSTANDING at once,
     // fetched CONCURRENTLY — so real offered load, queueing, and contention can build. The old serial
     // `.await` per Interest throttled the whole source to one-in-flight (≈1/RTT); no load could arise.
@@ -471,8 +739,7 @@ fn spawn_fetch_loop(
         let mut rng = SplitMix64::new(seed);
         let mut i = 0u64;
         while !cancel.is_cancelled() && (count == 0 || i < count) {
-            if let Ok(name) = format!("{prefix}/{i}").parse::<Name>() {
-                let builder = InterestBuilder::new(name).lifetime(lifetime);
+            if let Some(builder) = interest(i) {
                 let acquired = if open_loop {
                     avail_rx.try_recv().ok() // window full ⇒ None ⇒ the arrival is lost
                 } else {
@@ -481,8 +748,12 @@ fn spawn_fetch_loop(
                 match acquired {
                     Some(mut consumer) => {
                         stats.on_sent();
-                        let (stats2, clock2, tx2) =
-                            (stats.clone(), clock.clone(), avail_tx.clone());
+                        let (stats2, clock2, tx2, on_reply2) = (
+                            stats.clone(),
+                            clock.clone(),
+                            avail_tx.clone(),
+                            Arc::clone(&on_reply),
+                        );
                         ndn_app::rt::spawn(async move {
                             let t0 = clock2.unix_nanos();
                             match consumer.fetch_with(builder).await {
@@ -490,6 +761,7 @@ fn spawn_fetch_loop(
                                     let t1 = clock2.unix_nanos();
                                     let bytes = data.content().map(|c| c.len()).unwrap_or(0);
                                     stats2.on_recv(t1.saturating_sub(t0), bytes, t1);
+                                    on_reply2(&data, t1);
                                 }
                                 Err(_) => stats2.on_lost(),
                             }

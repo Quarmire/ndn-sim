@@ -271,8 +271,10 @@ fn init_tracing() {
         .try_init();
 }
 
-fn read_scenario(path: &PathBuf) -> Result<Scenario> {
-    Scenario::from_toml(&std::fs::read_to_string(path)?)
+/// Relative paths inside the scenario (its `mobility_trace`, …) resolve against the scenario
+/// file's directory, so `ndn-lab run/step/serve/fly` behave the same from any working directory.
+fn read_scenario(path: &std::path::Path) -> Result<Scenario> {
+    Scenario::from_toml_file(path)
 }
 
 /// Build a fabric from an optional scenario on `kernel`.
@@ -378,7 +380,7 @@ fn cmd_check(
     baseline: Option<PathBuf>,
     record_baseline: Option<PathBuf>,
 ) -> Result<()> {
-    let spec = ValidationSpec::from_toml(&std::fs::read_to_string(&path)?)?;
+    let spec = ValidationSpec::from_file(&path)?;
     let report = match &baseline {
         Some(bpath) => {
             let base = ndn_sim::Baseline::from_json(&std::fs::read_to_string(bpath)?)?;
@@ -484,7 +486,7 @@ async fn cmd_serve(
     record: Option<PathBuf>,
     require_signed: Option<PathBuf>,
 ) -> Result<()> {
-    let scenario = scenario.as_ref().map(read_scenario).transpose()?;
+    let scenario = scenario.as_deref().map(read_scenario).transpose()?;
     // Live co-sim rides the real-time governor (clock mode B); plain control uses wall-clock.
     let kernel: Arc<dyn SimKernel> = if mavlink.is_some() || feed.is_some() {
         RealTimeKernel::new()
@@ -609,7 +611,7 @@ async fn cmd_serve(
 }
 
 async fn cmd_mcp(scenario: Option<PathBuf>) -> Result<()> {
-    let scenario = scenario.as_ref().map(read_scenario).transpose()?;
+    let scenario = scenario.as_deref().map(read_scenario).transpose()?;
     let fabric = Arc::new(build_fabric(scenario, Arc::new(WallClockKernel::new())).await?);
     let control = ControlPlane::new(Arc::clone(&fabric));
     control.enable_radio_capture(); // so `explain_link` has evidence

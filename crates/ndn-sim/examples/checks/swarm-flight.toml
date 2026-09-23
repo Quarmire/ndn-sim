@@ -9,16 +9,17 @@
 #
 # This is the replay leg of the ArduPilot SITL workflow:
 #   ndn-lab fly examples/fly/swarm.toml --record flight.trace.json   # live (needs SITL)
-#   # point a check's mobility_trace at flight.trace.json, then:
+#   # point a check's mobility_trace at flight.trace.json (relative to the check file), then:
 #   ndn-lab check examples/checks/swarm-flight.toml                  # deterministic replay + gate
 #
-# Run it:   ndn-lab check examples/checks/swarm-flight.toml   (from the crate root)
+# Run it:   ndn-lab check examples/checks/swarm-flight.toml   (from any directory — the trace path
+#           below resolves relative to this file)
 
 duration_ms = 7000
 kernels = ["des"]
 
 [scenario]
-mobility_trace = "examples/checks/swarm-flight.trace.json"
+mobility_trace = "swarm-flight.trace.json"
 
 [scenario.kernel]
 kind = "des"

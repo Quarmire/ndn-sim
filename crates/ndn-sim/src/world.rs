@@ -7,7 +7,7 @@
 //! - [`MobilityModel`] — a node's position as a pure `fn(t)` (deterministic, cheap).
 //! - [`Environment`] — extra attenuation (walls/terrain) between two points.
 //! - the [`World`] ties them together and produces an immutable [`WorldView`] **snapshot**
-//!   per tick (no live lock → reproducible + parallel-friendly), backed by a [`SpatialGrid`]
+//!   per tick (no live lock → reproducible + parallel-friendly), backed by a `SpatialGrid`
 //!   so range queries are local, never O(N²).
 //!
 //! Units: metres for distance, seconds for mobility time (`t` = seconds since the world

@@ -16,15 +16,15 @@
 //! ```
 //!
 //! This pulls in the everyday vocabulary — the builder, kernels, control plane, scenarios,
-//! validation, co-simulation, world, the radio MAC + LoRa, the IP plane + its routing algorithms,
-//! metric series, the Keel render surface, and analysis. For the long tail (individual
+//! validation, co-simulation, world, the radio medium + MAC mode, metric series, the Keel render
+//! surface (with the `keel` feature), and analysis. For the long tail (individual
 //! propagation/interference models, scene renderers, the OTLP exporter) reach into the crate root or
-//! the specific module.
+//! the specific module. The IP plane and its routing algorithms live in `ndn-sim-studies`.
 //!
-//! **Name note — two `FreeSpace`s.** [`crate::world::FreeSpace`] is a propagation *Environment*
-//! (world/obstruction model); [`crate::phy::FreeSpace`] is a `PropagationBackend` (distance→loss for
-//! a [`RadioLinkConfig`](crate::RadioLinkConfig)). Different roles, same word — so neither is in this
-//! prelude; reach the one you want by its full module path.
+//! **Name note.** [`crate::world::FreeSpace`] is a propagation *Environment* (zero excess
+//! attenuation), not a path-loss model — the free-space *path loss* is
+//! [`FreeSpacePathLoss`](crate::FreeSpacePathLoss). Neither is in this prelude; reach the one you
+//! want by its full path.
 
 // Re-exported so `use ndn_sim::prelude::*` also brings the engine config the builder needs.
 pub use ndn_engine::builder::EngineConfig;
@@ -66,20 +66,13 @@ pub use crate::{
     CosimActuator, MobilitySource, MobilityTrace, NodeState, VehicleCommand, udp_json_feed,
 };
 pub use crate::{Environment, MobilityModel, Position, World};
-pub use crate::{PropagationModel, RadioBus, SimRadioFace, WirelessMedium};
-
-// The radio MAC + LoRa: a shared medium instead of point-to-point links.
-pub use crate::{LoraLinkConfig, SpreadingFactor};
-pub use crate::{RadioLinkConfig, Wifi, WifiMode, WifiOperatingMode};
-
-// The deterministic IP plane + its pluggable routing (for NDN-vs-IP benchmarks).
-pub use crate::{Aodv, DistanceVector, Dsr, Gpsr, GreedyGeographic, Olsr, ShortestPath};
-pub use crate::{IpNetwork, NetworkKind, RoutingAlgorithm};
+pub use crate::{PropagationModel, RadioBus, SimRadioFace, WifiMode};
 
 // Telemetry: virtual-time metric series (the OTLP exporter itself stays long-tail).
 pub use crate::{FabricGauges, MetricsLog, MetricsSample, sample_engine};
 
 // The Keel: telemetry types describe themselves; renderers compete for intents.
+#[cfg(feature = "keel")]
 pub use crate::{Floor, KeelView, Rendered, SceneView, Surface, Verdict};
 
 // Analysis + observability (the "why").

@@ -1,5 +1,5 @@
 //! `Simulation` (builder) + `RunningSimulation` (the live fabric) — multi-node in-process
-//! NDN networks of real `ForwarderEngine`s on a pluggable [`SimKernel`](crate::SimKernel).
+//! NDN networks of real `ForwarderEngine`s on a pluggable [`SimKernel`].
 //!
 //! The builder declares an initial topology; [`start`](Simulation::start) instantiates it on
 //! the kernel and returns a [`RunningSimulation`] — the headless **fabric** handle that
@@ -57,8 +57,8 @@ struct PendingRoute {
 struct PendingStrategy {
     node: NodeId,
     prefix: Name,
-    /// NFD-style short strategy name (`"best-route"`, `"multicast"`, …), resolved via
-    /// [`ndn_strategy::registry::create_by_name`] at [`start`](Simulation::start).
+    /// NFD-style short strategy name (`"best-route"`, `"multicast"`, …), resolved through the
+    /// `strategy-choice/set` resolver at [`start`](Simulation::start).
     strategy: String,
 }
 
@@ -92,6 +92,11 @@ pub struct Simulation {
     /// If set, wired links get name-aware per-prefix accounting (grouping names to this many
     /// components); read via [`RunningSimulation::prefix_stats`]. See [`crate::netstat`].
     prefix_accounting: Option<usize>,
+    /// Nodes booted from an ndn-fwd config (their `[[face]]`/`[[route]]`/`[[strategy]]` are
+    /// applied at start). See [`add_node_from_config`](Self::add_node_from_config).
+    configured: Vec<crate::config_boot::ConfiguredNode>,
+    /// How a `[[face]]` UDP peer link between two config-booted nodes is carried.
+    peer_link: FaceProfile,
 }
 
 impl Default for Simulation {
@@ -117,6 +122,8 @@ impl Simulation {
             radio_routes: Vec::new(),
             seed: 0,
             prefix_accounting: None,
+            configured: Vec::new(),
+            peer_link: FaceProfile::udp(),
         }
     }
 
@@ -249,7 +256,7 @@ impl Simulation {
 
     /// Attach a spatial [`World`] (node positions + mobility + environment). It's carried onto
     /// the running fabric ([`RunningSimulation::world`]) where position-driven faces — a
-    /// [`WirelessMedium`](crate::WirelessMedium) and the slice-4 named-radio face — read it.
+    /// [`RadioBus`] and the slice-4 named-radio face — read it.
     /// Wired links don't need a world; this is only for position-dependent delivery.
     pub fn world(mut self, world: World) -> Self {
         self.world = Some(std::sync::Arc::new(world));
@@ -305,12 +312,52 @@ impl Simulation {
         id
     }
 
-    /// Connect two nodes with a symmetric in-proc wired link.
+    /// Add a node booted from an **ndn-fwd config**, the way the deployed forwarder boots:
+    /// its `EngineConfig` comes from [`ndn_config::boot::engine_config`]; at
+    /// [`start`](Self::start) the node gets `addr` and a UDP stack: its `[[face]] kind = "udp"`
+    /// listeners, and a face per peer entry whose `remote` resolves to another config-booted
+    /// node, bound as [`ndn_config::boot::udp_peer_binding`] decides and carried per
+    /// [`with_peer_link`](Self::with_peer_link). Datagrams are demuxed by endpoint, so a peer
+    /// whose source matches no face arrives on an on-demand face the listener mints, as on the
+    /// fleet. `[[route]]` / `[[strategy]]` are applied by
+    /// [`ndn_config::boot::install_routes`] / [`install_strategies`](ndn_config::boot::install_strategies)
+    /// against the FaceIds reserved for each `[[face]]` index.
+    pub fn add_node_from_config(
+        &mut self,
+        label: impl Into<String>,
+        cfg: ndn_config::ForwarderConfig,
+        addr: std::net::IpAddr,
+    ) -> NodeId {
+        let id = self.add_node_profile(
+            NodeProfile::new(label).with_config(ndn_config::boot::engine_config(&cfg)),
+        );
+        self.configured.push(crate::config_boot::ConfiguredNode {
+            node: id,
+            cfg,
+            addr,
+        });
+        id
+    }
+
+    /// How the UDP faces of config-booted nodes are carried (default [`FaceProfile::udp`] on a
+    /// LAN). Give it the medium the fleet runs on, e.g.
+    /// `FaceProfile::udp().with_link(lossy).on_channel(cell)`. Persistency is not taken from
+    /// here: a configured peer face is `Permanent` like ndn-fwd's, a listener's on-demand face
+    /// OnDemand.
+    pub fn with_peer_link(mut self, profile: FaceProfile) -> Self {
+        self.peer_link = profile;
+        self
+    }
+
+    /// Connect two nodes with the production peer link the fleet runs between two forwarders
+    /// ([`FaceProfile::udp`]: UDP + NDNLPv2 fragmentation + LP reliability + Permanent), carrying
+    /// `config`'s delay/jitter/loss/bandwidth. An in-process app-style channel is an explicit
+    /// opt-in: `link_profiled(a, b, FaceProfile::internal().with_link(config))`.
     pub fn link(&mut self, a: NodeId, b: NodeId, config: LinkConfig) {
         self.links.push(PendingLink {
             a,
             b,
-            profile: FaceProfile::internal().with_link(config),
+            profile: FaceProfile::udp().with_link(config),
         });
     }
 
@@ -318,6 +365,25 @@ impl Simulation {
     /// engine sees that face type's `FaceKind`/MTU/delivery semantics.
     pub fn link_profiled(&mut self, a: NodeId, b: NodeId, profile: FaceProfile) {
         self.links.push(PendingLink { a, b, profile });
+    }
+
+    /// A production peer link ([`link`](Self::link)) whose transmissions contend for airtime on
+    /// `channel` with every other link on it — the managed-Wi-Fi shape, where each node's
+    /// per-peer UDP faces all share one radio channel. Loss/delay stay per link.
+    pub fn link_on_channel(
+        &mut self,
+        a: NodeId,
+        b: NodeId,
+        config: LinkConfig,
+        channel: &std::sync::Arc<crate::SharedChannel>,
+    ) {
+        self.link_profiled(
+            a,
+            b,
+            FaceProfile::udp()
+                .with_link(config)
+                .on_channel(std::sync::Arc::clone(channel)),
+        );
     }
 
     /// Connect two nodes — the `add_*` spelling matching [`add_node`](Self::add_node) /
@@ -373,6 +439,47 @@ impl Simulation {
         for (i, profile) in self.profiles.into_iter().enumerate() {
             let id = NodeId(i);
             let mut builder = EngineBuilder::new(profile.config).runtime(self.kernel.runtime());
+            // A config-booted node also takes ndn-fwd's data-path policy (`[security]` validation
+            // profile + schema rules, `[cs]` admission). Without it the engine validated forwarded
+            // Data (then with no certificate fetcher, so signed Data crossing a UDP hop was dropped
+            // after the pending-cert timeout) on a fleet whose config disables data-path validation.
+            if let Some(c) = self.configured.iter().find(|c| c.node == id) {
+                builder = ndn_config::boot::configure_data_path(builder, &c.cfg);
+                // Its identity, booted as ndn-fwd boots one: `[security] identity` from its PIB
+                // (whose trust anchors are what a `profile = "default"` node chains forwarded Data
+                // to), else an ephemeral key whose only anchor is itself -- so `default` fails
+                // closed for everyone else's key-signed Data here exactly as on the fleet. Unlike
+                // ndn-fwd a simulation never reads `~/.ndn/pib` (the operator's own PIB): a
+                // configured identity must name its PIB, and one that fails to load fails the
+                // start instead of falling back to an ephemeral key.
+                let loaded = match &c.cfg.security.identity {
+                    Some(_) => {
+                        let pib = c.cfg.security.pib_path.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "{}: [security] identity needs an explicit pib_path in a simulation",
+                                profile.label
+                            )
+                        })?;
+                        ndn_config::boot::load_identity(&c.cfg, std::path::Path::new(pib))
+                            .map_err(|e| {
+                                anyhow::anyhow!("{}: load [security] identity: {e}", profile.label)
+                            })?
+                            .map(|(mgr, _)| mgr)
+                    }
+                    None => None,
+                };
+                let mgr = match loaded {
+                    Some(mgr) => mgr,
+                    None => {
+                        ndn_config::boot::ephemeral_identity(&c.cfg, &profile.label)
+                            .map_err(|e| {
+                                anyhow::anyhow!("{}: ephemeral identity: {e}", profile.label)
+                            })?
+                            .0
+                    }
+                };
+                builder = builder.security(mgr);
+            }
             // Register any face factories the profile carries, so this node's engine can stand real
             // faces up via `add_face_of_kind` (empty for a pure sim-link node).
             for factory in &profile.factories {
@@ -393,6 +500,21 @@ impl Simulation {
             );
         }
 
+        // A config-booted node reserves one FaceId per `[[face]]` entry, in index order, before
+        // any other face exists — as ndn-fwd's `main` does before it builds the engine — so a
+        // `[[route]] face = N` resolves to exactly the face entry N creates.
+        let face_ids_by_index: HashMap<NodeId, Vec<FaceId>> = self
+            .configured
+            .iter()
+            .map(|c| {
+                let faces = nodes[&c.node].engine.faces();
+                (
+                    c.node,
+                    c.cfg.faces.iter().map(|_| faces.alloc_id()).collect(),
+                )
+            })
+            .collect();
+
         let mut links: HashMap<(NodeId, NodeId), FaceId> = HashMap::new();
         let mut link_states: HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>> =
             HashMap::new();
@@ -404,18 +526,54 @@ impl Simulation {
             if !nodes.contains_key(&link.a) || !nodes.contains_key(&link.b) {
                 bail!("link references non-existent node");
             }
+            let (a, b) = link_ends(&nodes, link.a, link.b, &link.profile);
             wire_link(
                 &nodes,
                 &mut links,
                 &mut link_states,
-                link.a,
-                link.b,
-                &link.profile,
+                a,
+                b,
                 self.channel_buffer,
                 self.seed,
                 prefix_arg,
             );
         }
+
+        // `[[face]]` UDP entries of config-booted nodes: each node a UDP host, its peer faces bound
+        // as ndn-fwd binds them, datagrams demuxed by endpoint (a listener mints an on-demand face
+        // for a source no face matches). See `sim_udp`.
+        let udp = crate::sim_udp::UdpNet::build(
+            self.configured
+                .iter()
+                .map(|c| {
+                    let entry = &nodes[&c.node];
+                    crate::sim_udp::HostSpec {
+                        node: c.node,
+                        ip: c.addr,
+                        cfg: &c.cfg,
+                        face_ids: &face_ids_by_index[&c.node],
+                        engine: entry.engine.clone(),
+                        cancel: entry.handle.cancel_token(),
+                        label: entry.label.clone(),
+                    }
+                })
+                .collect(),
+            crate::sim_udp::FaceEnv {
+                configured: self
+                    .peer_link
+                    .clone()
+                    .with_persistency(ndn_config::boot::CONFIGURED_FACE_PERSISTENCY),
+                on_demand: self
+                    .peer_link
+                    .clone()
+                    .with_persistency(ndn_transport::FacePersistency::OnDemand),
+                channel_buffer: self.channel_buffer,
+                world_seed: self.seed,
+                prefix: prefix_stats.as_ref().map(|s| (Arc::clone(s), s.grouping())),
+            },
+            &mut links,
+            &mut link_states,
+        )?;
 
         for route in &self.routes {
             let face_id = links
@@ -428,19 +586,21 @@ impl Simulation {
                         route.prefix
                     )
                 })?;
-            nodes[&route.node]
-                .engine
-                .fib()
-                .add_nexthop(&route.prefix, *face_id, 10);
+            crate::config_boot::install_route(&nodes[&route.node].engine, &route.prefix, *face_id);
         }
 
         for sc in &self.strategies {
             let entry = nodes.get(&sc.node).ok_or_else(|| {
                 anyhow::anyhow!("strategy choice references non-existent node {}", sc.node)
             })?;
-            let strategy = ndn_strategy::registry::create_by_name(sc.strategy.as_bytes())
-                .ok_or_else(|| anyhow::anyhow!("unknown forwarding strategy {:?}", sc.strategy))?;
-            entry.engine.strategy_table().insert(&sc.prefix, strategy);
+            crate::config_boot::install_strategy(&entry.engine, &sc.prefix, &sc.strategy)?;
+        }
+
+        // The config's own `[[route]]` / `[[strategy]]`, through ndn-fwd's boot path.
+        for c in &self.configured {
+            let engine = &nodes[&c.node].engine;
+            ndn_config::boot::install_routes(engine, &c.cfg.routes, &face_ids_by_index[&c.node]);
+            ndn_config::boot::install_strategies(engine, &c.cfg.strategies);
         }
 
         let epoch_ns = self.kernel.runtime().unix_nanos();
@@ -497,18 +657,16 @@ impl Simulation {
             bus
         });
 
-        // Radio FIB routes: broadcast `prefix` over the node's radio face (like route_over_radio,
+        // Radio routes: broadcast `prefix` over the node's radio face (like route_over_radio,
         // but declarative). Applied now that radio faces exist.
         for (node, prefix) in &self.radio_routes {
             let face = radio_faces.get(node).copied().ok_or_else(|| {
                 anyhow::anyhow!("radio route on node {node} which has no radio face")
             })?;
-            nodes
-                .get(node)
-                .ok_or_else(|| anyhow::anyhow!("radio route references non-existent node {node}"))?
-                .engine
-                .fib()
-                .add_nexthop(prefix, face, 10);
+            let entry = nodes.get(node).ok_or_else(|| {
+                anyhow::anyhow!("radio route references non-existent node {node}")
+            })?;
+            crate::config_boot::install_route(&entry.engine, prefix, face);
         }
 
         // Spawn declared apps now that every engine is up.
@@ -550,6 +708,7 @@ impl Simulation {
             next_node: AtomicUsize::new(n),
             seed: self.seed,
             prefix_stats,
+            udp,
         })
     }
 }
@@ -562,36 +721,58 @@ struct NodeEntry {
 
 struct FabricInner {
     nodes: HashMap<NodeId, NodeEntry>,
-    /// Directed: the face at `.0` pointing toward `.1`.
+    /// Directed: the face at `.0` pointing toward `.1`. For a config-booted pair that is `.0`'s
+    /// configured face; an on-demand face a listener mints is known to the UDP net only.
     links: HashMap<(NodeId, NodeId), FaceId>,
-    /// The live fault knob for each directed link face — cut / degrade a link at runtime.
+    /// The live fault knob for each direction of a link (shared by every face sending that way).
     link_states: HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>>,
 }
 
-/// Wire a symmetric SimLink between two existing nodes, recording both directed faces and their
-/// live fault knobs.
+/// One end of a link being wired: the node, the FaceId its face takes, and how it is attached.
+struct LinkEnd<'p> {
+    node: NodeId,
+    face: FaceId,
+    profile: &'p FaceProfile,
+}
+
+/// Both ends of an ad-hoc link between `a` and `b`, with fresh FaceIds (a's first).
+fn link_ends<'p>(
+    nodes: &HashMap<NodeId, NodeEntry>,
+    a: NodeId,
+    b: NodeId,
+    profile: &'p FaceProfile,
+) -> (LinkEnd<'p>, LinkEnd<'p>) {
+    let end = |node: NodeId| LinkEnd {
+        node,
+        face: nodes[&node].engine.faces().alloc_id(),
+        profile,
+    };
+    let a = end(a);
+    (a, end(b))
+}
+
+/// Wire a SimLink between two existing nodes, recording both directed faces and their live
+/// fault knobs.
 #[allow(clippy::too_many_arguments)]
 fn wire_link(
     nodes: &HashMap<NodeId, NodeEntry>,
     links: &mut HashMap<(NodeId, NodeId), FaceId>,
     link_states: &mut HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>>,
-    a: NodeId,
-    b: NodeId,
-    profile: &FaceProfile,
+    a: LinkEnd<'_>,
+    b: LinkEnd<'_>,
     channel_buffer: usize,
     world_seed: u64,
     prefix: Option<(&std::sync::Arc<crate::netstat::PrefixStats>, usize)>,
 ) {
-    let ea = &nodes[&a];
-    let eb = &nodes[&b];
-    let id_a = ea.engine.faces().alloc_id();
-    let id_b = eb.engine.faces().alloc_id();
+    let ea = &nodes[&a.node];
+    let eb = &nodes[&b.node];
     // Build the link faces on the fabric's kernel runtime so their delivery timing rides the
     // same clock/executor as the engines — including the discrete-event kernel.
-    let (face_a, face_b) = SimLink::pair_profiled_on(
-        id_a,
-        id_b,
-        profile,
+    let (face_a, face_b) = SimLink::pair_profiled_asymmetric_on(
+        a.face,
+        b.face,
+        a.profile,
+        b.profile,
         channel_buffer,
         ea.engine.runtime(),
         world_seed,
@@ -613,13 +794,15 @@ fn wire_link(
         None => (face_a, face_b),
     };
     // Grab the live fault knobs before the faces move into the engines.
-    link_states.insert((a, b), face_a.link_state());
-    link_states.insert((b, a), face_b.link_state());
-    ea.engine.add_face(face_a, ea.handle.cancel_token());
-    eb.engine.add_face(face_b, eb.handle.cancel_token());
-    links.insert((a, b), id_a);
-    links.insert((b, a), id_b);
-    info!(node_a = a.0, face_a = %id_a, node_b = b.0, face_b = %id_b, "ndn-lab: link created");
+    link_states.insert((a.node, b.node), face_a.link_state());
+    link_states.insert((b.node, a.node), face_b.link_state());
+    a.profile
+        .attach(&ea.engine, face_a, ea.handle.cancel_token());
+    b.profile
+        .attach(&eb.engine, face_b, eb.handle.cancel_token());
+    links.insert((a.node, b.node), a.face);
+    links.insert((b.node, a.node), b.face);
+    info!(node_a = a.node.0, face_a = %a.face, node_b = b.node.0, face_b = %b.face, "ndn-lab: link created");
 }
 
 /// The NFD short strategy name (`multicast`, `best-route`) from a full strategy Name
@@ -797,6 +980,28 @@ pub struct FaceStats {
     pub in_bytes: u64,
     pub out_bytes: u64,
     pub out_drops: u64,
+    /// NDNLPv2 reliability counters (what `faces/list` reports), when reliability is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lp: Option<LpCounters>,
+}
+
+/// A face's NDNLPv2 reliability counters, as `faces/list` reports them on the fleet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LpCounters {
+    /// Frames re-sent after their RTO expired.
+    pub resent: u64,
+    /// Frames re-sent early because later Acks condemned them (ack-ordering loss detection).
+    pub fast_retx: u64,
+    /// Frames given up on after `max_retries` — loss the link layer will not repair.
+    pub gave_up: u64,
+    /// Frames dropped from the unacked table for space — silent, unrepaired loss.
+    pub unacked_evictions: u64,
+    /// Inbound frames dropped as duplicates of one already received: every one is a peer
+    /// retransmission that was not needed (spurious), i.e. wasted airtime.
+    pub duplicate_frames: u64,
+    pub acks_sent: u64,
+    pub acks_received: u64,
+    pub rto_us: u64,
 }
 
 /// A running fabric: live `ForwarderEngine`s on the kernel, with a control API and event
@@ -823,6 +1028,8 @@ pub struct RunningSimulation {
     /// Name-aware per-prefix counters, if [`with_prefix_accounting`](Simulation::with_prefix_accounting)
     /// was set. Runtime-added links tap into the same table.
     prefix_stats: Option<std::sync::Arc<crate::netstat::PrefixStats>>,
+    /// The UDP stacks of config-booted nodes (empty without any).
+    udp: std::sync::Arc<crate::sim_udp::UdpNet>,
 }
 
 impl RunningSimulation {
@@ -836,6 +1043,33 @@ impl RunningSimulation {
     /// cadence for the network-viz feed. `None` when accounting is off. See [`crate::netstat`].
     pub fn prefix_stats(&self) -> Option<&std::sync::Arc<crate::netstat::PrefixStats>> {
         self.prefix_stats.as_ref()
+    }
+
+    /// Start recording every UDP datagram between config-booted nodes as it reaches its
+    /// destination host — the fabric's `tcpdump` (Round 15's return-to-origin forwarding was
+    /// found by following one Interest nonce through a capture). Restarts a capture in progress.
+    pub fn start_udp_capture(&self) {
+        self.udp.start_capture();
+    }
+
+    /// Stop the UDP capture and return what it recorded, in arrival order.
+    pub fn take_udp_capture(&self) -> Vec<crate::UdpDatagram> {
+        self.udp.take_capture()
+    }
+
+    /// This node's faces that are links, mapped to the node each reaches: wired links, plus every
+    /// UDP face of a config-booted node (an on-demand face its listener minted included).
+    fn link_faces(
+        &self,
+        links: &HashMap<(NodeId, NodeId), FaceId>,
+        node: NodeId,
+    ) -> HashMap<FaceId, NodeId> {
+        links
+            .iter()
+            .filter(|((from, _), _)| *from == node)
+            .map(|((_, to), face)| (*face, *to))
+            .chain(self.udp.link_faces(node))
+            .collect()
     }
 
     /// The face channel buffer depth (for engine-less links `bridge_udp_flow` builds).
@@ -863,7 +1097,7 @@ impl RunningSimulation {
     }
 
     /// The fabric's spatial [`World`] (empty unless declared via [`Simulation::world`]).
-    /// Position-driven faces (a [`WirelessMedium`](crate::WirelessMedium)) read node
+    /// Position-driven faces (a [`RadioBus`]) read node
     /// positions/mobility from here; it is live-mutable through `&self`.
     pub fn world(&self) -> std::sync::Arc<World> {
         std::sync::Arc::clone(&self.world)
@@ -1028,13 +1262,13 @@ impl RunningSimulation {
     }
 
     /// The [`FaceId`] of `node`'s radio face (if it has one) — route over the radio with
-    /// `engine.fib().add_nexthop(prefix, radio_face(node)?, cost)`.
+    /// [`route_over_radio`](Self::route_over_radio).
     pub fn radio_face(&self, node: NodeId) -> Option<FaceId> {
         self.radio_faces.get(&node).copied()
     }
 
-    /// Install a FIB route at `node`: `prefix` → its radio face (broadcast to all in-range
-    /// radios). Convenience over [`radio_face`](Self::radio_face).
+    /// Install a route at `node`: `prefix` → its radio face (broadcast to all in-range radios),
+    /// as a STATIC RIB route like `nfdc route add`.
     pub fn route_over_radio(&self, node: NodeId, prefix: &Name) -> Result<()> {
         let face = self
             .radio_face(node)
@@ -1048,7 +1282,7 @@ impl RunningSimulation {
             .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?
             .engine
             .clone();
-        engine.fib().add_nexthop(prefix, face, 10);
+        crate::config_boot::install_route(&engine, prefix, face);
         Ok(())
     }
 
@@ -1189,7 +1423,9 @@ impl RunningSimulation {
         self.inner.lock().unwrap().links.get(&(from, to)).copied()
     }
 
-    /// Install a FIB route at `node`: `prefix` → the link face toward `nexthop`.
+    /// Install a route at `node`: `prefix` → the link face toward `nexthop`, as `nfdc route add`
+    /// does (STATIC RIB route, CHILD_INHERIT) — so an app later registering the same prefix merges
+    /// with it instead of silently replacing it.
     pub fn route(&self, node: NodeId, prefix: &Name, nexthop: NodeId) -> Result<()> {
         let guard = self.inner.lock().unwrap();
         let face_id = *guard
@@ -1203,7 +1439,7 @@ impl RunningSimulation {
             .engine
             .clone();
         drop(guard);
-        engine.fib().add_nexthop(prefix, face_id, 10);
+        crate::config_boot::install_route(&engine, prefix, face_id);
         Ok(())
     }
 
@@ -1225,10 +1461,7 @@ impl RunningSimulation {
                 .engine
                 .clone()
         };
-        let strat = ndn_strategy::registry::create_by_name(strategy.as_bytes())
-            .ok_or_else(|| anyhow::anyhow!("unknown forwarding strategy {strategy:?}"))?;
-        engine.strategy_table().insert(prefix, strat);
-        Ok(())
+        crate::config_boot::install_strategy(&engine, prefix, strategy)
     }
 
     /// Explain where an Interest for `name` goes from `node` — the matched FIB prefix, the strategy,
@@ -1244,13 +1477,7 @@ impl RunningSimulation {
                 .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?
                 .engine
                 .clone();
-            // Faces of this node that are wired links, mapped to the node they point at.
-            let link_faces: HashMap<FaceId, NodeId> = guard
-                .links
-                .iter()
-                .filter(|((from, _), _)| *from == node)
-                .map(|((_, to), face)| (*face, *to))
-                .collect();
+            let link_faces = self.link_faces(&guard.links, node);
             (engine, link_faces)
         };
         let radio_face = self.radio_faces.get(&node).copied();
@@ -1327,12 +1554,7 @@ impl RunningSimulation {
                 .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?
                 .engine
                 .clone();
-            let link_faces: HashMap<FaceId, NodeId> = guard
-                .links
-                .iter()
-                .filter(|((from, _), _)| *from == node)
-                .map(|((_, to), face)| (*face, *to))
-                .collect();
+            let link_faces = self.link_faces(&guard.links, node);
             (engine, link_faces)
         };
         let radio_face = self.radio_faces.get(&node).copied();
@@ -1348,6 +1570,24 @@ impl RunningSimulation {
             } else {
                 FaceKind::App
             };
+            // Reported only while reliability is on, as `faces/list` does (the flag bit is the
+            // operator-visible switch; the feature object exists on every LP face).
+            let lp = e
+                .value()
+                .lp_reliability_enabled()
+                .then(|| engine.faces().get(face))
+                .flatten()
+                .and_then(|f| f.link_service.reliability_counters())
+                .map(|r| LpCounters {
+                    resent: r.resent_packets,
+                    fast_retx: r.fast_retx,
+                    gave_up: r.rto_expirations,
+                    unacked_evictions: r.unacked_evictions,
+                    duplicate_frames: r.duplicate_frames,
+                    acks_sent: r.acks_sent,
+                    acks_received: r.acks_received,
+                    rto_us: r.rto_micros,
+                });
             out.push(FaceStats {
                 face: face.to_string(),
                 kind,
@@ -1358,15 +1598,16 @@ impl RunningSimulation {
                 in_bytes: c.in_bytes.load(Ordering::Relaxed),
                 out_bytes: c.out_bytes.load(Ordering::Relaxed),
                 out_drops: c.out_drops.load(Ordering::Relaxed),
+                lp,
             });
         }
         out.sort_by(|a, b| a.face.cmp(&b.face));
         Ok(out)
     }
 
-    /// Connect two live nodes with a symmetric in-proc wired link.
+    /// Connect two live nodes with the production peer link (see [`Simulation::link`]).
     pub fn connect(&self, a: NodeId, b: NodeId, config: LinkConfig) -> Result<()> {
-        self.connect_profiled(a, b, FaceProfile::internal().with_link(config))
+        self.connect_profiled(a, b, FaceProfile::udp().with_link(config))
     }
 
     /// Connect two live nodes with a typed link from the per-face catalogue.
@@ -1381,13 +1622,13 @@ impl RunningSimulation {
             link_states,
         } = &mut *guard;
         let prefix_arg = self.prefix_stats.as_ref().map(|s| (s, s.grouping()));
+        let (end_a, end_b) = link_ends(nodes, a, b, &profile);
         wire_link(
             nodes,
             links,
             link_states,
-            a,
-            b,
-            &profile,
+            end_a,
+            end_b,
             self.channel_buffer,
             self.seed,
             prefix_arg,

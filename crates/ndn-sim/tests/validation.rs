@@ -4,6 +4,11 @@
 //! - Every `examples/probes/*.toml` must PARSE and currently FAIL (they are open findings; a probe
 //!   that starts passing is a signal to promote it to `checks/` — this test fails loudly when that
 //!   happens so the finding doesn't silently rot).
+//!
+//! Specs load through [`ValidationSpec::from_file`], exactly as `ndn-lab check` does: the
+//! trace-driven checks name their `mobility_trace` relative to the spec file, and the test's working
+//! directory (the crate root) is not that directory — so a regression to cwd-relative resolution
+//! fails `all_check_examples_pass` here instead of only failing for CLI users.
 
 use std::path::{Path, PathBuf};
 
@@ -31,8 +36,8 @@ fn all_check_examples_pass() {
     let specs = toml_specs(&dir);
     assert!(!specs.is_empty(), "no check examples found in {dir:?}");
     for path in specs {
-        let spec = ValidationSpec::from_toml(&std::fs::read_to_string(&path).unwrap())
-            .unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
+        let spec =
+            ValidationSpec::from_file(&path).unwrap_or_else(|e| panic!("parse {path:?}: {e:#}"));
         let report = run_validation(&spec).unwrap_or_else(|e| panic!("run {path:?}: {e}"));
         assert!(
             report.passed,
@@ -45,10 +50,7 @@ fn all_check_examples_pass() {
 #[test]
 fn regression_gate_passes_baseline_and_catches_drift() {
     let dir = examples_dir("checks");
-    let spec = ValidationSpec::from_toml(
-        &std::fs::read_to_string(dir.join("regression-throughput.toml")).unwrap(),
-    )
-    .unwrap();
+    let spec = ValidationSpec::from_file(&dir.join("regression-throughput.toml")).unwrap();
     let baseline = Baseline::from_json(
         &std::fs::read_to_string(dir.join("regression-throughput.baseline.json")).unwrap(),
     )
@@ -91,8 +93,8 @@ fn all_probe_examples_currently_fail() {
     // An empty probes/ dir is a *good* state — no open findings. Only the specs that exist must
     // still fail (a probe that starts passing should be promoted to checks/).
     for path in toml_specs(&dir) {
-        let spec = ValidationSpec::from_toml(&std::fs::read_to_string(&path).unwrap())
-            .unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
+        let spec =
+            ValidationSpec::from_file(&path).unwrap_or_else(|e| panic!("parse {path:?}: {e:#}"));
         let report = run_validation(&spec).unwrap_or_else(|e| panic!("run {path:?}: {e}"));
         assert!(
             !report.passed,

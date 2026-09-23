@@ -7,7 +7,7 @@
 //! - **NDN-native named control**: [`serve_ndn`](ControlPlane::serve_ndn) serves
 //!   `/localhop/sim/control` Interests — the JSON request rides in ApplicationParameters, the
 //!   JSON [`SimResponse`] comes back as Data — and installs a reusable
-//!   [`NotificationStream`](ndn_mgmt::NotificationStream) of [`SimNotification`]s at
+//!   [`NotificationStream`] of [`SimNotification`]s at
 //!   `/localhop/sim/control/notifications`. Drivable (and *attachable*) over the network.
 //! - **RPC / WebSocket**: [`handle_json`](ControlPlane::handle_json) is the per-message codec
 //!   (request string → response string). A WS/TCP server is a thin loop around it (the socket
@@ -274,7 +274,7 @@ impl ControlPlane {
         *self.control_validator.lock().unwrap() = Some(validator);
     }
 
-    /// Subscribe to the live telemetry stream (axis 4c) — each [`spawn_telemetry`] tick delivers a
+    /// Subscribe to the live telemetry stream (axis 4c) — each [`spawn_telemetry`](Self::spawn_telemetry) tick delivers a
     /// [`TelemetryFrame`] here. A WebSocket / NDN server forwards these to remote dashboards.
     pub fn subscribe_telemetry(&self) -> tokio::sync::broadcast::Receiver<TelemetryFrame> {
         self.telemetry.subscribe()
@@ -679,7 +679,7 @@ impl ControlPlane {
     /// Serve the control surface over **TCP** as newline-delimited JSON (one
     /// [`handle_json`](Self::handle_json) request/response per line) — the thin RPC/WS transport
     /// for the GUI and external tooling. Binds `addr`, spawns the accept loop, and returns the
-    /// bound [`SocketAddr`] (pass `"127.0.0.1:0"` for an ephemeral port). Runs until `cancel`.
+    /// bound [`SocketAddr`](std::net::SocketAddr) (pass `"127.0.0.1:0"` for an ephemeral port). Runs until `cancel`.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn serve_tcp(
         self: &Arc<Self>,
@@ -728,7 +728,7 @@ impl ControlPlane {
     /// Serve the control surface over **WebSocket** (one JSON [`handle_json`](Self::handle_json)
     /// request/response per message) — the transport a browser / Dioxus (`ndn-dashboard`) client
     /// uses, since wasm can't open raw TCP. Binds `addr`, spawns the accept loop, returns the
-    /// bound [`SocketAddr`]. Runs until `cancel`.
+    /// bound [`SocketAddr`](std::net::SocketAddr). Runs until `cancel`.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn serve_ws(
         self: &Arc<Self>,

@@ -2,7 +2,7 @@
 //! render-contract calculus (the `manifest` + `render-contract` crates).
 //!
 //! The thesis, applied to a simulator: a telemetry sample **describes itself**
-//! (a [`Manifest`] over an ndn-lab [`Vocabulary`]); renderers **publish what
+//! (a [`Manifest`](manifest::model::Manifest) over an ndn-lab [`Vocabulary`]); renderers **publish what
 //! they can express** ([`Contract`]s); a decidable, evaluation-free matcher
 //! binds `(manifest × intent × contracts × trust-frontier)` to a verdict and
 //! an inert renderer binding. ndn-lab stops hand-rolling one serializer per
@@ -46,7 +46,7 @@
 //!   matching per sample would be category-confused, not merely slow.
 //! - **`Via::Native` is a registry key and nothing more.** The matcher never
 //!   evaluates `via` (C8); the id string resolves a Rust renderer in
-//!   [`Renderers`] and is not allowed to accrue any other meaning (native-via
+//!   `Renderers` and is not allowed to accrue any other meaning (native-via
 //!   is the register's acknowledged attestation gap).
 //!
 //! Presentation of *why* a verdict landed is delegated to the `explain` crate
@@ -587,7 +587,7 @@ impl KeelView {
     }
 
     /// Render a batch of samples through a resolved lens: dispatch its
-    /// `Via::Native` id to the [`Renderers`] registry, and attach the
+    /// `Via::Native` id to the `Renderers` registry, and attach the
     /// human-auditable verdict trace.
     pub fn render(&self, m: &Match, samples: &[FabricGauges]) -> Option<Rendered> {
         // `contract_via` (F54) owns the walk back to the emitting clause,

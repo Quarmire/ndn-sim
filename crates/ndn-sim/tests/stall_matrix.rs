@@ -13,10 +13,12 @@
 //! stack red is a shell:
 //!
 //! - **NS-6 reorder→mispair**: row = the hold fault (delay-without-drop) under the stock
-//!   name-paired fetch → green. Red gate: `FetchMode::ArrivalPaired` (the pre-`fe36e7be`
-//!   pairing, preserved in the fieldkit) → a held stale reply is stored under the wrong seq →
-//!   the **byte-identity invariant** reddens. (Liveness alone can't see a mispair — it
-//!   converges to wrong bytes. That is why the assertion is dual.)
+//!   name-paired fetch, on a UDP hop without LP ARQ (an ARQ hop retransmits the held reply
+//!   and repairs the reorder before any consumer sees it) → green. Red gate:
+//!   `FetchMode::ArrivalPaired` (the pre-`fe36e7be` pairing, preserved in the fieldkit) → a
+//!   held stale reply is stored under the wrong seq → the **byte-identity invariant** reddens.
+//!   (Liveness alone can't see a mispair — it converges to wrong bytes. That is why the
+//!   assertion is dual.)
 //! - **NS-7 burst deadlock**: row = a 400-Block catch-up through the stock two-phase channels
 //!   → green since N-11 (`169f9a58`; the true pre-fix red-proof is in git history — ndn-sim
 //!   `dbe14fd` pinned `Stalled{at:11}/400` against ndn-rs `2472b6d9`). Red gate: a consumer
@@ -25,12 +27,12 @@
 //! - **NS-8 restart starvation**: row = a publisher restart with the persistent store
 //!   (N-13/N-15) → green. Red gate: `RestartablePublisher::new_ephemeral` (the stock per-boot
 //!   data plane) → the lagging peer starves → the **watchdog** fires.
-//! - **NS-9 step-timeout event loss**: row = slow per-Block processing under
-//!   `StepBound::BoundedWait` (bound the wait, not the processing) → green. Red gate:
-//!   `StepBound::WholeStep` (the `Follow::step` shape from the field) → the deadline fires
-//!   mid-range, stores/acks survive but the step's events are dropped → the **event-integrity
-//!   invariant** reddens while liveness converges (the field symptom: a view sitting stale on
-//!   a store that had moved).
+//! - **NS-9 step-timeout event loss**: row = slow per-Block processing of a multi-Block
+//!   update (a healed partition's backlog) under `StepBound::BoundedWait` (bound the wait,
+//!   not the processing) → green. Red gate: `StepBound::WholeStep` (the `Follow::step` shape
+//!   from the field) → the deadline fires mid-range, stores/acks survive but the step's events
+//!   are dropped → the **event-integrity invariant** reddens while liveness converges (the
+//!   field symptom: a view sitting stale on a store that had moved).
 //!
 //! ## The scoreboard
 //!
@@ -52,7 +54,8 @@ use ndn_sim::liveness::{
     watch,
 };
 use ndn_sim::{
-    FrameMatcher, HoldRule, LinkConfig, NodeId, RunningSimulation, Simulation, VirtualKernel,
+    FaceProfile, FrameMatcher, HoldRule, LinkConfig, NodeId, RunningSimulation, Simulation,
+    VirtualKernel,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -82,13 +85,13 @@ impl Topo {
     }
 }
 
-/// Build a fabric for `topo` with `link` on every edge. Returns the fabric, the publisher
+/// Build a fabric for `topo` with `face` on every edge. Returns the fabric, the publisher
 /// node, and the replica nodes in `replica_names` order.
 async fn build_topology(
     k: std::sync::Arc<dyn ndn_sim::SimKernel>,
     seed: u64,
     topo: Topo,
-    link: LinkConfig,
+    face: FaceProfile,
 ) -> (RunningSimulation, NodeId, Vec<NodeId>) {
     let mut sim = Simulation::new()
         .without_radio_interference()
@@ -98,7 +101,7 @@ async fn build_topology(
     match topo {
         Topo::Pair => {
             let b = sim.add_node(EngineConfig::default());
-            sim.link(a, b, link);
+            sim.link_profiled(a, b, face);
             sim.add_route(a, GROUP, b);
             sim.add_route(b, GROUP, a);
             sim.add_route(b, PUBLISHER, a);
@@ -113,8 +116,8 @@ async fn build_topology(
         Topo::Line3 => {
             let b = sim.add_node(EngineConfig::default());
             let c = sim.add_node(EngineConfig::default());
-            sim.link(a, b, link.clone());
-            sim.link(b, c, link);
+            sim.link_profiled(a, b, face.clone());
+            sim.link_profiled(b, c, face);
             for (from, to) in [(a, b), (b, a), (b, c), (c, b)] {
                 sim.add_route(from, GROUP, to);
             }
@@ -181,7 +184,7 @@ fn run_simple_cell(
     cell: &str,
     seed: u64,
     topo: Topo,
-    link: LinkConfig,
+    face: FaceProfile,
     hold: Option<HoldRule>,
     blocks: usize,
     opts: CatchupOpts,
@@ -190,7 +193,7 @@ fn run_simple_cell(
     let kernel = VirtualKernel::new();
     let cell = cell.to_string();
     kernel.run(move |k| async move {
-        let (fabric, a, replicas) = build_topology(k, seed, topo, link).await;
+        let (fabric, a, replicas) = build_topology(k, seed, topo, face).await;
         let cancel = CancellationToken::new();
         let ledger = Arc::new(Ledger::new());
         let rnames = topo.replica_names();
@@ -229,7 +232,8 @@ fn run_restart_cell(cell: &str, seed: u64, persistent: bool) -> CellReport {
     let kernel = VirtualKernel::new();
     let cell = cell.to_string();
     kernel.run(move |k| async move {
-        let (fabric, a, replicas) = build_topology(k, seed, Topo::Pair, LinkConfig::lan()).await;
+        let (fabric, a, replicas) =
+            build_topology(k, seed, Topo::Pair, udp(LinkConfig::lan())).await;
         let cancel = CancellationToken::new();
         let ledger = Arc::new(Ledger::new());
         let rnames = Topo::Pair.replica_names();
@@ -288,7 +292,8 @@ fn run_lag_cell(cell: &str, seed: u64) -> CellReport {
     let kernel = VirtualKernel::new();
     let cell = cell.to_string();
     kernel.run(move |k| async move {
-        let (fabric, a, replicas) = build_topology(k, seed, Topo::Line3, LinkConfig::lan()).await;
+        let (fabric, a, replicas) =
+            build_topology(k, seed, Topo::Line3, udp(LinkConfig::lan())).await;
         let cancel = CancellationToken::new();
         let ledger = Arc::new(Ledger::new());
         let rnames = Topo::Line3.replica_names();
@@ -339,6 +344,64 @@ fn run_lag_cell(cell: &str, seed: u64) -> CellReport {
     })
 }
 
+/// The NS-9 row runner: the replica attaches, the pair partitions, the publisher authors
+/// `blocks` into the void, the link heals. The replica then learns the whole backlog from one
+/// state vector — a single update spanning every missed Block, the multi-Block step a per-Block
+/// cost multiplies. Publishing live cannot build that step: SVS hands the consumer each inbound
+/// Sync Interest's gap separately (ndn-rs `7bee1514`), so live updates run 1..1, 1..2, …, 1..n
+/// and add one new Block apiece — never more than one `SLOW_STORE` per step.
+fn run_backlog_cell(cell: &str, seed: u64, blocks: usize, opts: CatchupOpts) -> CellReport {
+    fastrand::seed(seed);
+    let kernel = VirtualKernel::new();
+    let cell = cell.to_string();
+    kernel.run(move |k| async move {
+        let (fabric, a, replicas) =
+            build_topology(k, seed, Topo::Pair, udp(LinkConfig::lan())).await;
+        let cancel = CancellationToken::new();
+        let ledger = Arc::new(Ledger::new());
+        let rnames = Topo::Pair.replica_names();
+
+        attach_replicas(&fabric, &replicas, &rnames, &ledger, opts, &cancel).await;
+        let publisher = fabric
+            .engine_of(a)
+            .unwrap()
+            .app_node(cancel.child_token())
+            .publish(name(GROUP), name(PUBLISHER))
+            .await
+            .expect("publisher");
+        settle(Duration::from_millis(300)).await;
+
+        // The fault window (no watchdog): partition, author the backlog, and stay partitioned
+        // until no copy of the per-put Sync Interests is left in flight. LP reliability still
+        // retransmits them seconds later, and one landing after the heal replays the live 1..k
+        // updates (measured on this cell: a ≤ 3 s cut never reddens the gate, 5 s does).
+        fabric.set_link_up(a, replicas[0], false).unwrap();
+        publish_ledgered(&publisher, &ledger, blocks, "w").await;
+        settle(Duration::from_secs(10)).await;
+        fabric.set_link_up(a, replicas[0], true).unwrap();
+
+        let liveness = watch(&ledger, &rnames, STALL_WINDOW, BUDGET).await;
+        let report = CellReport::evaluate(cell, seed, &ledger, &rnames, liveness);
+
+        cancel.cancel();
+        fabric.shutdown().await;
+        report
+    })
+}
+
+/// The production peer face (what `Simulation::link` wires: UDP, LP reliability on) over `link`.
+fn udp(link: LinkConfig) -> FaceProfile {
+    FaceProfile::udp().with_link(link)
+}
+
+/// The NS-6 medium: the production UDP face with NDNLPv2 reliability OFF (ndn-fwd's state for a
+/// `[[face]]` until reliability is flipped on at runtime). On an ARQ hop the reply held past the
+/// RTO is retransmitted and the copy lands in time, so no straggler reaches the consumer and the
+/// arrival-paired gate stays byte-identical — the reorder must be one ARQ does not repair.
+fn udp_without_arq(link: LinkConfig) -> FaceProfile {
+    udp(link).with_lp_reliability(false)
+}
+
 fn lossy() -> LinkConfig {
     LinkConfig {
         delay: Duration::from_millis(20),
@@ -377,7 +440,7 @@ fn stall_matrix_scoreboard() {
         "clean/pair",
         0xC701,
         Topo::Pair,
-        LinkConfig::lan(),
+        udp(LinkConfig::lan()),
         None,
         30,
         CatchupOpts::default(),
@@ -386,7 +449,7 @@ fn stall_matrix_scoreboard() {
         "clean/line3",
         0xC702,
         Topo::Line3,
-        LinkConfig::lan(),
+        udp(LinkConfig::lan()),
         None,
         30,
         CatchupOpts::default(),
@@ -395,7 +458,7 @@ fn stall_matrix_scoreboard() {
         "drop/pair",
         0xC703,
         Topo::Pair,
-        lossy(),
+        udp(lossy()),
         None,
         30,
         CatchupOpts::default(),
@@ -404,21 +467,22 @@ fn stall_matrix_scoreboard() {
         "drop/line3",
         0xC704,
         Topo::Line3,
-        lossy(),
+        udp(lossy()),
         None,
         20,
         CatchupOpts::default(),
     ));
 
-    // NS-6 row — reorder (delay-without-drop) under the stock name-paired fetch.
+    // NS-6 row — reorder (delay-without-drop) under the stock name-paired fetch, on a hop whose
+    // ARQ does not repair the reorder (see `udp_without_arq`).
     board.push(run_simple_cell(
         "reorder-ns6/pair",
         0xC706,
         Topo::Pair,
-        LinkConfig {
+        udp_without_arq(LinkConfig {
             delay: Duration::from_millis(30),
             ..LinkConfig::default()
-        },
+        }),
         Some(reorder_hold()),
         12,
         CatchupOpts::default(),
@@ -431,10 +495,10 @@ fn stall_matrix_scoreboard() {
         "reorder-ns6-windowed/pair",
         0xC716,
         Topo::Pair,
-        LinkConfig {
+        udp_without_arq(LinkConfig {
             delay: Duration::from_millis(30),
             ..LinkConfig::default()
-        },
+        }),
         Some(reorder_hold()),
         12,
         CatchupOpts {
@@ -448,7 +512,7 @@ fn stall_matrix_scoreboard() {
         "burst-ns7/pair",
         0xC707,
         Topo::Pair,
-        LinkConfig::lan(),
+        udp(LinkConfig::lan()),
         None,
         400,
         CatchupOpts::default(),
@@ -460,7 +524,7 @@ fn stall_matrix_scoreboard() {
         "burst-ns7-windowed/pair",
         0xC717,
         Topo::Pair,
-        LinkConfig::lan(),
+        udp(LinkConfig::lan()),
         None,
         400,
         CatchupOpts {
@@ -472,13 +536,11 @@ fn stall_matrix_scoreboard() {
     // NS-8 row — publisher restart with the persistent store (the N-13/N-15 regime).
     board.push(run_restart_cell("restart-ns8/pair", 0xC708, true));
 
-    // NS-9 row — slow per-Block processing under the FIXED step shape (bound the wait).
-    board.push(run_simple_cell(
+    // NS-9 row — slow per-Block processing of a multi-Block update (a healed partition's
+    // backlog) under the FIXED step shape (bound the wait).
+    board.push(run_backlog_cell(
         "slowstore-ns9/pair",
         0xC709,
-        Topo::Pair,
-        LinkConfig::lan(),
-        None,
         30,
         CatchupOpts {
             per_seq_delay: SLOW_STORE,
@@ -518,7 +580,7 @@ fn watchdog_fires_on_a_wedged_stack_and_stays_silent_on_a_healthy_one() {
         "gate-healthy/pair",
         0xC7A0,
         Topo::Pair,
-        LinkConfig::lan(),
+        udp(LinkConfig::lan()),
         None,
         10,
         CatchupOpts::default(),
@@ -534,7 +596,7 @@ fn watchdog_fires_on_a_wedged_stack_and_stays_silent_on_a_healthy_one() {
         "gate-wedged/pair",
         0xC7A1,
         Topo::Pair,
-        LinkConfig::lan(),
+        udp(LinkConfig::lan()),
         None,
         10,
         CatchupOpts {
@@ -567,7 +629,9 @@ fn watchdog_fires_on_a_wedged_stack_and_stays_silent_on_a_healthy_one() {
 /// correct), and the range shapes vary with sync-round interleaving. The single pass IS the
 /// deterministic mispair geometry — a held mid-stream reply lands inside the NEXT fetch's
 /// (timeout, timeout+RTT) window, ahead of that fetch's own reply, and every later pairing
-/// shifts by one (the pinned-red original is `field_faults.rs` at ndn-sim `dbe14fd`).
+/// shifts by one (the pinned-red original is `field_faults.rs` at ndn-sim `dbe14fd`). The hop
+/// runs without LP ARQ (`udp_without_arq`): with it, the held reply is retransmitted inside the
+/// client wait and this pass stays byte-identical — a gate that cannot redden.
 #[test]
 fn ns6_row_reddens_with_arrival_paired_pairing() {
     fastrand::seed(0xC7A6);
@@ -579,10 +643,10 @@ fn ns6_row_reddens_with_arrival_paired_pairing() {
             k,
             0xC7A6,
             Topo::Pair,
-            LinkConfig {
+            udp_without_arq(LinkConfig {
                 delay: Duration::from_millis(200),
                 ..LinkConfig::default()
-            },
+            }),
         )
         .await;
         let cancel = CancellationToken::new();
@@ -660,15 +724,14 @@ fn ns8_row_reddens_with_the_ephemeral_data_plane() {
 
 /// NS-9 red gate: bounding the WHOLE step (the `Follow::step` field shape) instead of just
 /// the wait drops in-flight events when per-Block processing is slow — the store converges
-/// but the caller never learns: event integrity reddens while liveness is green.
+/// but the caller never learns: event integrity reddens while liveness is green. Same cell as
+/// the row: the healed partition's single update spans 30 new Blocks ≥ 30 × `SLOW_STORE`, so a
+/// 50 ms bound fires mid-range on every schedule (live publishing never built such an update).
 #[test]
 fn ns9_row_reddens_with_a_whole_step_bound() {
-    let red = run_simple_cell(
+    let red = run_backlog_cell(
         "gate-ns9-wholestep/pair",
         0xC7A9,
-        Topo::Pair,
-        LinkConfig::lan(),
-        None,
         30,
         CatchupOpts {
             per_seq_delay: SLOW_STORE,
@@ -686,6 +749,7 @@ fn ns9_row_reddens_with_a_whole_step_bound() {
         "the NS-9 row must redden the whole-step bound via event integrity: {red:?}"
     );
     assert!(!red.pass);
+    println!("NS-9 event loss caught: {:?}", red.invariants.violations);
 }
 
 /// Same seed ⇒ identical NORMATIVE report (cell, seed, verdict class, invariants, published,
@@ -700,7 +764,7 @@ fn scoreboard_is_deterministic() {
             "determinism/drop-pair",
             0xC7D0,
             Topo::Pair,
-            lossy(),
+            udp(lossy()),
             None,
             20,
             CatchupOpts::default(),

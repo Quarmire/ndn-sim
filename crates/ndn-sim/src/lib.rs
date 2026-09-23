@@ -49,43 +49,26 @@
 //! assert_eq!(scenario.nodes.len(), 2);
 //! ```
 //!
-//! ## Radio and the IP plane
+//! ## Radio
 //!
-//! Nodes can share a **radio medium** instead of point-to-point links — a [`RadioLinkConfig`] picks
-//! the MAC discipline ([`WifiMode`]) and organisation ([`WifiOperatingMode`]), or use [`LoraLinkConfig`]
-//! for LoRa. And ndn-lab carries a deterministic **IP plane** ([`IpNetwork`]) with pluggable routing
-//! ([`ShortestPath`]/[`DistanceVector`]/[`Olsr`] proactive, [`Aodv`]/[`Dsr`] reactive,
-//! [`GreedyGeographic`]/[`Gpsr`] geographic) so the *same* workload can be benchmarked NDN-vs-IP.
+//! Nodes can share a **radio medium** instead of point-to-point links: [`RadioBus`] +
+//! [`SimRadioFace`] with pluggable propagation ([`PropagationModel`]), collisions
+//! ([`InterferenceModel`]), side-band leakage ([`ChannelModel`]) and the 802.11 airtime model
+//! ([`wifi`], [`WifiMode`] monitor-vs-managed). The in-sim IP plane, routing algorithms, LoRa, the
+//! multi-radio PHY reference and the NDN-vs-IP harness live in the separate `ndn-sim-studies`
+//! crate, which depends on this one.
 //!
-//! ```rust,no_run
-//! use ndn_sim::{IpNetwork, Position, RadioLinkConfig, ShortestPath, Wifi, WifiMode};
-//! # fn f(rt: std::sync::Arc<dyn ndn_runtime::Runtime>) {
-//! // Three stations on a shared Wi-Fi medium; IP routes itself over the in-range links.
-//! let net = IpNetwork::from_positions_wifi(
-//!     rt,
-//!     vec![Position::xy(0.0, 0.0), Position::xy(20.0, 0.0), Position::xy(40.0, 0.0)],
-//!     &Wifi::new(),
-//!     &RadioLinkConfig::new(30.0, WifiMode::Managed),
-//!     &ShortestPath,
-//! );
-//! # let _ = net; }
-//! ```
+//! ## Telemetry that describes itself (the Keel, `keel` feature)
 //!
-//! The two planes enter differently *by design*: the NDN side is a mutable [`Simulation`] builder
-//! (topology grows incrementally, then `start()`), while [`IpNetwork`]'s `from_*` constructors take
-//! the whole topology up front — routing tables are computed from the complete graph at build time.
-//! [`from_scenario`](IpNetwork::from_scenario) bridges them: one [`Scenario`] drives both planes.
-//!
-//! ## Telemetry that describes itself (the Keel)
-//!
-//! ndn-lab does not hand-roll one serializer per output. A telemetry type carries
-//! `#[derive(Manifest)]` (see [`FabricGauges`] / [`scene::SceneSnapshot`]) and *describes itself*;
-//! renderers publish **contracts** declaring what they can express; a deterministic matcher binds
-//! `(manifest × intent × contracts)` to a verdict — and competing renderers are resolved by
-//! [`KeelView::select_for`] against a fidelity [`Floor`], with every lossy step a *named term* a
-//! reader can audit. One metric renders as an exact SVG (Express), ASCII glyphs or an OTLP gauge
-//! (Approximate, loss declared) depending on what the [`Surface`] can hold — see [`keel`] and
-//! `examples/keel-telemetry.rs`.
+//! With the off-by-default `keel` feature, ndn-lab does not hand-roll one serializer per output. A
+//! telemetry type carries `#[derive(Manifest)]` (see [`FabricGauges`] / [`scene::SceneSnapshot`])
+//! and *describes itself*; renderers publish **contracts** declaring what they can express; a
+//! deterministic matcher binds `(manifest × intent × contracts)` to a verdict — and competing
+//! renderers are resolved by `KeelView::select_for` against a fidelity `Floor`, with every lossy
+//! step a *named term* a reader can audit. One metric renders as an exact SVG (Express), ASCII glyphs
+//! or an OTLP gauge (Approximate, loss declared) depending on what the `Surface` can hold — see the
+//! `keel` module and `examples/keel-telemetry.rs`. The feature pulls the manifest / render-contract
+//! crates from the sibling `flotilla` checkout; without it the core builds with no flotilla at all.
 //!
 //! ## The five capability axes
 //!
@@ -97,9 +80,9 @@
 //!   (ArduPilot SITL / Gazebo / Bevy) drive node motion; `cosim` commands actuate them back.
 //! - **Observability** ([`analysis::explain_link`], [`diff_runs`], [`OtlpExporter`]) — causal "why"
 //!   over radio delivery, cross-run diff, and OTLP/Jaeger export.
-//! - **Self-description** ([`KeelView`], [`SceneView`], [`Surface`]) — telemetry described once via
-//!   `#[derive(Manifest)]`; renderers compete per intent; selection is deterministic and every loss
-//!   is a named, auditable term.
+//! - **Self-description** (`keel` feature: `KeelView`, `SceneView`, `Surface`) — telemetry described
+//!   once via `#[derive(Manifest)]`; renderers compete per intent; selection is deterministic and
+//!   every loss is a named, auditable term.
 //!
 //! The [`ControlPlane`] projects all of this over one JSON surface (in-process / NDN-native / TCP /
 //! WebSocket), and [`SimMcp`] projects *that* as Model Context Protocol tools for agents.
@@ -123,16 +106,11 @@
 //! | [`sim_face`] | `SimFace` — channel-backed face with delay/loss/bandwidth emulation |
 //! | [`sim_link`] | `SimLink` — connected face pairs (the wired *static channel*) |
 //! | [`world`]    | `World` / `MobilityModel` / `Environment` — *where* nodes are and how they move |
-//! | [`medium`]   | `WirelessMedium` / `PropagationModel` — position-driven broadcast delivery |
+//! | [`medium`]   | `PropagationModel` / `InterferenceModel` / `ChannelModel` — the pluggable radio physics |
 //! | [`link_model`] | `LinkModel` — RSSI/SNR → MCS → per-frame delivery (the 802.11n logical link) |
 //! | [`radio`]    | `RadioBus` / `SimRadioFace` — the named-radio simulated face (engine `Face`) |
-//! | [`wifi`]     | 802.11 MAC model — `Monitor` (named-data radio) vs `Managed` (CSMA-CA/ACK/minstrel/EDCA); IBSS / AP / mesh |
-//! | [`phy`]      | pluggable multi-radio PHY — channels, antennas, propagation + interference backends (SINR) |
-//! | [`lora`]     | LoRa PHY/MAC — spreading factors, Semtech airtime, duty cycle, device classes A/B/C |
-//! | [`ip`]       | `IpNetwork` / `IpNode` — the deterministic in-sim IP forwarding plane |
-//! | [`routing`]  | `RoutingAlgorithm` — proactive (OSPF/RIP-class, OLSR), reactive (AODV/DSR), geographic (GPSR), each with a control-overhead model |
-//! | [`compare`]  | the NDN-vs-IP diff harness — the same workload run both ways, one report |
-//! | [`keel`]     | `KeelView` / `SceneView` / `Surface` — self-describing telemetry through render contracts; competing lenses, deterministic selection |
+//! | [`wifi`]     | 802.11 airtime model — `Monitor` (named-data radio) vs `Managed` (EDCA/ACK) frame cost |
+//! | `keel`       | `KeelView` / `SceneView` / `Surface` (feature `keel`) — self-describing telemetry through render contracts; competing lenses, deterministic selection |
 //! | [`telemetry`] | `MetricsLog` / `SimSpanEmitter` — Runtime-clocked metric gauges + OTLP spans |
 //! | [`analysis`] | `explain_link` / `diff_runs` — causal "why" over deliveries + cross-run divergence |
 //! | [`validate`] | `ValidationSpec` / `run_validation` — faults + properties + seed sweeps as a CI gate |
@@ -151,9 +129,7 @@ pub mod app;
 pub mod bridge;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ceiling;
-pub mod cognition;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod compare;
+mod config_boot;
 pub mod control;
 pub mod control_plane;
 pub mod cosim;
@@ -162,29 +138,28 @@ pub mod energy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fieldkit;
 pub mod geometry;
-pub mod ip;
+#[cfg(feature = "keel")]
 pub mod keel;
 pub mod kernel;
 pub mod link_model;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod liveness;
-pub mod lora;
 #[cfg(feature = "mavlink")]
 pub mod mavlink;
 pub mod mcp;
 pub mod medium;
 pub mod netstat;
 pub mod otel_export;
-pub mod phy;
 pub mod prelude;
 pub mod profile;
 pub mod radio;
 pub mod replay;
-pub mod routing;
 pub mod scenario;
 pub mod scene;
+pub mod shared_channel;
 pub mod sim_face;
 pub mod sim_link;
+mod sim_udp;
 pub mod span_capture;
 pub mod stepper;
 pub mod telemetry;
@@ -201,8 +176,6 @@ pub use analysis::{
     RunCapture, RunDiff, Throughput, diff_runs, explain_link, throughput,
 };
 pub use app::{AppHandle, AppId, AppSpec, FlowStats, TrafficPattern};
-#[cfg(not(target_arch = "wasm32"))]
-pub use compare::{ComparisonSpec, ProtocolComparison, compare_ndn_vs_ip};
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,
@@ -215,37 +188,22 @@ pub use cosim::{
 pub use des::{DesKernel, DesSession};
 pub use energy::{EnergyAccount, EnergyAccounts, EnergyModel, RadioEnergyModel};
 pub use geometry::{Obstacle, ObstructedPropagation};
-pub use ip::{
-    IpNetwork, IpNode, IpNodeStats, IpPacket, Ipv4, RadioLinkConfig, RunningIpNode, ip_link,
-};
+#[cfg(feature = "keel")]
+pub use keel::{KeelView, Rendered, SceneView, Surface};
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{
     DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,
 };
 pub use kernel::{ImmediateRuntime, RealTimeKernel, SimKernel, WallClockKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
-pub use lora::{
-    CodingRate, DeviceClass, DutyCycle, LoraConfig, LoraLinkConfig, SpreadingFactor, adr_select,
-};
 pub use mcp::SimMcp;
 pub use medium::{
     AdjacentLeakChannel, CarrierSenseInterference, ChannelModel, Delivery, DeliveryReason,
     FreeSpacePathLoss, InterferenceModel, NoInterference, OrthogonalChannels, PerfectPropagation,
-    PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
+    PropagationModel, RangeThreshold, TxContext,
 };
+pub use netstat::{PrefixCounters, PrefixSample, PrefixStats};
 pub use otel_export::OtlpExporter;
-pub use routing::{
-    Aodv, DistanceVector, Dsr, Gpsr, GreedyGeographic, NetworkKind, Olsr, RoutingAlgorithm,
-    RoutingCategory, ShortestPath, TopologyView,
-};
-// NB: `phy::FreeSpace` (a PropagationBackend) is intentionally not re-exported at the crate root —
-// it would collide with `world::FreeSpace` (an Environment). Reach it via `ndn_sim::phy::FreeSpace`.
-pub use keel::{KeelView, Rendered, SceneView, Surface};
-pub use phy::{
-    Antenna, AntennaPlacement, Channel, DefaultInterference, Dipole, Directional,
-    InterferenceBackend, Isotropic, LogDistance, PropagationBackend, Radio, RadioEnvironment,
-    RadioPlatform,
-};
 pub use profile::NodeProfile;
 pub use radio::{RadioBus, RadioMcs, RadioRx, SimRadioFace};
 pub use replay::{RecordedCommand, Recording};
@@ -257,20 +215,22 @@ pub use scene::{
     RadioLink, SceneBounds, SceneLink, SceneNode, ScenePoint, SceneSnapshot, render_sparkline,
     render_topology_svg,
 };
+pub use shared_channel::{ChannelStats, SharedChannel};
 pub use sim_face::{FrameMatcher, HoldRule, SimFace};
 pub use sim_link::{FaceProfile, LinkConfig, SimLink};
+pub use sim_udp::UdpDatagram;
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use stepper::Stepper;
 // Re-exported for the KeelView surface (best_lens floor; Rendered verdict).
-pub use netstat::{PrefixCounters, PrefixSample, PrefixStats};
+#[cfg(feature = "keel")]
 pub use render_contract::{Floor, Verdict};
 pub use telemetry::{
-    FabricGauges, IpMetricsSample, MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter,
-    compare_metrics, sample_engine,
+    FabricGauges, MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter, compare_metrics,
+    sample_engine,
 };
 pub use topology::{
-    Clock, FaceKind, FaceStats, NodeId, RouteExplanation, RouteNexthop, RunningSimulation,
-    Simulation, Strategy,
+    Clock, FaceKind, FaceStats, LpCounters, NodeId, RouteExplanation, RouteNexthop,
+    RunningSimulation, Simulation, Strategy,
 };
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]
@@ -279,10 +239,7 @@ pub use validate::{
     Observation, Probe, Property, PropertyResult, RegressionResult, RunReport, ScheduledFault,
     ValidationReport, ValidationSpec, run_validation, run_validation_against,
 };
-pub use wifi::{
-    AccessCategory, FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, WifiMode,
-    WifiOperatingMode, broadcast_airtime, frame_airtime,
-};
+pub use wifi::{AccessCategory, WifiMode, broadcast_airtime, frame_airtime};
 pub use world::{
     Environment, FreeSpace, LinearMobility, MobilityModel, Position, RandomWaypointMobility,
     StaticMobility, UniformAttenuation, WaypointMobility, World, WorldView,

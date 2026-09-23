@@ -1,9 +1,9 @@
-//! Interactive DES stepping — drive a fabric on the [`DesKernel`](crate::DesKernel) event queue and
+//! Interactive DES stepping — drive a fabric on the [`DesKernel`] event queue and
 //! advance it **one event at a time**, inspecting the state between steps. The debugger surface the
 //! tokio-paused kernels can't offer (they auto-advance over any idle window; they can't stop *at*
 //! the next event).
 //!
-//! A [`Stepper`] owns a [`DesSession`](crate::des::DesSession) plus the fabric built on it. Because
+//! A [`Stepper`] owns a [`DesSession`] plus the fabric built on it. Because
 //! the DES executor is a single-threaded event loop, stepping is synchronous: [`step`](Stepper::step)
 //! runs the ready tasks, jumps the virtual clock to the next scheduled event, and stops — so a REPL
 //! (`ndn-lab step <scenario>`) can pause between events, print the topology / metrics / positions,

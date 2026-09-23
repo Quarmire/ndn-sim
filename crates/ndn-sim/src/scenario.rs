@@ -9,11 +9,16 @@
 //!
 //! [`Scenario::build`] turns the document into a ready-to-`start` [`Simulation`] on a kernel the
 //! caller supplies (so a `virtual` scenario is driven inside `VirtualKernel::run`, a `wall_clock`
-//! one directly). Round-trips: `from_toml`/`to_toml`, `from_json`/`to_json`.
+//! one directly). Round-trips: `from_toml`/`to_toml`, `from_json`/`to_json`; load a file with
+//! [`from_toml_file`](Scenario::from_toml_file) so relative paths resolve against it.
 //!
-//! Not yet captured (documented gaps): per-node `EngineConfig` (not serde — nodes use the
-//! default), app lifecycle (spawn_app — its own follow-on), and waypoint mobility (linear only).
+//! A node is either a default-config forwarder or **booted from an ndn-fwd config**
+//! (`config = "gcs.toml"`, `addr = "10.0.0.11"`): its `[[face]]` UDP peers between sim nodes
+//! become [`peer_links`](Scenario::peer_links), and its routes/strategies are applied by ndn-fwd's
+//! own boot code. Not yet captured: app lifecycle (spawn_app — its own follow-on) and waypoint
+//! mobility (linear only).
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -33,10 +38,11 @@ pub struct Scenario {
     /// default realization; a validation seed sweep overrides it to draw independent realizations.
     #[serde(default)]
     pub seed: u64,
-    /// Path (relative to the working directory) to a recorded co-sim [`MobilityTrace`] JSON. When
-    /// set, each node named in the trace is driven by a deterministic `SampledMobility` replaying it
-    /// — the replay leg of co-simulation: a live capture (e.g. an ArduPilot flight) becomes a
-    /// reproducible, gate-able scenario.
+    /// Path to a recorded co-sim [`MobilityTrace`](crate::cosim::MobilityTrace) JSON — relative to the scenario file when
+    /// loaded with [`from_toml_file`](Scenario::from_toml_file) (else to the working directory).
+    /// When set, each node named in the trace is driven by a deterministic `SampledMobility`
+    /// replaying it — the replay leg of co-simulation: a live capture (e.g. an ArduPilot flight)
+    /// becomes a reproducible, gate-able scenario.
     #[serde(default)]
     pub mobility_trace: Option<String>,
     #[serde(default)]
@@ -61,6 +67,71 @@ pub struct Scenario {
     /// cannot obey a virtual clock.
     #[serde(default)]
     pub bridges: Vec<BridgeSpec>,
+    /// Shared contended media (managed Wi-Fi cells) that links join by name — see
+    /// [`SharedChannel`](crate::SharedChannel).
+    #[serde(default)]
+    pub channels: Vec<ChannelSpec>,
+    /// How `[[face]]` UDP peer links between config-booted nodes are carried (default: a
+    /// production UDP peer link on a LAN).
+    #[serde(default)]
+    pub peer_links: Option<PeerLinkSpec>,
+}
+
+/// A shared, airtime-serialised medium:
+///
+/// ```toml
+/// [[channels]]
+/// name = "cell"
+/// rate_bps = 24000000        # effective PHY rate
+/// frame_overhead_us = 150    # per-frame MAC/PHY overhead (default 150)
+/// max_backlog_ms = 200       # queued airtime before tail-drop (default 200)
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelSpec {
+    pub name: String,
+    pub rate_bps: u64,
+    #[serde(default = "default_frame_overhead_us")]
+    pub frame_overhead_us: u64,
+    #[serde(default)]
+    pub max_backlog_ms: Option<u64>,
+}
+
+fn default_frame_overhead_us() -> u64 {
+    150
+}
+
+/// The link config-derived UDP peer faces ride:
+///
+/// ```toml
+/// [peer_links]
+/// delay_ms = 2
+/// loss_rate = 0.05
+/// loss_frame_bytes = 1500   # optional: loss_rate is that of a 1500 B frame; smaller lose less
+/// channel = "cell"          # optional [[channels]] name
+/// lp_reliability = true     # default true: the fleet enables it per face
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeerLinkSpec {
+    #[serde(default)]
+    pub delay_ms: u64,
+    #[serde(default)]
+    pub jitter_ms: u64,
+    #[serde(default)]
+    pub loss_rate: f64,
+    #[serde(default)]
+    pub bandwidth_bps: u64,
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// `loss_rate` is quoted for a frame of this many IP bytes (see
+    /// [`FaceProfile::with_loss_frame_bytes`](crate::FaceProfile::with_loss_frame_bytes)).
+    #[serde(default)]
+    pub loss_frame_bytes: Option<usize>,
+    #[serde(default = "default_true")]
+    pub lp_reliability: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A declarable UDP bridge to an external NDN endpoint (NFD / ndnd / NDNts / a device):
@@ -246,9 +317,11 @@ impl PropSpec {
     }
 }
 
-/// One node. Engine config is the default (per-node config isn't serde yet).
+/// One node: a default-config forwarder, or — with `config` + `addr` — one booted from an
+/// ndn-fwd TOML the way the deployed forwarder boots (see [`Simulation::add_node_from_config`]).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NodeSpec {
+    /// Defaults to the config file's stem for a config-booted node.
     #[serde(default)]
     pub label: Option<String>,
     /// World position `[x, y, z]` metres.
@@ -263,6 +336,13 @@ pub struct NodeSpec {
     /// Apps to run on this node (producers/consumers).
     #[serde(default)]
     pub apps: Vec<crate::app::AppSpec>,
+    /// Path to an ndn-fwd TOML config (relative to the scenario file under
+    /// [`from_toml_file`](Scenario::from_toml_file)). Requires `addr`.
+    #[serde(default)]
+    pub config: Option<String>,
+    /// The node's IP identity: other nodes' `[[face]] remote`s resolve against it.
+    #[serde(default)]
+    pub addr: Option<String>,
 }
 
 /// A wired link between two nodes (durations in ms; `0` = none).
@@ -272,7 +352,7 @@ pub struct ScenarioLink {
     pub b: usize,
     /// Face type from the catalogue (`"udp"`, `"tcp"`, `"quic"`, `"ble"`, …). When set, the link
     /// uses that type's preset behavior (kind/MTU/loss/ordering) and the `*_ms`/`loss`/`bandwidth`
-    /// fields are ignored; omit it for a plain in-proc wired link configured by those fields.
+    /// fields are ignored; omit it for the production UDP peer link carrying those fields.
     #[serde(default)]
     pub face: Option<String>,
     #[serde(default)]
@@ -283,6 +363,9 @@ pub struct ScenarioLink {
     pub loss_rate: f64,
     #[serde(default)]
     pub bandwidth_bps: u64,
+    /// A [`channels`](Scenario::channels) name: the link contends for that medium's airtime.
+    #[serde(default)]
+    pub channel: Option<String>,
 }
 
 /// A FIB route: `prefix` at `node` toward `nexthop` (over the link between them).
@@ -307,11 +390,79 @@ impl Scenario {
         Ok(serde_json::to_string_pretty(self)?)
     }
 
+    /// Load a scenario file, resolving its relative paths (node `config`s, `mobility_trace`)
+    /// against the file's directory — so a scenario runs the same from any working directory.
+    pub fn from_toml_file(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read scenario {}", path.display()))?;
+        let mut scenario =
+            Self::from_toml(&text).with_context(|| format!("parse scenario {}", path.display()))?;
+        scenario.resolve_paths(path.parent().unwrap_or(Path::new(".")));
+        Ok(scenario)
+    }
+
+    /// Rewrite every relative path in the document (node `config`s, `mobility_trace`) as
+    /// `base_dir.join(path)`. Absolute paths are left alone.
+    pub fn resolve_paths(&mut self, base_dir: &Path) {
+        let resolve = |p: &mut String| {
+            if Path::new(p.as_str()).is_relative() {
+                *p = base_dir.join(p.as_str()).to_string_lossy().into_owned();
+            }
+        };
+        if let Some(trace) = &mut self.mobility_trace {
+            resolve(trace);
+        }
+        for node in &mut self.nodes {
+            if let Some(config) = &mut node.config {
+                resolve(config);
+            }
+        }
+    }
+
     /// Turn the document into a ready-to-[`start`](Simulation::start) [`Simulation`] on `kernel`.
     /// For a `virtual` scenario, call this *inside* `VirtualKernel::run` with that kernel; for
     /// `wall_clock`, pass a [`WallClockKernel`](crate::WallClockKernel).
     pub fn build(&self, kernel: Arc<dyn SimKernel>) -> Result<Simulation> {
+        let channels: std::collections::HashMap<&str, Arc<crate::SharedChannel>> = self
+            .channels
+            .iter()
+            .map(|c| {
+                let mut ch = crate::SharedChannel::new(
+                    c.name.clone(),
+                    c.rate_bps.max(1),
+                    std::time::Duration::from_micros(c.frame_overhead_us),
+                );
+                if let Some(ms) = c.max_backlog_ms {
+                    ch = ch.with_max_backlog(std::time::Duration::from_millis(ms));
+                }
+                (c.name.as_str(), Arc::new(ch))
+            })
+            .collect();
+        let channel = |name: &str| {
+            channels
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("unknown channel {name:?}"))
+        };
+
         let mut sim = Simulation::new().kernel(kernel).seed(self.seed);
+        if let Some(p) = &self.peer_links {
+            let mut profile = crate::FaceProfile::udp()
+                .with_link(link_config(
+                    p.delay_ms,
+                    p.jitter_ms,
+                    p.loss_rate,
+                    p.bandwidth_bps,
+                ))
+                .with_lp_reliability(p.lp_reliability);
+            if let Some(name) = &p.channel {
+                profile = profile.on_channel(channel(name)?);
+            }
+            if let Some(bytes) = p.loss_frame_bytes {
+                profile = profile.with_loss_frame_bytes(bytes);
+            }
+            sim = sim.with_peer_link(profile);
+        }
 
         if let Some(radio) = &self.radio {
             let base = radio.propagation.build();
@@ -343,9 +494,31 @@ impl Scenario {
             sim.environment(Arc::new(UniformAttenuation(db)));
         }
 
-        for spec in &self.nodes {
+        for (i, spec) in self.nodes.iter().enumerate() {
             let pos = spec.position.map(|[x, y, z]| Position::xyz(x, y, z));
-            let id = if spec.radio {
+            let id = if let Some(path) = &spec.config {
+                if spec.radio {
+                    bail!("nodes[{i}]: a config-booted node cannot also be a `radio` node");
+                }
+                let addr = spec
+                    .addr
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("nodes[{i}]: `config` requires `addr`"))?
+                    .parse()
+                    .with_context(|| format!("nodes[{i}].addr"))?;
+                let cfg = ndn_config::ForwarderConfig::from_file(Path::new(path))
+                    .with_context(|| format!("nodes[{i}]: load ndn-fwd config {path}"))?;
+                let label = spec.label.clone().unwrap_or_else(|| {
+                    Path::new(path)
+                        .file_stem()
+                        .map_or_else(|| format!("node#{i}"), |s| s.to_string_lossy().into_owned())
+                });
+                let id = sim.add_node_from_config(label, cfg, addr);
+                if let Some(p) = pos {
+                    sim.place_node(id, p);
+                }
+                id
+            } else if spec.radio {
                 sim.add_radio_node(EngineConfig::default(), pos.unwrap_or(Position::ORIGIN))
             } else {
                 let id = sim.add_node(EngineConfig::default());
@@ -371,23 +544,21 @@ impl Scenario {
         for l in &self.links {
             self.check_node(l.a)?;
             self.check_node(l.b)?;
-            match &l.face {
-                Some(name) => {
-                    let profile = crate::FaceProfile::from_name(name)
-                        .ok_or_else(|| anyhow::anyhow!("unknown face type {name:?}"))?;
-                    sim.link_profiled(NodeId(l.a), NodeId(l.b), profile);
-                }
-                None => sim.link(
-                    NodeId(l.a),
-                    NodeId(l.b),
-                    crate::LinkConfig {
-                        delay: std::time::Duration::from_millis(l.delay_ms),
-                        jitter: std::time::Duration::from_millis(l.jitter_ms),
-                        loss_rate: l.loss_rate,
-                        bandwidth_bps: l.bandwidth_bps,
-                    },
-                ),
-            }
+            let profile = match &l.face {
+                Some(name) => crate::FaceProfile::from_name(name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown face type {name:?}"))?,
+                None => crate::FaceProfile::udp().with_link(link_config(
+                    l.delay_ms,
+                    l.jitter_ms,
+                    l.loss_rate,
+                    l.bandwidth_bps,
+                )),
+            };
+            let profile = match &l.channel {
+                Some(name) => profile.on_channel(channel(name)?),
+                None => profile,
+            };
+            sim.link_profiled(NodeId(l.a), NodeId(l.b), profile);
         }
 
         for r in &self.routes {
@@ -468,6 +639,21 @@ impl Scenario {
             );
         }
         Ok(())
+    }
+}
+
+/// A [`LinkConfig`](crate::LinkConfig) from a spec's millisecond fields.
+fn link_config(
+    delay_ms: u64,
+    jitter_ms: u64,
+    loss_rate: f64,
+    bandwidth_bps: u64,
+) -> crate::LinkConfig {
+    crate::LinkConfig {
+        delay: std::time::Duration::from_millis(delay_ms),
+        jitter: std::time::Duration::from_millis(jitter_ms),
+        loss_rate,
+        bandwidth_bps,
     }
 }
 

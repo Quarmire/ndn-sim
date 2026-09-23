@@ -56,6 +56,9 @@ pub enum RadioMcs {
     Adaptive,
 }
 
+/// Receivers at which an on-air frame has been retro-collided by a later overlapping frame.
+type CollidedRx = Arc<Mutex<std::collections::HashSet<NodeId>>>;
+
 /// The shared radio medium. Radios [`attach`](Self::attach) to get a receiver; a
 /// [`transmit`](Self::transmit) broadcasts to every in-range node, each delivery gated by the
 /// [`LinkModel`] erasure for that pair's SNR.
@@ -83,14 +86,7 @@ pub struct RadioBus {
     /// Frames currently on the air `(sender, start_ns, end_ns, collided_rx)` — for collision detection.
     /// `collided_rx` is the shared set of receivers a *later* overlapping frame has retro-collided this
     /// one at, so both frames lose at a shared receiver (F2 both-lose, not first-caller-wins).
-    in_air: Mutex<
-        Vec<(
-            NodeId,
-            u64,
-            u64,
-            Arc<Mutex<std::collections::HashSet<NodeId>>>,
-        )>,
-    >,
+    in_air: Mutex<Vec<(NodeId, u64, u64, CollidedRx)>>,
     /// Per-instant world-snapshot cache `(now_ns, world_generation, view)` — rebuild the
     /// spatial index once per instant, not per transmit.
     view_cache: Mutex<Option<(u64, u64, Arc<crate::world::WorldView>)>>,
@@ -318,7 +314,7 @@ impl RadioBus {
     }
 
     /// Install a hardware name-group filter (`node → registered group key`) for the MAC-offload
-    /// accounting. A listed node then pays **host** processing energy only for [`transmit_named`]
+    /// accounting. A listed node then pays **host** processing energy only for [`transmit_named`](Self::transmit_named)
     /// (Self::transmit_named) frames whose group matches its key — the radio drops the rest before
     /// the CPU wakes. Without it (default) every in-range host processes every frame (monitor mode).
     pub fn set_host_filter(&self, filter: HashMap<NodeId, u64>) {
@@ -551,13 +547,8 @@ impl RadioBus {
         // delivery/half-duplex timing disagreed with the accounted airtime.
         let airtime_ns = crate::wifi::frame_airtime(frame.len(), mcs_index).as_nanos() as u64;
         let end_ns = now_ns.saturating_add(airtime_ns);
-        let my_collided: Arc<Mutex<std::collections::HashSet<NodeId>>> =
-            Arc::new(Mutex::new(std::collections::HashSet::new()));
-        let concurrent: Vec<(
-            NodeId,
-            Position,
-            Arc<Mutex<std::collections::HashSet<NodeId>>>,
-        )> = {
+        let my_collided: CollidedRx = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let concurrent: Vec<(NodeId, Position, CollidedRx)> = {
             let mut in_air = self.in_air.lock().unwrap();
             in_air.retain(|(_, _, e, _)| *e > now_ns); // prune finished transmissions
             // Batch/instantaneous mode stamps every frame with the same `now_ns`, so `e > now_ns` never
@@ -669,11 +660,7 @@ impl RadioBus {
             // adjacent channels leak, orthogonal not at all). Excludes the receiver itself (half-duplex
             // handled above).
             let irange = max_range * irange_factor;
-            let clashers: Vec<(
-                NodeId,
-                Position,
-                Arc<Mutex<std::collections::HashSet<NodeId>>>,
-            )> = concurrent
+            let clashers: Vec<(NodeId, Position, CollidedRx)> = concurrent
                 .iter()
                 .filter(|(s, p, _)| {
                     *s != rx_node
@@ -821,8 +808,8 @@ impl RadioBus {
             }
             crate::wifi::WifiMode::Managed => {
                 // F5: sum of EXPECTED attempts across the managed unicasts (retransmissions included),
-                // not one attempt per receiver — retries cost airtime. `wifi::link_cost` uses the same
-                // expected-attempts model; this is the per-transmission analog.
+                // not one attempt per receiver — retries cost airtime. The studies crate's
+                // `Wifi::link_cost` uses the same expected-attempts model; this is the per-transmission analog.
                 let ns = crate::wifi::unicast_airtime(frame.len(), mcs_index).as_nanos() as f64
                     * managed_attempts.max(1.0);
                 std::time::Duration::from_nanos(ns as u64)

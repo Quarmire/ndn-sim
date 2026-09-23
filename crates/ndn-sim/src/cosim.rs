@@ -1,6 +1,6 @@
 //! # Co-simulation: drive the World from an external source (axis 3, slice 3a)
 //!
-//! Today the World is driven by a **pull, closed-form** [`MobilityModel`](crate::MobilityModel):
+//! Today the World is driven by a **pull, closed-form** [`MobilityModel`]:
 //! `position(t) -> Position`. That is deterministic and replayable — perfect for scripted tests, and
 //! useless for co-simulation, because you cannot ask an autopilot "where will you be at t=57.3s". An
 //! external system (ArduPilot SITL, Gazebo, a game engine) **pushes** where it *is*, live.
@@ -15,7 +15,7 @@
 //!   the stream into a [`MobilityTrace`].
 //!
 //! ## Clock model (mode B — timestamp-slaved follower)
-//! The external system is the clock master; the sim follows. On the [`RealTimeKernel`] governor the
+//! The external system is the clock master; the sim follows. On the [`RealTimeKernel`](crate::RealTimeKernel) governor the
 //! driver runs at real pace so a live SITL feed lines up; on a virtual/DES kernel a [`ScriptedSource`]
 //! that paces itself through the ambient clock makes the whole loop deterministic and testable.
 //!
@@ -191,7 +191,7 @@ impl Drop for FeedReader {
 /// - **Bevy-headless**: in a fixed-timestep system, serialize each tracked entity's `Transform`
 ///   translation to the same JSON and `UdpSocket::send_to` it.
 /// - **ArduPilot SITL**: prefer the first-class MAVLink path
-///   ([`mavlink_source`](crate::mavlink::mavlink_source), feature `mavlink`) — it also carries the
+///   (`crate::mavlink::mavlink_source`, feature `mavlink`) — it also carries the
 ///   actuation back-channel ([`CosimActuator`]); the UDP feed is observe-only.
 ///
 /// The mapping from an external body id to a sim [`NodeId`] is the bridge's responsibility (it sets
@@ -407,7 +407,7 @@ impl MobilityModel for SampledMobility {
 /// and (on a paced kernel) tick the ambient clock by `tick`. Returns the recorded [`MobilityTrace`]
 /// when the source is exhausted or `cancel` fires.
 ///
-/// Kernel-agnostic: on the [`RealTimeKernel`] governor it runs at real pace for a live feed; on a
+/// Kernel-agnostic: on the [`RealTimeKernel`](crate::RealTimeKernel) governor it runs at real pace for a live feed; on a
 /// virtual/DES kernel with a [`ScriptedSource`] the whole loop is deterministic.
 pub async fn drive_cosim(
     world: Arc<World>,

@@ -969,6 +969,13 @@ fn cooperative_ha_starves_when_backfill_reaches_only_the_writer() {
 /// tampered bytes under a valid name is rejected by the fetcher's signature validation, never
 /// accepted "because it's the repo." The repo serves BOTH a genuine and a tampered Block; the
 /// verifying fetcher accepts the genuine and rejects the tampered — purely on the crypto.
+///
+/// Each Block is W's signed Data carried as the content of a stock SVS publication (outer
+/// `DigestSha256`, the `SvSync` default). Over production (non-local) faces every forwarder
+/// re-validates the outer Data, and a sim node (no `SecurityManager` → `AcceptSigned`, no cert
+/// fetcher) drops a W-key-signed outer after the pending-cert timeout. The digest is keyless, so
+/// a byzantine repo recomputes it over a tampered inner Block and the hops pass it: only the
+/// fetcher's re-verification of W's signature stands between the tamper and the consumer.
 #[test]
 fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
     fastrand::seed(8);
@@ -1007,14 +1014,14 @@ fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
         // A genuine W-signed Block, and a tampered one (a content byte flipped after signing, so
         // the signature no longer matches — the wire still decodes, verification is what fails).
         let good_content = b"genuine-history-block".to_vec();
-        let good_wire = DataBuilder::new(good_name.clone(), &good_content)
+        let good_block = DataBuilder::new(name("/grp/w/blk/1"), &good_content)
             .sign_with_sync(&*signer)
             .expect("sign good");
         let bad_content = b"about-to-be-tampered!".to_vec();
-        let signed_bad = DataBuilder::new(bad_name.clone(), &bad_content)
+        let signed_bad = DataBuilder::new(name("/grp/w/blk/2"), &bad_content)
             .sign_with_sync(&*signer)
             .expect("sign bad");
-        let tampered_wire = {
+        let tampered_block = {
             let mut t = signed_bad.to_vec();
             let pos = t
                 .windows(bad_content.len())
@@ -1022,6 +1029,15 @@ fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
                 .expect("content in wire");
             t[pos] ^= 0x01;
             Bytes::from(t)
+        };
+        // The publications the repo serves. The byzantine one re-digests over the tampered Block,
+        // so it is intact as a packet: every hop's validation passes it through to the fetcher.
+        let good_wire = DataBuilder::new(good_name.clone(), &good_block).sign_digest_sha256();
+        let tampered_wire =
+            DataBuilder::new(bad_name.clone(), &tampered_block).sign_digest_sha256();
+        let inner_block = |publication: &ndn_packet::Data| {
+            ndn_packet::Data::decode(publication.content().cloned().expect("publication content"))
+                .expect("publication carries a Block")
         };
 
         // A byzantine ndn-repo: it holds (and will serve) BOTH the genuine and the tampered wire
@@ -1050,8 +1066,12 @@ fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
             .await
             .expect("fetch good timed out")
             .expect("repo serves the genuine wire");
+        let genuine = inner_block(&good);
         assert!(
-            matches!(validator.validate(&good).await, ValidationResult::Valid(_)),
+            matches!(
+                validator.validate(&genuine).await,
+                ValidationResult::Valid(_)
+            ),
             "a genuine, correctly-signed Block served by the repo validates"
         );
 
@@ -1065,8 +1085,12 @@ fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
             *bad.name, bad_name,
             "same valid name — only the bytes are tampered"
         );
+        let tampered = inner_block(&bad);
         assert!(
-            !matches!(validator.validate(&bad).await, ValidationResult::Valid(_)),
+            !matches!(
+                validator.validate(&tampered).await,
+                ValidationResult::Valid(_)
+            ),
             "tampered bytes served by the repo MUST be rejected by the fetcher (untrusted serving)"
         );
 

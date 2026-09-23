@@ -14,7 +14,8 @@
 use ndn_observability::{AttrValue, Span, SpanKind};
 use serde_json::{Value, json};
 
-use crate::telemetry::{FabricGauges, IpMetricsSample, MetricsSample};
+use crate::NodeId;
+use crate::telemetry::{FabricGauges, MetricsSample};
 
 /// Exports OTLP/JSON to an OTLP/HTTP collector at `host:port` (e.g. the default `127.0.0.1:4318`).
 pub struct OtlpExporter {
@@ -61,31 +62,7 @@ impl OtlpExporter {
             gauge("ndn.face.out_bytes", samples, |s| json!(s.out_bytes)),
             gauge("ndn.face.out_drops", samples, |s| json!(s.out_drops)),
         ]);
-        json!({
-            "resourceMetrics": [{
-                "resource": self.resource(),
-                "scopeMetrics": [{
-                    "scope": { "name": "ndn-lab" },
-                    "metrics": metrics
-                }]
-            }]
-        })
-        .to_string()
-    }
-
-    /// The OTLP/JSON `ResourceMetrics` document for IP-plane per-node samples (forwarded / delivered
-    /// / drops / tx bytes) — the IP analogue of [`metrics_payload`](Self::metrics_payload).
-    pub fn ip_metrics_payload(&self, samples: &[IpMetricsSample]) -> String {
-        let metrics = json!([
-            ip_gauge("ndn.ip.forwarded", samples, |s| json!(s.forwarded)),
-            ip_gauge("ndn.ip.delivered", samples, |s| json!(s.delivered)),
-            ip_gauge("ndn.ip.drops.no_route", samples, |s| json!(
-                s.dropped_no_route
-            )),
-            ip_gauge("ndn.ip.drops.ttl", samples, |s| json!(s.dropped_ttl)),
-            ip_gauge("ndn.ip.tx_bytes", samples, |s| json!(s.tx_bytes)),
-        ]);
-        self.metrics_doc(metrics)
+        self.metrics_document(metrics)
     }
 
     /// The OTLP/JSON `ResourceMetrics` document for the medium/network-wide gauges (shared-radio
@@ -105,11 +82,13 @@ impl OtlpExporter {
                 g.association_overhead_ns as f64 / 1000.0
             ),
         ]);
-        self.metrics_doc(metrics)
+        self.metrics_document(metrics)
     }
 
-    /// Wrap a `metrics` array in the OTLP `ResourceMetrics` envelope.
-    fn metrics_doc(&self, metrics: Value) -> String {
+    /// Wrap a `metrics` array (e.g. [`node_gauge`] series) in the OTLP `ResourceMetrics` envelope
+    /// under this exporter's resource + scope — public so a plane defined outside this crate (the
+    /// studies crate's IP plane) exports through the identical envelope instead of a copy of it.
+    pub fn metrics_document(&self, metrics: Value) -> String {
         json!({
             "resourceMetrics": [{
                 "resource": self.resource(),
@@ -117,12 +96,6 @@ impl OtlpExporter {
             }]
         })
         .to_string()
-    }
-
-    /// POST IP-plane metrics to `<addr>/v1/metrics`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn export_ip_metrics(&self, samples: &[IpMetricsSample]) -> std::io::Result<u16> {
-        http_post_json(&self.addr, "/v1/metrics", &self.ip_metrics_payload(samples)).await
     }
 
     /// POST the medium/network-wide gauges to `<addr>/v1/metrics`.
@@ -145,7 +118,7 @@ impl OtlpExporter {
         http_post_json(&self.addr, "/v1/traces", &self.spans_payload(spans)).await
     }
 
-    /// The OTLP/JSON `ResourceSpans` document for captured engine spans (the [`SpanLog`] entries),
+    /// The OTLP/JSON `ResourceSpans` document for captured engine spans (the [`SpanLog`](crate::SpanLog) entries),
     /// so the sim's own fwd.pipeline / fwd.pit / radio spans flow to Jaeger.
     pub fn captured_spans_payload(&self, spans: &[crate::span_capture::CapturedSpan]) -> String {
         let span_json: Vec<Value> = spans
@@ -184,34 +157,24 @@ impl OtlpExporter {
 }
 
 fn gauge(name: &str, samples: &[MetricsSample], f: impl Fn(&MetricsSample) -> Value) -> Value {
-    let points: Vec<Value> = samples
-        .iter()
-        .map(|s| {
-            json!({
-                "timeUnixNano": s.virtual_time_ns.to_string(),
-                "asDouble": f(s),
-                "attributes": [
-                    { "key": "node", "value": { "intValue": s.node.0.to_string() } }
-                ]
-            })
-        })
-        .collect();
-    json!({ "name": name, "gauge": { "dataPoints": points } })
+    node_gauge(
+        name,
+        samples.iter().map(|s| (s.node, s.virtual_time_ns, f(s))),
+    )
 }
 
-fn ip_gauge(
-    name: &str,
-    samples: &[IpMetricsSample],
-    f: impl Fn(&IpMetricsSample) -> Value,
-) -> Value {
-    let points: Vec<Value> = samples
-        .iter()
-        .map(|s| {
+/// One OTLP gauge series with a data point per `(node, virtual_time_ns, value)`, each tagged with
+/// the node id — the per-node shape every sample family exports (wrap the series in
+/// [`OtlpExporter::metrics_document`]).
+pub fn node_gauge(name: &str, points: impl IntoIterator<Item = (NodeId, u64, Value)>) -> Value {
+    let points: Vec<Value> = points
+        .into_iter()
+        .map(|(node, t_ns, value)| {
             json!({
-                "timeUnixNano": s.virtual_time_ns.to_string(),
-                "asDouble": f(s),
+                "timeUnixNano": t_ns.to_string(),
+                "asDouble": value,
                 "attributes": [
-                    { "key": "node", "value": { "intValue": s.node.0.to_string() } }
+                    { "key": "node", "value": { "intValue": node.0.to_string() } }
                 ]
             })
         })
@@ -398,33 +361,6 @@ mod tests {
         // The real span id and its parent link are carried through to OTLP (span-id 7, parent 3).
         assert_eq!(s["spanId"], "0000000000000007");
         assert_eq!(s["parentSpanId"], "0000000000000003");
-    }
-
-    #[test]
-    fn ip_metrics_payload_carries_per_node_gauges() {
-        let exporter = OtlpExporter::new("127.0.0.1:4318");
-        let s = |node, fwd, tx| IpMetricsSample {
-            node: crate::NodeId(node),
-            virtual_time_ns: 7_000,
-            forwarded: fwd,
-            delivered: 3,
-            dropped_no_route: 0,
-            dropped_ttl: 0,
-            tx_bytes: tx,
-        };
-        let payload = exporter.ip_metrics_payload(&[s(0, 10, 640), s(1, 4, 256)]);
-        let v: Value = serde_json::from_str(&payload).unwrap();
-        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
-            .as_array()
-            .unwrap();
-        let fwd = metrics
-            .iter()
-            .find(|m| m["name"] == "ndn.ip.forwarded")
-            .unwrap();
-        let points = fwd["gauge"]["dataPoints"].as_array().unwrap();
-        assert_eq!(points.len(), 2, "one point per IP node");
-        assert_eq!(points[0]["asDouble"], 10);
-        assert!(metrics.iter().any(|m| m["name"] == "ndn.ip.tx_bytes"));
     }
 
     #[test]

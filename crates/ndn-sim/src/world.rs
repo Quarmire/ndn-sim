@@ -404,7 +404,11 @@ mod tests {
 
     #[test]
     fn random_waypoint_is_deterministic_bounded_and_moves() {
-        let m = RandomWaypointMobility { radius: 100.0, speed_mps: 10.0, seed: 42 };
+        let m = RandomWaypointMobility {
+            radius: 100.0,
+            speed_mps: 10.0,
+            seed: 42,
+        };
         // Deterministic: same seed/time ⇒ same position.
         assert_eq!(m.position(3.0), m.position(3.0));
         // Moves over time (not static).
@@ -412,13 +416,25 @@ mod tests {
         // Stays within the disc (both waypoints in it, motion is a convex interpolation).
         for i in 0..200 {
             let p = m.position(i as f64 * 0.37);
-            assert!(p.x.hypot(p.y) <= 100.0 + 1e-6, "escaped the disc at t={}", i);
+            assert!(
+                p.x.hypot(p.y) <= 100.0 + 1e-6,
+                "escaped the disc at t={}",
+                i
+            );
         }
         // A different node (seed) follows a different track.
-        let other = RandomWaypointMobility { radius: 100.0, speed_mps: 10.0, seed: 43 };
+        let other = RandomWaypointMobility {
+            radius: 100.0,
+            speed_mps: 10.0,
+            seed: 43,
+        };
         assert_ne!(m.position(2.0), other.position(2.0));
         // Faster node travels farther by the same time (vehicular vs pedestrian).
-        let fast = RandomWaypointMobility { radius: 100.0, speed_mps: 30.0, seed: 42 };
+        let fast = RandomWaypointMobility {
+            radius: 100.0,
+            speed_mps: 30.0,
+            seed: 42,
+        };
         assert_ne!(m.position(1.0), fast.position(1.0));
     }
 

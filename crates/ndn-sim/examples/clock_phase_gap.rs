@@ -44,14 +44,21 @@ impl PhysClock {
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 11
     }
     fn drops(&mut self, loss_pct: u64) -> bool {
         self.next() % 100 < loss_pct
     }
     fn jitter(&mut self, half_ns: i64) -> i64 {
-        if half_ns == 0 { 0 } else { (self.next() as i64 % (2 * half_ns + 1)) - half_ns }
+        if half_ns == 0 {
+            0
+        } else {
+            (self.next() as i64 % (2 * half_ns + 1)) - half_ns
+        }
     }
 }
 
@@ -88,7 +95,10 @@ fn mk_nodes(n_osc: usize, seed: u64) -> Vec<Node> {
     let policy = TimePolicy::default();
     let mut nodes = Vec::new();
     nodes.push(Node {
-        phys: PhysClock { offset_ns: 0, drift_ppb: 0 },
+        phys: PhysClock {
+            offset_ns: 0,
+            drift_ppb: 0,
+        },
         tk: Timekeeper::new(0, KeyId(0), ClockCapability::gnss_disciplined(), policy),
         cap: ClockCapability::gnss_disciplined(),
         pub_unc_ns: 50,
@@ -100,7 +110,10 @@ fn mk_nodes(n_osc: usize, seed: u64) -> Vec<Node> {
         let off = rng.jitter(9_000_000);
         let drift = rng.jitter(400);
         nodes.push(Node {
-            phys: PhysClock { offset_ns: off, drift_ppb: drift },
+            phys: PhysClock {
+                offset_ns: off,
+                drift_ppb: drift,
+            },
             tk: Timekeeper::new(id, KeyId(id), ClockCapability::oscillator_tcxo(), policy),
             cap: ClockCapability::oscillator_tcxo(),
             pub_unc_ns: 20_000_000,
@@ -114,35 +127,57 @@ fn mk_nodes(n_osc: usize, seed: u64) -> Vec<Node> {
 /// calibrated mean `txlat`, and per-reception jitters.
 fn asserted(arm: Arm, wall: i64, lat: i64, txlat: i64, rxj: i64, rxj2: i64) -> i64 {
     match arm {
-        Arm::Build => wall - lat + rxj,                 // stale by lat
-        Arm::BuildCal => wall - (lat - txlat) + rxj,    // mean removed → only jitter remains
-        Arm::Shared => wall + rxj + rxj2,               // txlat cancels; √2 RX jitter
-        Arm::Air => wall + rxj,                          // stamped at radiate
+        Arm::Build => wall - lat + rxj,              // stale by lat
+        Arm::BuildCal => wall - (lat - txlat) + rxj, // mean removed → only jitter remains
+        Arm::Shared => wall + rxj + rxj2,            // txlat cancels; √2 RX jitter
+        Arm::Air => wall + rxj,                      // stamped at radiate
     }
 }
 
 /// Run the ensemble; `hears(i,j)` gates delivery (mesh = always; chain = |i-j|<=1).
 /// Returns per-oscillator (nodes 1..n) tail-max residual, and rounds-to-converge for the worst node.
-fn run(arm: Arm, txlat: i64, n_osc: usize, hears: impl Fn(usize, usize) -> bool, seed: u64) -> (Vec<u64>, usize) {
+fn run(
+    arm: Arm,
+    txlat: i64,
+    n_osc: usize,
+    hears: impl Fn(usize, usize) -> bool,
+    seed: u64,
+) -> (Vec<u64>, usize) {
     let mut nodes = mk_nodes(n_osc, seed);
     let n = nodes.len();
-    let mut rng = Lcg(seed.wrapping_mul(2862933555777941757).wrapping_add(3037000493));
+    let mut rng = Lcg(seed
+        .wrapping_mul(2862933555777941757)
+        .wrapping_add(3037000493));
     let mut tail: Vec<Vec<u64>> = vec![Vec::new(); n];
     let mut converged = usize::MAX;
 
     for r in 0..ROUNDS {
         let t = r as i64 * CADENCE_NS;
-        let published: Vec<(u64, i64, u64, ClockCapability)> =
-            nodes.iter_mut().map(|nd| { nd.seq += 1; (nd.seq, nd.phys.wall(t), nd.pub_unc_ns, nd.cap) }).collect();
+        let published: Vec<(u64, i64, u64, ClockCapability)> = nodes
+            .iter_mut()
+            .map(|nd| {
+                nd.seq += 1;
+                (nd.seq, nd.phys.wall(t), nd.pub_unc_ns, nd.cap)
+            })
+            .collect();
         for (i, &(seq, wall, unc, cap)) in published.iter().enumerate() {
             for j in 0..n {
                 if i == j || !hears(i, j) || rng.drops(20) {
                     continue;
                 }
                 let lat = txlat + rng.jitter(txlat / 4);
-                let a = asserted(arm, wall, lat, txlat, rng.jitter(RX_JITTER_HALF_NS), rng.jitter(RX_JITTER_HALF_NS));
+                let a = asserted(
+                    arm,
+                    wall,
+                    lat,
+                    txlat,
+                    rng.jitter(RX_JITTER_HALF_NS),
+                    rng.jitter(RX_JITTER_HALF_NS),
+                );
                 let bytes = beacon_wire::encode(seq, a, unc, &cap);
-                let Some(dec) = beacon_wire::decode(&bytes) else { continue };
+                let Some(dec) = beacon_wire::decode(&bytes) else {
+                    continue;
+                };
                 let beacon = dec.into_beacon(t as u64, peer_prov(i));
                 nodes[j].tk.ingest_beacon(i as u64, &beacon);
             }
@@ -150,7 +185,14 @@ fn run(arm: Arm, txlat: i64, n_osc: usize, hears: impl Fn(usize, usize) -> bool,
         for nd in nodes.iter_mut() {
             let local_wall = nd.phys.wall(t);
             let reading = Reading {
-                wall: TimeInterval::new(local_wall, if nd.phys.drift_ppb == 0 { 50 } else { 20_000_000 }),
+                wall: TimeInterval::new(
+                    local_wall,
+                    if nd.phys.drift_ppb == 0 {
+                        50
+                    } else {
+                        20_000_000
+                    },
+                ),
                 cap: nd.cap,
                 captured_mono_ns: t as u64,
             };
@@ -161,7 +203,9 @@ fn run(arm: Arm, txlat: i64, n_osc: usize, hears: impl Fn(usize, usize) -> bool,
                 nd.pub_unc_ns = out.correction.uncertainty_ns;
             }
         }
-        let errs: Vec<u64> = (1..n).map(|i| (nodes[i].phys.wall(t) - t).unsigned_abs()).collect();
+        let errs: Vec<u64> = (1..n)
+            .map(|i| (nodes[i].phys.wall(t) - t).unsigned_abs())
+            .collect();
         if *errs.iter().max().unwrap() < 100_000 && converged == usize::MAX {
             converged = r;
         }
@@ -182,7 +226,9 @@ fn run_nt_chain(arm: Arm, txlat_us: i64, hops: usize, seed: u64) -> Vec<i64> {
     let mut nts: Vec<NetworkTime> = (0..=hops).map(|i| NetworkTime::new(i as u64)).collect();
     let mut rng = Lcg(seed ^ 0xabcd_1234);
     // true clock offsets (µs): node 0 = reference (0); others scattered ±5 ms.
-    let offs: Vec<i64> = std::iter::once(0).chain((1..=hops).map(|_| rng.jitter(5000))).collect();
+    let offs: Vec<i64> = std::iter::once(0)
+        .chain((1..=hops).map(|_| rng.jitter(5000)))
+        .collect();
     for _round in 0..(3 * hops + 12) {
         for j in 1..=hops {
             // measured hardware offset to the downstream neighbour (nbr_tsf − my_rxtsfl), µs, plus
@@ -200,23 +246,43 @@ fn run_nt_chain(arm: Arm, txlat_us: i64, hops: usize, seed: u64) -> Vec<i64> {
     }
     // residual = |offs[k] + offset_to_ref|: offset_to_ref should map this clock (true+offs[k]) onto
     // the reference (offset 0), i.e. equal −offs[k]; the leftover is the composition error.
-    (1..=hops).map(|k| (offs[k] + nts[k].offset_to_ref()).abs()).collect()
+    (1..=hops)
+        .map(|k| (offs[k] + nts[k].offset_to_ref()).abs())
+        .collect()
 }
 
 fn main() {
     use std::io::Write;
-    let _ = RefBelief { ref_id: 0, stratum: 0, offset_to_ref: 0 }; // (type used via NetworkTime)
+    let _ = RefBelief {
+        ref_id: 0,
+        stratum: 0,
+        offset_to_ref: 0,
+    }; // (type used via NetworkTime)
     const SEEDS: u64 = 12;
     let dir = "docs/data/clock-phase";
     let _ = std::fs::create_dir_all(dir);
     let mut csv = std::fs::File::create(format!("{dir}/residual.csv")).unwrap();
-    writeln!(csv, "experiment,arm,x,residual_max_ns,residual_mean_ns,converge_rounds").unwrap();
+    writeln!(
+        csv,
+        "experiment,arm,x,residual_max_ns,residual_mean_ns,converge_rounds"
+    )
+    .unwrap();
 
-    let arms = [("build", Arm::Build), ("build+cal", Arm::BuildCal), ("shared", Arm::Shared), ("air", Arm::Air)];
+    let arms = [
+        ("build", Arm::Build),
+        ("build+cal", Arm::BuildCal),
+        ("shared", Arm::Shared),
+        ("air", Arm::Air),
+    ];
 
     // ---- Sweep 1: residual vs build→air latency (single-hop mesh) ----
-    println!("SWEEP 1 — residual vs build→air TX latency (5 osc + 1 ref, mesh, 20% loss, {ROUNDS} rounds)\n");
-    println!("{:<10} {:>9} {:>15} {:>15} {:>10}", "arm", "txlat µs", "residual max", "residual mean", "converge");
+    println!(
+        "SWEEP 1 — residual vs build→air TX latency (5 osc + 1 ref, mesh, 20% loss, {ROUNDS} rounds)\n"
+    );
+    println!(
+        "{:<10} {:>9} {:>15} {:>15} {:>10}",
+        "arm", "txlat µs", "residual max", "residual mean", "converge"
+    );
     for &tx_us in &[10i64, 50, 200, 1000, 5000] {
         let tx = tx_us * 1000;
         for (name, arm) in arms {
@@ -225,41 +291,75 @@ fn main() {
                 let (per, c) = run(arm, tx, 5, |_, _| true, s + 1);
                 mx += *per.iter().max().unwrap() as f64;
                 mn += per.iter().sum::<u64>() as f64 / per.len() as f64;
-                cv += if c == usize::MAX { ROUNDS as f64 } else { c as f64 };
+                cv += if c == usize::MAX {
+                    ROUNDS as f64
+                } else {
+                    c as f64
+                };
             }
             (mx, mn, cv) = (mx / SEEDS as f64, mn / SEEDS as f64, cv / SEEDS as f64);
-            println!("{:<10} {:>9} {:>12.2} µs {:>12.2} µs {:>7.1} r", name, tx_us, mx / 1e3, mn / 1e3, cv);
+            println!(
+                "{:<10} {:>9} {:>12.2} µs {:>12.2} µs {:>7.1} r",
+                name,
+                tx_us,
+                mx / 1e3,
+                mn / 1e3,
+                cv
+            );
             writeln!(csv, "latency,{name},{tx_us},{:.0},{:.0},{:.1}", mx, mn, cv).unwrap();
         }
         println!("  ─");
     }
 
     // ---- Sweep 2: residual vs hop count (chain, NetworkTime stratum composition) ----
-    println!("\nSWEEP 2 — residual vs hop distance from the reference (chain, air-stamp, txlat=50µs)");
+    println!(
+        "\nSWEEP 2 — residual vs hop distance from the reference (chain, air-stamp, txlat=50µs)"
+    );
     println!("{:<8} {}", "arm", "residual (µs) at hop 1,2,…");
     let tx = 50_000;
-    for (name, arm) in [("air", Arm::Air), ("build+cal", Arm::BuildCal), ("build", Arm::Build)] {
+    for (name, arm) in [
+        ("air", Arm::Air),
+        ("build+cal", Arm::BuildCal),
+        ("build", Arm::Build),
+    ] {
         for hops in [8usize] {
             // node j hears only j-1 and j+1 (a line rooted at the reference, node 0).
             let mut per_hop = vec![0.0f64; hops];
             for s in 0..SEEDS {
-                let (per, _) = run(arm, tx, hops, |i, j| (i as isize - j as isize).abs() <= 1, s + 1);
+                let (per, _) = run(
+                    arm,
+                    tx,
+                    hops,
+                    |i, j| (i as isize - j as isize).abs() <= 1,
+                    s + 1,
+                );
                 for (h, v) in per.iter().enumerate() {
                     per_hop[h] += *v as f64;
                 }
             }
-            let cells: Vec<String> = per_hop.iter().enumerate().map(|(h, v)| {
-                let us = v / SEEDS as f64 / 1e3;
-                writeln!(csv, "hops,{name},{},{:.0},0,0", h + 1, v / SEEDS as f64).ok();
-                format!("h{}:{:.1}", h + 1, us)
-            }).collect();
+            let cells: Vec<String> = per_hop
+                .iter()
+                .enumerate()
+                .map(|(h, v)| {
+                    let us = v / SEEDS as f64 / 1e3;
+                    writeln!(csv, "hops,{name},{},{:.0},0,0", h + 1, v / SEEDS as f64).ok();
+                    format!("h{}:{:.1}", h + 1, us)
+                })
+                .collect();
             println!("{:<8} {}", name, cells.join("  "));
         }
     }
     // ---- Sweep 3: the SAME chain via NetworkTime explicit stratum composition ----
-    println!("\nSWEEP 3 — SAME chain via NetworkTime EXPLICIT stratum composition (8 hops, txlat=50µs)");
+    println!(
+        "\nSWEEP 3 — SAME chain via NetworkTime EXPLICIT stratum composition (8 hops, txlat=50µs)"
+    );
     println!("{:<10} {}", "arm", "residual (µs) at hop 1..8");
-    for (name, arm) in [("air", Arm::Air), ("shared", Arm::Shared), ("build+cal", Arm::BuildCal), ("build", Arm::Build)] {
+    for (name, arm) in [
+        ("air", Arm::Air),
+        ("shared", Arm::Shared),
+        ("build+cal", Arm::BuildCal),
+        ("build", Arm::Build),
+    ] {
         let mut per = vec![0.0f64; 8];
         for s in 0..SEEDS {
             let r = run_nt_chain(arm, 50, 8, s + 1);
@@ -267,15 +367,33 @@ fn main() {
                 per[h] += *v as f64;
             }
         }
-        let cells: Vec<String> = per.iter().enumerate().map(|(h, v)| {
-            writeln!(csv, "nt_hops,{name},{},{:.0},0,0", h + 1, v / SEEDS as f64 * 1000.0).ok();
-            format!("h{}:{:.1}", h + 1, v / SEEDS as f64)
-        }).collect();
+        let cells: Vec<String> = per
+            .iter()
+            .enumerate()
+            .map(|(h, v)| {
+                writeln!(
+                    csv,
+                    "nt_hops,{name},{},{:.0},0,0",
+                    h + 1,
+                    v / SEEDS as f64 * 1000.0
+                )
+                .ok();
+                format!("h{}:{:.1}", h + 1, v / SEEDS as f64)
+            })
+            .collect();
         println!("{:<10} {}", name, cells.join("  "));
     }
-    println!("\nSWEEP 1: 'build' ∝ txlat (breaks the schedule); 'build+cal'/'shared' reach the air floor, NO TX stamp.");
-    println!("SWEEP 2 (Timekeeper uncertainty-fusion): a propagation HORIZON — far hops never converge.");
-    println!("SWEEP 3 (NetworkTime stratum composition): propagates ALL hops. build accumulates k·txlat (linear,");
-    println!("  bad at depth); air/shared accumulate only √k·jitter — the exploit matters MORE with hops.");
+    println!(
+        "\nSWEEP 1: 'build' ∝ txlat (breaks the schedule); 'build+cal'/'shared' reach the air floor, NO TX stamp."
+    );
+    println!(
+        "SWEEP 2 (Timekeeper uncertainty-fusion): a propagation HORIZON — far hops never converge."
+    );
+    println!(
+        "SWEEP 3 (NetworkTime stratum composition): propagates ALL hops. build accumulates k·txlat (linear,"
+    );
+    println!(
+        "  bad at depth); air/shared accumulate only √k·jitter — the exploit matters MORE with hops."
+    );
     println!("wrote {dir}/residual.csv");
 }

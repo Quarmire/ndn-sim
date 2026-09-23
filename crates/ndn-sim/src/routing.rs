@@ -69,7 +69,11 @@ impl TopologyView {
             adj[a].push((b, 1));
             adj[b].push((a, 1));
         }
-        TopologyView { n, adj, positions: None }
+        TopologyView {
+            n,
+            adj,
+            positions: None,
+        }
     }
 
     /// Attach node positions (enables [`GreedyGeographic`]).
@@ -142,7 +146,11 @@ fn avg_hops(view: &TopologyView) -> u64 {
             }
         }
     }
-    let reached: Vec<u32> = depth.iter().copied().filter(|&d| d != u32::MAX && d > 0).collect();
+    let reached: Vec<u32> = depth
+        .iter()
+        .copied()
+        .filter(|&d| d != u32::MAX && d > 0)
+        .collect();
     if reached.is_empty() {
         return 0;
     }
@@ -169,7 +177,10 @@ fn mpr_set(view: &TopologyView, u: usize) -> Vec<usize> {
         return Vec::new(); // fully covered by 1-hop already (dense neighbourhood) — no relays needed
     }
     let covers = |v: usize, target: &HashSet<usize>| -> usize {
-        view.adj[v].iter().filter(|&&(w, _)| target.contains(&w)).count()
+        view.adj[v]
+            .iter()
+            .filter(|&&(w, _)| target.contains(&w))
+            .count()
     };
     let mut uncovered = n2;
     let mut mprs: Vec<usize> = Vec::new();
@@ -179,7 +190,11 @@ fn mpr_set(view: &TopologyView, u: usize) -> Vec<usize> {
             .iter()
             .copied()
             .filter(|v| !mprs.contains(v))
-            .max_by(|&a, &b| covers(a, &uncovered).cmp(&covers(b, &uncovered)).then(b.cmp(&a)));
+            .max_by(|&a, &b| {
+                covers(a, &uncovered)
+                    .cmp(&covers(b, &uncovered))
+                    .then(b.cmp(&a))
+            });
         let Some(best) = best else { break };
         if covers(best, &uncovered) == 0 {
             break; // no remaining neighbour makes progress (disconnected 2-hop) — stop
@@ -246,7 +261,11 @@ fn dijkstra_table(view: &TopologyView, src: usize) -> Vec<RouteEntry> {
     }
     (0..n)
         .filter(|&d| d != src && dist[d] != u32::MAX)
-        .map(|d| RouteEntry { dest: d, next_hop: first_hop[d], metric: dist[d] })
+        .map(|d| RouteEntry {
+            dest: d,
+            next_hop: first_hop[d],
+            metric: dist[d],
+        })
         .collect()
 }
 
@@ -307,7 +326,11 @@ impl RoutingAlgorithm for DistanceVector {
             .map(|u| {
                 (0..n)
                     .filter(|&d| d != u && next[u][d] != usize::MAX)
-                    .map(|d| RouteEntry { dest: d, next_hop: next[u][d], metric: dist[u][d] })
+                    .map(|d| RouteEntry {
+                        dest: d,
+                        next_hop: next[u][d],
+                        metric: dist[u][d],
+                    })
                     .collect()
             })
             .collect()
@@ -428,7 +451,11 @@ impl RoutingAlgorithm for Gpsr {
                             // Local minimum ⇒ perimeter recovery around the void.
                             None => (perimeter_hop(view, pos, u, d)?, my_dist as u32),
                         };
-                        Some(RouteEntry { dest: d, next_hop, metric })
+                        Some(RouteEntry {
+                            dest: d,
+                            next_hop,
+                            metric,
+                        })
                     })
                     .collect()
             })
@@ -614,7 +641,11 @@ mod tests {
     fn shortest_path_prefers_the_diagonal() {
         let t = ShortestPath.compute(&square_with_diagonal());
         let to2 = t[0].iter().find(|r| r.dest == 2).unwrap();
-        assert_eq!((to2.next_hop, to2.metric), (2, 1), "0→2 takes the 1-hop diagonal");
+        assert_eq!(
+            (to2.next_hop, to2.metric),
+            (2, 1),
+            "0→2 takes the 1-hop diagonal"
+        );
     }
 
     #[test]
@@ -625,7 +656,10 @@ mod tests {
         // Same least-cost metric to every destination from every source (converged DV == SPF).
         for u in 0..view.n {
             for r in &sp[u] {
-                let d = dv[u].iter().find(|e| e.dest == r.dest).expect("dv reaches it too");
+                let d = dv[u]
+                    .iter()
+                    .find(|e| e.dest == r.dest)
+                    .expect("dv reaches it too");
                 assert_eq!(d.metric, r.metric, "node {u} → {}: same cost", r.dest);
             }
         }
@@ -639,8 +673,14 @@ mod tests {
         let sp = ShortestPath.control_overhead(&view, 1);
         let dv = DistanceVector::default().control_overhead(&view, 1);
         let gpsr = GreedyGeographic.control_overhead(&view, 1);
-        assert!(gpsr * 5 < sp, "GPSR beacons ≪ link-state floods ({gpsr} vs {sp})");
-        assert!(gpsr * 5 < dv, "GPSR beacons ≪ distance-vector exchanges ({gpsr} vs {dv})");
+        assert!(
+            gpsr * 5 < sp,
+            "GPSR beacons ≪ link-state floods ({gpsr} vs {sp})"
+        );
+        assert!(
+            gpsr * 5 < dv,
+            "GPSR beacons ≪ distance-vector exchanges ({gpsr} vs {dv})"
+        );
     }
 
     /// AODV/DSR discover routes on demand, but on a static graph they converge to the same min-hop
@@ -653,8 +693,17 @@ mod tests {
             let t = algo.compute(&view);
             for (u, sp_u) in sp.iter().enumerate() {
                 for r in sp_u {
-                    let e = t[u].iter().find(|e| e.dest == r.dest).expect("reactive reaches it too");
-                    assert_eq!(e.metric, r.metric, "{} node {u}→{}: same min-hop", algo.name(), r.dest);
+                    let e = t[u]
+                        .iter()
+                        .find(|e| e.dest == r.dest)
+                        .expect("reactive reaches it too");
+                    assert_eq!(
+                        e.metric,
+                        r.metric,
+                        "{} node {u}→{}: same min-hop",
+                        algo.name(),
+                        r.dest
+                    );
                 }
             }
         }
@@ -673,9 +722,19 @@ mod tests {
             ShortestPath.control_overhead(&view, 8),
             "link-state chatter is periodic, not per-flow",
         );
-        let (aodv_1, aodv_8) = (Aodv.control_overhead(&view, 1), Aodv.control_overhead(&view, 8));
-        assert!(aodv_8 > aodv_1, "AODV overhead grows with active flows ({aodv_1} → {aodv_8})");
-        assert_eq!(Dsr.control_overhead(&view, 0), 0, "DSR is silent when nothing is flowing");
+        let (aodv_1, aodv_8) = (
+            Aodv.control_overhead(&view, 1),
+            Aodv.control_overhead(&view, 8),
+        );
+        assert!(
+            aodv_8 > aodv_1,
+            "AODV overhead grows with active flows ({aodv_1} → {aodv_8})"
+        );
+        assert_eq!(
+            Dsr.control_overhead(&view, 0),
+            0,
+            "DSR is silent when nothing is flowing"
+        );
         assert!(
             ShortestPath.control_overhead(&view, 0) > 0,
             "proactive still floods link-state when idle",
@@ -708,8 +767,9 @@ mod tests {
     #[test]
     fn olsr_matches_shortest_path_but_floods_far_less() {
         // K5 over {0..4} + pendants 5,6,7 attached only to hub 0.
-        let mut links: Vec<(usize, usize)> =
-            (0..5).flat_map(|i| ((i + 1)..5).map(move |j| (i, j))).collect();
+        let mut links: Vec<(usize, usize)> = (0..5)
+            .flat_map(|i| ((i + 1)..5).map(move |j| (i, j)))
+            .collect();
         links.extend([(0, 5), (0, 6), (0, 7)]);
         let view = TopologyView::from_links(8, &links);
 
@@ -718,14 +778,20 @@ mod tests {
         let olsr = Olsr.compute(&view);
         for (u, sp_u) in sp.iter().enumerate() {
             for r in sp_u {
-                let e = olsr[u].iter().find(|e| e.dest == r.dest).expect("olsr reaches it");
+                let e = olsr[u]
+                    .iter()
+                    .find(|e| e.dest == r.dest)
+                    .expect("olsr reaches it");
                 assert_eq!(e.metric, r.metric, "olsr node {u}→{}: same cost", r.dest);
             }
         }
         // MPR reduction ⇒ far less control traffic than pure link-state flooding.
         let ls = ShortestPath.control_overhead(&view, 1);
         let ol = Olsr.control_overhead(&view, 1);
-        assert!(ol * 2 < ls, "OLSR MPR flooding ≪ pure link-state ({ol} vs {ls})");
+        assert!(
+            ol * 2 < ls,
+            "OLSR MPR flooding ≪ pure link-state ({ol} vs {ls})"
+        );
     }
 
     /// A concave void: source 0 sits at a local minimum — both its neighbours are *farther* from the
@@ -735,13 +801,14 @@ mod tests {
     fn gpsr_perimeter_routes_around_a_void_that_defeats_greedy() {
         // 0 (src) at origin, dest 4 straight up; 0's neighbours 1,2 are both below it (farther from
         // 4). The way out is 0→1→3→4 around the void.
-        let view = TopologyView::from_links(5, &[(0, 1), (0, 2), (1, 3), (3, 4)]).with_positions(vec![
-            Position::xy(0.0, 0.0),   // 0 src
-            Position::xy(-1.0, -1.0), // 1
-            Position::xy(1.0, -1.0),  // 2 (dead-end stub)
-            Position::xy(-1.0, 10.0), // 3
-            Position::xy(0.0, 10.0),  // 4 dst
-        ]);
+        let view =
+            TopologyView::from_links(5, &[(0, 1), (0, 2), (1, 3), (3, 4)]).with_positions(vec![
+                Position::xy(0.0, 0.0),   // 0 src
+                Position::xy(-1.0, -1.0), // 1
+                Position::xy(1.0, -1.0),  // 2 (dead-end stub)
+                Position::xy(-1.0, 10.0), // 3
+                Position::xy(0.0, 10.0),  // 4 dst
+            ]);
 
         // Pure greedy: node 0 is a local minimum ⇒ no route to 4.
         let greedy = GreedyGeographic.compute(&view);
@@ -752,16 +819,29 @@ mod tests {
 
         // GPSR: perimeter recovery gives 0 a next hop, and the table chains through to the dest.
         let gpsr = Gpsr.compute(&view);
-        let hop = gpsr[0].iter().find(|r| r.dest == 4).expect("gpsr recovers a route to 4");
-        assert_eq!(hop.next_hop, 1, "right-hand rule enters the perimeter via neighbour 1");
+        let hop = gpsr[0]
+            .iter()
+            .find(|r| r.dest == 4)
+            .expect("gpsr recovers a route to 4");
+        assert_eq!(
+            hop.next_hop, 1,
+            "right-hand rule enters the perimeter via neighbour 1"
+        );
         // Follow the installed table 0→…→4 to confirm it actually reaches the destination.
         let mut at = 0usize;
         let mut hops = 0;
         while at != 4 && hops < 10 {
-            at = gpsr[at].iter().find(|r| r.dest == 4).expect("each hop has a next hop").next_hop;
+            at = gpsr[at]
+                .iter()
+                .find(|r| r.dest == 4)
+                .expect("each hop has a next hop")
+                .next_hop;
             hops += 1;
         }
-        assert_eq!(at, 4, "GPSR's table routes 0→4 around the void in {hops} hops");
+        assert_eq!(
+            at, 4,
+            "GPSR's table routes 0→4 around the void in {hops} hops"
+        );
     }
 
     #[test]
@@ -775,6 +855,9 @@ mod tests {
         ]);
         let t = GreedyGeographic.compute(&view);
         let to3 = t[0].iter().find(|r| r.dest == 3).unwrap();
-        assert_eq!(to3.next_hop, 1, "greedy forwards toward the closer-to-dest neighbour");
+        assert_eq!(
+            to3.next_hop, 1,
+            "greedy forwards toward the closer-to-dest neighbour"
+        );
     }
 }

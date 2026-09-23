@@ -21,9 +21,7 @@ use ndn_sim::energy::RadioEnergyModel;
 use ndn_sim::link_model::mcs_phy_rate_bps;
 use ndn_sim::medium::CarrierSenseInterference;
 use ndn_sim::radio::RadioBus;
-use ndn_sim::{
-    EnergyModel, FreeSpacePathLoss, ImmediateRuntime, NodeId, Position, World,
-};
+use ndn_sim::{EnergyModel, FreeSpacePathLoss, ImmediateRuntime, NodeId, Position, World};
 
 const SIZES: [u64; 10] = [3, 5, 8, 12, 18, 27, 40, 60, 80, 100];
 const MCS: u8 = 5;
@@ -62,7 +60,8 @@ fn run_size(n: u64) -> Row {
     let model = RadioEnergyModel::default();
     let host_cost = model.host_process_energy_j(PAYLOAD);
 
-    let (mut deliv, mut att, mut succ_tx, mut coll_tx, mut tx_total) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut deliv, mut att, mut succ_tx, mut coll_tx, mut tx_total) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
     let mut host_promisc_sum = 0.0;
     let mut delivered_bits = 0.0;
     let mut active_energy = 0.0;
@@ -74,7 +73,10 @@ fn run_size(n: u64) -> Row {
         for i in 0..n {
             let ang = (xs(&mut rng) as f64 / u64::MAX as f64) * std::f64::consts::TAU;
             let r = RADIUS_M * (xs(&mut rng) as f64 / u64::MAX as f64).sqrt();
-            world.place(NodeId(i as usize), Position::xy(r * ang.cos(), r * ang.sin()));
+            world.place(
+                NodeId(i as usize),
+                Position::xy(r * ang.cos(), r * ang.sin()),
+            );
         }
         let bus = RadioBus::with_interference_on(
             world.clone(),
@@ -100,7 +102,12 @@ fn run_size(n: u64) -> Row {
 
         for (t, node) in sends {
             tx_total += 1;
-            let rx = bus.transmit(NodeId(node as usize), MCS, Bytes::from(vec![0u8; PAYLOAD]), t);
+            let rx = bus.transmit(
+                NodeId(node as usize),
+                MCS,
+                Bytes::from(vec![0u8; PAYLOAD]),
+                t,
+            );
             let mut any_ok = false;
             for (_, _, ok) in &rx {
                 att += 1;
@@ -133,15 +140,36 @@ fn run_size(n: u64) -> Row {
     let offered = (nodes * FRAMES_PER_NODE as f64 * air as f64) / WINDOW_NS as f64;
     // Throughput S = successful airtime ÷ window.
     let throughput = (succ_tx as f64 / seeds) * air as f64 / WINDOW_NS as f64;
-    let delivery = if att > 0 { deliv as f64 / att as f64 } else { 0.0 };
-    let collision = if tx_total > 0 { coll_tx as f64 / tx_total as f64 } else { 0.0 };
+    let delivery = if att > 0 {
+        deliv as f64 / att as f64
+    } else {
+        0.0
+    };
+    let collision = if tx_total > 0 {
+        coll_tx as f64 / tx_total as f64
+    } else {
+        0.0
+    };
     // Host energy per node (mJ): promiscuous from the run; filtered = one subscription's frames.
     let host_promisc_mj = host_promisc_sum / (seeds * nodes) * 1e3;
     let host_filtered_mj = FRAMES_PER_NODE as f64 * host_cost * 1e3; // wakes only for its 1 producer
-    let uj_per_bit = if delivered_bits > 0.0 { active_energy / delivered_bits * 1e6 } else { 0.0 };
+    let uj_per_bit = if delivered_bits > 0.0 {
+        active_energy / delivered_bits * 1e6
+    } else {
+        0.0
+    };
     let _ = window_s;
 
-    Row { n, offered, throughput, delivery, collision, host_promisc_mj, host_filtered_mj, uj_per_bit }
+    Row {
+        n,
+        offered,
+        throughput,
+        delivery,
+        collision,
+        host_promisc_mj,
+        host_filtered_mj,
+        uj_per_bit,
+    }
 }
 
 fn main() {
@@ -152,8 +180,14 @@ fn main() {
     for r in &rows {
         eprintln!(
             "{:>3}   {:7.2}  {:6.3}   {:5.0}%    {:5.0}%    {:7.2}   {:7.2}   {:6.2}",
-            r.n, r.offered, r.throughput, r.delivery * 100.0, r.collision * 100.0,
-            r.host_promisc_mj, r.host_filtered_mj, r.uj_per_bit
+            r.n,
+            r.offered,
+            r.throughput,
+            r.delivery * 100.0,
+            r.collision * 100.0,
+            r.host_promisc_mj,
+            r.host_filtered_mj,
+            r.uj_per_bit
         );
     }
 

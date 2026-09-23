@@ -147,8 +147,7 @@ impl RunningSimulation {
         // Ingress: route each datagram by source into the matching link end. fa.send → fb.recv
         // (A→B), fb.send → fa.recv (B→A); the impairment happens inside the link.
         {
-            let (socket, fa, fb, cancel) =
-                (socket.clone(), fa.clone(), fb.clone(), cancel.clone());
+            let (socket, fa, fb, cancel) = (socket.clone(), fa.clone(), fb.clone(), cancel.clone());
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 65_535];
                 loop {

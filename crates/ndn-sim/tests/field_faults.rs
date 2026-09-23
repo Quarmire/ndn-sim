@@ -38,22 +38,22 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_app::error::AppError;
+use ndn_app::Consumer;
 use ndn_app::EngineAppExt;
+use ndn_app::error::AppError;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_packet::Name;
+use ndn_packet::encode::{DataBuilder, InterestBuilder};
+use ndn_repo::{
+    BlobFetch, Repo, RepoCmd, RepoCmdRes, RepoService, RepoServiceConfig, SyncJoin,
+    sync_protocol_svs_v3,
+};
 use ndn_security::{KeyChain, SignWith, TrustSchema, ValidationResult, Validator};
 use ndn_sim::fieldkit::{
     CatchupOutcome, Progress, RestartablePublisher, TwoPhaseReplica, drive_until_or_stall,
     naive_catchup, publish_backlog,
 };
 use ndn_sim::{FrameMatcher, HoldRule, LinkConfig, Simulation, VirtualKernel};
-use ndn_app::Consumer;
-use ndn_repo::{
-    BlobFetch, Repo, RepoCmd, RepoCmdRes, RepoService, RepoServiceConfig, SyncJoin,
-    sync_protocol_svs_v3,
-};
 use ndn_sync::{DataStore, MemoryStore, SvSyncConfig, SvsConfig, svs_data_name};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -118,7 +118,11 @@ fn held_reply_is_discarded_never_mispaired() {
         // fetch #2's own reply (~270 ms). A loss knob cannot express this; that is why no
         // existing suite could reach the bug.
         fabric
-            .hold_link(a, b, HoldRule::nth(FrameMatcher::Data, 0, Duration::from_millis(60)))
+            .hold_link(
+                a,
+                b,
+                HoldRule::nth(FrameMatcher::Data, 0, Duration::from_millis(60)),
+            )
             .unwrap();
 
         let interest = |n: &str| {
@@ -332,7 +336,8 @@ fn run_lagging_peer(persistent: bool) -> (CatchupOutcome, Option<Vec<u8>>) {
         .await
         .unwrap();
         let progress = Progress::new();
-        let received: Arc<StdMutex<BTreeMap<u64, Bytes>>> = Arc::new(StdMutex::new(BTreeMap::new()));
+        let received: Arc<StdMutex<BTreeMap<u64, Bytes>>> =
+            Arc::new(StdMutex::new(BTreeMap::new()));
         {
             let progress = progress.clone();
             let received = Arc::clone(&received);
@@ -360,8 +365,18 @@ fn run_lagging_peer(persistent: bool) -> (CatchupOutcome, Option<Vec<u8>>) {
         };
         publisher.start().await.unwrap();
         ndn_sim::fieldkit::settle(Duration::from_millis(200)).await;
-        publisher.publisher().unwrap().put(history[0]).await.unwrap();
-        publisher.publisher().unwrap().put(history[1]).await.unwrap();
+        publisher
+            .publisher()
+            .unwrap()
+            .put(history[0])
+            .await
+            .unwrap();
+        publisher
+            .publisher()
+            .unwrap()
+            .put(history[1])
+            .await
+            .unwrap();
         assert_eq!(
             drive_until_or_stall(&progress, 2, Duration::from_secs(15)).await,
             CatchupOutcome::Reached(2),
@@ -373,7 +388,12 @@ fn run_lagging_peer(persistent: bool) -> (CatchupOutcome, Option<Vec<u8>>) {
         // store, seq reset. Either way the third Block now lives only in A's store — nothing was
         // re-published on the wire.
         fabric.set_link_up(a, b, false).unwrap();
-        publisher.publisher().unwrap().put(history[2]).await.unwrap();
+        publisher
+            .publisher()
+            .unwrap()
+            .put(history[2])
+            .await
+            .unwrap();
         publisher.stop();
         publisher.start().await.unwrap();
         fabric.set_link_up(a, b, true).unwrap();
@@ -384,9 +404,17 @@ fn run_lagging_peer(persistent: bool) -> (CatchupOutcome, Option<Vec<u8>>) {
         if let CatchupOutcome::Stalled { at } = outcome {
             // A stall verdict must mean WEDGED, not slow: nothing may move for another window.
             tokio::time::sleep(Duration::from_secs(30)).await;
-            assert_eq!(progress.get(), at, "the starvation is permanent, not slow convergence");
+            assert_eq!(
+                progress.get(),
+                at,
+                "the starvation is permanent, not slow convergence"
+            );
         }
-        let seq3 = received.lock().unwrap().get(&3).map(|b| b.as_ref().to_vec());
+        let seq3 = received
+            .lock()
+            .unwrap()
+            .get(&3)
+            .map(|b| b.as_ref().to_vec());
 
         cancel.cancel();
         fabric.shutdown().await;
@@ -404,7 +432,10 @@ fn lagging_peer_starves_after_publisher_restart() {
         CatchupOutcome::Stalled { at: 2 },
         "PINNED BUG (NS-8): a fresh empty store per boot leaves the lagging peer no fetch path"
     );
-    assert_eq!(seq3, None, "the missing Block never crossed on the stock data plane");
+    assert_eq!(
+        seq3, None,
+        "the missing Block never crossed on the stock data plane"
+    );
 }
 
 /// THE GATE (NS-8 / N-13). A persistent store carried across the restart lets the new boot
@@ -463,7 +494,11 @@ impl RepoNode {
             two_phase_ingest: true,
             initial_groups: vec![group.clone()],
             svs: SvSyncConfig {
-                svs: SvsConfig { sync_interval, jitter_ms: 0, ..Default::default() },
+                svs: SvsConfig {
+                    sync_interval,
+                    jitter_ms: 0,
+                    ..Default::default()
+                },
                 fetch_timeout: Duration::from_secs(2),
                 ..Default::default()
             },
@@ -472,7 +507,8 @@ impl RepoNode {
         let (send_tx, mut send_rx) = mpsc::channel::<Bytes>(256);
         let (recv_tx, recv_rx) = mpsc::channel::<Bytes>(256);
         let (reg_tx, mut reg_rx) = mpsc::channel::<Name>(64);
-        let svc = RepoService::new(repo, name("/repo-svc"), send_tx, config).with_registration(reg_tx);
+        let svc =
+            RepoService::new(repo, name("/repo-svc"), send_tx, config).with_registration(reg_tx);
 
         // Register every prefix the service asks for (its command prefix + each joined group) on
         // the face, so the forwarder delivers commands, sync Interests, and publication Interests.
@@ -541,7 +577,10 @@ fn offline_writer_history_served_via_ndn_repo() {
     fastrand::seed(8);
     let kernel = VirtualKernel::new();
     kernel.run(|k| async move {
-        let no_cs = || EngineConfig { cs_capacity_bytes: 0, ..EngineConfig::default() };
+        let no_cs = || EngineConfig {
+            cs_capacity_bytes: 0,
+            ..EngineConfig::default()
+        };
         let mut sim = Simulation::new().kernel(k).seed(8);
         let sw = sim.add_node(no_cs());
         let w = sim.add_node(no_cs());
@@ -570,8 +609,16 @@ fn offline_writer_history_served_via_ndn_repo() {
 
         // The durable serving member: a real ndn-repo in two-phase mode.
         let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let server =
-            RepoNode::attach(&fabric, repo, &group, "repo", Arc::clone(&store), Duration::from_millis(50), &cancel).await;
+        let server = RepoNode::attach(
+            &fabric,
+            repo,
+            &group,
+            "repo",
+            Arc::clone(&store),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
 
         // W publishes three Blocks while up.
         let publisher = fabric
@@ -589,22 +636,37 @@ fn offline_writer_history_served_via_ndn_repo() {
         // Wait until the repo has durably ingested W's full history.
         let mut ingested = false;
         for _ in 0..600 {
-            if (1..=3).all(|s| server.store().find_under(&svs_data_name(&w_base, &group, s)).is_some())
-            {
+            if (1..=3).all(|s| {
+                server
+                    .store()
+                    .find_under(&svs_data_name(&w_base, &group, s))
+                    .is_some()
+            }) {
                 ingested = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(ingested, "the ndn-repo must ingest W's full history while W is up");
+        assert!(
+            ingested,
+            "the ndn-repo must ingest W's full history while W is up"
+        );
 
         // W goes offline and STAYS down.
         fabric.set_link_up(sw, w, false).unwrap();
         drop(publisher);
 
         // The reader fetches the history — served by the repo, writer gone.
-        let (outcome, seq3) =
-            drive_reader(&fabric, r, &group, &name("/grp/r"), &cancel, 3, Duration::from_secs(20)).await;
+        let (outcome, seq3) = drive_reader(
+            &fabric,
+            r,
+            &group,
+            &name("/grp/r"),
+            &cancel,
+            3,
+            Duration::from_secs(20),
+        )
+        .await;
         assert_eq!(
             outcome,
             CatchupOutcome::Reached(3),
@@ -642,10 +704,16 @@ async fn drive_reader(
     target: u64,
     timeout: Duration,
 ) -> (CatchupOutcome, Option<Vec<u8>>) {
-    let replica =
-        TwoPhaseReplica::attach(fabric, node, group, local, Duration::from_millis(500), cancel)
-            .await
-            .unwrap();
+    let replica = TwoPhaseReplica::attach(
+        fabric,
+        node,
+        group,
+        local,
+        Duration::from_millis(500),
+        cancel,
+    )
+    .await
+    .unwrap();
     let progress = Progress::new();
     let received: Arc<StdMutex<BTreeMap<u64, Bytes>>> = Arc::new(StdMutex::new(BTreeMap::new()));
     {
@@ -666,7 +734,11 @@ async fn drive_reader(
         });
     }
     let outcome = drive_until_or_stall(&progress, target, timeout).await;
-    let seq3 = received.lock().unwrap().get(&3).map(|b| b.as_ref().to_vec());
+    let seq3 = received
+        .lock()
+        .unwrap()
+        .get(&3)
+        .map(|b| b.as_ref().to_vec());
     (outcome, seq3)
 }
 
@@ -734,9 +806,27 @@ fn run_cooperative_ha(
 
         // K=2: repo1 and repo2 serve, ingesting W's chain while the writer is up.
         let store1: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let s1 = RepoNode::attach(&fabric, repo1, &group, "repo1", Arc::clone(&store1), Duration::from_millis(50), &cancel).await;
+        let s1 = RepoNode::attach(
+            &fabric,
+            repo1,
+            &group,
+            "repo1",
+            Arc::clone(&store1),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
         let store2: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let s2 = RepoNode::attach(&fabric, repo2, &group, "repo2", Arc::clone(&store2), Duration::from_millis(50), &cancel).await;
+        let s2 = RepoNode::attach(
+            &fabric,
+            repo2,
+            &group,
+            "repo2",
+            Arc::clone(&store2),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
 
         // Writer publishes, then leaves for good.
         let publisher = fabric
@@ -760,23 +850,47 @@ fn run_cooperative_ha(
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(ingested, "the K=2 repos must ingest the chain while the writer is up");
+        assert!(
+            ingested,
+            "the K=2 repos must ingest the chain while the writer is up"
+        );
         // Writer OFFLINE for the rest of the scenario (both its links down + process gone).
         fabric.set_link_up(sw, w, false).unwrap();
         fabric.set_link_up(repo3, w, false).unwrap();
         drop(publisher);
 
         // Baseline: a reader converges, served by the live cooperative (writer offline).
-        let (baseline, _) =
-            drive_reader(&fabric, r, &group, &name("/grp/r"), &cancel, 3, Duration::from_secs(15)).await;
+        let (baseline, _) = drive_reader(
+            &fabric,
+            r,
+            &group,
+            &name("/grp/r"),
+            &cancel,
+            3,
+            Duration::from_secs(15),
+        )
+        .await;
 
         // CHURN. Drop repo1 (K → 1), then a NEW repo3 joins and must back-fill the full chain from
         // the surviving repo2 (GREEN) — or reach only the offline writer (RED).
         fabric.set_link_up(sw, repo1, false).unwrap();
         let store3: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let s3 = RepoNode::attach(&fabric, repo3, &group, "repo3", Arc::clone(&store3), Duration::from_millis(50), &cancel).await;
+        let s3 = RepoNode::attach(
+            &fabric,
+            repo3,
+            &group,
+            "repo3",
+            Arc::clone(&store3),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
         for _ in 0..300 {
-            if (1..=3).all(|s| store3.find_under(&svs_data_name(&w_base, &group, s)).is_some()) {
+            if (1..=3).all(|s| {
+                store3
+                    .find_under(&svs_data_name(&w_base, &group, s))
+                    .is_some()
+            }) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -787,8 +901,16 @@ fn run_cooperative_ha(
 
         // Continuity: a FRESH reader that joins after the full churn converges iff ≥1 live member
         // holds the chain — i.e. iff redistribution restored K by peer back-fill.
-        let (after, seq3) =
-            drive_reader(&fabric, r2, &group, &name("/grp/r2"), &cancel, 3, Duration::from_secs(20)).await;
+        let (after, seq3) = drive_reader(
+            &fabric,
+            r2,
+            &group,
+            &name("/grp/r2"),
+            &cancel,
+            3,
+            Duration::from_secs(20),
+        )
+        .await;
 
         cancel.cancel();
         drop((s1, s2, s3));
@@ -852,7 +974,10 @@ fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
     fastrand::seed(8);
     let kernel = VirtualKernel::new();
     kernel.run(|k| async move {
-        let no_cs = || EngineConfig { cs_capacity_bytes: 0, ..EngineConfig::default() };
+        let no_cs = || EngineConfig {
+            cs_capacity_bytes: 0,
+            ..EngineConfig::default()
+        };
         let mut sim = Simulation::new().kernel(k).seed(8);
         let sw = sim.add_node(no_cs());
         let repo = sim.add_node(no_cs());
@@ -902,12 +1027,23 @@ fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
         // A byzantine ndn-repo: it holds (and will serve) BOTH the genuine and the tampered wire
         // under valid names. (No writer needed — we poison the store directly.)
         let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let server =
-            RepoNode::attach(&fabric, repo, &group, "repo", Arc::clone(&store), Duration::from_millis(50), &cancel).await;
+        let server = RepoNode::attach(
+            &fabric,
+            repo,
+            &group,
+            "repo",
+            Arc::clone(&store),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
         store.insert(good_name.clone(), good_wire);
         store.insert(bad_name.clone(), tampered_wire);
 
-        let mut consumer = fabric.engine_of(r).unwrap().app_consumer(cancel.child_token());
+        let mut consumer = fabric
+            .engine_of(r)
+            .unwrap()
+            .app_consumer(cancel.child_token());
 
         // Genuine Block: served by the repo and it VERIFIES → accepted.
         let good = tokio::time::timeout(Duration::from_secs(5), consumer.fetch(good_name.clone()))
@@ -925,7 +1061,10 @@ fn history_served_bytes_are_re_verified_not_trusted_via_ndn_repo() {
             .await
             .expect("fetch bad timed out")
             .expect("repo serves the tampered wire too");
-        assert_eq!(*bad.name, bad_name, "same valid name — only the bytes are tampered");
+        assert_eq!(
+            *bad.name, bad_name,
+            "same valid name — only the bytes are tampered"
+        );
         assert!(
             !matches!(validator.validate(&bad).await, ValidationResult::Valid(_)),
             "tampered bytes served by the repo MUST be rejected by the fetcher (untrusted serving)"
@@ -946,7 +1085,10 @@ fn ndnd_repo_cmd_interop_drives_the_repo() {
     fastrand::seed(8);
     let kernel = VirtualKernel::new();
     kernel.run(|k| async move {
-        let no_cs = || EngineConfig { cs_capacity_bytes: 0, ..EngineConfig::default() };
+        let no_cs = || EngineConfig {
+            cs_capacity_bytes: 0,
+            ..EngineConfig::default()
+        };
         let mut sim = Simulation::new().kernel(k).seed(8);
         let sw = sim.add_node(no_cs());
         let repo = sim.add_node(no_cs());
@@ -963,10 +1105,21 @@ fn ndnd_repo_cmd_interop_drives_the_repo() {
         let cancel = CancellationToken::new();
         let group = name(GROUP);
         let store: Arc<dyn DataStore> = Arc::new(MemoryStore::new());
-        let _repo =
-            RepoNode::attach(&fabric, repo, &group, "repo", Arc::clone(&store), Duration::from_millis(50), &cancel).await;
+        let _repo = RepoNode::attach(
+            &fabric,
+            repo,
+            &group,
+            "repo",
+            Arc::clone(&store),
+            Duration::from_millis(50),
+            &cancel,
+        )
+        .await;
 
-        let mut consumer = fabric.engine_of(c).unwrap().app_consumer(cancel.child_token());
+        let mut consumer = fabric
+            .engine_of(c)
+            .unwrap()
+            .app_consumer(cancel.child_token());
 
         // ndnd-shaped SyncJoin: tell the repo to start holding a NEW group over the wire.
         let join = RepoCmd::SyncJoin(SyncJoin {
@@ -975,7 +1128,10 @@ fn ndnd_repo_cmd_interop_drives_the_repo() {
             ..Default::default()
         });
         let res = drive_repo_cmd(&mut consumer, &name("/repo-svc/join"), join.encode()).await;
-        assert_eq!(res.status, 200, "SyncJoin accepted over the wire (ndnd RepoCmd interop)");
+        assert_eq!(
+            res.status, 200,
+            "SyncJoin accepted over the wire (ndnd RepoCmd interop)"
+        );
 
         // ndnd-shaped BlobFetch: queue a by-name ingest.
         let blob = RepoCmd::BlobFetch(BlobFetch {
@@ -983,7 +1139,10 @@ fn ndnd_repo_cmd_interop_drives_the_repo() {
             ..Default::default()
         });
         let res2 = drive_repo_cmd(&mut consumer, &name("/repo-svc/blob"), blob.encode()).await;
-        assert_eq!(res2.status, 200, "BlobFetch accepted over the wire (ndnd RepoCmd interop)");
+        assert_eq!(
+            res2.status, 200,
+            "BlobFetch accepted over the wire (ndnd RepoCmd interop)"
+        );
 
         cancel.cancel();
         fabric.shutdown().await;

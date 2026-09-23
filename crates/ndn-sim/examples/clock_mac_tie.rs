@@ -56,7 +56,10 @@ fn trial(residual_ns: u64, guard_ns: u64, seed: u64) -> Trial {
     world.place(NodeId(0), Position::xy(0.0, 0.0));
     for i in 1..=N {
         let ang = i as f64 * std::f64::consts::TAU / N as f64;
-        world.place(NodeId(i as usize), Position::xy(30.0 * ang.cos(), 30.0 * ang.sin()));
+        world.place(
+            NodeId(i as usize),
+            Position::xy(30.0 * ang.cos(), 30.0 * ang.sin()),
+        );
     }
     let bus = RadioBus::with_interference_on(
         world.clone(),
@@ -73,14 +76,29 @@ fn trial(residual_ns: u64, guard_ns: u64, seed: u64) -> Trial {
     let frame_ns = N * slot;
     let mut rng = seed | 1;
     let clocks: Vec<i64> = (0..=N)
-        .map(|_| if residual_ns == 0 { 0 } else { (xs(&mut rng) % (2 * residual_ns + 1)) as i64 - residual_ns as i64 })
+        .map(|_| {
+            if residual_ns == 0 {
+                0
+            } else {
+                (xs(&mut rng) % (2 * residual_ns + 1)) as i64 - residual_ns as i64
+            }
+        })
         .collect();
 
-    let mut out = Trial { delivered: 0, attempted: 0, lat: Vec::new() };
+    let mut out = Trial {
+        delivered: 0,
+        attempted: 0,
+        lat: Vec::new(),
+    };
     for f in 0..FRAMES {
         let base = f * frame_ns;
         let mut sends: Vec<(NodeId, u64)> = (1..=N)
-            .map(|i| (NodeId(i as usize), (base as i64 + ((i - 1) * slot) as i64 + clocks[i as usize]).max(0) as u64))
+            .map(|i| {
+                (
+                    NodeId(i as usize),
+                    (base as i64 + ((i - 1) * slot) as i64 + clocks[i as usize]).max(0) as u64,
+                )
+            })
             .collect();
         sends.sort_by_key(|(_, t)| *t);
         for (node, t) in sends {
@@ -111,7 +129,11 @@ fn run(residual_ns: u64, guard_ns: u64) -> (f64, f64, u64) {
     let secs = SEEDS as f64 * FRAMES as f64 * frame_ns as f64 / 1e9;
     let goodput = d as f64 * PAYLOAD as f64 * 8.0 / secs;
     lat.sort_unstable();
-    let p99 = if lat.is_empty() { 0 } else { lat[(lat.len() * 99 / 100).min(lat.len() - 1)] };
+    let p99 = if lat.is_empty() {
+        0
+    } else {
+        lat[(lat.len() * 99 / 100).min(lat.len() - 1)]
+    };
     (delivery, goodput, p99)
 }
 
@@ -120,7 +142,11 @@ fn main() {
     let dir = "docs/data/clock-phase";
     let _ = std::fs::create_dir_all(dir);
     let mut csv = std::fs::File::create(format!("{dir}/mac_tie.csv")).unwrap();
-    writeln!(csv, "clock,residual_us,guard_us,delivery,goodput_mbps,lat_p99_us").unwrap();
+    writeln!(
+        csv,
+        "clock,residual_us,guard_us,delivery,goodput_mbps,lat_p99_us"
+    )
+    .unwrap();
 
     // Real OTLP-in-Data telemetry: emit one span per measured (clock, guard) cell through the
     // production ndn-observability SpanPublisher (the same wire as a live node).
@@ -133,7 +159,10 @@ fn main() {
 
     let air = airtime_ns();
     println!("Clock → guard → delivery, over the REAL RadioBus ({N} tx → 1 rx, {SEEDS} seeds).");
-    println!("frame airtime = {:.1} µs (MCS{MCS}, {PAYLOAD} B); slot = airtime + guard.\n", air as f64 / 1e3);
+    println!(
+        "frame airtime = {:.1} µs (MCS{MCS}, {PAYLOAD} B); slot = airtime + guard.\n",
+        air as f64 / 1e3
+    );
 
     // Residuals labelled by the discipline that produces them (from clock_phase_gap).
     let clocks: [(&str, u64); 5] = [
@@ -156,7 +185,15 @@ fn main() {
         for &g in &guards_us {
             let (del, gp, p99) = run(res, g * 1000);
             print!("{:>9.0}%", del * 100.0);
-            writeln!(csv, "{name},{},{g},{:.4},{:.2},{:.1}", res / 1000, del, gp / 1e6, p99 as f64 / 1e3).ok();
+            writeln!(
+                csv,
+                "{name},{},{g},{:.4},{:.2},{:.1}",
+                res / 1000,
+                del,
+                gp / 1e6,
+                p99 as f64 / 1e3
+            )
+            .ok();
             // OTLP span for this measurement cell.
             let start = vclock_ns;
             vclock_ns += p99.max(1);
@@ -179,23 +216,41 @@ fn main() {
 
     // The guard's COST: goodput + p99 access latency at a residual small enough to deliver (perfect).
     println!("\nGuard cost (delivery-safe clock): the price of a wider guard —");
-    println!("{:<12}{:>14}{:>16}", "guard µs", "goodput Mb/s", "access p99 µs");
+    println!(
+        "{:<12}{:>14}{:>16}",
+        "guard µs", "goodput Mb/s", "access p99 µs"
+    );
     for &g in &guards_us {
         let (_d, gp, p99) = run(0, g * 1000);
         println!("{:<12}{:>13.1}{:>15.1}", g, gp / 1e6, p99 as f64 / 1e3);
     }
 
-    println!("\nRead: a clock's residual must fit inside the guard or delivery collapses (collisions when");
-    println!("adjacent residuals differ by > guard). A tight clock (air/shared ~7µs, ~3µs at 8 hops)");
-    println!("unlocks a ~10µs guard → dense slots, low latency, high goodput. A software (ms) clock forces");
-    println!("a ms guard → few slots → the #111 tax. THIS is why closing the phase gap earns the slots.");
+    println!(
+        "\nRead: a clock's residual must fit inside the guard or delivery collapses (collisions when"
+    );
+    println!(
+        "adjacent residuals differ by > guard). A tight clock (air/shared ~7µs, ~3µs at 8 hops)"
+    );
+    println!(
+        "unlocks a ~10µs guard → dense slots, low latency, high goodput. A software (ms) clock forces"
+    );
+    println!(
+        "a ms guard → few slots → the #111 tax. THIS is why closing the phase gap earns the slots."
+    );
     // Drain the OTLP-in-Data spans (each a Data packet whose content is an OTLP trace.proto Span).
     let total = publisher.len();
     if let Ok(mut tf) = std::fs::File::create(format!("{dir}/traces.ndjson")) {
         for (trace, span) in publisher.recent_span_ids(30) {
             if let Some(wire) = publisher.lookup(&trace, &span) {
                 let hx = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
-                writeln!(tf, "{{\"trace\":\"{}\",\"span\":\"{}\",\"data_wire_bytes\":{}}}", hx(&trace), hx(&span), wire.len()).ok();
+                writeln!(
+                    tf,
+                    "{{\"trace\":\"{}\",\"span\":\"{}\",\"data_wire_bytes\":{}}}",
+                    hx(&trace),
+                    hx(&span),
+                    wire.len()
+                )
+                .ok();
             }
         }
     }

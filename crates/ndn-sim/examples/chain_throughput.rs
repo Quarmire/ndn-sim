@@ -68,8 +68,7 @@ fn chain_tput(hops: i64, cs_range: i64, half_duplex: bool, round_trip: bool) -> 
         for c in cands {
             let conflict = active.iter().any(|a| {
                 // Half-duplex / one-packet-per-node: shared endpoints can't both act.
-                let shared = half_duplex
-                    && (a.t == c.t || a.t == c.r || a.r == c.t || a.r == c.r);
+                let shared = half_duplex && (a.t == c.t || a.t == c.r || a.r == c.t || a.r == c.r);
                 // Interference: a's transmitter within cs_range of c's receiver, or c's transmitter
                 // within cs_range of a's receiver (each would corrupt the other's reception).
                 let interf = (a.t - c.r).abs() <= cs_range || (c.t - a.r).abs() <= cs_range;
@@ -123,7 +122,9 @@ fn main() {
     // realistic curve.
     // Baseline = the single-hop CHANNEL capacity: one saturated one-way link, 1 object/slot. (The
     // round-trip flow already pays half of that at 1 hop, since Interest and Data share the link.)
-    println!("  carrier-sense span sensitivity (round-trip throughput ÷ single-hop channel capacity):");
+    println!(
+        "  carrier-sense span sensitivity (round-trip throughput ÷ single-hop channel capacity):"
+    );
     println!("  cs_range   3 hops    4 hops    8 hops");
     for cs in [2i64, 3, 4] {
         let base = chain_tput(1, cs, true, false); // = 1.0 obj/slot
@@ -159,10 +160,19 @@ fn main() {
     println!("    full physics (interference + carrier-sense + round-trip):  {full:.3}  ← ≈ 1/8");
     println!("    without the reverse (Data) flow contending (one-way):      {no_rt:.3}");
     println!("    interference range = 1 hop (optimistic reuse):             {cs1:.3}");
-    println!("\ntakeaway: full single-radio physics puts a 4-hop chain near 1/8 of the single-hop channel");
-    println!("throughput and 3 hops near 1/6 — the classic collapse, well below the naive 1/hops. The");
-    println!("contending return path costs ~2× (one-way is {:.3}); wide interference + carrier-sense", no_rt);
-    println!("defer-waste do the rest. All of it is parameterised (cs_range / half_duplex / round_trip).");
+    println!(
+        "\ntakeaway: full single-radio physics puts a 4-hop chain near 1/8 of the single-hop channel"
+    );
+    println!(
+        "throughput and 3 hops near 1/6 — the classic collapse, well below the naive 1/hops. The"
+    );
+    println!(
+        "contending return path costs ~2× (one-way is {:.3}); wide interference + carrier-sense",
+        no_rt
+    );
+    println!(
+        "defer-waste do the rest. All of it is parameterised (cs_range / half_duplex / round_trip)."
+    );
 
     // JSON (stderr) for the dashboard: normalized capacity vs hops, plus the naive-1/hops reference.
     let cap: Vec<String> = [1i64, 2, 3, 4, 5, 6, 8]

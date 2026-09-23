@@ -423,7 +423,12 @@ impl Fault {
                 Ok(())
             }
             Fault::SetLink { a, b, up } => fabric.set_link_up(NodeId(*a), NodeId(*b), *up),
-            Fault::DegradeLink { a, b, loss_rate, delay_ms } => fabric.degrade_link(
+            Fault::DegradeLink {
+                a,
+                b,
+                loss_rate,
+                delay_ms,
+            } => fabric.degrade_link(
                 NodeId(*a),
                 NodeId(*b),
                 *loss_rate,

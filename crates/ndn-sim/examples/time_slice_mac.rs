@@ -60,7 +60,9 @@ fn airtime_ns() -> u64 {
 enum Mode {
     Contention,
     /// Slotted; `residual_ns` = the clock's ± error vs the common view (its precision).
-    Slotted { residual_ns: u64 },
+    Slotted {
+        residual_ns: u64,
+    },
 }
 
 struct Trial {
@@ -80,7 +82,10 @@ fn trial(mode: &Mode, seed: u64) -> Trial {
     world.place(NodeId(0), Position::xy(0.0, 0.0));
     for i in 1..=N {
         let ang = i as f64 * std::f64::consts::TAU / N as f64;
-        world.place(NodeId(i as usize), Position::xy(30.0 * ang.cos(), 30.0 * ang.sin()));
+        world.place(
+            NodeId(i as usize),
+            Position::xy(30.0 * ang.cos(), 30.0 * ang.sin()),
+        );
     }
     let bus = RadioBus::with_interference_on(
         world.clone(),
@@ -109,7 +114,11 @@ fn trial(mode: &Mode, seed: u64) -> Trial {
         })
         .collect();
 
-    let mut out = Trial { delivered: 0, attempted: 0, latencies: Vec::new() };
+    let mut out = Trial {
+        delivered: 0,
+        attempted: 0,
+        latencies: Vec::new(),
+    };
     for f in 0..FRAMES {
         let base = f * frame_ns;
         let mut sends: Vec<(NodeId, u64)> = (1..=N)
@@ -154,15 +163,25 @@ fn run(mode: &Mode) -> (f64, f64, f64, u64) {
     let secs = SEEDS as f64 * FRAMES as f64 * frame_ns as f64 / 1e9;
     let goodput = bits / secs;
     lat.sort_unstable();
-    let mean = if lat.is_empty() { 0.0 } else { lat.iter().sum::<u64>() as f64 / lat.len() as f64 };
-    let p99 = if lat.is_empty() { 0 } else { lat[(lat.len() * 99 / 100).min(lat.len() - 1)] };
+    let mean = if lat.is_empty() {
+        0.0
+    } else {
+        lat.iter().sum::<u64>() as f64 / lat.len() as f64
+    };
+    let p99 = if lat.is_empty() {
+        0
+    } else {
+        lat[(lat.len() * 99 / 100).min(lat.len() - 1)]
+    };
     (delivery, goodput, mean, p99)
 }
 
 fn main() {
     let air = airtime_ns();
     let guard = air;
-    println!("time-slice MAC over a common-view clock — {N} transmitters → 1 receiver, {SEEDS} seeds");
+    println!(
+        "time-slice MAC over a common-view clock — {N} transmitters → 1 receiver, {SEEDS} seeds"
+    );
     println!(
         "frame airtime = {:.1} µs (MCS{MCS}, {PAYLOAD} B)  →  slot = {:.1} µs, guard = {:.1} µs\n",
         air as f64 / 1e3,
@@ -171,13 +190,35 @@ fn main() {
     );
 
     let modes: [(&str, &str, Mode); 4] = [
-        ("contention (uncoordinated)", "     —      ", Mode::Contention),
-        ("slotted · software clock", "±923 µs (ms)", Mode::Slotted { residual_ns: air * 100 }),
-        ("slotted · hardware TSF", "±2.3 µs(sub)", Mode::Slotted { residual_ns: guard / 4 }),
-        ("slotted · perfect clock", "  0.0 µs    ", Mode::Slotted { residual_ns: 0 }),
+        (
+            "contention (uncoordinated)",
+            "     —      ",
+            Mode::Contention,
+        ),
+        (
+            "slotted · software clock",
+            "±923 µs (ms)",
+            Mode::Slotted {
+                residual_ns: air * 100,
+            },
+        ),
+        (
+            "slotted · hardware TSF",
+            "±2.3 µs(sub)",
+            Mode::Slotted {
+                residual_ns: guard / 4,
+            },
+        ),
+        (
+            "slotted · perfect clock",
+            "  0.0 µs    ",
+            Mode::Slotted { residual_ns: 0 },
+        ),
     ];
 
-    println!("discipline                    clock resid   delivery   goodput    lat mean   lat p99");
+    println!(
+        "discipline                    clock resid   delivery   goodput    lat mean   lat p99"
+    );
     for (label, resid, mode) in &modes {
         let (delivery, goodput, mean, p99) = run(mode);
         println!(

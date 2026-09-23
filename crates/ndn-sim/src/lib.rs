@@ -144,22 +144,31 @@
 
 #![allow(missing_docs)]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod adversary;
 pub mod analysis;
 pub mod app;
-pub mod energy;
 pub mod bridge;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ceiling;
+pub mod cognition;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compare;
 pub mod control;
 pub mod control_plane;
 pub mod cosim;
 pub mod des;
+pub mod energy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fieldkit;
 pub mod geometry;
 pub mod ip;
+pub mod keel;
 pub mod kernel;
 pub mod link_model;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod liveness;
 pub mod lora;
-pub mod cognition;
 #[cfg(feature = "mavlink")]
 pub mod mavlink;
 pub mod mcp;
@@ -172,28 +181,19 @@ pub mod profile;
 pub mod radio;
 pub mod replay;
 pub mod routing;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod fieldkit;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod liveness;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod ceiling;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod adversary;
 pub mod scenario;
 pub mod scene;
 pub mod sim_face;
 pub mod sim_link;
-pub mod keel;
 pub mod span_capture;
 pub mod stepper;
 pub mod telemetry;
 pub mod topo;
 pub mod topology;
-pub mod wifi;
 pub mod tracer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod validate;
+pub mod wifi;
 pub mod world;
 
 pub use analysis::{
@@ -213,19 +213,15 @@ pub use cosim::{
     SampledMobility, ScriptedSource, SteppableSource, VehicleCommand, drive_cosim, udp_json_feed,
 };
 pub use des::{DesKernel, DesSession};
+pub use energy::{EnergyAccount, EnergyAccounts, EnergyModel, RadioEnergyModel};
 pub use geometry::{Obstacle, ObstructedPropagation};
 pub use ip::{
     IpNetwork, IpNode, IpNodeStats, IpPacket, Ipv4, RadioLinkConfig, RunningIpNode, ip_link,
-};
-pub use routing::{
-    Aodv, DistanceVector, Dsr, Gpsr, GreedyGeographic, NetworkKind, Olsr, RoutingAlgorithm,
-    RoutingCategory, ShortestPath, TopologyView,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use kernel::{
     DEFAULT_RUN_CEILING, StepSession, SteppableKernel, VirtualKernel, VirtualTimeExceeded,
 };
-pub use energy::{EnergyAccount, EnergyAccounts, EnergyModel, RadioEnergyModel};
 pub use kernel::{ImmediateRuntime, RealTimeKernel, SimKernel, WallClockKernel};
 pub use link_model::{LinkModel, NOISE_FLOOR_DBM};
 pub use lora::{
@@ -238,8 +234,13 @@ pub use medium::{
     PropagationModel, RangeThreshold, ReceivedFrame, TxContext, WirelessMedium,
 };
 pub use otel_export::OtlpExporter;
+pub use routing::{
+    Aodv, DistanceVector, Dsr, Gpsr, GreedyGeographic, NetworkKind, Olsr, RoutingAlgorithm,
+    RoutingCategory, ShortestPath, TopologyView,
+};
 // NB: `phy::FreeSpace` (a PropagationBackend) is intentionally not re-exported at the crate root —
 // it would collide with `world::FreeSpace` (an Environment). Reach it via `ndn_sim::phy::FreeSpace`.
+pub use keel::{KeelView, Rendered, SceneView, Surface};
 pub use phy::{
     Antenna, AntennaPlacement, Channel, DefaultInterference, Dipole, Directional,
     InterferenceBackend, Isotropic, LogDistance, PropagationBackend, Radio, RadioEnvironment,
@@ -260,21 +261,16 @@ pub use sim_face::{FrameMatcher, HoldRule, SimFace};
 pub use sim_link::{FaceProfile, LinkConfig, SimLink};
 pub use span_capture::{CapturedSpan, EngineSpanLayer, SpanLog, capture_engine_spans};
 pub use stepper::Stepper;
-pub use keel::{KeelView, Rendered, SceneView, Surface};
 // Re-exported for the KeelView surface (best_lens floor; Rendered verdict).
+pub use netstat::{PrefixCounters, PrefixSample, PrefixStats};
 pub use render_contract::{Floor, Verdict};
 pub use telemetry::{
     FabricGauges, IpMetricsSample, MetricsDiff, MetricsLog, MetricsSample, SimSpanEmitter,
     compare_metrics, sample_engine,
 };
-pub use netstat::{PrefixCounters, PrefixSample, PrefixStats};
 pub use topology::{
     Clock, FaceKind, FaceStats, NodeId, RouteExplanation, RouteNexthop, RunningSimulation,
     Simulation, Strategy,
-};
-pub use wifi::{
-    AccessCategory, FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, WifiMode,
-    WifiOperatingMode, broadcast_airtime, frame_airtime,
 };
 pub use tracer::{EventKind, SimEvent, SimTracer};
 #[cfg(not(target_arch = "wasm32"))]
@@ -282,6 +278,10 @@ pub use validate::{
     Agg, Baseline, BaselineCheck, CheckKernel, Cmp, Direction, Fault, FlowField, MetricField,
     Observation, Probe, Property, PropertyResult, RegressionResult, RunReport, ScheduledFault,
     ValidationReport, ValidationSpec, run_validation, run_validation_against,
+};
+pub use wifi::{
+    AccessCategory, FixedRate, MinstrelHt, RateControl, TxOutcome, Wifi, WifiMode,
+    WifiOperatingMode, broadcast_airtime, frame_airtime,
 };
 pub use world::{
     Environment, FreeSpace, LinearMobility, MobilityModel, Position, RandomWaypointMobility,

@@ -42,7 +42,9 @@ fn schedule(hops: i64, channels: i64, radios: usize) -> f64 {
             }
             let c = ch(t);
             // co-channel interferer within CS span (or carrier-sensed) blocks it
-            let conflict = active.iter().any(|&(at, ac)| ac == c && (at - r).abs() <= CS || ac == c && (at - t).abs() <= CS);
+            let conflict = active.iter().any(|&(at, ac)| {
+                ac == c && (at - r).abs() <= CS || ac == c && (at - t).abs() <= CS
+            });
             if !conflict {
                 radio_use[t as usize] += 1;
                 radio_use[r as usize] += 1;
@@ -90,14 +92,39 @@ fn main() {
         println!("    {h:>3}    {:.2}     {:.2}", s, r);
     }
 
-    println!("\nfit: the schedule captures the STRUCTURE (single-radio serializes to ~1/hops; spaced");
-    println!("multi-channel pipelines to ~1×), and one per-hop efficiency per regime lands it on the");
-    println!("measured 802.11s mesh — a reference anchor, not a hard fit. The model stays general:");
-    println!("change channels/radios/cs/link_eff and it tracks other setups (LoRa, HaLow, other spacing).");
+    println!(
+        "\nfit: the schedule captures the STRUCTURE (single-radio serializes to ~1/hops; spaced"
+    );
+    println!(
+        "multi-channel pipelines to ~1×), and one per-hop efficiency per regime lands it on the"
+    );
+    println!(
+        "measured 802.11s mesh — a reference anchor, not a hard fit. The model stays general:"
+    );
+    println!(
+        "change channels/radios/cs/link_eff and it tracks other setups (LoRa, HaLow, other spacing)."
+    );
 
     // JSON (stderr) for the sim-vs-real overlay: retention at 1/2/3 hops.
     let curve = |ch: i64, r: usize, eff: f64| -> String {
-        [1i64, 2, 3].iter().map(|&h| format!("{:.3}", if h == 1 { 1.0 } else { retention(h, ch, r, eff) })).collect::<Vec<_>>().join(",")
+        [1i64, 2, 3]
+            .iter()
+            .map(|&h| {
+                format!(
+                    "{:.3}",
+                    if h == 1 {
+                        1.0
+                    } else {
+                        retention(h, ch, r, eff)
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
     };
-    eprintln!("{{\"hops\":[1,2,3],\"sim_single\":[{}],\"sim_multi\":[{}]}}", curve(1, 1, SINGLE_EFF), curve(3, 2, MULTI_EFF));
+    eprintln!(
+        "{{\"hops\":[1,2,3],\"sim_single\":[{}],\"sim_multi\":[{}]}}",
+        curve(1, 1, SINGLE_EFF),
+        curve(3, 2, MULTI_EFF)
+    );
 }

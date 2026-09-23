@@ -46,7 +46,12 @@ async fn run_chain(n: usize) -> Row {
     });
     let mut sim = Simulation::new().with_radio_medium(prop, 7);
     let nodes: Vec<_> = (0..n)
-        .map(|i| sim.add_radio_node(EngineConfig::default(), Position::xy(i as f64 * SPACING_M, 0.0)))
+        .map(|i| {
+            sim.add_radio_node(
+                EngineConfig::default(),
+                Position::xy(i as f64 * SPACING_M, 0.0),
+            )
+        })
         .collect();
     let fabric = sim.start().await.unwrap();
     // Realistic physics: half-duplex is on by default (a relay can't RX while it TXes); widen the
@@ -69,7 +74,10 @@ async fn run_chain(n: usize) -> Row {
         );
     }
     // Producer at the far end.
-    let prod = fabric.engine_of(nodes[n - 1]).unwrap().register_producer("/mesh", CancellationToken::new());
+    let prod = fabric
+        .engine_of(nodes[n - 1])
+        .unwrap()
+        .register_producer("/mesh", CancellationToken::new());
     let serve = tokio::spawn(async move {
         let _ = prod
             .serve(|i, r| async move {
@@ -109,9 +117,13 @@ async fn run_chain(n: usize) -> Row {
     // in-network Content Store serves it — a full N-hop fetch collapses to a near-local cache hit, so
     // the warm cost is ~0 regardless of chain length. The saving IS the cold multi-hop overhead.
     let mut warm = eng_c.app_consumer(CancellationToken::new());
-    let wb = InterestBuilder::new("/mesh/seg0".parse::<Name>().unwrap()).lifetime(Duration::from_secs(2));
+    let wb = InterestBuilder::new("/mesh/seg0".parse::<Name>().unwrap())
+        .lifetime(Duration::from_secs(2));
     let _ = tokio::time::timeout(Duration::from_millis(1500), warm.fetch_with(wb)).await;
-    let warm_tx = log.as_ref().map(|l| tx_set(l).difference(&cold_set).count()).unwrap_or(0);
+    let warm_tx = log
+        .as_ref()
+        .map(|l| tx_set(l).difference(&cold_set).count())
+        .unwrap_or(0);
 
     // SATURATED throughput: fire BATCH fetches concurrently so consecutive packets' hops overlap in
     // the chain. Half-duplex (a relay can't RX packet k+1 while TXing packet k) + the wide
@@ -125,7 +137,10 @@ async fn run_chain(n: usize) -> Row {
             let mut c = eng.app_consumer(CancellationToken::new());
             let b = InterestBuilder::new(format!("/mesh/tput{k}").parse::<Name>().unwrap())
                 .lifetime(Duration::from_secs(3));
-            matches!(tokio::time::timeout(Duration::from_millis(3000), c.fetch_with(b)).await, Ok(Ok(_)))
+            matches!(
+                tokio::time::timeout(Duration::from_millis(3000), c.fetch_with(b)).await,
+                Ok(Ok(_))
+            )
         }));
     }
     let mut done = 0usize;
@@ -143,8 +158,16 @@ async fn run_chain(n: usize) -> Row {
         n,
         hops: n - 1,
         delivery: ok as f64 / FETCHES as f64,
-        rtt_ms: if ok > 0 { rtt_sum / ok as f64 } else { f64::NAN },
-        tx_per_fetch: if ok > 0 { cold_set.len() as f64 / ok as f64 } else { f64::NAN },
+        rtt_ms: if ok > 0 {
+            rtt_sum / ok as f64
+        } else {
+            f64::NAN
+        },
+        tx_per_fetch: if ok > 0 {
+            cold_set.len() as f64 / ok as f64
+        } else {
+            f64::NAN
+        },
         warm_tx: warm_tx as f64,
         tput,
     }
@@ -159,7 +182,13 @@ async fn main() {
         let r = run_chain(n).await;
         println!(
             "  {:>2}   {:>3}    {:>5.0}%   {:>6.1}    {:>9.1}    {:>6.0}    {:>9.1}",
-            r.n, r.hops, r.delivery * 100.0, r.rtt_ms, r.tx_per_fetch, r.warm_tx, r.tput
+            r.n,
+            r.hops,
+            r.delivery * 100.0,
+            r.rtt_ms,
+            r.tx_per_fetch,
+            r.warm_tx,
+            r.tput
         );
         rows.push(r);
     }

@@ -50,11 +50,19 @@ impl FlowStats {
     }
     /// Fraction of requests that timed out (`0` if none sent).
     pub fn loss_rate(&self) -> f64 {
-        if self.sent == 0 { 0.0 } else { self.lost as f64 / self.sent as f64 }
+        if self.sent == 0 {
+            0.0
+        } else {
+            self.lost as f64 / self.sent as f64
+        }
     }
     /// Mean round-trip time (ms) over received replies (`0` if none).
     pub fn mean_rtt_ms(&self) -> f64 {
-        if self.received == 0 { 0.0 } else { (self.rtt_sum_ns as f64 / self.received as f64) / 1e6 }
+        if self.received == 0 {
+            0.0
+        } else {
+            (self.rtt_sum_ns as f64 / self.received as f64) / 1e6
+        }
     }
     /// Min / max RTT (ms).
     pub fn min_rtt_ms(&self) -> f64 {
@@ -66,7 +74,11 @@ impl FlowStats {
     /// Goodput in bits/sec over the receive window (`0` if fewer than two replies).
     pub fn throughput_bps(&self) -> f64 {
         let span = self.last_recv_ns.saturating_sub(self.first_recv_ns);
-        if span == 0 { 0.0 } else { (self.bytes as f64 * 8.0) / (span as f64 / 1e9) }
+        if span == 0 {
+            0.0
+        } else {
+            (self.bytes as f64 * 8.0) / (span as f64 / 1e9)
+        }
     }
 }
 
@@ -107,7 +119,9 @@ impl FlowStatsInner {
     fn on_served(&self, bytes: usize, now_ns: u64) {
         self.received.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
-        let _ = self.first_recv_ns.compare_exchange(0, now_ns, Ordering::Relaxed, Ordering::Relaxed);
+        let _ =
+            self.first_recv_ns
+                .compare_exchange(0, now_ns, Ordering::Relaxed, Ordering::Relaxed);
         self.last_recv_ns.store(now_ns, Ordering::Relaxed);
     }
     fn snapshot(&self) -> FlowStats {
@@ -160,13 +174,19 @@ impl TrafficPattern {
     pub(crate) fn next_delay(&self, i: u64, rng: &mut SplitMix64) -> Duration {
         match *self {
             TrafficPattern::Cbr { interval_ms } => Duration::from_millis(interval_ms),
-            TrafficPattern::Poisson { mean_interval_ms, .. } => {
+            TrafficPattern::Poisson {
+                mean_interval_ms, ..
+            } => {
                 // Exponential inter-arrival: -mean * ln(1 - U), U ∈ [0,1).
                 let u = rng.next_f64();
                 let ms = -(mean_interval_ms as f64) * (1.0 - u).max(f64::MIN_POSITIVE).ln();
                 Duration::from_secs_f64(ms / 1000.0)
             }
-            TrafficPattern::Bursty { burst, gap_ms, interval_ms } => {
+            TrafficPattern::Bursty {
+                burst,
+                gap_ms,
+                interval_ms,
+            } => {
                 let burst = burst.max(1);
                 if i % burst == burst - 1 {
                     Duration::from_millis(gap_ms)
@@ -304,7 +324,6 @@ pub(crate) fn spawn_app(
     node: NodeId,
     spec: &AppSpec,
 ) -> anyhow::Result<AppHandle> {
-
     let cancel = CancellationToken::new();
     let stats = FlowStatsInner::new();
     let prefix: Name = spec
@@ -314,7 +333,11 @@ pub(crate) fn spawn_app(
     let clock = engine.runtime();
 
     match spec {
-        AppSpec::Producer { content, freshness_ms, .. } => {
+        AppSpec::Producer {
+            content,
+            freshness_ms,
+            ..
+        } => {
             let producer = engine.register_producer(prefix, cancel.clone());
             let bytes = Bytes::from(content.clone().unwrap_or_else(|| "ndn-lab".to_string()));
             let served = Arc::clone(&stats);
@@ -344,9 +367,20 @@ pub(crate) fn spawn_app(
                     })
                     .await;
             });
-            Ok(AppHandle { id, node, kind: "producer", cancel, stats })
+            Ok(AppHandle {
+                id,
+                node,
+                kind: "producer",
+                cancel,
+                stats,
+            })
         }
-        AppSpec::Consumer { prefix: pfx, count, interval_ms, lifetime_ms } => {
+        AppSpec::Consumer {
+            prefix: pfx,
+            count,
+            interval_ms,
+            lifetime_ms,
+        } => {
             // Unbounded consumers get a default 50 ms pace so they don't busy-loop.
             let interval = match (*interval_ms, *count) {
                 (0, 0) => Duration::from_millis(50),
@@ -364,9 +398,20 @@ pub(crate) fn spawn_app(
                 false, // …but closed-loop (backpressure) so every prefix/<i> is fetched, none dropped
                 move |_i, _rng| interval,
             );
-            Ok(AppHandle { id, node, kind: "consumer", cancel, stats })
+            Ok(AppHandle {
+                id,
+                node,
+                kind: "consumer",
+                cancel,
+                stats,
+            })
         }
-        AppSpec::TrafficSource { prefix: pfx, pattern, count, lifetime_ms } => {
+        AppSpec::TrafficSource {
+            prefix: pfx,
+            pattern,
+            count,
+            lifetime_ms,
+        } => {
             let pattern = *pattern;
             spawn_fetch_loop(
                 engine,
@@ -380,7 +425,13 @@ pub(crate) fn spawn_app(
                 true, // …open-loop: a full window DROPS the arrival (offered load exceeding capacity)
                 move |i, rng| pattern.next_delay(i, rng),
             );
-            Ok(AppHandle { id, node, kind: "traffic_source", cancel, stats })
+            Ok(AppHandle {
+                id,
+                node,
+                kind: "traffic_source",
+                cancel,
+                stats,
+            })
         }
     }
 }
@@ -403,7 +454,9 @@ fn spawn_fetch_loop(
 ) {
     let lifetime = Duration::from_millis(lifetime_ms);
     // Seed the Poisson clock from the prefix so distinct sources draw distinct (reproducible) streams.
-    let seed = prefix.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x1000_0000_01b3));
+    let seed = prefix.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x1000_0000_01b3)
+    });
     // H2: a bounded pool of `window` consumers lets up to `window` Interests be OUTSTANDING at once,
     // fetched CONCURRENTLY — so real offered load, queueing, and contention can build. The old serial
     // `.await` per Interest throttled the whole source to one-in-flight (≈1/RTT); no load could arise.
@@ -428,7 +481,8 @@ fn spawn_fetch_loop(
                 match acquired {
                     Some(mut consumer) => {
                         stats.on_sent();
-                        let (stats2, clock2, tx2) = (stats.clone(), clock.clone(), avail_tx.clone());
+                        let (stats2, clock2, tx2) =
+                            (stats.clone(), clock.clone(), avail_tx.clone());
                         ndn_app::rt::spawn(async move {
                             let t0 = clock2.unix_nanos();
                             match consumer.fetch_with(builder).await {

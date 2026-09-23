@@ -160,16 +160,26 @@ impl Ndnd {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(socket.exists(), "ndnd fw did not come up (no socket at {socket_str})");
+        assert!(
+            socket.exists(),
+            "ndnd fw did not come up (no socket at {socket_str})"
+        );
         tokio::time::sleep(Duration::from_millis(500)).await; // let the UDP listener bind
-        Some(Ndnd { bin, socket_str, reaper })
+        Some(Ndnd {
+            bin,
+            socket_str,
+            reaper,
+        })
     }
 
     /// Spawn an ndnd tool attached to this forwarder; it stays alive until the reaper.
     fn tool(&mut self, args: &[&str]) -> &mut Self {
         let child = Command::new(&self.bin)
             .args(args)
-            .env("NDN_CLIENT_TRANSPORT", format!("unix://{}", self.socket_str))
+            .env(
+                "NDN_CLIENT_TRANSPORT",
+                format!("unix://{}", self.socket_str),
+            )
             .spawn()
             .unwrap();
         self.reaper.0.push(child);
@@ -180,7 +190,10 @@ impl Ndnd {
     fn tool_with_stdin(&mut self, args: &[&str], stdin_bytes: &[u8]) {
         let mut child = Command::new(&self.bin)
             .args(args)
-            .env("NDN_CLIENT_TRANSPORT", format!("unix://{}", self.socket_str))
+            .env(
+                "NDN_CLIENT_TRANSPORT",
+                format!("unix://{}", self.socket_str),
+            )
             .stdin(Stdio::piped())
             .spawn()
             .unwrap();
@@ -193,7 +206,10 @@ impl Ndnd {
     async fn tool_output(&self, args: &[&str]) -> String {
         let child = Command::new(&self.bin)
             .args(args)
-            .env("NDN_CLIENT_TRANSPORT", format!("unix://{}", self.socket_str))
+            .env(
+                "NDN_CLIENT_TRANSPORT",
+                format!("unix://{}", self.socket_str),
+            )
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
@@ -239,12 +255,17 @@ async fn bridged_fabric(
 #[tokio::test]
 #[ignore = "needs a built ndnd binary (set NDND_BIN or build to /tmp/ndnd)"]
 async fn sim_node_interops_with_real_ndnd_over_udp() {
-    let Some(mut ndnd) = Ndnd::start("ping", 16363).await else { return };
+    let Some(mut ndnd) = Ndnd::start("ping", 16363).await else {
+        return;
+    };
     ndnd.tool(&["pingserver", "/interop"]);
     tokio::time::sleep(Duration::from_secs(1)).await; // let it register /interop
 
     let (fabric, node, _face) = bridged_fabric(16363, "127.0.0.1:0", "/interop", None).await;
-    let mut consumer = fabric.engine_of(node).unwrap().app_consumer(CancellationToken::new());
+    let mut consumer = fabric
+        .engine_of(node)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
     let interest = InterestBuilder::new("/interop/ping/0".parse::<Name>().unwrap())
         .must_be_fresh()
         .lifetime(Duration::from_secs(4));
@@ -254,13 +275,18 @@ async fn sim_node_interops_with_real_ndnd_over_udp() {
     let data = data.expect("sim node should fetch ndnd-produced Data over the UDP bridge");
     assert_eq!(*data.name, "/interop/ping/0".parse::<Name>().unwrap());
 
-    let sig = data.sig_info().expect("ndnd Data carries SignatureInfo we can parse");
+    let sig = data
+        .sig_info()
+        .expect("ndnd Data carries SignatureInfo we can parse");
     assert!(
         !matches!(sig.sig_type, ndn_packet::SignatureType::Other(_)),
         "foreign signature type must be recognized, got {:?}",
         sig.sig_type
     );
-    eprintln!("INTEROP OK: fetched {} from real ndnd; signature {:?}", *data.name, sig.sig_type);
+    eprintln!(
+        "INTEROP OK: fetched {} from real ndnd; signature {:?}",
+        *data.name, sig.sig_type
+    );
 }
 
 /// **Documented divergence** — the wire's "no" here is silence, not a Nack.
@@ -274,10 +300,15 @@ async fn sim_node_interops_with_real_ndnd_over_udp() {
 #[tokio::test]
 #[ignore = "needs a built ndnd binary (set NDND_BIN or build to /tmp/ndnd)"]
 async fn unrouted_interest_at_ndnd_times_out_by_design_not_nacks() {
-    let Some(_ndnd) = Ndnd::start("nack", 16364).await else { return };
+    let Some(_ndnd) = Ndnd::start("nack", 16364).await else {
+        return;
+    };
     // No producer, no route on the ndnd side: /void is unroutable there.
     let (fabric, node, _face) = bridged_fabric(16364, "127.0.0.1:0", "/void", None).await;
-    let mut consumer = fabric.engine_of(node).unwrap().app_consumer(CancellationToken::new());
+    let mut consumer = fabric
+        .engine_of(node)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
     let interest =
         InterestBuilder::new("/void/x".parse::<Name>().unwrap()).lifetime(Duration::from_secs(2));
     let res = consumer.fetch_with(interest).await;
@@ -301,7 +332,9 @@ async fn unrouted_interest_at_ndnd_times_out_by_design_not_nacks() {
 #[tokio::test]
 #[ignore = "needs a built ndnd binary (set NDND_BIN or build to /tmp/ndnd)"]
 async fn lp_fragmentation_reassembles_in_both_directions() {
-    let Some(mut ndnd) = Ndnd::start("lpfrag", 16365).await else { return };
+    let Some(mut ndnd) = Ndnd::start("lpfrag", 16365).await else {
+        return;
+    };
 
     // ── their fragmentation → our reassembly ────────────────────────────────
     // `ndnd put` publishes one 8000-byte-segment object; 3 kB fits one segment,
@@ -310,8 +343,12 @@ async fn lp_fragmentation_reassembles_in_both_directions() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Our local port is fixed so ndnd can route back toward us for phase 2.
-    let (fabric, node, face) = bridged_fabric(16365, "127.0.0.1:17365", "/interop", Some(1200)).await;
-    let mut consumer = fabric.engine_of(node).unwrap().app_consumer(CancellationToken::new());
+    let (fabric, node, face) =
+        bridged_fabric(16365, "127.0.0.1:17365", "/interop", Some(1200)).await;
+    let mut consumer = fabric
+        .engine_of(node)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
     // CanBePrefix: we don't know the version component `put` minted — discovery
     // by prefix is itself part of the conformance surface.
     let interest = InterestBuilder::new("/interop/big".parse::<Name>().unwrap())
@@ -323,7 +360,10 @@ async fn lp_fragmentation_reassembles_in_both_directions() {
         .expect("fetch the >MTU ndnd object via CanBePrefix (their frag, our reassembly)");
     let content_len = data.content().map(|c| c.len()).unwrap_or(0);
     assert_eq!(content_len, 3000, "reassembled content must be intact");
-    eprintln!("INTEROP OK: reassembled {} bytes fragmented by ndnd ({})", content_len, *data.name);
+    eprintln!(
+        "INTEROP OK: reassembled {} bytes fragmented by ndnd ({})",
+        content_len, *data.name
+    );
 
     // ── our fragmentation → their reassembly ────────────────────────────────
     // A 4 kB Data over a face clamped to 1200 bytes forces our LpLinkService to
@@ -334,19 +374,31 @@ async fn lp_fragmentation_reassembles_in_both_directions() {
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from(vec![b'y'; 4000])).await;
+                let _ = r
+                    .respond((*i.name).clone(), bytes::Bytes::from(vec![b'y'; 4000]))
+                    .await;
             })
             .await;
     });
     // Point ndnd at us (rib/register auto-creates the UDP face toward 17365).
-    ndnd.tool(&["fw", "route-add", "prefix=/rev", "face=udp://127.0.0.1:17365"]);
+    ndnd.tool(&[
+        "fw",
+        "route-add",
+        "prefix=/rev",
+        "face=udp://127.0.0.1:17365",
+    ]);
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let out = ndnd.tool_output(&["ping", "/rev", "-c", "3", "-i", "300"]).await;
+    let out = ndnd
+        .tool_output(&["ping", "/rev", "-c", "3", "-i", "300"])
+        .await;
     fabric.shutdown().await;
     assert!(
         out.contains("content from /rev"),
         "ndnd's ping client should reassemble our >MTU Data; ping output:\n{out}"
     );
-    eprintln!("INTEROP OK: ndnd reassembled our 1200-byte LP fragments\n{}", out.trim_end());
+    eprintln!(
+        "INTEROP OK: ndnd reassembled our 1200-byte LP fragments\n{}",
+        out.trim_end()
+    );
 }

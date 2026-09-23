@@ -48,7 +48,13 @@ async fn main() -> anyhow::Result<()> {
 
     // ── a real fabric on the wall clock ─────────────────────────────────────
     let mut sim = Simulation::new() // default WallClockKernel: live time
-        .with_radio_medium(Arc::new(RangeThreshold { range_m: 50.0, tx_power_dbm: 20.0 }), 7);
+        .with_radio_medium(
+            Arc::new(RangeThreshold {
+                range_m: 50.0,
+                tx_power_dbm: 20.0,
+            }),
+            7,
+        );
     let p = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
     let consumers = [
         sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 0.0)),
@@ -57,7 +63,11 @@ async fn main() -> anyhow::Result<()> {
     ];
     sim.add_app(
         p,
-        AppSpec::Producer { prefix: "/svc".into(), content: Some("air".into()), freshness_ms: None },
+        AppSpec::Producer {
+            prefix: "/svc".into(),
+            content: Some("air".into()),
+            freshness_ms: None,
+        },
     );
     let fabric = Arc::new(sim.start().await?);
     for c in consumers {
@@ -75,15 +85,21 @@ async fn main() -> anyhow::Result<()> {
     let fetches = Arc::new(AtomicU64::new(0));
     let t0 = std::time::Instant::now();
     {
-        let (fabric, bus, samples, fetches) =
-            (Arc::clone(&fabric), Arc::clone(&bus), Arc::clone(&samples), Arc::clone(&fetches));
+        let (fabric, bus, samples, fetches) = (
+            Arc::clone(&fabric),
+            Arc::clone(&bus),
+            Arc::clone(&samples),
+            Arc::clone(&fetches),
+        );
         tokio::spawn(async move {
             let mut n = 0u64;
             loop {
                 // Unique names so the fetch crosses the radio instead of the CS.
                 let c = consumers[(n % 3) as usize];
-                let mut consumer =
-                    fabric.engine_of(c).unwrap().app_consumer(CancellationToken::new());
+                let mut consumer = fabric
+                    .engine_of(c)
+                    .unwrap()
+                    .app_consumer(CancellationToken::new());
                 let name: Name = format!("/svc/live/{n}").parse().unwrap();
                 let _ = consumer
                     .fetch_with(InterestBuilder::new(name).lifetime(Duration::from_secs(2)))
@@ -111,7 +127,16 @@ async fn main() -> anyhow::Result<()> {
         // CI mode: let a few fetches land, print one composed page, exit.
         tokio::time::sleep(Duration::from_millis(1800)).await;
         let s = samples.lock().unwrap().clone();
-        println!("{}", page(&keel, &scene_view, &fabric.scene_snapshot(), &s, fetches.load(Ordering::Relaxed)));
+        println!(
+            "{}",
+            page(
+                &keel,
+                &scene_view,
+                &fabric.scene_snapshot(),
+                &s,
+                fetches.load(Ordering::Relaxed)
+            )
+        );
         fabric.shutdown().await;
         return Ok(());
     }
@@ -132,7 +157,13 @@ async fn main() -> anyhow::Result<()> {
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf).await; // drain the GET; path is irrelevant
             let s = samples.lock().unwrap().clone();
-            let body = page(&keel, &scene_view, &fabric.scene_snapshot(), &s, fetches.load(Ordering::Relaxed));
+            let body = page(
+                &keel,
+                &scene_view,
+                &fabric.scene_snapshot(),
+                &s,
+                fetches.load(Ordering::Relaxed),
+            );
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -152,7 +183,10 @@ fn page(
     fetches: u64,
 ) -> String {
     use std::fmt::Write as _;
-    let airtime_us = samples.last().map(|g| g.radio_airtime_ns / 1000).unwrap_or(0);
+    let airtime_us = samples
+        .last()
+        .map(|g| g.radio_airtime_ns / 1000)
+        .unwrap_or(0);
 
     let mut h = String::new();
     let _ = write!(
@@ -188,9 +222,25 @@ fn page(
     offers.sort_by_key(|m| (m.verdict.rank(), m.verdict.loss_len()));
     for m in offers {
         let is_pick = picked.is_some_and(|p| std::ptr::eq(p, m));
-        let Some(Rendered { verdict, body, trace, .. }) = keel.render(m, samples) else { continue };
-        let _ = write!(h, "<div class=\"card{}\">", if is_pick { " pick" } else { "" });
-        let _ = write!(h, "<div class=v>{verdict:?}{}</div>", if is_pick { " — selected" } else { "" });
+        let Some(Rendered {
+            verdict,
+            body,
+            trace,
+            ..
+        }) = keel.render(m, samples)
+        else {
+            continue;
+        };
+        let _ = write!(
+            h,
+            "<div class=\"card{}\">",
+            if is_pick { " pick" } else { "" }
+        );
+        let _ = write!(
+            h,
+            "<div class=v>{verdict:?}{}</div>",
+            if is_pick { " — selected" } else { "" }
+        );
         let is_glyphs = matches!(verdict, Verdict::Approximate(_)) && !body.contains('{');
         if body.contains("<svg") {
             let _ = write!(h, "{body}");

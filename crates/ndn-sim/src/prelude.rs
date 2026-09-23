@@ -35,15 +35,15 @@ pub use crate::{Clock, Fabric, FabricControl, NodeId, RunningSimulation, Simulat
 pub use crate::{FaceKind, FaceStats, RouteExplanation};
 pub use crate::{LinkConfig, NodeProfile};
 // Targeted faults (delay-without-drop / reorder) + the field-failure scenario kit.
-pub use crate::{FrameMatcher, HoldRule};
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::adversary;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::ceiling;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::fieldkit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::liveness;
-#[cfg(not(target_arch = "wasm32"))]
-pub use crate::ceiling;
-#[cfg(not(target_arch = "wasm32"))]
-pub use crate::adversary;
+pub use crate::{FrameMatcher, HoldRule};
 
 // Kernels — the execution + time engine.
 pub use crate::{DesKernel, RealTimeKernel, SimKernel, WallClockKernel};
@@ -69,12 +69,12 @@ pub use crate::{Environment, MobilityModel, Position, World};
 pub use crate::{PropagationModel, RadioBus, SimRadioFace, WirelessMedium};
 
 // The radio MAC + LoRa: a shared medium instead of point-to-point links.
-pub use crate::{RadioLinkConfig, Wifi, WifiMode, WifiOperatingMode};
 pub use crate::{LoraLinkConfig, SpreadingFactor};
+pub use crate::{RadioLinkConfig, Wifi, WifiMode, WifiOperatingMode};
 
 // The deterministic IP plane + its pluggable routing (for NDN-vs-IP benchmarks).
-pub use crate::{IpNetwork, NetworkKind, RoutingAlgorithm};
 pub use crate::{Aodv, DistanceVector, Dsr, Gpsr, GreedyGeographic, Olsr, ShortestPath};
+pub use crate::{IpNetwork, NetworkKind, RoutingAlgorithm};
 
 // Telemetry: virtual-time metric series (the OTLP exporter itself stays long-tail).
 pub use crate::{FabricGauges, MetricsLog, MetricsSample, sample_engine};

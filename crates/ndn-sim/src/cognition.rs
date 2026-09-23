@@ -43,7 +43,12 @@ impl SimCognition {
     pub fn new(radio: RadioId, cap: RadioCapability, max_mcs: u8) -> Self {
         let mut medium = MediumState::new();
         medium.register_radio(radio, cap);
-        Self { radio, policy: RadioPolicy::default(), medium, max_mcs }
+        Self {
+            radio,
+            policy: RadioPolicy::default(),
+            medium,
+            max_mcs,
+        }
     }
 
     /// Feed a heard frame's RSSI (dBm) from `neighbor` (an ephemeral source key) into the sense plane.

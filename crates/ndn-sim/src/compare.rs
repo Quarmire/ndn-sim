@@ -65,7 +65,12 @@ impl ProtocolComparison {
 pub fn compare_ndn_vs_ip(spec: &ComparisonSpec) -> ProtocolComparison {
     let (ndn, ndn_wire_bytes) = run_ndn(spec);
     let (ip, ip_wire_bytes) = run_ip(spec);
-    ProtocolComparison { ndn, ip, ndn_wire_bytes, ip_wire_bytes }
+    ProtocolComparison {
+        ndn,
+        ip,
+        ndn_wire_bytes,
+        ip_wire_bytes,
+    }
 }
 
 /// The NDN plane: a producer at `dest`, a `TrafficSource` at `source`, shortest-path routes.
@@ -74,9 +79,15 @@ fn run_ndn(spec: &ComparisonSpec) -> (FlowStats, u64) {
     use crate::scenario::{KernelSpec, NodeSpec, Scenario, ScenarioLink};
     use crate::{DesKernel, NodeId, SimKernel};
 
-    let mut scenario = Scenario { kernel: KernelSpec::Des { epoch_ns: None }, ..Default::default() };
+    let mut scenario = Scenario {
+        kernel: KernelSpec::Des { epoch_ns: None },
+        ..Default::default()
+    };
     scenario.nodes = (0..spec.n)
-        .map(|i| NodeSpec { label: Some(format!("n{i}")), ..Default::default() })
+        .map(|i| NodeSpec {
+            label: Some(format!("n{i}")),
+            ..Default::default()
+        })
         .collect();
     scenario.links = spec
         .links
@@ -93,12 +104,14 @@ fn run_ndn(spec: &ComparisonSpec) -> (FlowStats, u64) {
         content: Some("x".repeat(spec.payload_len)),
         freshness_ms: Some(spec.duration_ms.max(4000)),
     });
-    scenario.nodes[spec.source].apps.push(AppSpec::TrafficSource {
-        prefix: "/bench".into(),
-        pattern: spec.pattern,
-        count: u64::from(spec.count),
-        lifetime_ms: Some(2000),
-    });
+    scenario.nodes[spec.source]
+        .apps
+        .push(AppSpec::TrafficSource {
+            prefix: "/bench".into(),
+            pattern: spec.pattern,
+            count: u64::from(spec.count),
+            lifetime_ms: Some(2000),
+        });
     crate::topo::add_routes_toward(&mut scenario, "/bench", spec.dest);
 
     let source = spec.source;
@@ -125,17 +138,31 @@ fn run_ip(spec: &ComparisonSpec) -> (FlowStats, u64) {
     use crate::{DesKernel, IpNetwork, SimKernel};
 
     let links = spec.links.clone();
-    let (n, source, dest, pattern, count, payload_len) =
-        (spec.n, spec.source, spec.dest, spec.pattern, spec.count, spec.payload_len);
+    let (n, source, dest, pattern, count, payload_len) = (
+        spec.n,
+        spec.source,
+        spec.dest,
+        spec.pattern,
+        spec.count,
+        spec.payload_len,
+    );
     let link_delay = spec.link_delay;
     DesKernel::new().run(move |k: std::sync::Arc<dyn SimKernel>| async move {
         let rt = k.runtime();
-        let prof =
-            FaceProfile::internal().with_link(LinkConfig { delay: link_delay, ..Default::default() });
+        let prof = FaceProfile::internal().with_link(LinkConfig {
+            delay: link_delay,
+            ..Default::default()
+        });
         let net = IpNetwork::from_links(rt, n, &links, &prof);
         let stats = net
             .node(source)
-            .run_flow(net.addr(dest), pattern, count, payload_len, Duration::from_secs(2))
+            .run_flow(
+                net.addr(dest),
+                pattern,
+                count,
+                payload_len,
+                Duration::from_secs(2),
+            )
             .await;
         (stats, net.total_tx_bytes())
     })

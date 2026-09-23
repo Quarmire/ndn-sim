@@ -79,7 +79,9 @@ impl OtlpExporter {
         let metrics = json!([
             ip_gauge("ndn.ip.forwarded", samples, |s| json!(s.forwarded)),
             ip_gauge("ndn.ip.delivered", samples, |s| json!(s.delivered)),
-            ip_gauge("ndn.ip.drops.no_route", samples, |s| json!(s.dropped_no_route)),
+            ip_gauge("ndn.ip.drops.no_route", samples, |s| json!(
+                s.dropped_no_route
+            )),
             ip_gauge("ndn.ip.drops.ttl", samples, |s| json!(s.dropped_ttl)),
             ip_gauge("ndn.ip.tx_bytes", samples, |s| json!(s.tx_bytes)),
         ]);
@@ -91,9 +93,17 @@ impl OtlpExporter {
     pub fn fabric_gauges_payload(&self, g: &FabricGauges) -> String {
         let t = g.virtual_time_ns;
         let metrics = json!([
-            scalar_gauge("ndn.radio.airtime_us", t, g.radio_airtime_ns as f64 / 1000.0),
+            scalar_gauge(
+                "ndn.radio.airtime_us",
+                t,
+                g.radio_airtime_ns as f64 / 1000.0
+            ),
             scalar_gauge("ndn.wifi.handoffs", t, g.handoffs as f64),
-            scalar_gauge("ndn.wifi.assoc_overhead_us", t, g.association_overhead_ns as f64 / 1000.0),
+            scalar_gauge(
+                "ndn.wifi.assoc_overhead_us",
+                t,
+                g.association_overhead_ns as f64 / 1000.0
+            ),
         ]);
         self.metrics_doc(metrics)
     }
@@ -189,7 +199,11 @@ fn gauge(name: &str, samples: &[MetricsSample], f: impl Fn(&MetricsSample) -> Va
     json!({ "name": name, "gauge": { "dataPoints": points } })
 }
 
-fn ip_gauge(name: &str, samples: &[IpMetricsSample], f: impl Fn(&IpMetricsSample) -> Value) -> Value {
+fn ip_gauge(
+    name: &str,
+    samples: &[IpMetricsSample],
+    f: impl Fn(&IpMetricsSample) -> Value,
+) -> Value {
     let points: Vec<Value> = samples
         .iter()
         .map(|s| {
@@ -400,8 +414,13 @@ mod tests {
         };
         let payload = exporter.ip_metrics_payload(&[s(0, 10, 640), s(1, 4, 256)]);
         let v: Value = serde_json::from_str(&payload).unwrap();
-        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"].as_array().unwrap();
-        let fwd = metrics.iter().find(|m| m["name"] == "ndn.ip.forwarded").unwrap();
+        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+            .as_array()
+            .unwrap();
+        let fwd = metrics
+            .iter()
+            .find(|m| m["name"] == "ndn.ip.forwarded")
+            .unwrap();
         let points = fwd["gauge"]["dataPoints"].as_array().unwrap();
         assert_eq!(points.len(), 2, "one point per IP node");
         assert_eq!(points[0]["asDouble"], 10);
@@ -418,10 +437,21 @@ mod tests {
             association_overhead_ns: 360_000_000,
         };
         let v: Value = serde_json::from_str(&exporter.fabric_gauges_payload(&g)).unwrap();
-        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"].as_array().unwrap();
-        let air = metrics.iter().find(|m| m["name"] == "ndn.radio.airtime_us").unwrap();
-        assert_eq!(air["gauge"]["dataPoints"][0]["asDouble"], 2000.0, "2 ms → 2000 µs");
-        let ho = metrics.iter().find(|m| m["name"] == "ndn.wifi.handoffs").unwrap();
+        let metrics = v["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+            .as_array()
+            .unwrap();
+        let air = metrics
+            .iter()
+            .find(|m| m["name"] == "ndn.radio.airtime_us")
+            .unwrap();
+        assert_eq!(
+            air["gauge"]["dataPoints"][0]["asDouble"], 2000.0,
+            "2 ms → 2000 µs"
+        );
+        let ho = metrics
+            .iter()
+            .find(|m| m["name"] == "ndn.wifi.handoffs")
+            .unwrap();
         assert_eq!(ho["gauge"]["dataPoints"][0]["asDouble"], 3.0);
     }
 

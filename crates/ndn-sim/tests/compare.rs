@@ -32,10 +32,24 @@ fn ndn_and_ip_deliver_the_same_workload() {
     let cmp = compare_ndn_vs_ip(&spec);
     println!("{}", cmp.summary());
 
-    assert!(cmp.ndn.received >= 8, "NDN delivered the workload: {:?}", cmp.ndn);
-    assert!(cmp.ip.received >= 8, "IP delivered the workload: {:?}", cmp.ip);
-    assert!(cmp.ndn.mean_rtt_ms() > 0.0 && cmp.ip.mean_rtt_ms() > 0.0, "both measured RTT");
-    assert!(cmp.ndn_wire_bytes > 0 && cmp.ip_wire_bytes > 0, "both measured wire bytes");
+    assert!(
+        cmp.ndn.received >= 8,
+        "NDN delivered the workload: {:?}",
+        cmp.ndn
+    );
+    assert!(
+        cmp.ip.received >= 8,
+        "IP delivered the workload: {:?}",
+        cmp.ip
+    );
+    assert!(
+        cmp.ndn.mean_rtt_ms() > 0.0 && cmp.ip.mean_rtt_ms() > 0.0,
+        "both measured RTT"
+    );
+    assert!(
+        cmp.ndn_wire_bytes > 0 && cmp.ip_wire_bytes > 0,
+        "both measured wire bytes"
+    );
 }
 
 /// The caching contrast: two consumers fetch the SAME content through a shared relay. NDN serves the
@@ -69,8 +83,14 @@ fn ndn_caching_halves_producer_load_vs_ip() {
         let fabric = sim.start().await.unwrap();
 
         // Consumer A fetches /demo/0..K (warms the relay cache), then B fetches the SAME names.
-        let mut cons_a = fabric.engine_of(ca).unwrap().app_consumer(CancellationToken::new());
-        let mut cons_b = fabric.engine_of(cb).unwrap().app_consumer(CancellationToken::new());
+        let mut cons_a = fabric
+            .engine_of(ca)
+            .unwrap()
+            .app_consumer(CancellationToken::new());
+        let mut cons_b = fabric
+            .engine_of(cb)
+            .unwrap()
+            .app_consumer(CancellationToken::new());
         for consumer in [&mut cons_a, &mut cons_b] {
             for i in 0..K {
                 let name = format!("/demo/{i}").parse::<Name>().unwrap();
@@ -94,7 +114,13 @@ fn ndn_caching_halves_producer_load_vs_ip() {
         for client in [2usize, 3] {
             let _ = net
                 .node(client)
-                .ping(server, K as u32, 7, Duration::from_millis(2), Duration::from_secs(2))
+                .ping(
+                    server,
+                    K as u32,
+                    7,
+                    Duration::from_millis(2),
+                    Duration::from_secs(2),
+                )
                 .await;
         }
         // Requests that reached the server (no cache exists, so every request is served).

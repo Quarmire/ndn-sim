@@ -60,7 +60,11 @@ impl Ipv4 {
         if prefix_len == 0 {
             return true;
         }
-        let mask = if prefix_len >= 32 { u32::MAX } else { !((1u32 << (32 - prefix_len)) - 1) };
+        let mask = if prefix_len >= 32 {
+            u32::MAX
+        } else {
+            !((1u32 << (32 - prefix_len)) - 1)
+        };
         (self.0 & mask) == (net.0 & mask)
     }
 }
@@ -186,7 +190,8 @@ impl Inner {
                     crate::lora::LoraTx::Gated => return, // duty-cycle gated: frame dropped
                     crate::lora::LoraTx::OnAir { id, airtime } => {
                         // The bytes go on the air (a collided frame still burned airtime).
-                        self.tx_bytes.fetch_add(wire.len() as u64, Ordering::Relaxed);
+                        self.tx_bytes
+                            .fetch_add(wire.len() as u64, Ordering::Relaxed);
                         self.clock.sleep(airtime).await; // half-duplex: occupy the radio for the airtime
                         if !h.medium.resolve(id, h.node, rx) {
                             return; // collided at the receiver: frame lost
@@ -196,7 +201,8 @@ impl Inner {
                 }
                 return;
             }
-            self.tx_bytes.fetch_add(wire.len() as u64, Ordering::Relaxed);
+            self.tx_bytes
+                .fetch_add(wire.len() as u64, Ordering::Relaxed);
             let _ = face.send_bytes(wire).await;
         }
     }
@@ -204,8 +210,9 @@ impl Inner {
         if pkt.dst == self.addr {
             self.delivered.fetch_add(1, Ordering::Relaxed);
             if pkt.reply {
-                let _ =
-                    self.reply_tx.send((pkt.seq, self.clock.unix_nanos(), pkt.payload.len()));
+                let _ = self
+                    .reply_tx
+                    .send((pkt.seq, self.clock.unix_nanos(), pkt.payload.len()));
             } else {
                 // Echo: reflect a reply back to the source.
                 let reply = IpPacket {
@@ -251,7 +258,12 @@ pub struct IpNode {
 
 impl IpNode {
     pub fn new(addr: Ipv4, clock: Arc<dyn Runtime>) -> Self {
-        IpNode { addr, clock, faces: Vec::new(), routes: Vec::new() }
+        IpNode {
+            addr,
+            clock,
+            faces: Vec::new(),
+            routes: Vec::new(),
+        }
     }
     /// Attach a byte-channel face (one end of an [`ip_link`]); returns its face index for routing.
     pub fn attach(&mut self, face: SimFace) -> usize {
@@ -260,7 +272,11 @@ impl IpNode {
     }
     /// Route `net/prefix_len` out the face at index `via`. `Ipv4(0)` + `prefix_len = 0` is a default route.
     pub fn route(&mut self, net: Ipv4, prefix_len: u8, via: usize) {
-        self.routes.push(Route { net, prefix_len, via });
+        self.routes.push(Route {
+            net,
+            prefix_len,
+            via,
+        });
     }
     /// Start forwarding: spawn a receive loop per face on the ambient runtime (virtual under DES).
     pub fn start(self) -> RunningIpNode {
@@ -289,7 +305,10 @@ impl IpNode {
                 }
             });
         }
-        RunningIpNode { inner, reply_rx: tokio::sync::Mutex::new(reply_rx) }
+        RunningIpNode {
+            inner,
+            reply_rx: tokio::sync::Mutex::new(reply_rx),
+        }
     }
 }
 
@@ -311,7 +330,11 @@ impl RunningIpNode {
         let mut table = self.inner.routes.lock().unwrap();
         *table = routes
             .into_iter()
-            .map(|(net, prefix_len, via)| Route { net, prefix_len, via })
+            .map(|(net, prefix_len, via)| Route {
+                net,
+                prefix_len,
+                via,
+            })
             .collect();
     }
 
@@ -337,7 +360,8 @@ impl RunningIpNode {
         interval: Duration,
         lifetime: Duration,
     ) -> FlowStats {
-        self.flow_loop(dst, count, payload_len, lifetime, |_| interval).await
+        self.flow_loop(dst, count, payload_len, lifetime, |_| interval)
+            .await
     }
 
     /// Like [`ping`](Self::ping) but with inter-request delays from a [`TrafficPattern`] (CBR /
@@ -499,7 +523,10 @@ pub struct IpNetwork {
     /// next-hop *nodes* into face indices when installing.
     face_to: Vec<HashMap<usize, usize>>,
     /// The live fault knobs for each link's two directed faces (for [`set_link`](Self::set_link)).
-    link_states: Vec<(Arc<crate::sim_face::LinkState>, Arc<crate::sim_face::LinkState>)>,
+    link_states: Vec<(
+        Arc<crate::sim_face::LinkState>,
+        Arc<crate::sim_face::LinkState>,
+    )>,
     /// Whether each link is currently up (a down link is excluded from re-routing).
     link_up: Vec<std::sync::atomic::AtomicBool>,
     /// Node positions, for position-based re-routing (GPSR) and range-gated connectivity. Mutable so
@@ -530,7 +557,14 @@ impl IpNetwork {
         links: &[(usize, usize)],
         profile: &FaceProfile,
     ) -> Self {
-        Self::from_links_with(runtime, n, links, None, profile, &crate::routing::ShortestPath)
+        Self::from_links_with(
+            runtime,
+            n,
+            links,
+            None,
+            profile,
+            &crate::routing::ShortestPath,
+        )
     }
 
     /// Build + start with an explicit [`RoutingAlgorithm`](crate::routing::RoutingAlgorithm) —
@@ -545,8 +579,10 @@ impl IpNetwork {
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) -> Self {
         let addrs: Vec<Ipv4> = (0..n).map(|i| Ipv4::new(10, 0, 0, (i + 1) as u8)).collect();
-        let mut builders: Vec<IpNode> =
-            addrs.iter().map(|&a| IpNode::new(a, Arc::clone(&runtime))).collect();
+        let mut builders: Vec<IpNode> = addrs
+            .iter()
+            .map(|&a| IpNode::new(a, Arc::clone(&runtime)))
+            .collect();
 
         // Wire links, tracking each node's (neighbour → face index) map + the links' fault knobs.
         let mut face_to: Vec<HashMap<usize, usize>> = vec![HashMap::new(); n];
@@ -574,7 +610,10 @@ impl IpNetwork {
 
         let epoch_ns = runtime.unix_nanos();
         let nodes = builders.into_iter().map(IpNode::start).collect();
-        let link_up = links.iter().map(|_| std::sync::atomic::AtomicBool::new(true)).collect();
+        let link_up = links
+            .iter()
+            .map(|_| std::sync::atomic::AtomicBool::new(true))
+            .collect();
         IpNetwork {
             nodes,
             addrs,
@@ -585,7 +624,9 @@ impl IpNetwork {
             positions: Mutex::new(positions),
             runtime,
             epoch_ns,
-            associated: (0..n).map(|_| std::sync::atomic::AtomicBool::new(false)).collect(),
+            associated: (0..n)
+                .map(|_| std::sync::atomic::AtomicBool::new(false))
+                .collect(),
             handoffs: std::sync::atomic::AtomicU64::new(0),
             assoc_overhead_ns: std::sync::atomic::AtomicU64::new(0),
             lora_medium: Mutex::new(None),
@@ -621,7 +662,14 @@ impl IpNetwork {
                     .unwrap_or(crate::world::Position::ORIGIN)
             })
             .collect();
-        Self::from_links_with(runtime, scenario.nodes.len(), &links, Some(positions), profile, algo)
+        Self::from_links_with(
+            runtime,
+            scenario.nodes.len(),
+            &links,
+            Some(positions),
+            profile,
+            algo,
+        )
     }
 
     pub fn node(&self, i: usize) -> &RunningIpNode {
@@ -678,7 +726,9 @@ impl IpNetwork {
             let routes: Vec<(Ipv4, u8, usize)> = table
                 .iter()
                 .filter_map(|e| {
-                    self.face_to[u].get(&e.next_hop).map(|&via| (self.addrs[e.dest], 32, via))
+                    self.face_to[u]
+                        .get(&e.next_hop)
+                        .map(|&via| (self.addrs[e.dest], 32, via))
                 })
                 .collect();
             self.nodes[u].set_routes(routes);
@@ -733,7 +783,8 @@ impl IpNetwork {
             let (sa, sb) = &self.link_states[i];
             if up {
                 let snr = cfg.snr_at(dist);
-                let (loss, airtime) = wifi.link_cost(cfg.mode, snr, cfg.frame_bytes, cfg.retry_limit);
+                let (loss, airtime) =
+                    wifi.link_cost(cfg.mode, snr, cfg.frame_bytes, cfg.retry_limit);
                 // (Re)association: a station coming into AP range must scan+auth+assoc(+4-way) before
                 // it can pass traffic — a one-time per-handoff cost. Account it (handoff count +
                 // total handshake time); the link itself carries only the per-frame MAC cost.
@@ -742,7 +793,8 @@ impl IpNetwork {
                 {
                     let setup = cfg.op_mode.association_setup();
                     self.handoffs.fetch_add(1, Relaxed);
-                    self.assoc_overhead_ns.fetch_add(setup.as_nanos() as u64, Relaxed);
+                    self.assoc_overhead_ns
+                        .fetch_add(setup.as_nanos() as u64, Relaxed);
                 }
                 for s in [sa, sb] {
                     s.set_down(false);
@@ -774,7 +826,10 @@ impl IpNetwork {
     /// Accumulated association-handshake time across all handoffs — the control overhead
     /// infrastructure Wi-Fi pays for mobility that a connectionless broadcast face never does.
     pub fn association_overhead(&self) -> Duration {
-        Duration::from_nanos(self.assoc_overhead_ns.load(std::sync::atomic::Ordering::Relaxed))
+        Duration::from_nanos(
+            self.assoc_overhead_ns
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     /// A per-node [`IpMetricsSample`](crate::telemetry::IpMetricsSample) snapshot at the current
@@ -808,7 +863,9 @@ impl IpNetwork {
             virtual_time_ns: self.runtime.unix_nanos(),
             radio_airtime_ns: radio_airtime.as_nanos() as u64,
             handoffs: self.handoff_count(),
-            association_overhead_ns: self.assoc_overhead_ns.load(std::sync::atomic::Ordering::Relaxed),
+            association_overhead_ns: self
+                .assoc_overhead_ns
+                .load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -824,10 +881,10 @@ impl IpNetwork {
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) -> Self {
         let n = positions.len();
-        let full: Vec<(usize, usize)> =
-            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
-        let net =
-            Self::from_links_with(runtime, n, &full, Some(positions.clone()), profile, algo);
+        let full: Vec<(usize, usize)> = (0..n)
+            .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
+            .collect();
+        let net = Self::from_links_with(runtime, n, &full, Some(positions.clone()), profile, algo);
         net.reconnect(&positions, range, algo);
         net
     }
@@ -844,8 +901,9 @@ impl IpNetwork {
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) -> Self {
         let n = positions.len();
-        let full: Vec<(usize, usize)> =
-            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
+        let full: Vec<(usize, usize)> = (0..n)
+            .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
+            .collect();
         // A plain in-proc face carries no loss/delay of its own; the MAC supplies both.
         let prof = FaceProfile::internal();
         let net = Self::from_links_with(runtime, n, &full, Some(positions.clone()), &prof, algo);
@@ -881,12 +939,16 @@ impl IpNetwork {
         algo: &dyn crate::routing::RoutingAlgorithm,
     ) -> Self {
         let n = positions.len();
-        let full: Vec<(usize, usize)> =
-            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
+        let full: Vec<(usize, usize)> = (0..n)
+            .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
+            .collect();
         let prof = FaceProfile::internal();
         let net = Self::from_links_with(runtime, n, &full, Some(positions.clone()), &prof, algo);
-        let medium =
-            Arc::new(crate::lora::LoraMedium::new(cfg.clone(), positions.clone(), duty_enforced));
+        let medium = Arc::new(crate::lora::LoraMedium::new(
+            cfg.clone(),
+            positions.clone(),
+            duty_enforced,
+        ));
         net.attach_lora_medium(&medium);
         net.reconnect_lora(&positions, cfg, algo);
         net
@@ -898,7 +960,12 @@ impl IpNetwork {
     fn attach_lora_medium(&self, medium: &Arc<crate::lora::LoraMedium>) {
         *self.lora_medium.lock().unwrap() = Some(Arc::clone(medium));
         for (u, node) in self.nodes.iter().enumerate() {
-            let nfaces = self.face_to[u].values().copied().max().map(|m| m + 1).unwrap_or(0);
+            let nfaces = self.face_to[u]
+                .values()
+                .copied()
+                .max()
+                .map(|m| m + 1)
+                .unwrap_or(0);
             let mut face_neighbor = vec![None; nfaces];
             for (&nbr, &fidx) in &self.face_to[u] {
                 face_neighbor[fidx] = Some(nbr);
@@ -935,7 +1002,11 @@ impl IpNetwork {
                 let (loss, airtime) = cfg.link_cost(dist);
                 // With the shared medium, airtime is the in-air window (a half-duplex occupancy the
                 // send path sleeps through), not a per-link delay — so don't double-count it here.
-                let extra = if medium.is_some() { Duration::ZERO } else { airtime };
+                let extra = if medium.is_some() {
+                    Duration::ZERO
+                } else {
+                    airtime
+                };
                 for s in [sa, sb] {
                     s.set_down(false);
                     s.set_loss(Some(loss));
@@ -954,17 +1025,29 @@ impl IpNetwork {
 
     /// Frames lost to LoRa ALOHA collisions across the shared medium (0 if not IP-over-LoRa).
     pub fn lora_collisions(&self) -> u64 {
-        self.lora_medium.lock().unwrap().as_ref().map_or(0, |m| m.collisions())
+        self.lora_medium
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |m| m.collisions())
     }
 
     /// Frames gated by the LoRa duty-cycle regulator across the shared medium (0 if none / disabled).
     pub fn lora_duty_gated(&self) -> u64 {
-        self.lora_medium.lock().unwrap().as_ref().map_or(0, |m| m.duty_gated())
+        self.lora_medium
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |m| m.duty_gated())
     }
 
     /// Frames that reached the air (were not duty-gated) across the shared LoRa medium.
     pub fn lora_transmissions(&self) -> u64 {
-        self.lora_medium.lock().unwrap().as_ref().map_or(0, |m| m.transmissions())
+        self.lora_medium
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |m| m.transmissions())
     }
 
     /// **Hands-free mobility-driven routing.** Spawn a background loop that, every `interval`, reads
@@ -989,7 +1072,10 @@ impl IpNetwork {
                 let t = me.runtime.unix_nanos().saturating_sub(me.epoch_ns) as f64 / 1e9;
                 let view = world.snapshot(t);
                 let positions: Vec<crate::world::Position> = (0..me.nodes.len())
-                    .map(|i| view.position(crate::NodeId(i)).unwrap_or(crate::world::Position::ORIGIN))
+                    .map(|i| {
+                        view.position(crate::NodeId(i))
+                            .unwrap_or(crate::world::Position::ORIGIN)
+                    })
                     .collect();
                 me.reconnect(&positions, range, &*algo);
             }
@@ -1040,7 +1126,10 @@ mod tests {
             payload: Bytes::from_static(b"hello"),
         };
         let d = IpPacket::decode(&p.encode()).unwrap();
-        assert_eq!((d.src, d.dst, d.ttl, d.reply, d.seq), (p.src, p.dst, p.ttl, p.reply, p.seq));
+        assert_eq!(
+            (d.src, d.dst, d.ttl, d.reply, d.seq),
+            (p.src, p.dst, p.ttl, p.reply, p.seq)
+        );
         assert_eq!(&d.payload[..], b"hello");
     }
 }

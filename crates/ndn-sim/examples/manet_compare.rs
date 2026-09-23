@@ -44,7 +44,9 @@ fn schedule(hops: i64, channels: i64, radios: usize) -> f64 {
                 continue;
             }
             let c = ch(t);
-            let conflict = active.iter().any(|&(at, ac)| ac == c && (at - r).abs() <= CS || ac == c && (at - t).abs() <= CS);
+            let conflict = active.iter().any(|&(at, ac)| {
+                ac == c && (at - r).abs() <= CS || ac == c && (at - t).abs() <= CS
+            });
             if !conflict {
                 radio_use[t as usize] += 1;
                 radio_use[r as usize] += 1;
@@ -70,7 +72,8 @@ fn retention(hops: i64, mrmc: bool) -> f64 {
         return 1.0;
     }
     let (channels, radios, eff): (i64, usize, f64) = if mrmc { (3, 2, 0.93) } else { (1, 1, 0.72) };
-    let r = schedule(hops, channels, radios) / schedule(1, channels, radios) * eff.powi((hops - 1) as i32);
+    let r = schedule(hops, channels, radios) / schedule(1, channels, radios)
+        * eff.powi((hops - 1) as i32);
     r
 }
 
@@ -93,13 +96,48 @@ struct Proto {
 }
 
 const PROTOS: &[Proto] = &[
-    Proto { name: "AODV",          route: Route::Reactive,    mrmc: false, caches: false },
-    Proto { name: "DSR",           route: Route::ReactiveSrc, mrmc: false, caches: false },
-    Proto { name: "802.11s HWMP",  route: Route::HybridL2,    mrmc: false, caches: false },
-    Proto { name: "batman-adv",    route: Route::ProactiveL2, mrmc: false, caches: false },
-    Proto { name: "NDN (bcast)",   route: Route::Stateless,   mrmc: false, caches: true  },
-    Proto { name: "IP-MRMC(WCETT)",route: Route::Reactive,    mrmc: true,  caches: false },
-    Proto { name: "ndnpipes",      route: Route::Stateless,   mrmc: true,  caches: true  },
+    Proto {
+        name: "AODV",
+        route: Route::Reactive,
+        mrmc: false,
+        caches: false,
+    },
+    Proto {
+        name: "DSR",
+        route: Route::ReactiveSrc,
+        mrmc: false,
+        caches: false,
+    },
+    Proto {
+        name: "802.11s HWMP",
+        route: Route::HybridL2,
+        mrmc: false,
+        caches: false,
+    },
+    Proto {
+        name: "batman-adv",
+        route: Route::ProactiveL2,
+        mrmc: false,
+        caches: false,
+    },
+    Proto {
+        name: "NDN (bcast)",
+        route: Route::Stateless,
+        mrmc: false,
+        caches: true,
+    },
+    Proto {
+        name: "IP-MRMC(WCETT)",
+        route: Route::Reactive,
+        mrmc: true,
+        caches: false,
+    },
+    Proto {
+        name: "ndnpipes",
+        route: Route::Stateless,
+        mrmc: true,
+        caches: true,
+    },
 ];
 
 fn main() {
@@ -118,13 +156,21 @@ fn main() {
     for p in PROTOS {
         print!("  {:<15}", p.name);
         for h in hops {
-            let ndn_tax = if matches!(p.route, Route::Stateless) { 0.97 } else { 1.0 };
+            let ndn_tax = if matches!(p.route, Route::Stateless) {
+                0.97
+            } else {
+                1.0
+            };
             print!("  {:>5.2}", retention(h, p.mrmc) * ndn_tax);
         }
         println!("   {}", if p.mrmc { "multi" } else { "1" });
     }
-    println!("\n  → the split is single-radio (~0.17 at 3 hops) vs MRMC (~0.86). L3 protocol barely moves");
-    println!("    it. NDN-broadcast ≈ 802.11s on a chain (one receiver/hop). This is a PHY result.");
+    println!(
+        "\n  → the split is single-radio (~0.17 at 3 hops) vs MRMC (~0.86). L3 protocol barely moves"
+    );
+    println!(
+        "    it. NDN-broadcast ≈ 802.11s on a chain (one receiver/hop). This is a PHY result."
+    );
 
     // ---- Panel B: multi-consumer / repeated content (caching) -----------------------------------
     // K consumers each fetch the SAME named content across an H=4-hop network. Cost = hop-transmissions
@@ -133,14 +179,24 @@ fn main() {
     // present along the network, each later consumer hits a copy ~1 hop away → cost ≈ H + (K−1)·1.
     // (First-order: dense-ish consumers, LRU big enough to hold the object. Sparse consumers weaken it.)
     let h_b = 4.0;
-    println!("\nB. multi-consumer: cost (hop-transmissions) to serve K consumers the same content, H=4\n");
+    println!(
+        "\nB. multi-consumer: cost (hop-transmissions) to serve K consumers the same content, H=4\n"
+    );
     println!("  K consumers   IP (no cache)   NDN (relay cache)   NDN speedup");
     for k in [1usize, 2, 4, 8, 16, 32] {
         let ip = k as f64 * h_b;
         let ndn = h_b + (k as f64 - 1.0); // first fetch seeds path, later ones ~1 hop to cache
-        println!("  {:>7}       {:>10.0}      {:>12.0}        {:>6.1}×", k, ip, ndn, ip / ndn);
+        println!(
+            "  {:>7}       {:>10.0}      {:>12.0}        {:>6.1}×",
+            k,
+            ip,
+            ndn,
+            ip / ndn
+        );
     }
-    println!("  → IP cost is linear in consumers (no in-network reuse); NDN caching makes it ~flat.");
+    println!(
+        "  → IP cost is linear in consumers (no in-network reuse); NDN caching makes it ~flat."
+    );
     println!("    This is structural: routing protocols move packets, they don't hold content.");
 
     // ---- Panel C: mobility / route churn (control overhead) --------------------------------------
@@ -158,9 +214,14 @@ fn main() {
         let hwmp = 0.3 * nn + lam * nn * 0.5; // periodic tree upkeep + reactive repair
         let bat = ogm; // constant periodic OGMs, churn-independent (but stale)
         let ndn = lam * 0.0; // no explicit repair; cost folded into next data Interest
-        println!("  {:>7.1}    {:>5.1}  {:>5.1}   {:>6.1}   {:>6.1}   {:>6.1}", lam, aodv, dsr, hwmp, bat, ndn);
+        println!(
+            "  {:>7.1}    {:>5.1}  {:>5.1}   {:>6.1}   {:>6.1}   {:>6.1}",
+            lam, aodv, dsr, hwmp, bat, ndn
+        );
     }
-    println!("  → reactive overhead climbs with churn; batman is flat-but-stale; NDN sheds route repair");
+    println!(
+        "  → reactive overhead climbs with churn; batman is flat-but-stale; NDN sheds route repair"
+    );
     println!("    entirely (no route object exists to break). The named-data mobility advantage.");
 
     // ---- Panel D: MRMC + caching together (the ndnpipes payoff) ----------------------------------
@@ -169,38 +230,92 @@ fn main() {
     // else it gets: IP-MRMC needs an explicit channel-assignment metric (WCETT/MIC) and STILL cannot
     // cache; ndnpipes derives channel diversity from named pipes AND caches. Score a 3-hop, 8-consumer
     // repeated-content workload: throughput retention × caching benefit.
-    println!("\nD. MRMC + caching: 3-hop, 8-consumer repeated content — throughput AND reuse together\n");
+    println!(
+        "\nD. MRMC + caching: 3-hop, 8-consumer repeated content — throughput AND reuse together\n"
+    );
     let h_d = 3i64;
     let k_d = 8.0;
     println!("  protocol          3-hop tput   serve-8 cost   effective (tput / cost, ↑ better)");
     for p in &[PROTOS[2], PROTOS[3], PROTOS[5], PROTOS[6]] {
         // 802.11s, batman (stock single-radio), IP-MRMC, ndnpipes
         let t = retention(h_d, p.mrmc);
-        let cost = if p.caches { h_d as f64 + (k_d - 1.0) } else { k_d * h_d as f64 };
+        let cost = if p.caches {
+            h_d as f64 + (k_d - 1.0)
+        } else {
+            k_d * h_d as f64
+        };
         let eff = t / cost;
-        println!("  {:<15}   {:>7.2}     {:>10.0}       {:>8.3}", p.name, t, cost, eff);
+        println!(
+            "  {:<15}   {:>7.2}     {:>10.0}       {:>8.3}",
+            p.name, t, cost, eff
+        );
     }
-    println!("  → IP-MRMC wins throughput back but pays full re-fetch cost for every consumer; ndnpipes");
-    println!("    matches the throughput AND collapses the cost via caching — MRMC and naming compound.");
+    println!(
+        "  → IP-MRMC wins throughput back but pays full re-fetch cost for every consumer; ndnpipes"
+    );
+    println!(
+        "    matches the throughput AND collapses the cost via caching — MRMC and naming compound."
+    );
 
     // ---- JSON for the dashboard -----------------------------------------------------------------
-    let a: Vec<String> = PROTOS.iter().map(|p| {
-        let tax = if matches!(p.route, Route::Stateless) { 0.97 } else { 1.0 };
-        let series: Vec<String> = hops.iter().map(|&h| format!("{:.3}", retention(h, p.mrmc) * tax)).collect();
-        format!("{{\"name\":\"{}\",\"mrmc\":{},\"caches\":{},\"tput\":[{}]}}", p.name, p.mrmc, p.caches, series.join(","))
-    }).collect();
-    let b: Vec<String> = [1usize, 2, 4, 8, 16, 32].iter().map(|&k| {
-        format!("{{\"k\":{k},\"ip\":{:.0},\"ndn\":{:.0}}}", k as f64 * h_b, h_b + (k as f64 - 1.0))
-    }).collect();
+    let a: Vec<String> = PROTOS
+        .iter()
+        .map(|p| {
+            let tax = if matches!(p.route, Route::Stateless) {
+                0.97
+            } else {
+                1.0
+            };
+            let series: Vec<String> = hops
+                .iter()
+                .map(|&h| format!("{:.3}", retention(h, p.mrmc) * tax))
+                .collect();
+            format!(
+                "{{\"name\":\"{}\",\"mrmc\":{},\"caches\":{},\"tput\":[{}]}}",
+                p.name,
+                p.mrmc,
+                p.caches,
+                series.join(",")
+            )
+        })
+        .collect();
+    let b: Vec<String> = [1usize, 2, 4, 8, 16, 32]
+        .iter()
+        .map(|&k| {
+            format!(
+                "{{\"k\":{k},\"ip\":{:.0},\"ndn\":{:.0}}}",
+                k as f64 * h_b,
+                h_b + (k as f64 - 1.0)
+            )
+        })
+        .collect();
     let c: Vec<String> = [0.0f64, 0.5, 1.0, 2.0, 4.0, 8.0].iter().map(|&lam| {
         format!("{{\"lam\":{lam},\"aodv\":{:.1},\"dsr\":{:.1},\"hwmp\":{:.1},\"batman\":{:.1},\"ndn\":{:.1}}}",
             lam * nn, lam * nn * 0.6, 0.3 * nn + lam * nn * 0.5, ogm, 0.0)
     }).collect();
-    let d: Vec<String> = [PROTOS[2], PROTOS[3], PROTOS[5], PROTOS[6]].iter().map(|p| {
-        let t = retention(h_d, p.mrmc);
-        let cost = if p.caches { h_d as f64 + (k_d - 1.0) } else { k_d * h_d as f64 };
-        format!("{{\"name\":\"{}\",\"tput\":{:.3},\"cost\":{:.0},\"eff\":{:.4}}}", p.name, t, cost, t / cost)
-    }).collect();
-    eprintln!("{{\"hops\":[1,2,3,4,5],\"A\":[{}],\"B\":[{}],\"C\":[{}],\"D\":[{}]}}",
-        a.join(","), b.join(","), c.join(","), d.join(","));
+    let d: Vec<String> = [PROTOS[2], PROTOS[3], PROTOS[5], PROTOS[6]]
+        .iter()
+        .map(|p| {
+            let t = retention(h_d, p.mrmc);
+            let cost = if p.caches {
+                h_d as f64 + (k_d - 1.0)
+            } else {
+                k_d * h_d as f64
+            };
+            format!(
+                "{{\"name\":\"{}\",\"tput\":{:.3},\"cost\":{:.0},\"eff\":{:.4}}}",
+                p.name,
+                t,
+                cost,
+                t / cost
+            )
+        })
+        .collect();
+    eprintln!(
+        "{{\"hops\":[1,2,3,4,5],\"A\":[{}],\"B\":[{}],\"C\":[{}],\"D\":[{}]}}",
+        a.join(","),
+        b.join(","),
+        c.join(","),
+        d.join(",")
+    );
 }

@@ -42,12 +42,22 @@ pub struct Channel {
 impl Channel {
     /// A 20 MHz 2.4 GHz Wi-Fi channel (1..=14; ch14 special-cased to 2484 MHz).
     pub fn wifi_2g(ch: u8) -> Self {
-        let center = if ch == 14 { 2_484e6 } else { 2_412e6 + (ch as f64 - 1.0) * 5e6 };
-        Channel { center_hz: center, bandwidth_hz: 20e6 }
+        let center = if ch == 14 {
+            2_484e6
+        } else {
+            2_412e6 + (ch as f64 - 1.0) * 5e6
+        };
+        Channel {
+            center_hz: center,
+            bandwidth_hz: 20e6,
+        }
     }
     /// A 20 MHz 5 GHz Wi-Fi channel (non-DFS lower band approximation).
     pub fn wifi_5g(ch: u8) -> Self {
-        Channel { center_hz: 5_000e6 + ch as f64 * 5e6, bandwidth_hz: 20e6 }
+        Channel {
+            center_hz: 5_000e6 + ch as f64 * 5e6,
+            bandwidth_hz: 20e6,
+        }
     }
     fn low(&self) -> f64 {
         self.center_hz - self.bandwidth_hz / 2.0
@@ -62,7 +72,11 @@ impl Channel {
     /// Overlap as a fraction of the narrower channel (`0` orthogonal, `1` fully co-channel).
     pub fn overlap_fraction(&self, other: &Channel) -> f64 {
         let narrower = self.bandwidth_hz.min(other.bandwidth_hz);
-        if narrower <= 0.0 { 0.0 } else { self.overlap_hz(other) / narrower }
+        if narrower <= 0.0 {
+            0.0
+        } else {
+            self.overlap_hz(other) / narrower
+        }
     }
     /// Centre-frequency separation (Hz).
     pub fn separation_hz(&self, other: &Channel) -> f64 {
@@ -144,11 +158,17 @@ pub struct AntennaPlacement {
 
 impl AntennaPlacement {
     pub fn omni(antenna: Arc<dyn Antenna>) -> Self {
-        AntennaPlacement { offset: [0.0; 3], boresight_az: 0.0, boresight_el: 0.0, antenna }
+        AntennaPlacement {
+            offset: [0.0; 3],
+            boresight_az: 0.0,
+            boresight_el: 0.0,
+            antenna,
+        }
     }
     /// Gain toward a world-frame direction `(az, el)` (accounts for the boresight orientation).
     pub fn gain_toward(&self, az: f64, el: f64) -> f64 {
-        self.antenna.gain_dbi(az - self.boresight_az, el - self.boresight_el)
+        self.antenna
+            .gain_dbi(az - self.boresight_az, el - self.boresight_el)
     }
 }
 
@@ -179,7 +199,11 @@ impl RadioPlatform {
     fn antenna_world_pos(&self, radio: &Radio) -> [f64; 3] {
         let [ox, oy, oz] = radio.antenna.offset;
         let (s, c) = self.yaw.sin_cos();
-        [self.position[0] + c * ox - s * oy, self.position[1] + s * ox + c * oy, self.position[2] + oz]
+        [
+            self.position[0] + c * ox - s * oy,
+            self.position[1] + s * ox + c * oy,
+            self.position[2] + oz,
+        ]
     }
 }
 
@@ -263,7 +287,8 @@ pub trait InterferenceBackend: Send + Sync {
     fn channel_rejection_db(&self, victim: &Channel, interferer: &Channel) -> f64;
     /// TX↔RX isolation (dB) between two radios on the **same platform** — the self-interference path.
     /// Finite even on orthogonal channels (leakage + PA nonlinearity), capped by hardware.
-    fn self_isolation_db(&self, victim: &Radio, aggressor: &Radio, platform: &RadioPlatform) -> f64;
+    fn self_isolation_db(&self, victim: &Radio, aggressor: &Radio, platform: &RadioPlatform)
+    -> f64;
     /// Isolation (dB) from physical antenna coupling between two co-located antennas at `freq_hz`.
     fn antenna_coupling_db(&self, a: &AntennaPlacement, b: &AntennaPlacement, freq_hz: f64) -> f64;
     fn name(&self) -> &'static str;
@@ -301,12 +326,20 @@ impl InterferenceBackend for DefaultInterference {
         let bws = victim.separation_hz(interferer) / victim.bandwidth_hz.max(1.0);
         (self.adjacent_reject_db_per_bw * bws) * (1.0 - overlap)
     }
-    fn self_isolation_db(&self, victim: &Radio, aggressor: &Radio, platform: &RadioPlatform) -> f64 {
+    fn self_isolation_db(
+        &self,
+        victim: &Radio,
+        aggressor: &Radio,
+        platform: &RadioPlatform,
+    ) -> f64 {
         // Total isolation = board isolation + channel-filter rejection + antenna coupling isolation,
         // but never more than the hardware cap (the crux: orthogonal ≠ infinite isolation).
         let reject = self.channel_rejection_db(&victim.channel, &aggressor.channel);
-        let coupling =
-            self.antenna_coupling_db(&victim.antenna, &aggressor.antenna, victim.channel.center_hz);
+        let coupling = self.antenna_coupling_db(
+            &victim.antenna,
+            &aggressor.antenna,
+            victim.channel.center_hz,
+        );
         let _ = platform;
         (self.base_self_isolation_db + reject + coupling).min(self.self_isolation_cap_db)
     }
@@ -345,17 +378,16 @@ impl RadioEnvironment {
         propagation: Arc<dyn PropagationBackend>,
         interference: Arc<dyn InterferenceBackend>,
     ) -> Self {
-        RadioEnvironment { propagation, interference, noise_floor_dbm: -95.0 }
+        RadioEnvironment {
+            propagation,
+            interference,
+            noise_floor_dbm: -95.0,
+        }
     }
 
     /// Received power (dBm) of `tx`'s signal at `victim` (on `victim_platform`), accounting for
     /// distance, both antennas' gains, and cross-channel rejection.
-    pub fn rx_power_dbm(
-        &self,
-        victim: &Radio,
-        victim_platform: &RadioPlatform,
-        tx: TxRef,
-    ) -> f64 {
+    pub fn rx_power_dbm(&self, victim: &Radio, victim_platform: &RadioPlatform, tx: TxRef) -> f64 {
         let tx_pos = tx.platform.antenna_world_pos(tx.radio);
         let rx_pos = victim_platform.antenna_world_pos(victim);
         let (az_t, el_t) = az_el(tx_pos, rx_pos);
@@ -368,7 +400,9 @@ impl RadioEnvironment {
             rx_gain_dbi: victim.antenna.gain_toward(az_r - victim_platform.yaw, el_r),
         };
         self.propagation.rx_power_dbm(&ctx)
-            - self.interference.channel_rejection_db(&victim.channel, &tx.radio.channel)
+            - self
+                .interference
+                .channel_rejection_db(&victim.channel, &tx.radio.channel)
     }
 
     /// SINR (dB) at `victim` receiving `signal`, with a set of `concurrent` interferers (including,
@@ -388,7 +422,9 @@ impl RadioEnvironment {
             let i_dbm = if same_platform {
                 // Self-interference: the aggressor's power minus the platform's TX↔RX isolation.
                 tx.radio.tx_power_dbm
-                    - self.interference.self_isolation_db(victim, tx.radio, victim_platform)
+                    - self
+                        .interference
+                        .self_isolation_db(victim, tx.radio, victim_platform)
             } else {
                 self.rx_power_dbm(victim, victim_platform, *tx)
             };
@@ -407,7 +443,11 @@ mod tests {
     use super::*;
 
     fn platform(pos: [f64; 3], radios: Vec<Radio>) -> RadioPlatform {
-        RadioPlatform { position: pos, yaw: 0.0, radios }
+        RadioPlatform {
+            position: pos,
+            yaw: 0.0,
+            radios,
+        }
     }
     fn radio(id: usize, ch: u8, offset: [f64; 3]) -> Radio {
         Radio {
@@ -435,7 +475,11 @@ mod tests {
 
     #[test]
     fn directional_antenna_gain_peaks_on_boresight() {
-        let d = Directional { peak_dbi: 12.0, beamwidth_rad: 0.5, back_lobe_dbi: -10.0 };
+        let d = Directional {
+            peak_dbi: 12.0,
+            beamwidth_rad: 0.5,
+            back_lobe_dbi: -10.0,
+        };
         let on = d.gain_dbi(0.0, 0.0);
         let off = d.gain_dbi(1.2, 0.0); // well off boresight
         assert!(on > off + 5.0, "gain peaks on boresight ({on} ≫ {off})");
@@ -451,26 +495,47 @@ mod tests {
         let itf = DefaultInterference::default();
         let iso = itf.self_isolation_db(&victim, &aggressor, &plat);
         // Isolation is capped (hardware floor) ⇒ the aggressor's 20 dBm leaks in well above noise.
-        assert!(iso <= itf.self_isolation_cap_db, "orthogonal channels don't give infinite isolation");
+        assert!(
+            iso <= itf.self_isolation_cap_db,
+            "orthogonal channels don't give infinite isolation"
+        );
         let self_interf_dbm = aggressor.tx_power_dbm - iso;
-        assert!(self_interf_dbm > -95.0, "self-interference sits above the noise floor ({self_interf_dbm} dBm)");
+        assert!(
+            self_interf_dbm > -95.0,
+            "self-interference sits above the noise floor ({self_interf_dbm} dBm)"
+        );
     }
 
     #[test]
     fn antenna_coupling_rises_as_antennas_approach() {
         let itf = DefaultInterference::default();
         let far = AntennaPlacement::omni(Arc::new(Isotropic { gain_dbi: 0.0 }));
-        let a = AntennaPlacement { offset: [0.5, 0.0, 0.0], ..far.clone() };
-        let b = AntennaPlacement { offset: [0.02, 0.0, 0.0], ..far.clone() };
-        let origin = AntennaPlacement { offset: [0.0, 0.0, 0.0], ..far };
+        let a = AntennaPlacement {
+            offset: [0.5, 0.0, 0.0],
+            ..far.clone()
+        };
+        let b = AntennaPlacement {
+            offset: [0.02, 0.0, 0.0],
+            ..far.clone()
+        };
+        let origin = AntennaPlacement {
+            offset: [0.0, 0.0, 0.0],
+            ..far
+        };
         let iso_far = itf.antenna_coupling_db(&origin, &a, 2.4e9);
         let iso_near = itf.antenna_coupling_db(&origin, &b, 2.4e9);
-        assert!(iso_near < iso_far, "closer antennas couple more (less isolation): {iso_near} < {iso_far}");
+        assert!(
+            iso_near < iso_far,
+            "closer antennas couple more (less isolation): {iso_near} < {iso_far}"
+        );
     }
 
     #[test]
     fn sinr_drops_when_an_interferer_is_added() {
-        let env = RadioEnvironment::new(Arc::new(FreeSpace), Arc::new(DefaultInterference::default()));
+        let env = RadioEnvironment::new(
+            Arc::new(FreeSpace),
+            Arc::new(DefaultInterference::default()),
+        );
         let rx = radio(0, 1, [0.0; 3]);
         let rx_plat = platform([0.0, 0.0, 0.0], vec![rx.clone()]);
         let tx = radio(0, 1, [0.0; 3]);
@@ -478,13 +543,30 @@ mod tests {
         let itf = radio(0, 1, [0.0; 3]);
         let itf_plat = platform([120.0, 0.0, 0.0], vec![itf.clone()]);
 
-        let clean = env.sinr_db(&rx, &rx_plat, TxRef { platform: &tx_plat, radio: &tx }, &[]);
+        let clean = env.sinr_db(
+            &rx,
+            &rx_plat,
+            TxRef {
+                platform: &tx_plat,
+                radio: &tx,
+            },
+            &[],
+        );
         let jammed = env.sinr_db(
             &rx,
             &rx_plat,
-            TxRef { platform: &tx_plat, radio: &tx },
-            &[TxRef { platform: &itf_plat, radio: &itf }],
+            TxRef {
+                platform: &tx_plat,
+                radio: &tx,
+            },
+            &[TxRef {
+                platform: &itf_plat,
+                radio: &itf,
+            }],
         );
-        assert!(jammed < clean - 3.0, "a co-channel interferer lowers SINR ({jammed} < {clean})");
+        assert!(
+            jammed < clean - 3.0,
+            "a co-channel interferer lowers SINR ({jammed} < {clean})"
+        );
     }
 }

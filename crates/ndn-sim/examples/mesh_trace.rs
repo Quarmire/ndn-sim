@@ -23,7 +23,9 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_radio_cognition::{apply_arm, reward, WifiRate, ARMS, Context, ContextualBandit, NameContext, TxParams};
+use ndn_radio_cognition::{
+    ARMS, Context, ContextualBandit, NameContext, TxParams, WifiRate, apply_arm, reward,
+};
 use ndn_sim::link_model::mcs_phy_rate_bps;
 use ndn_sim::medium::CarrierSenseInterference;
 use ndn_sim::radio::RadioBus;
@@ -37,8 +39,12 @@ const MAX_PIDX: u8 = 63;
 const MAX_DBM: f64 = 20.0;
 
 // Line topology: consumer → relay1 → relay2 → producer. Interest walks up, Data walks back.
-const PATH: [(usize, &str, f64); 4] =
-    [(0, "consumer", 0.0), (1, "relay-1", 160.0), (2, "relay-2", 320.0), (3, "producer", 480.0)];
+const PATH: [(usize, &str, f64); 4] = [
+    (0, "consumer", 0.0),
+    (1, "relay-1", 160.0),
+    (2, "relay-2", 320.0),
+    (3, "producer", 480.0),
+];
 
 fn air_ns(mcs: u8) -> u64 {
     (PAYLOAD as u64) * 8 * 1_000_000_000 / (mcs_phy_rate_bps(mcs).max(1) as u64)
@@ -70,7 +76,11 @@ fn main() {
     }
     // Generous sensitivity so 160 m links deliver reliably — then retries in the trace come from
     // COLLISIONS (overlapping requests), the interesting failure mode, not from range.
-    let prop = Arc::new(FreeSpacePathLoss { tx_power_dbm: 20.0, freq_hz: 2.4e9, rx_sensitivity_dbm: -85.0 });
+    let prop = Arc::new(FreeSpacePathLoss {
+        tx_power_dbm: 20.0,
+        freq_hz: 2.4e9,
+        rx_sensitivity_dbm: -85.0,
+    });
     let bus = RadioBus::with_interference_on(
         world.clone(),
         prop,
@@ -84,7 +94,9 @@ fn main() {
         bus.set_tx_power(NodeId(id), MAX_DBM);
     }
     // one bandit per forwarding node (each learns its own downstream link)
-    let mut bandits: Vec<ContextualBandit> = (0..PATH.len()).map(|_| ContextualBandit::new(1.0)).collect();
+    let mut bandits: Vec<ContextualBandit> = (0..PATH.len())
+        .map(|_| ContextualBandit::new(1.0))
+        .collect();
 
     let mut spans: Vec<Span> = Vec::new();
     let mut next_id = 0u64;
@@ -113,9 +125,18 @@ fn main() {
             let ok = rx.iter().any(|(n, _, d)| *n == NodeId(to) && *d);
             let sid = id();
             spans.push(Span {
-                id: sid, parent, node: from, lane: PATH[hop].1, kind: "interest",
-                name: name.clone(), t0: t, dur: base_air, ok,
-                arm: None, mcs: Some(BASE_MCS), dbm: None,
+                id: sid,
+                parent,
+                node: from,
+                lane: PATH[hop].1,
+                kind: "interest",
+                name: name.clone(),
+                t0: t,
+                dur: base_air,
+                ok,
+                arm: None,
+                mcs: Some(BASE_MCS),
+                dbm: None,
             });
             parent = Some(sid);
             t += base_air;
@@ -125,9 +146,18 @@ fn main() {
                 let ok2 = rx2.iter().any(|(n, _, d)| *n == NodeId(to) && *d);
                 let rid = id();
                 spans.push(Span {
-                    id: rid, parent, node: from, lane: PATH[hop].1, kind: "retry",
-                    name: name.clone(), t0: t, dur: base_air, ok: ok2,
-                    arm: None, mcs: Some(BASE_MCS), dbm: None,
+                    id: rid,
+                    parent,
+                    node: from,
+                    lane: PATH[hop].1,
+                    kind: "retry",
+                    name: name.clone(),
+                    t0: t,
+                    dur: base_air,
+                    ok: ok2,
+                    arm: None,
+                    mcs: Some(BASE_MCS),
+                    dbm: None,
                 });
                 parent = Some(rid);
                 t += base_air;
@@ -139,11 +169,18 @@ fn main() {
             let (from, to) = (PATH[hop + 1].0, PATH[hop].0);
             // measure the downstream link RSSI WITHOUT emitting a frame (no probe → no extra collisions)
             let (fx, tx_x) = (PATH[hop + 1].2, PATH[hop].2);
-            let rssi = bus.link_rssi(Position::xy(fx, 0.0), Position::xy(tx_x, 0.0)).unwrap_or(-90.0);
+            let rssi = bus
+                .link_rssi(Position::xy(fx, 0.0), Position::xy(tx_x, 0.0))
+                .unwrap_or(-90.0);
             let ctx = Context::new(rssi.round() as i8, 20, 4, &NameContext::new(0));
             let choice = bandits[from].select_traced(&ctx);
             let arm = choice.arm;
-            let mut p: TxParams = TxParams::wifi(WifiRate { mcs: Some(BASE_MCS), bw: Some(2), nss: Some(1), ..Default::default() });
+            let mut p: TxParams = TxParams::wifi(WifiRate {
+                mcs: Some(BASE_MCS),
+                bw: Some(2),
+                nss: Some(1),
+                ..Default::default()
+            });
             p.tx_power = Some(MAX_PIDX);
             apply_arm(&ARMS[arm], &mut p, MAX_MCS, MAX_PIDX, Some(0.5), 0);
             let mcs = p.mcs().unwrap_or(BASE_MCS);
@@ -156,9 +193,18 @@ fn main() {
             bus.set_tx_power(NodeId(from), MAX_DBM);
             let sid = id();
             spans.push(Span {
-                id: sid, parent, node: from, lane: PATH[hop + 1].1, kind: "data",
-                name: name.clone(), t0: t, dur, ok,
-                arm: Some(arm), mcs: Some(mcs), dbm: Some(dbm_of(pidx)),
+                id: sid,
+                parent,
+                node: from,
+                lane: PATH[hop + 1].1,
+                kind: "data",
+                name: name.clone(),
+                t0: t,
+                dur,
+                ok,
+                arm: Some(arm),
+                mcs: Some(mcs),
+                dbm: Some(dbm_of(pidx)),
             });
             parent = Some(sid);
             t += dur;
@@ -171,18 +217,46 @@ fn main() {
     let ok = spans.iter().filter(|s| s.ok).count();
     let retries = spans.iter().filter(|s| s.kind == "retry").count();
     let mean_lat = latencies.iter().sum::<f64>() / latencies.len() as f64;
-    println!("Multi-node distributed trace — {REQUESTS} requests, {} spans across {} node lanes\n", n, PATH.len());
-    println!("  spans           {n}  ({} delivered, {retries} retries)", ok);
-    println!("  mean end-to-end {:.0} µs (Interest up 3 hops + Data back 3 hops)", mean_lat);
-    println!("  decision spans  {} Data hops, each stamped with the bandit's arm/MCS/power\n", spans.iter().filter(|s| s.kind == "data").count());
-    println!("  the trace stitches on the wire the way the real OTLP-in-Data path does — every span");
-    println!("  carries its node, its causal parent, and (on Data hops) WHY that rate was chosen.\n");
+    println!(
+        "Multi-node distributed trace — {REQUESTS} requests, {} spans across {} node lanes\n",
+        n,
+        PATH.len()
+    );
+    println!(
+        "  spans           {n}  ({} delivered, {retries} retries)",
+        ok
+    );
+    println!(
+        "  mean end-to-end {:.0} µs (Interest up 3 hops + Data back 3 hops)",
+        mean_lat
+    );
+    println!(
+        "  decision spans  {} Data hops, each stamped with the bandit's arm/MCS/power\n",
+        spans.iter().filter(|s| s.kind == "data").count()
+    );
+    println!(
+        "  the trace stitches on the wire the way the real OTLP-in-Data path does — every span"
+    );
+    println!(
+        "  carries its node, its causal parent, and (on Data hops) WHY that rate was chosen.\n"
+    );
 
     // per-node span counts
     println!("  node        interest  data  retry");
     for (id_, label, _) in PATH {
-        let c = |k: &str| spans.iter().filter(|s| s.node == id_ && s.kind == k).count();
-        println!("  {:<10}    {:>5}  {:>4}  {:>5}", label, c("interest"), c("data"), c("retry"));
+        let c = |k: &str| {
+            spans
+                .iter()
+                .filter(|s| s.node == id_ && s.kind == k)
+                .count()
+        };
+        println!(
+            "  {:<10}    {:>5}  {:>4}  {:>5}",
+            label,
+            c("interest"),
+            c("data"),
+            c("retry")
+        );
     }
 
     // JSON for the trace dashboard
@@ -195,6 +269,14 @@ fn main() {
         s.mcs.map(|m| m.to_string()).unwrap_or("null".into()),
         s.dbm.map(|d| format!("{:.1}", d)).unwrap_or("null".into()),
     )).collect();
-    let lanes: Vec<String> = PATH.iter().map(|(id_, l, _)| format!("{{\"node\":{id_},\"label\":\"{l}\"}}")).collect();
-    eprintln!("{{\"lanes\":[{}],\"spans\":[{}],\"arms\":{}}}", lanes.join(","), js.join(","), ARMS.len());
+    let lanes: Vec<String> = PATH
+        .iter()
+        .map(|(id_, l, _)| format!("{{\"node\":{id_},\"label\":\"{l}\"}}"))
+        .collect();
+    eprintln!(
+        "{{\"lanes\":[{}],\"spans\":[{}],\"arms\":{}}}",
+        lanes.join(","),
+        js.join(","),
+        ARMS.len()
+    );
 }

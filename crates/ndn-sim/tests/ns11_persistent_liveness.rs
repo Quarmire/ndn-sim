@@ -73,7 +73,10 @@ fn persistent_subscription_survives_single_loss_past_2x_budget() {
 
         // Consumer C: subscribe /push with a SMALL budget and a short staleness (so a stalled
         // subscriber re-expresses promptly — the budget/staleness re-express the field describes).
-        let consumer = fabric.engine_of(c).unwrap().app_consumer(cancel.child_token());
+        let consumer = fabric
+            .engine_of(c)
+            .unwrap()
+            .app_consumer(cancel.child_token());
         let mut sub = consumer
             .subscribe(
                 n(PREFIX),
@@ -97,7 +100,11 @@ fn persistent_subscription_survives_single_loss_past_2x_budget() {
             .hold_link(
                 p,
                 r,
-                HoldRule::nth(FrameMatcher::Data, (BUDGET - 1) as u64, Duration::from_secs(86_400)),
+                HoldRule::nth(
+                    FrameMatcher::Data,
+                    (BUDGET - 1) as u64,
+                    Duration::from_secs(86_400),
+                ),
             )
             .unwrap();
 

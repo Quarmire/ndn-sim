@@ -437,11 +437,19 @@ impl Scenario {
         }
         for (i, b) in self.bridges.iter().enumerate() {
             let node = NodeId(b.node);
-            let local = b.local.parse().with_context(|| format!("bridges[{i}].local"))?;
-            let peer = b.peer.parse().with_context(|| format!("bridges[{i}].peer"))?;
+            let local = b
+                .local
+                .parse()
+                .with_context(|| format!("bridges[{i}].local"))?;
+            let peer = b
+                .peer
+                .parse()
+                .with_context(|| format!("bridges[{i}].peer"))?;
             let face = fabric.bridge_udp_mtu(node, local, peer, b.mtu).await?;
             if let Some(route) = &b.route {
-                let prefix = route.parse().with_context(|| format!("bridges[{i}].route"))?;
+                let prefix = route
+                    .parse()
+                    .with_context(|| format!("bridges[{i}].route"))?;
                 fabric
                     .engine_of(node)
                     .ok_or_else(|| anyhow::anyhow!("bridges[{i}]: no node {node}"))?

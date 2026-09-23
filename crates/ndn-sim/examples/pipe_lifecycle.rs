@@ -25,8 +25,17 @@ const UNICAST_EDGE: f64 = 1.10; // generous ACK/rate-adapt bonus for DCNLA on a 
 
 /// Break rate (per second) at speed `v` — interpolated from #70's measured points.
 fn lambda(v: f64) -> f64 {
-    let pts = [(0.5, 0.031), (1.0, 0.067), (2.0, 0.138), (5.0, 0.229), (10.0, 0.299), (20.0, 0.376)];
-    if v <= pts[0].0 { return pts[0].1; }
+    let pts = [
+        (0.5, 0.031),
+        (1.0, 0.067),
+        (2.0, 0.138),
+        (5.0, 0.229),
+        (10.0, 0.299),
+        (20.0, 0.376),
+    ];
+    if v <= pts[0].0 {
+        return pts[0].1;
+    }
     for w in pts.windows(2) {
         if v <= w[1].0 {
             let (x0, y0) = w[0];
@@ -59,7 +68,12 @@ fn named_ctrl_msgs() -> f64 {
     HOPS * 2.0
 }
 
-struct Cell { dcnla: f64, named: f64, dcnla_ovh: f64, named_ovh: f64 }
+struct Cell {
+    dcnla: f64,
+    named: f64,
+    dcnla_ovh: f64,
+    named_ovh: f64,
+}
 
 fn eval(v: f64, n: f64) -> Cell {
     let lam = lambda(v);
@@ -76,8 +90,12 @@ fn eval(v: f64, n: f64) -> Cell {
 }
 
 fn main() {
-    println!("Pipe lifecycle over mobility × density — DCNLA (setup-amortized) vs named-data (setup-free)\n");
-    println!("model grounded in: #70 λ(v), real-engine RTT, thesis IBSS-assoc, MT7612U rate. DCNLA gets a");
+    println!(
+        "Pipe lifecycle over mobility × density — DCNLA (setup-amortized) vs named-data (setup-free)\n"
+    );
+    println!(
+        "model grounded in: #70 λ(v), real-engine RTT, thesis IBSS-assoc, MT7612U rate. DCNLA gets a"
+    );
     println!("generous +10% unicast edge on a chain.\n");
 
     let vels = [0.5f64, 1.0, 2.0, 5.0, 10.0, 20.0];
@@ -85,10 +103,18 @@ fn main() {
 
     // Axis 0 — the robust, assumption-free costs, paid on EVERY create AND rebuild:
     println!("0. per-event cost (create OR recover-from-break), N=50:");
-    println!("   setup/recovery latency   DCNLA {:>5.0} ms   named {:>4.0} ms   ({:.0}× slower to recover)",
-        dcnla_setup_ms(50.0), named_setup_ms(), dcnla_setup_ms(50.0) / named_setup_ms());
-    println!("   control messages/rebuild DCNLA {:>5.0}      named {:>4.0}         ({:.0}× more traffic)\n",
-        dcnla_ctrl_msgs(50.0), named_ctrl_msgs(), dcnla_ctrl_msgs(50.0) / named_ctrl_msgs());
+    println!(
+        "   setup/recovery latency   DCNLA {:>5.0} ms   named {:>4.0} ms   ({:.0}× slower to recover)",
+        dcnla_setup_ms(50.0),
+        named_setup_ms(),
+        dcnla_setup_ms(50.0) / named_setup_ms()
+    );
+    println!(
+        "   control messages/rebuild DCNLA {:>5.0}      named {:>4.0}         ({:.0}× more traffic)\n",
+        dcnla_ctrl_msgs(50.0),
+        named_ctrl_msgs(),
+        dcnla_ctrl_msgs(50.0) / named_ctrl_msgs()
+    );
 
     // A. effective goodput vs velocity at a mid density
     let n_a = 50.0;
@@ -98,8 +124,20 @@ fn main() {
     for &v in &vels {
         let c = eval(v, n_a);
         let win = if c.named > c.dcnla { "named" } else { "DCNLA" };
-        println!("  {:>4.1}   {:.3}   {:>6.1}   {:>6.1}    {}", v, lambda(v), c.dcnla, c.named, win);
-        a_json.push(format!("{{\"v\":{v},\"lam\":{:.3},\"dcnla\":{:.1},\"named\":{:.1}}}", lambda(v), c.dcnla, c.named));
+        println!(
+            "  {:>4.1}   {:.3}   {:>6.1}   {:>6.1}    {}",
+            v,
+            lambda(v),
+            c.dcnla,
+            c.named,
+            win
+        );
+        a_json.push(format!(
+            "{{\"v\":{v},\"lam\":{:.3},\"dcnla\":{:.1},\"named\":{:.1}}}",
+            lambda(v),
+            c.dcnla,
+            c.named
+        ));
     }
 
     // B. control overhead vs density at a mid velocity
@@ -109,14 +147,24 @@ fn main() {
     let mut b_json = Vec::new();
     for &n in &dens {
         let c = eval(v_b, n);
-        println!("  {:>4}    {:>6.1}   {:>5.1}", n as u32, c.dcnla_ovh, c.named_ovh);
-        b_json.push(format!("{{\"n\":{n},\"dcnla\":{:.1},\"named\":{:.1}}}", c.dcnla_ovh, c.named_ovh));
+        println!(
+            "  {:>4}    {:>6.1}   {:>5.1}",
+            n as u32, c.dcnla_ovh, c.named_ovh
+        );
+        b_json.push(format!(
+            "{{\"n\":{n},\"dcnla\":{:.1},\"named\":{:.1}}}",
+            c.dcnla_ovh, c.named_ovh
+        ));
     }
 
     // C. winner map over velocity × density (named advantage in Mbps)
-    println!("\nC. named − DCNLA effective goodput (Mbps) over speed × density (＋ = named wins)\n");
+    println!(
+        "\nC. named − DCNLA effective goodput (Mbps) over speed × density (＋ = named wins)\n"
+    );
     print!("      N=   ");
-    for &n in &dens { print!("{:>7}", n as u32); }
+    for &n in &dens {
+        print!("{:>7}", n as u32);
+    }
     println!();
     let mut c_json = Vec::new();
     for &v in &vels {
@@ -130,16 +178,38 @@ fn main() {
         println!();
     }
 
-    println!("\ntakeaway (honest, three axes): on THROUGHPUT the thesis's amortization argument HOLDS — at");
-    println!("realistic break rates (λ<0.4/s, #70) a 250 ms setup costs only ~9% availability, so DCNLA's");
-    println!("+10% unicast edge (if real; #66 showed they tie on a chain) keeps it competitive on Mbps until");
-    println!("the extreme mobile+dense corner. Where DCNLA loses is the PER-EVENT costs it can't amortize:");
-    println!("  • recovery LATENCY — ~250 ms to rebuild a broken pipe vs ~18 ms to re-express an Interest (14×)");
-    println!("  • control OVERHEAD — a SEEK flood + handshake per rebuild, growing with λ×N (6→27 msg/s) vs ~2");
-    println!("So named-data doesn't necessarily deliver more bits — it recovers ~14× faster and spends a");
-    println!("fraction of the airtime doing it. For a MANET (responsiveness + scarce spectrum), those are the");
-    println!("costs that matter, and they're the ones the named-data floor removes without host identity.");
+    println!(
+        "\ntakeaway (honest, three axes): on THROUGHPUT the thesis's amortization argument HOLDS — at"
+    );
+    println!(
+        "realistic break rates (λ<0.4/s, #70) a 250 ms setup costs only ~9% availability, so DCNLA's"
+    );
+    println!(
+        "+10% unicast edge (if real; #66 showed they tie on a chain) keeps it competitive on Mbps until"
+    );
+    println!(
+        "the extreme mobile+dense corner. Where DCNLA loses is the PER-EVENT costs it can't amortize:"
+    );
+    println!(
+        "  • recovery LATENCY — ~250 ms to rebuild a broken pipe vs ~18 ms to re-express an Interest (14×)"
+    );
+    println!(
+        "  • control OVERHEAD — a SEEK flood + handshake per rebuild, growing with λ×N (6→27 msg/s) vs ~2"
+    );
+    println!(
+        "So named-data doesn't necessarily deliver more bits — it recovers ~14× faster and spends a"
+    );
+    println!(
+        "fraction of the airtime doing it. For a MANET (responsiveness + scarce spectrum), those are the"
+    );
+    println!(
+        "costs that matter, and they're the ones the named-data floor removes without host identity."
+    );
 
-    eprintln!("{{\"A\":[{}],\"B\":[{}],\"C\":[{}],\"vels\":[0.5,1,2,5,10,20],\"dens\":[10,25,50,100]}}",
-        a_json.join(","), b_json.join(","), c_json.join(","));
+    eprintln!(
+        "{{\"A\":[{}],\"B\":[{}],\"C\":[{}],\"vels\":[0.5,1,2,5,10,20],\"dens\":[10,25,50,100]}}",
+        a_json.join(","),
+        b_json.join(","),
+        c_json.join(",")
+    );
 }

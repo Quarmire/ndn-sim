@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_radio_cognition::{ARMS, Context, ContextualBandit, NameContext, TxParams, WifiRate, apply_arm, reward};
+use ndn_radio_cognition::{
+    ARMS, Context, ContextualBandit, NameContext, TxParams, WifiRate, apply_arm, reward,
+};
 use ndn_sim::energy::RadioEnergyModel;
 use ndn_sim::link_model::mcs_phy_rate_bps;
 use ndn_sim::medium::{CarrierSenseInterference, DeliveryReason};
@@ -40,13 +42,48 @@ struct Node {
 
 fn nodes() -> Vec<Node> {
     vec![
-        Node { id: 0, role: "producer", x: 0.0, y: 0.0 },
-        Node { id: 1, role: "relay", x: 200.0, y: 90.0 },
-        Node { id: 2, role: "relay", x: 200.0, y: -90.0 },
-        Node { id: 3, role: "consumer", x: 380.0, y: 150.0 },
-        Node { id: 4, role: "consumer", x: 380.0, y: -150.0 },
-        Node { id: 5, role: "consumer", x: 300.0, y: 0.0 },
-        Node { id: 6, role: "consumer", x: 560.0, y: 20.0 }, // far — marginal link
+        Node {
+            id: 0,
+            role: "producer",
+            x: 0.0,
+            y: 0.0,
+        },
+        Node {
+            id: 1,
+            role: "relay",
+            x: 200.0,
+            y: 90.0,
+        },
+        Node {
+            id: 2,
+            role: "relay",
+            x: 200.0,
+            y: -90.0,
+        },
+        Node {
+            id: 3,
+            role: "consumer",
+            x: 380.0,
+            y: 150.0,
+        },
+        Node {
+            id: 4,
+            role: "consumer",
+            x: 380.0,
+            y: -150.0,
+        },
+        Node {
+            id: 5,
+            role: "consumer",
+            x: 300.0,
+            y: 0.0,
+        },
+        Node {
+            id: 6,
+            role: "consumer",
+            x: 560.0,
+            y: 20.0,
+        }, // far — marginal link
     ]
 }
 
@@ -55,7 +92,12 @@ fn dbm_of(power_idx: u8) -> f64 {
 }
 
 fn base_params() -> TxParams {
-    let mut p = TxParams::wifi(WifiRate { mcs: Some(BASE_MCS), bw: Some(2), nss: Some(1), ..Default::default() });
+    let mut p = TxParams::wifi(WifiRate {
+        mcs: Some(BASE_MCS),
+        bw: Some(2),
+        nss: Some(1),
+        ..Default::default()
+    });
     p.tx_power = Some(MAX_POWER_IDX);
     p
 }
@@ -91,7 +133,11 @@ fn main() {
     // Probe producer→target to fix the bandit's context.
     bus.set_tx_power(NodeId(0), MAX_DBM);
     let probe = bus.transmit(NodeId(0), BASE_MCS, Bytes::from(vec![0u8; PAYLOAD]), 0);
-    let rssi = probe.iter().find(|(to, _, _)| *to == NodeId(TARGET)).map(|(_, r, _)| *r).unwrap_or(-90.0);
+    let rssi = probe
+        .iter()
+        .find(|(to, _, _)| *to == NodeId(TARGET))
+        .map(|(_, r, _)| *r)
+        .unwrap_or(-90.0);
     let ctx = Context::new(rssi.round() as i8, 20, 4, &NameContext::new(0));
 
     // Per-round decisions: (arm, delivered_to_target).
@@ -115,7 +161,12 @@ fn main() {
         // The two relays rebroadcast at full power/base rate (their cooperative contribution).
         for r in [1u64, 2] {
             bus.set_tx_power(NodeId(r as usize), MAX_DBM);
-            bus.transmit(NodeId(r as usize), BASE_MCS, Bytes::from(vec![0u8; PAYLOAD]), t);
+            bus.transmit(
+                NodeId(r as usize),
+                BASE_MCS,
+                Bytes::from(vec![0u8; PAYLOAD]),
+                t,
+            );
             t += air * 2;
         }
     }
@@ -153,7 +204,8 @@ fn main() {
         if matches!(r.reason, DeliveryReason::Collision) {
             e.collided += 1;
         }
-        let bin = (((r.t_ns - t_min) as u128 * BINS as u128) / span as u128).min(BINS as u128 - 1) as usize;
+        let bin = (((r.t_ns - t_min) as u128 * BINS as u128) / span as u128).min(BINS as u128 - 1)
+            as usize;
         e.bins[bin].0 += 1;
         if r.delivered {
             e.bins[bin].1 += 1;
@@ -168,7 +220,10 @@ fn main() {
         if i > 0 {
             s.push(',');
         }
-        s.push_str(&format!("{{\"id\":{},\"role\":\"{}\",\"x\":{},\"y\":{}}}", n.id, n.role, n.x, n.y));
+        s.push_str(&format!(
+            "{{\"id\":{},\"role\":\"{}\",\"x\":{},\"y\":{}}}",
+            n.id, n.role, n.x, n.y
+        ));
     }
     s.push_str("],\n");
     // edges (fan-out DAG + heatmap)
@@ -180,7 +235,13 @@ fn main() {
         let bins: Vec<String> = e
             .bins
             .iter()
-            .map(|(t, d)| if *t == 0 { "null".into() } else { format!("{:.3}", *d as f64 / *t as f64) })
+            .map(|(t, d)| {
+                if *t == 0 {
+                    "null".into()
+                } else {
+                    format!("{:.3}", *d as f64 / *t as f64)
+                }
+            })
             .collect();
         s.push_str(&format!(
             "{{\"from\":{from},\"to\":{to},\"total\":{},\"delivered\":{},\"collided\":{},\"rssi\":{:.1},\"dist\":{:.0},\"bins\":[{}]}}",
@@ -221,11 +282,23 @@ fn main() {
         }
         let sc: Vec<String> = scores
             .iter()
-            .map(|v| if v.is_finite() { format!("{v:.3}") } else { "null".into() })
+            .map(|v| {
+                if v.is_finite() {
+                    format!("{v:.3}")
+                } else {
+                    "null".into()
+                }
+            })
             .collect();
-        s.push_str(&format!("{{\"arm\":{arm},\"scores\":[{}],\"ok\":{}}}", sc.join(","), ok));
+        s.push_str(&format!(
+            "{{\"arm\":{arm},\"scores\":[{}],\"ok\":{}}}",
+            sc.join(","),
+            ok
+        ));
     }
     s.push_str("],\n");
-    s.push_str(&format!("\"target\":{TARGET},\"rounds\":{ROUNDS},\"bins\":{BINS}\n}}"));
+    s.push_str(&format!(
+        "\"target\":{TARGET},\"rounds\":{ROUNDS},\"bins\":{BINS}\n}}"
+    ));
     println!("{s}");
 }

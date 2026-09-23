@@ -44,7 +44,10 @@ impl Drop for Reaper {
 fn nfd_bin() -> Option<String> {
     [
         std::env::var("NFD_BIN").ok(),
-        Some(format!("{}/Documents/Dev/NFD/build/bin/nfd", std::env::var("HOME").unwrap_or_default())),
+        Some(format!(
+            "{}/Documents/Dev/NFD/build/bin/nfd",
+            std::env::var("HOME").unwrap_or_default()
+        )),
     ]
     .into_iter()
     .flatten()
@@ -53,14 +56,21 @@ fn nfd_bin() -> Option<String> {
 
 /// The ndn-cxx dylib directory NFD (C++) needs at runtime.
 fn ndn_cxx_lib() -> String {
-    std::env::var("NDN_CXX_LIB")
-        .unwrap_or_else(|_| format!("{}/Documents/Dev/ndn-cxx/build", std::env::var("HOME").unwrap_or_default()))
+    std::env::var("NDN_CXX_LIB").unwrap_or_else(|_| {
+        format!(
+            "{}/Documents/Dev/ndn-cxx/build",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    })
 }
 
 /// The unix socket NFD's in-process RIB manager talks to the forwarder over
 /// (without it, NFD aborts at startup: "No transport is available").
 fn nfd_socket(port: u16) -> String {
-    std::env::temp_dir().join(format!("ndn-lab-nfd-{port}.sock")).to_string_lossy().into_owned()
+    std::env::temp_dir()
+        .join(format!("ndn-lab-nfd-{port}.sock"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// A minimal, self-contained NFD config: a UDP unicast listener on `port` (with
@@ -112,7 +122,10 @@ async fn start_nfd(port: u16) -> Option<Reaper> {
     let nfd = Command::new(&bin)
         .args(["--config", config.to_str().unwrap()])
         .env("DYLD_FALLBACK_LIBRARY_PATH", ndn_cxx_lib())
-        .env("NDN_CLIENT_TRANSPORT", format!("unix://{}", nfd_socket(port)))
+        .env(
+            "NDN_CLIENT_TRANSPORT",
+            format!("unix://{}", nfd_socket(port)),
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -129,21 +142,34 @@ async fn start_nfd(port: u16) -> Option<Reaper> {
 #[ignore = "needs a built NFD (set NFD_BIN + NDN_CXX_LIB)"]
 async fn nfd_best_route_nacks_noroute_and_we_surface_it() {
     let port = 26363u16;
-    let Some(_nfd) = start_nfd(port).await else { return };
+    let Some(_nfd) = start_nfd(port).await else {
+        return;
+    };
 
     let mut sim = Simulation::new().kernel(RealTimeKernel::new() as Arc<dyn SimKernel>);
     let node = sim.add_node(ndn_engine::builder::EngineConfig::default());
     let fabric = sim.start().await.unwrap();
     let face = fabric
-        .bridge_udp(node, "127.0.0.1:0".parse().unwrap(), format!("127.0.0.1:{port}").parse().unwrap())
+        .bridge_udp(
+            node,
+            "127.0.0.1:0".parse().unwrap(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+        )
         .await
         .unwrap();
     // Route /nfd-void toward NFD; NFD has no route for it ⇒ best-route Nacks NoRoute.
-    fabric.engine_of(node).unwrap().fib().add_nexthop(&"/nfd-void".parse::<Name>().unwrap(), face, 10);
+    fabric.engine_of(node).unwrap().fib().add_nexthop(
+        &"/nfd-void".parse::<Name>().unwrap(),
+        face,
+        10,
+    );
 
-    let mut consumer = fabric.engine_of(node).unwrap().app_consumer(CancellationToken::new());
-    let interest =
-        InterestBuilder::new("/nfd-void/x".parse::<Name>().unwrap()).lifetime(Duration::from_secs(4));
+    let mut consumer = fabric
+        .engine_of(node)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
+    let interest = InterestBuilder::new("/nfd-void/x".parse::<Name>().unwrap())
+        .lifetime(Duration::from_secs(4));
     let res = consumer.fetch_with(interest).await;
     fabric.shutdown().await;
 
@@ -162,7 +188,10 @@ fn nfdc(port: u16, args: &[&str]) {
     let ok = Command::new(nfdc_path)
         .args(args)
         .env("DYLD_FALLBACK_LIBRARY_PATH", ndn_cxx_lib())
-        .env("NDN_CLIENT_TRANSPORT", format!("unix://{}", nfd_socket(port)))
+        .env(
+            "NDN_CLIENT_TRANSPORT",
+            format!("unix://{}", nfd_socket(port)),
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -177,7 +206,11 @@ async fn fetch_n(consumer: &mut ndn_app::Consumer, n: u32) -> u32 {
     for i in 0..n {
         let name: Name = format!("/diff/obj/{i}").parse().unwrap();
         if consumer
-            .fetch_with(InterestBuilder::new(name).must_be_fresh().lifetime(Duration::from_secs(4)))
+            .fetch_with(
+                InterestBuilder::new(name)
+                    .must_be_fresh()
+                    .lifetime(Duration::from_secs(4)),
+            )
             .await
             .is_ok()
         {
@@ -199,7 +232,12 @@ async fn differential_ndn_rs_relay_vs_nfd_forwarder_agree() {
     let serve = |producer: ndn_app::Producer| async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"diff-payload")).await;
+                let _ = r
+                    .respond(
+                        (*i.name).clone(),
+                        bytes::Bytes::from_static(b"diff-payload"),
+                    )
+                    .await;
             })
             .await;
     };
@@ -217,8 +255,16 @@ async fn differential_ndn_rs_relay_vs_nfd_forwarder_agree() {
         sim.add_route(c, "/diff", r);
         sim.add_route(r, "/diff", p);
         let fabric = sim.start().await.unwrap();
-        tokio::spawn(serve(fabric.engine_of(p).unwrap().register_producer("/diff/obj", CancellationToken::new())));
-        let mut consumer = fabric.engine_of(c).unwrap().app_consumer(CancellationToken::new());
+        tokio::spawn(serve(
+            fabric
+                .engine_of(p)
+                .unwrap()
+                .register_producer("/diff/obj", CancellationToken::new()),
+        ));
+        let mut consumer = fabric
+            .engine_of(c)
+            .unwrap()
+            .app_consumer(CancellationToken::new());
         let got = fetch_n(&mut consumer, N).await;
         fabric.shutdown().await;
         got
@@ -226,7 +272,9 @@ async fn differential_ndn_rs_relay_vs_nfd_forwarder_agree() {
 
     // ── Run B: foreign, real NFD in the middle (C — NFD — P) ─────────────────
     let port = 28363u16;
-    let Some(_nfd) = start_nfd(port).await else { return };
+    let Some(_nfd) = start_nfd(port).await else {
+        return;
+    };
     let received_foreign = {
         let mut sim = Simulation::new().kernel(RealTimeKernel::new() as Arc<dyn SimKernel>);
         let (c, p) = (
@@ -237,21 +285,53 @@ async fn differential_ndn_rs_relay_vs_nfd_forwarder_agree() {
         let nfd_addr = format!("127.0.0.1:{port}");
         // Producer node P listens on a FIXED port so NFD can route toward it.
         let p_port = 28401u16;
-        fabric.bridge_udp(p, format!("127.0.0.1:{p_port}").parse().unwrap(), nfd_addr.parse().unwrap()).await.unwrap();
-        tokio::spawn(serve(fabric.engine_of(p).unwrap().register_producer("/diff/obj", CancellationToken::new())));
+        fabric
+            .bridge_udp(
+                p,
+                format!("127.0.0.1:{p_port}").parse().unwrap(),
+                nfd_addr.parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        tokio::spawn(serve(
+            fabric
+                .engine_of(p)
+                .unwrap()
+                .register_producer("/diff/obj", CancellationToken::new()),
+        ));
         // Consumer node C bridges to NFD; route /diff over that face.
-        let c_face = fabric.bridge_udp(c, "127.0.0.1:0".parse().unwrap(), nfd_addr.parse().unwrap()).await.unwrap();
-        fabric.engine_of(c).unwrap().fib().add_nexthop(&"/diff".parse::<Name>().unwrap(), c_face, 10);
+        let c_face = fabric
+            .bridge_udp(c, "127.0.0.1:0".parse().unwrap(), nfd_addr.parse().unwrap())
+            .await
+            .unwrap();
+        fabric.engine_of(c).unwrap().fib().add_nexthop(
+            &"/diff".parse::<Name>().unwrap(),
+            c_face,
+            10,
+        );
         // NFD forwards /diff toward P.
-        nfdc(port, &["route", "add", "/diff", &format!("udp://127.0.0.1:{p_port}")]);
+        nfdc(
+            port,
+            &[
+                "route",
+                "add",
+                "/diff",
+                &format!("udp://127.0.0.1:{p_port}"),
+            ],
+        );
         tokio::time::sleep(Duration::from_millis(400)).await;
-        let mut consumer = fabric.engine_of(c).unwrap().app_consumer(CancellationToken::new());
+        let mut consumer = fabric
+            .engine_of(c)
+            .unwrap()
+            .app_consumer(CancellationToken::new());
         let got = fetch_n(&mut consumer, N).await;
         fabric.shutdown().await;
         got
     };
 
-    eprintln!("DIFFERENTIAL: pure ndn-rs relay delivered {received_pure}/{N}; real NFD delivered {received_foreign}/{N}");
+    eprintln!(
+        "DIFFERENTIAL: pure ndn-rs relay delivered {received_pure}/{N}; real NFD delivered {received_foreign}/{N}"
+    );
     assert_eq!(received_pure, N, "the pure ndn-rs path delivers everything");
     assert_eq!(
         received_pure, received_foreign,

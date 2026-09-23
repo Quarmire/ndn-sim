@@ -296,7 +296,9 @@ pub struct Wifi {
 
 impl Wifi {
     pub fn new() -> Self {
-        Self { link: LinkModel::new() }
+        Self {
+            link: LinkModel::new(),
+        }
     }
 
     /// **Monitor / injection** transmit: one broadcast at `mcs`, no ACK, no retry. Delivered iff the
@@ -343,7 +345,12 @@ impl Wifi {
                 break;
             }
         }
-        TxOutcome { delivered, attempts, airtime, mcs: last_mcs }
+        TxOutcome {
+            delivered,
+            attempts,
+            airtime,
+            mcs: last_mcs,
+        }
     }
 
     /// The **expected per-frame loss and airtime** for a `bytes` frame to a peer at `snr_db` under
@@ -368,8 +375,10 @@ impl Wifi {
                 let attempts = (retry_limit + 1) as i32;
                 let delivered = 1.0 - (1.0 - p).powi(attempts);
                 let expected_attempts = (delivered / p).max(1.0); // geometric, capped by delivered
-                let per = managed_unicast_attempt_airtime(bytes, 1, mcs, AccessCategory::BestEffort);
-                let airtime = Duration::from_nanos((per.as_nanos() as f64 * expected_attempts) as u64);
+                let per =
+                    managed_unicast_attempt_airtime(bytes, 1, mcs, AccessCategory::BestEffort);
+                let airtime =
+                    Duration::from_nanos((per.as_nanos() as f64 * expected_attempts) as u64);
                 (1.0 - delivered, airtime)
             }
         }
@@ -412,13 +421,25 @@ mod tests {
                 mono += 1;
             }
             if wifi
-                .managed_unicast_tx(0, snr, 200, &mut rc, 4, 1, AccessCategory::BestEffort, &mut r2)
+                .managed_unicast_tx(
+                    0,
+                    snr,
+                    200,
+                    &mut rc,
+                    4,
+                    1,
+                    AccessCategory::BestEffort,
+                    &mut r2,
+                )
                 .delivered
             {
                 uni += 1;
             }
         }
-        assert!(uni > mono + 300, "ACK+retry raises delivery (uni {uni} vs mono {mono})");
+        assert!(
+            uni > mono + 300,
+            "ACK+retry raises delivery (uni {uni} vs mono {mono})"
+        );
     }
 
     /// Managed multicast is pinned to the basic (legacy) rate — robust but the slowest airtime — while
@@ -431,14 +452,20 @@ mod tests {
         assert_eq!(out.mcs, 0, "group frames go at the basic rate");
         // The same multicast injected at a high MCS in monitor mode occupies far less airtime.
         let monitor_fast = broadcast_airtime(500, MAX_RELIABLE_MCS);
-        assert!(out.airtime > monitor_fast * 2, "basic-rate multicast ≫ high-rate monitor airtime");
+        assert!(
+            out.airtime > monitor_fast * 2,
+            "basic-rate multicast ≫ high-rate monitor airtime"
+        );
     }
 
     /// Managed modes spend airtime on beacons; monitor mode does not.
     #[test]
     fn only_managed_mode_beacons() {
         assert_eq!(WifiMode::Monitor.beacon_airtime_per_sec(), Duration::ZERO);
-        assert!(WifiMode::Managed.beacon_airtime_per_sec() > Duration::ZERO, "managed beacons cost airtime");
+        assert!(
+            WifiMode::Managed.beacon_airtime_per_sec() > Duration::ZERO,
+            "managed beacons cost airtime"
+        );
     }
 
     /// A-MPDU aggregation amortises the PHY preamble across sub-frames, so airtime-per-frame drops as
@@ -448,7 +475,10 @@ mod tests {
         let per_frame_1 = managed_unicast_attempt_airtime(1500, 1, 7, AccessCategory::BestEffort);
         let agg = managed_unicast_attempt_airtime(1500, 16, 7, AccessCategory::BestEffort);
         let per_frame_16 = agg / 16;
-        assert!(per_frame_16 < per_frame_1, "16-frame A-MPDU is cheaper per frame ({per_frame_16:?} < {per_frame_1:?})");
+        assert!(
+            per_frame_16 < per_frame_1,
+            "16-frame A-MPDU is cheaper per frame ({per_frame_16:?} < {per_frame_1:?})"
+        );
     }
 
     /// EDCA prioritises: a Voice frame contends less (shorter AIFS + CW) than a Background frame.
@@ -456,7 +486,10 @@ mod tests {
     fn edca_voice_beats_background() {
         let voice = managed_unicast_attempt_airtime(200, 1, 4, AccessCategory::Voice);
         let background = managed_unicast_attempt_airtime(200, 1, 4, AccessCategory::Background);
-        assert!(voice < background, "voice AC waits less than background ({voice:?} < {background:?})");
+        assert!(
+            voice < background,
+            "voice AC waits less than background ({voice:?} < {background:?})"
+        );
     }
 
     /// …but a successful unicast costs more airtime than a monitor broadcast (ACK + contention).
@@ -477,7 +510,10 @@ mod tests {
         let mut m = MinstrelHt::new();
         let low = m.select(0, 8.0, &wifi.link); // weak link (fresh peer 0)
         let high = m.select(1, 40.0, &wifi.link); // strong link (fresh peer 1)
-        assert!(low < high, "conservative on weak SNR, aggressive on strong ({low} < {high})");
+        assert!(
+            low < high,
+            "conservative on weak SNR, aggressive on strong ({low} < {high})"
+        );
         assert_eq!(high, MAX_RELIABLE_MCS, "very strong link uses the top rate");
     }
 

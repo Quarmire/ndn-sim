@@ -541,7 +541,11 @@ impl Simulation {
             radio_faces,
             apps: Mutex::new(apps),
             next_app: AtomicUsize::new(next_app),
-            inner: Mutex::new(FabricInner { nodes, links, link_states }),
+            inner: Mutex::new(FabricInner {
+                nodes,
+                links,
+                link_states,
+            }),
             channel_buffer: self.channel_buffer,
             next_node: AtomicUsize::new(n),
             seed: self.seed,
@@ -595,8 +599,16 @@ fn wire_link(
     // Per-prefix accounting: each face counts its owning node's frames by name prefix.
     let (face_a, face_b) = match prefix {
         Some((stats, depth)) => (
-            face_a.with_prefix_tap(crate::netstat::PrefixTap::new(stats.clone(), ea.label.clone(), depth)),
-            face_b.with_prefix_tap(crate::netstat::PrefixTap::new(stats.clone(), eb.label.clone(), depth)),
+            face_a.with_prefix_tap(crate::netstat::PrefixTap::new(
+                stats.clone(),
+                ea.label.clone(),
+                depth,
+            )),
+            face_b.with_prefix_tap(crate::netstat::PrefixTap::new(
+                stats.clone(),
+                eb.label.clone(),
+                depth,
+            )),
         ),
         None => (face_a, face_b),
     };
@@ -1363,9 +1375,23 @@ impl RunningSimulation {
         if !guard.nodes.contains_key(&a) || !guard.nodes.contains_key(&b) {
             bail!("connect references non-existent node");
         }
-        let FabricInner { nodes, links, link_states } = &mut *guard;
+        let FabricInner {
+            nodes,
+            links,
+            link_states,
+        } = &mut *guard;
         let prefix_arg = self.prefix_stats.as_ref().map(|s| (s, s.grouping()));
-        wire_link(nodes, links, link_states, a, b, &profile, self.channel_buffer, self.seed, prefix_arg);
+        wire_link(
+            nodes,
+            links,
+            link_states,
+            a,
+            b,
+            &profile,
+            self.channel_buffer,
+            self.seed,
+            prefix_arg,
+        );
         drop(guard);
         self.tracer.record_now(
             a.0,

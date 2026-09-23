@@ -131,8 +131,16 @@ pub struct IpMetricsSample {
 /// Medium/network-wide gauges that aren't per-node: the shared-radio airtime and the AP-mode
 /// roaming cost. One snapshot for a whole `RadioBus` / `IpNetwork` at a virtual instant, so these —
 /// previously only reachable via ad-hoc accessors — also flow to the OTLP exporter.
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[derive(manifest_derive::Manifest)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    manifest_derive::Manifest,
+)]
 #[manifest(ty = "fabric-gauges", describes = "ndn-lab/run/fabric-gauges")]
 pub struct FabricGauges {
     /// Kernel-clock time of the sample (ns).

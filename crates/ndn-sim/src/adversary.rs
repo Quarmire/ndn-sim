@@ -184,7 +184,11 @@ impl AdversaryCell {
         };
         let mut s = format!(
             "{}|seed={}|honest={}|poison_free={}|event_integrity={}",
-            self.cell, self.seed, verdict, self.invariants.poison_free, self.invariants.event_integrity
+            self.cell,
+            self.seed,
+            verdict,
+            self.invariants.poison_free,
+            self.invariants.event_integrity
         );
         for b in &self.cost {
             s.push_str(&format!("|{}={}", b.name, b.pass));

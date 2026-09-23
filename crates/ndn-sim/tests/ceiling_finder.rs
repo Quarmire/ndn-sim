@@ -81,7 +81,9 @@ async fn build_star(
 ) -> (RunningSimulation, NodeId, Vec<NodeId>) {
     let mut sim = Simulation::new().kernel(k).seed(seed);
     let a = sim.add_node(EngineConfig::default());
-    let spokes: Vec<NodeId> = (0..peers).map(|_| sim.add_node(EngineConfig::default())).collect();
+    let spokes: Vec<NodeId> = (0..peers)
+        .map(|_| sim.add_node(EngineConfig::default()))
+        .collect();
     for &s in &spokes {
         sim.link(a, s, LinkConfig::lan());
         sim.add_route(a, "/grp", s);
@@ -174,7 +176,12 @@ fn run_ingest_cell(cell: &str, seed: u64, per_stored: Duration) -> PerfCell {
         let ledger = Arc::new(Ledger::new());
 
         attach_ledgered(
-            &fabric, b, "/grp", "/nodes/B", &ledger, "B",
+            &fabric,
+            b,
+            "/grp",
+            "/nodes/B",
+            &ledger,
+            "B",
             CatchupOpts {
                 // A constant per-Block cost dominates round-trip noise so the quartile shape
                 // measures the CONSUMER's cost model, which is what the bound is about.
@@ -218,7 +225,11 @@ fn run_ingest_cell(cell: &str, seed: u64, per_stored: Duration) -> PerfCell {
         }
 
         let q = |i: usize| -> f64 {
-            let lo = if i == 0 { Duration::ZERO } else { crossings[i - 1] };
+            let lo = if i == 0 {
+                Duration::ZERO
+            } else {
+                crossings[i - 1]
+            };
             (crossings[i] - lo).as_secs_f64() * 1e3
         };
         let (q1, q4) = (q(0), q(3));
@@ -319,9 +330,18 @@ fn late_join_point_over(point_seed: u64, window: usize, backlog: u64, link: Link
         // A tight replica sync interval keeps the DISCOVERY floor (first
         // vector exchange) from swamping the fetch phase the sweep measures.
         attach_ledgered_at(
-            &fabric, b, "/grp", "/nodes/B", &ledger, "B",
-            CatchupOpts { window, ..CatchupOpts::default() },
-            Duration::from_millis(100), &cancel,
+            &fabric,
+            b,
+            "/grp",
+            "/nodes/B",
+            &ledger,
+            "B",
+            CatchupOpts {
+                window,
+                ..CatchupOpts::default()
+            },
+            Duration::from_millis(100),
+            &cancel,
         )
         .await;
         let drain = time_to_drain(&ledger, &["B".to_string()], DRAIN_BUDGET).await;
@@ -360,7 +380,14 @@ fn bend_link() -> LinkConfig {
 const BEND_SEEDS: u64 = 2;
 fn best_late_join(seed: u64, window: usize) -> f64 {
     (0..BEND_SEEDS)
-        .map(|s| late_join_point_over(seed.wrapping_add(0x5000 + s * 0x101), window, BEND_BACKLOG, bend_link()))
+        .map(|s| {
+            late_join_point_over(
+                seed.wrapping_add(0x5000 + s * 0x101),
+                window,
+                BEND_BACKLOG,
+                bend_link(),
+            )
+        })
         .fold(f64::INFINITY, f64::min)
 }
 
@@ -371,7 +398,11 @@ fn best_late_join(seed: u64, window: usize) -> f64 {
 /// doesn't pipeline lands at ratio ≈ 1 and trips it (see
 /// `bend_bound_reddens_when_the_window_does_not_pipeline`).
 fn bend_bound(serial_ms: f64, windowed_ms: f64, min_speedup: f64) -> BoundCheck {
-    let speedup = if windowed_ms > 0.0 { serial_ms / windowed_ms } else { f64::INFINITY };
+    let speedup = if windowed_ms > 0.0 {
+        serial_ms / windowed_ms
+    } else {
+        f64::INFINITY
+    };
     BoundCheck {
         name: "latejoin-window-bends-the-curve".into(),
         claim: format!(
@@ -458,8 +489,12 @@ fn run_latency_cell(cell: &str, seed: u64) -> PerfCell {
             Arc::new(std::sync::Mutex::new(BTreeMap::new()));
 
         let replica = TwoPhaseReplica::attach(
-            &fabric, b, &name("/grp"), &name("/nodes/B"),
-            Duration::from_millis(500), &cancel,
+            &fabric,
+            b,
+            &name("/grp"),
+            &name("/nodes/B"),
+            Duration::from_millis(500),
+            &cancel,
         )
         .await
         .unwrap();
@@ -513,8 +548,7 @@ fn run_latency_cell(cell: &str, seed: u64) -> PerfCell {
         );
         report.bound(BoundCheck {
             name: "latency-tail-shape".into(),
-            claim: "p99 stays within 50× p50 under sustained load (no pathological tail)"
-                .into(),
+            claim: "p99 stays within 50× p50 under sustained load (no pathological tail)".into(),
             detail: format!("p50 {p50:.1} ms, p99 {p99:.1} ms"),
             pass: p99 <= p50 * 50.0,
         });
@@ -549,8 +583,14 @@ fn run_chains_knee_cell(cell: &str, seed: u64) -> PerfCell {
             let mut publishers = Vec::new();
             for (gi, g) in groups.iter().enumerate() {
                 attach_ledgered(
-                    &fabric, b, g, &format!("/nodes/B/c{gi}"), &ledger, "B",
-                    CatchupOpts::default(), &cancel,
+                    &fabric,
+                    b,
+                    g,
+                    &format!("/nodes/B/c{gi}"),
+                    &ledger,
+                    "B",
+                    CatchupOpts::default(),
+                    &cancel,
                 )
                 .await;
                 publishers.push(
@@ -583,7 +623,10 @@ fn run_chains_knee_cell(cell: &str, seed: u64) -> PerfCell {
         report.metric(format!("drain_ms_chains_{n}"), *ms);
     }
     let knee = find_knee(&curve, 3.0); // total time vs 1-chain baseline; parallel-ideal is flat
-    report.metric("knee_chains_per_node", knee.map(|n| n as f64).unwrap_or(-1.0));
+    report.metric(
+        "knee_chains_per_node",
+        knee.map(|n| n as f64).unwrap_or(-1.0),
+    );
     report.bound(growth_bound(
         "chains-superlinearity-guard",
         "16 chains on one node cost ≤10× the 1-chain drain (catastrophic contention guard; \
@@ -609,8 +652,14 @@ fn run_peers_knee_cell(cell: &str, seed: u64) -> PerfCell {
             let rnames: Vec<String> = (0..peers).map(|i| format!("R{i}")).collect();
             for (i, &s) in spokes.iter().enumerate() {
                 attach_ledgered(
-                    &fabric, s, "/grp", &format!("/nodes/R{i}"), &ledger, &rnames[i],
-                    CatchupOpts::default(), &cancel,
+                    &fabric,
+                    s,
+                    "/grp",
+                    &format!("/nodes/R{i}"),
+                    &ledger,
+                    &rnames[i],
+                    CatchupOpts::default(),
+                    &cancel,
                 )
                 .await;
             }
@@ -639,7 +688,10 @@ fn run_peers_knee_cell(cell: &str, seed: u64) -> PerfCell {
         report.metric(format!("drain_ms_peers_{n}"), *ms);
     }
     let knee = find_knee(&curve, 3.0);
-    report.metric("knee_peers_per_group", knee.map(|n| n as f64).unwrap_or(-1.0));
+    report.metric(
+        "knee_peers_per_group",
+        knee.map(|n| n as f64).unwrap_or(-1.0),
+    );
     report.bound(growth_bound(
         "peers-superlinearity-guard",
         "8 peers in one group cost ≤10× the 1-peer drain (catastrophic guard; the knee is \
@@ -722,5 +774,8 @@ fn bend_bound_reddens_when_the_window_does_not_pipeline() {
 fn ceiling_is_deterministic() {
     let a = run_ingest_cell("determinism/ingest", 0xA0D0, Duration::ZERO).normative();
     let b = run_ingest_cell("determinism/ingest", 0xA0D0, Duration::ZERO).normative();
-    assert_eq!(a, b, "same seed must reproduce the identical normative perf report");
+    assert_eq!(
+        a, b,
+        "same seed must reproduce the identical normative perf report"
+    );
 }

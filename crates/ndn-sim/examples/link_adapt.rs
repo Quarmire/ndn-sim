@@ -45,19 +45,27 @@ fn erasure(rssi: f64, r: usize) -> f64 {
 /// Highest rate index every receiver in `group` can decode cleanly (rssi ≥ threshold). None if even the
 /// weakest can't clear MCS0 — the straggler case (rate selection alone fails).
 fn worst_rate(group: &[f64]) -> Option<usize> {
-    (0..8).rev().find(|&r| group.iter().all(|&rssi| rssi >= RATE_THR_DBM[r]))
+    (0..8)
+        .rev()
+        .find(|&r| group.iter().all(|&rssi| rssi >= RATE_THR_DBM[r]))
 }
 
 /// Binomial P(X ≥ k) for X ~ Binom(n, p) — the systematic K-of-N decode probability (recover K from any
 /// K of N received). Direct sum; n stays small here.
 fn binom_ge(n: usize, k: usize, p: f64) -> f64 {
-    if k == 0 { return 1.0; }
-    if p <= 0.0 { return 0.0; }
+    if k == 0 {
+        return 1.0;
+    }
+    if p <= 0.0 {
+        return 0.0;
+    }
     let mut prob = 0.0;
     for x in k..=n {
         // C(n,x) p^x (1-p)^(n-x), computed in log space for stability.
         let mut logc = 0.0f64;
-        for i in 0..x { logc += ((n - i) as f64).ln() - ((i + 1) as f64).ln(); }
+        for i in 0..x {
+            logc += ((n - i) as f64).ln() - ((i + 1) as f64).ln();
+        }
         let logp = logc + x as f64 * p.ln() + (n - x) as f64 * (1.0 - p).ln();
         prob += logp.exp();
     }
@@ -77,7 +85,11 @@ fn airtime_ms(symbols: f64, r: usize) -> f64 {
 /// receiver's requirement.
 fn rateless_symbols_for(rssi: f64, r: usize) -> f64 {
     let e = erasure(rssi, r);
-    if e >= 0.999 { f64::INFINITY } else { K as f64 / (1.0 - e) }
+    if e >= 0.999 {
+        f64::INFINITY
+    } else {
+        K as f64 / (1.0 - e)
+    }
 }
 
 fn main() {
@@ -97,19 +109,38 @@ fn main() {
     // ---- Part A — rate selection alone cannot serve the tail --------------------------------------
     println!("PART A — can pure rate selection (no coding) serve everyone?");
     match worst_rate(&group) {
-        Some(r) => println!("  worst-receiver rate = MCS{r} ({} Mbit/s) — all decode cleanly", RATE_MBPS[r]),
+        Some(r) => println!(
+            "  worst-receiver rate = MCS{r} ({} Mbit/s) — all decode cleanly",
+            RATE_MBPS[r]
+        ),
         None => {
             let e = erasure(straggler, 0);
-            println!("  NONE — the straggler ({straggler} dBm) can't clear even MCS0; erasure {:.0}% at MCS0.", e * 100.0);
-            println!("  ⇒ systematic transmission drops {:.0}% of its symbols → NO decode without FEC.", e * 100.0);
-            println!("  Rate adaptation alone is INSUFFICIENT for the tail; coding is mandatory, not optional.");
+            println!(
+                "  NONE — the straggler ({straggler} dBm) can't clear even MCS0; erasure {:.0}% at MCS0.",
+                e * 100.0
+            );
+            println!(
+                "  ⇒ systematic transmission drops {:.0}% of its symbols → NO decode without FEC.",
+                e * 100.0
+            );
+            println!(
+                "  Rate adaptation alone is INSUFFICIENT for the tail; coding is mandatory, not optional."
+            );
             writeln!(csv, "A,worst_rate_exists,0,0,straggler_below_mcs0_floor").ok();
         }
     }
     // If we drop the straggler, a worst-rate DOES exist for the rest.
     if let Some(r) = worst_rate(&rest) {
-        println!("  (drop the straggler → worst-rate for the rest = MCS{r} ({} Mbit/s))", RATE_MBPS[r]);
-        writeln!(csv, "A,worst_rate_without_straggler,{r},{:.1},rest_only", RATE_MBPS[r]).ok();
+        println!(
+            "  (drop the straggler → worst-rate for the rest = MCS{r} ({} Mbit/s))",
+            RATE_MBPS[r]
+        );
+        writeln!(
+            csv,
+            "A,worst_rate_without_straggler,{r},{:.1},rest_only",
+            RATE_MBPS[r]
+        )
+        .ok();
     }
 
     // ---- Part B — ALARM name (serve everyone): systematic-FEC vs rateless, BOTH rate-swept ---------
@@ -123,18 +154,35 @@ fn main() {
     let mut fec_best = (f64::INFINITY, 0usize, 0usize);
     for r in 0..8 {
         let e = erasure(straggler, r);
-        if e >= 0.97 { continue; } // straggler can't be served at this rate for any finite block
+        if e >= 0.97 {
+            continue;
+        } // straggler can't be served at this rate for any finite block
         let mut n = K;
         // cap the block so an un-decodable rate doesn't loop forever.
-        while n < 4000 && binom_ge(n, K, 1.0 - e) < 0.99 { n += 1; }
-        if binom_ge(n, K, 1.0 - e) < 0.99 { continue; }
+        while n < 4000 && binom_ge(n, K, 1.0 - e) < 0.99 {
+            n += 1;
+        }
+        if binom_ge(n, K, 1.0 - e) < 0.99 {
+            continue;
+        }
         let air = airtime_ms(n as f64, r);
-        println!("      MCS{r} ({:>4} Mbit/s): N={:>4} (R={:>4}) → {:.2} ms", RATE_MBPS[r], n, n - K, air);
+        println!(
+            "      MCS{r} ({:>4} Mbit/s): N={:>4} (R={:>4}) → {:.2} ms",
+            RATE_MBPS[r],
+            n,
+            n - K,
+            air
+        );
         writeln!(csv, "B,fec_rate_sweep,{r},{:.3},N={n}", air).ok();
-        if air < fec_best.0 { fec_best = (air, r, n); }
+        if air < fec_best.0 {
+            fec_best = (air, r, n);
+        }
     }
     let fec_air = fec_best.0;
-    println!("  ⇒ systematic-FEC best = MCS{} (N={}) at {:.2} ms", fec_best.1, fec_best.2, fec_air);
+    println!(
+        "  ⇒ systematic-FEC best = MCS{} (N={}) at {:.2} ms",
+        fec_best.1, fec_best.2, fec_air
+    );
 
     // Rateless: sweep the PHY rate. Sender streams until the STRAGGLER collects K (alarm ⇒ 100%). Its
     // airtime = rateless_symbols_for(straggler, r) / rate. Find the airtime-optimal rate.
@@ -142,51 +190,116 @@ fn main() {
     let mut best = (f64::INFINITY, 0usize);
     for r in 0..8 {
         let sym = rateless_symbols_for(straggler, r);
-        if !sym.is_finite() { continue; }
+        if !sym.is_finite() {
+            continue;
+        }
         let air = airtime_ms(sym, r);
-        println!("      MCS{r} ({:>4} Mbit/s): straggler needs {:>5.0} symbols → {:.2} ms", RATE_MBPS[r], sym, air);
+        println!(
+            "      MCS{r} ({:>4} Mbit/s): straggler needs {:>5.0} symbols → {:.2} ms",
+            RATE_MBPS[r], sym, air
+        );
         writeln!(csv, "B,rateless_rate_sweep,{r},{:.3},sym={sym:.0}", air).ok();
-        if air < best.0 { best = (air, r); }
+        if air < best.0 {
+            best = (air, r);
+        }
     }
     let coding_gain = (fec_air / best.0 - 1.0) * 100.0;
-    println!("  ⇒ rateless best = MCS{} at {:.2} ms  vs  systematic-FEC best {:.2} ms", best.1, best.0, fec_air);
-    println!("    rateless's incremental-vs-block advantage: {:.0}% less airtime (both rate-swept — fair).", coding_gain);
+    println!(
+        "  ⇒ rateless best = MCS{} at {:.2} ms  vs  systematic-FEC best {:.2} ms",
+        best.1, best.0, fec_air
+    );
+    println!(
+        "    rateless's incremental-vs-block advantage: {:.0}% less airtime (both rate-swept — fair).",
+        coding_gain
+    );
     // Strong-receiver decoupling: at the rateless best rate, when does the STRONG receiver finish?
     let strong_sym = rateless_symbols_for(strong, best.1);
     let strong_air = airtime_ms(strong_sym, best.1);
-    println!("  strong receiver finishes at {:.2} ms ({:.0}x sooner than the straggler) — the rateless", strong_air, best.0 / strong_air);
-    println!("  dividend: strong RX gets its data early even though the SENDER streams until the straggler.");
-    writeln!(csv, "B,rateless_strong_finish,{},{:.3},sooner", best.1, strong_air).ok();
+    println!(
+        "  strong receiver finishes at {:.2} ms ({:.0}x sooner than the straggler) — the rateless",
+        strong_air,
+        best.0 / strong_air
+    );
+    println!(
+        "  dividend: strong RX gets its data early even though the SENDER streams until the straggler."
+    );
+    writeln!(
+        csv,
+        "B,rateless_strong_finish,{},{:.3},sooner",
+        best.1, strong_air
+    )
+    .ok();
 
     // ---- Part C — the per-NAME reliability target: the dominant lever -----------------------------
     // BULK name: the straggler is tolerable — serve the REST (drop the -84 straggler; it re-Interests).
     // Now the worst receiver is -80 (clears MCS0), and a higher rate is available. Rateless at that rate.
-    println!("\nPART C — the per-NAME reliability target (ALARM: wait for straggler | BULK: drop it).");
+    println!(
+        "\nPART C — the per-NAME reliability target (ALARM: wait for straggler | BULK: drop it)."
+    );
     let bulk_worst = rest.iter().cloned().fold(f64::INFINITY, f64::min); // -80
     // Rateless best rate serving the bulk-worst receiver.
     let mut bulk_best = (f64::INFINITY, 0usize);
     for r in 0..8 {
         let sym = rateless_symbols_for(bulk_worst, r);
-        if !sym.is_finite() { continue; }
+        if !sym.is_finite() {
+            continue;
+        }
         let air = airtime_ms(sym, r);
-        if air < bulk_best.0 { bulk_best = (air, r); }
+        if air < bulk_best.0 {
+            bulk_best = (air, r);
+        }
     }
     let alarm_air = best.0; // from Part B: serve everyone
     let bulk_air = bulk_best.0;
     let goodput_alarm = airtime_ms(K as f64, 0) / alarm_air; // relative useful throughput
     let bulk_goodput = airtime_ms(K as f64, 0) / bulk_air;
-    println!("  ALARM (serve all): rateless MCS{}  → {:.2} ms", best.1, alarm_air);
-    println!("  BULK  (drop straggler, serve ≥{} dBm): rateless MCS{} → {:.2} ms", bulk_worst, bulk_best.1, bulk_air);
-    println!("  ⇒ the BULK target is {:.1}x faster than ALARM by dropping ONE straggler.", alarm_air / bulk_air);
-    println!("    Compare the levers: name-target = {:.0}% airtime cut; coding (rateless vs FEC) = {:.0}%.", (1.0 - bulk_air / alarm_air) * 100.0, coding_gain);
-    writeln!(csv, "C,alarm_serve_all,{},{:.3},goodput={goodput_alarm:.2}", best.1, alarm_air).ok();
-    writeln!(csv, "C,bulk_drop_straggler,{},{:.3},goodput={bulk_goodput:.2}", bulk_best.1, bulk_air).ok();
+    println!(
+        "  ALARM (serve all): rateless MCS{}  → {:.2} ms",
+        best.1, alarm_air
+    );
+    println!(
+        "  BULK  (drop straggler, serve ≥{} dBm): rateless MCS{} → {:.2} ms",
+        bulk_worst, bulk_best.1, bulk_air
+    );
+    println!(
+        "  ⇒ the BULK target is {:.1}x faster than ALARM by dropping ONE straggler.",
+        alarm_air / bulk_air
+    );
+    println!(
+        "    Compare the levers: name-target = {:.0}% airtime cut; coding (rateless vs FEC) = {:.0}%.",
+        (1.0 - bulk_air / alarm_air) * 100.0,
+        coding_gain
+    );
+    writeln!(
+        csv,
+        "C,alarm_serve_all,{},{:.3},goodput={goodput_alarm:.2}",
+        best.1, alarm_air
+    )
+    .ok();
+    writeln!(
+        csv,
+        "C,bulk_drop_straggler,{},{:.3},goodput={bulk_goodput:.2}",
+        bulk_best.1, bulk_air
+    )
+    .ok();
 
-    println!("\nHEADLINE: three levers, ranked by measured airtime impact. (1) The per-NAME reliability target");
-    println!("is the DOMINANT lever — ALARM pays full airtime for the tail; BULK drops the straggler (it");
-    println!("re-Interests) and runs multiples faster. (2) Coding (rateless's incremental redundancy vs a");
-    println!("pre-sized systematic block) is a REAL but smaller lever, both rate-swept. (3) Rate selection");
-    println!("stays MANDATORY — the tail needs the floor (Part A). Rateless's non-airtime gift is DECOUPLING:");
-    println!("the strong receiver finishes early regardless of when the sender stops for the straggler.");
+    println!(
+        "\nHEADLINE: three levers, ranked by measured airtime impact. (1) The per-NAME reliability target"
+    );
+    println!(
+        "is the DOMINANT lever — ALARM pays full airtime for the tail; BULK drops the straggler (it"
+    );
+    println!(
+        "re-Interests) and runs multiples faster. (2) Coding (rateless's incremental redundancy vs a"
+    );
+    println!(
+        "pre-sized systematic block) is a REAL but smaller lever, both rate-swept. (3) Rate selection"
+    );
+    println!(
+        "stays MANDATORY — the tail needs the floor (Part A). Rateless's non-airtime gift is DECOUPLING:"
+    );
+    println!(
+        "the strong receiver finishes early regardless of when the sender stops for the straggler."
+    );
     println!("wrote {dir}/link_adapt.csv");
 }

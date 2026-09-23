@@ -83,7 +83,14 @@ pub struct RadioBus {
     /// Frames currently on the air `(sender, start_ns, end_ns, collided_rx)` — for collision detection.
     /// `collided_rx` is the shared set of receivers a *later* overlapping frame has retro-collided this
     /// one at, so both frames lose at a shared receiver (F2 both-lose, not first-caller-wins).
-    in_air: Mutex<Vec<(NodeId, u64, u64, Arc<Mutex<std::collections::HashSet<NodeId>>>)>>,
+    in_air: Mutex<
+        Vec<(
+            NodeId,
+            u64,
+            u64,
+            Arc<Mutex<std::collections::HashSet<NodeId>>>,
+        )>,
+    >,
     /// Per-instant world-snapshot cache `(now_ns, world_generation, view)` — rebuild the
     /// spatial index once per instant, not per transmit.
     view_cache: Mutex<Option<(u64, u64, Arc<crate::world::WorldView>)>>,
@@ -255,7 +262,8 @@ impl RadioBus {
 
     /// Toggle the half-duplex constraint (a radio cannot receive while transmitting). Default ON.
     pub fn set_half_duplex(&self, on: bool) {
-        self.half_duplex.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.half_duplex
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Set the interference range as a multiple of the decode range (default 1.0). Values >1 model the
@@ -265,7 +273,12 @@ impl RadioBus {
     }
 
     fn channel_of(&self, node: NodeId) -> u8 {
-        self.channels.lock().unwrap().get(&node).copied().unwrap_or(0)
+        self.channels
+            .lock()
+            .unwrap()
+            .get(&node)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Coupling between an interferer node and a signal on `signal_ch`, via the channel model
@@ -321,7 +334,10 @@ impl RadioBus {
 
     /// Whether the medium is in managed (CSMA) mode — the discipline that listens before talking.
     pub fn is_managed(&self) -> bool {
-        matches!(*self.mac_mode.lock().unwrap(), crate::wifi::WifiMode::Managed)
+        matches!(
+            *self.mac_mode.lock().unwrap(),
+            crate::wifi::WifiMode::Managed
+        )
     }
 
     /// F4 carrier-sense: the instant the medium clears for `node` — the latest `end_ns` among frames
@@ -332,11 +348,14 @@ impl RadioBus {
         let view = self.view_at(now_ns);
         let node_pos = view.position(node)?;
         let node_ch = self.channel_of(node);
-        let cs_range = self.propagation.max_range_m() * *self.interference_range_factor.lock().unwrap();
+        let cs_range =
+            self.propagation.max_range_m() * *self.interference_range_factor.lock().unwrap();
         let in_air = self.in_air.lock().unwrap();
         in_air
             .iter()
-            .filter(|(s, _, e, _)| *s != node && *e > now_ns && self.channel_coupling(*s, node_ch) > 0.1)
+            .filter(|(s, _, e, _)| {
+                *s != node && *e > now_ns && self.channel_coupling(*s, node_ch) > 0.1
+            })
             .filter_map(|(s, _, e, _)| view.position(*s).map(|p| (p, *e)))
             .filter(|(p, _)| p.distance(node_pos) <= cs_range)
             .map(|(_, e)| e)
@@ -374,13 +393,15 @@ impl RadioBus {
 
     /// Set the managed-mode retransmit budget (default 6).
     pub fn set_retry_limit(&self, retry_limit: u32) {
-        self.retry_limit.store(retry_limit, std::sync::atomic::Ordering::Relaxed);
+        self.retry_limit
+            .store(retry_limit, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Enable SINR-based interference: concurrent in-range transmitters raise the effective noise at
     /// a receiver (capture effect), instead of only a binary collision. Off by default.
     pub fn set_sinr_interference(&self, on: bool) {
-        self.sinr_interference.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.sinr_interference
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Total airtime consumed on the medium so far.
@@ -452,7 +473,13 @@ impl RadioBus {
     /// The frame carries no name-group, so under energy accounting it reaches **every** in-range
     /// host (promiscuous / monitor mode). Use [`transmit_named`](Self::transmit_named) to carry a
     /// name-group so a hardware name-filter can offload non-matching frames off the host CPU.
-    pub fn transmit(&self, node: NodeId, mcs_index: u8, frame: Bytes, now_ns: u64) -> Vec<(NodeId, f64, bool)> {
+    pub fn transmit(
+        &self,
+        node: NodeId,
+        mcs_index: u8,
+        frame: Bytes,
+        now_ns: u64,
+    ) -> Vec<(NodeId, f64, bool)> {
         self.transmit_inner(node, mcs_index, frame, now_ns, None)
     }
 
@@ -461,7 +488,14 @@ impl RadioBus {
     /// receivers registered for this group pay host-processing energy — the MAC offload; the rest
     /// have the frame dropped by the radio before the CPU wakes. Radio RX energy is charged to all
     /// in-range radios regardless (the front end still hears it).
-    pub fn transmit_named(&self, node: NodeId, mcs_index: u8, group_key: u64, frame: Bytes, now_ns: u64) -> Vec<(NodeId, f64, bool)> {
+    pub fn transmit_named(
+        &self,
+        node: NodeId,
+        mcs_index: u8,
+        group_key: u64,
+        frame: Bytes,
+        now_ns: u64,
+    ) -> Vec<(NodeId, f64, bool)> {
         self.transmit_inner(node, mcs_index, frame, now_ns, Some(group_key))
     }
 
@@ -488,11 +522,19 @@ impl RadioBus {
         };
         let env = self.world.environment();
         let mode = *self.mac_mode.lock().unwrap();
-        let sinr_on = self.sinr_interference.load(std::sync::atomic::Ordering::Relaxed);
+        let sinr_on = self
+            .sinr_interference
+            .load(std::sync::atomic::Ordering::Relaxed);
         // The sender's TX power: a per-node override (a policy trimming power) or the bus default.
         // Used for BOTH this frame's RSSI (delivery) and its energy — so the power dial trades reach
         // against joules honestly.
-        let tx_dbm = self.tx_power.lock().unwrap().get(&node).copied().unwrap_or(self.tx_power_dbm);
+        let tx_dbm = self
+            .tx_power
+            .lock()
+            .unwrap()
+            .get(&node)
+            .copied()
+            .unwrap_or(self.tx_power_dbm);
         let signal_ch = self.channel_of(node);
         let half_duplex = self.half_duplex.load(std::sync::atomic::Ordering::Relaxed);
         let irange_factor = *self.interference_range_factor.lock().unwrap();
@@ -511,7 +553,11 @@ impl RadioBus {
         let end_ns = now_ns.saturating_add(airtime_ns);
         let my_collided: Arc<Mutex<std::collections::HashSet<NodeId>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
-        let concurrent: Vec<(NodeId, Position, Arc<Mutex<std::collections::HashSet<NodeId>>>)> = {
+        let concurrent: Vec<(
+            NodeId,
+            Position,
+            Arc<Mutex<std::collections::HashSet<NodeId>>>,
+        )> = {
             let mut in_air = self.in_air.lock().unwrap();
             in_air.retain(|(_, _, e, _)| *e > now_ns); // prune finished transmissions
             // Batch/instantaneous mode stamps every frame with the same `now_ns`, so `e > now_ns` never
@@ -623,16 +669,19 @@ impl RadioBus {
             // adjacent channels leak, orthogonal not at all). Excludes the receiver itself (half-duplex
             // handled above).
             let irange = max_range * irange_factor;
-            let clashers: Vec<(NodeId, Position, Arc<Mutex<std::collections::HashSet<NodeId>>>)> =
-                concurrent
-                    .iter()
-                    .filter(|(s, p, _)| {
-                        *s != rx_node
-                            && p.distance(rx_pos) <= irange
-                            && self.channel_coupling(*s, signal_ch) > 0.1
-                    })
-                    .map(|(s, p, c)| (*s, *p, Arc::clone(c)))
-                    .collect();
+            let clashers: Vec<(
+                NodeId,
+                Position,
+                Arc<Mutex<std::collections::HashSet<NodeId>>>,
+            )> = concurrent
+                .iter()
+                .filter(|(s, p, _)| {
+                    *s != rx_node
+                        && p.distance(rx_pos) <= irange
+                        && self.channel_coupling(*s, signal_ch) > 0.1
+                })
+                .map(|(s, p, c)| (*s, *p, Arc::clone(c)))
+                .collect();
             // Without SINR modelling, any in-range concurrent transmitter is a hard collision.
             if !sinr_on {
                 let clasher_ids: Vec<NodeId> = clashers.iter().map(|(s, _, _)| *s).collect();
@@ -666,7 +715,13 @@ impl RadioBus {
                         // F8: the interferer's per-node TX power (its override, not the bus default) —
                         // mirrors the sender path, so trimming an interferer's power earns SINR/capture
                         // credit (spatial reuse). Was `self.tx_power_dbm`, ignoring set_tx_power.
-                        tx_power_dbm: self.tx_power.lock().unwrap().get(s).copied().unwrap_or(self.tx_power_dbm),
+                        tx_power_dbm: self
+                            .tx_power
+                            .lock()
+                            .unwrap()
+                            .get(s)
+                            .copied()
+                            .unwrap_or(self.tx_power_dbm),
                         environment: env.as_ref(),
                         frame_len: frame.len(),
                     };
@@ -761,7 +816,9 @@ impl RadioBus {
         // in a single transmission — NDN's multicast advantage); managed charges a unicast per
         // in-range receiver (normal Wi-Fi replaces the broadcast with N unicasts).
         let cost = match mode {
-            crate::wifi::WifiMode::Monitor => crate::wifi::broadcast_airtime(frame.len(), mcs_index),
+            crate::wifi::WifiMode::Monitor => {
+                crate::wifi::broadcast_airtime(frame.len(), mcs_index)
+            }
             crate::wifi::WifiMode::Managed => {
                 // F5: sum of EXPECTED attempts across the managed unicasts (retransmissions included),
                 // not one attempt per receiver — retries cost airtime. `wifi::link_cost` uses the same
@@ -771,10 +828,8 @@ impl RadioBus {
                 std::time::Duration::from_nanos(ns as u64)
             }
         };
-        self.airtime_ns.fetch_add(
-            cost.as_nanos() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.airtime_ns
+            .fetch_add(cost.as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
 
         out
     }
@@ -905,7 +960,9 @@ impl Transport for SimRadioFace {
                     Some(busy_until) if busy_until > now => {
                         let backoff = self.bus.csma_backoff_ns(attempt);
                         self.clock
-                            .sleep(std::time::Duration::from_nanos((busy_until - now) + backoff))
+                            .sleep(std::time::Duration::from_nanos(
+                                (busy_until - now) + backoff,
+                            ))
                             .await;
                         attempt += 1;
                     }
@@ -1062,7 +1119,10 @@ mod tests {
         let d2 = def.transmit(NodeId(2), 7, Bytes::from_static(b"aaaaaaaa"), 0);
         let d1_ok = d1.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok);
         let d2_ok = d2.iter().any(|(n, _, ok)| *n == NodeId(0) && *ok);
-        assert!(!(d1_ok && d2_ok), "default (physics ON) must collide concurrent frames");
+        assert!(
+            !(d1_ok && d2_ok),
+            "default (physics ON) must collide concurrent frames"
+        );
 
         // Explicit NoInterference opt-out: the idealization still lets both through.
         let world = World::new();
@@ -1130,8 +1190,8 @@ mod tests {
         // Weak interferer (far, near sensitivity) vs a very strong wanted signal (metres away).
         let capture = bus_with(
             &[
-                (NodeId(0), Position::xy(0.0, 0.0)),      // receiver
-                (NodeId(1), Position::xy(3.0, 0.0)),      // wanted: strong
+                (NodeId(0), Position::xy(0.0, 0.0)),       // receiver
+                (NodeId(1), Position::xy(3.0, 0.0)),       // wanted: strong
                 (NodeId(2), Position::xy(max * 0.9, 0.0)), // interferer: weak
             ],
             3,

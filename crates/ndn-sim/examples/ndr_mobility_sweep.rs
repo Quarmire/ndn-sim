@@ -18,7 +18,9 @@ use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
-use ndn_sim::{AppSpec, DesKernel, Position, RandomWaypointMobility, RangeThreshold, SimKernel, Simulation};
+use ndn_sim::{
+    AppSpec, DesKernel, Position, RandomWaypointMobility, RangeThreshold, SimKernel, Simulation,
+};
 use ndn_strategy_reach as _; // force-link so `soft-prefix-reach` is in the strategy registry (linkme)
 use tokio_util::sync::CancellationToken;
 
@@ -44,28 +46,47 @@ fn run(speed: f64) -> Row {
     DesKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
         // `broadcast` (flood) self-registers via linkme at link time — `set_strategy("broadcast")` resolves.
         let strat = strategy();
-        let mut sim = Simulation::new()
-            .kernel(k.clone())
-            .with_radio_medium(Arc::new(RangeThreshold { range_m: COMM_R, tx_power_dbm: 20.0 }), 7);
+        let mut sim = Simulation::new().kernel(k.clone()).with_radio_medium(
+            Arc::new(RangeThreshold {
+                range_m: COMM_R,
+                tx_power_dbm: 20.0,
+            }),
+            7,
+        );
 
-        let nodes: Vec<_> =
-            (0..N).map(|_| sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0))).collect();
+        let nodes: Vec<_> = (0..N)
+            .map(|_| sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0)))
+            .collect();
         sim.add_app(
             nodes[0],
-            AppSpec::Producer { prefix: "/svc".into(), content: Some("air".into()), freshness_ms: None },
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("air".into()),
+                freshness_ms: None,
+            },
         );
 
         let svc: Name = "/svc".parse().unwrap();
         let fabric = sim.start().await.unwrap();
         // Named-data radio = Monitor (broadcast injection); the default Managed mode needs association.
-        fabric.radio_bus().unwrap().set_mac_mode(ndn_sim::WifiMode::Monitor);
+        fabric
+            .radio_bus()
+            .unwrap()
+            .set_mac_mode(ndn_sim::WifiMode::Monitor);
 
         // Every node roams the disc (seeded per-node). Consumers/relays route `/svc` over the radio and
         // flood; the PRODUCER gets NO radio route — that would compete with its local app face and, under
         // best-route, make it re-broadcast the Interest instead of serving it.
         for (i, &node) in nodes.iter().enumerate() {
             let seed = 0x1234_5678u64 ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            fabric.set_mobility(node, Arc::new(RandomWaypointMobility { radius: REGION_R, speed_mps: speed, seed }));
+            fabric.set_mobility(
+                node,
+                Arc::new(RandomWaypointMobility {
+                    radius: REGION_R,
+                    speed_mps: speed,
+                    seed,
+                }),
+            );
             if i != 0 {
                 fabric.route_over_radio(node, &svc).unwrap();
                 fabric.set_strategy(node, &svc, &strat).unwrap();
@@ -73,8 +94,15 @@ fn run(speed: f64) -> Row {
         }
 
         // One reusable consumer per non-producer node.
-        let mut consumers: Vec<_> =
-            nodes[1..].iter().map(|&c| fabric.engine_of(c).unwrap().app_consumer(CancellationToken::new())).collect();
+        let mut consumers: Vec<_> = nodes[1..]
+            .iter()
+            .map(|&c| {
+                fabric
+                    .engine_of(c)
+                    .unwrap()
+                    .app_consumer(CancellationToken::new())
+            })
+            .collect();
 
         let mut attempts = 0u32;
         let mut delivered = 0u32;
@@ -85,7 +113,10 @@ fn run(speed: f64) -> Row {
                 let name: Name = format!("/svc/{r}/{i}").parse().unwrap();
                 async move {
                     consumer
-                        .fetch_with(InterestBuilder::new(name).lifetime(Duration::from_millis(FETCH_LIFETIME_MS)))
+                        .fetch_with(
+                            InterestBuilder::new(name)
+                                .lifetime(Duration::from_millis(FETCH_LIFETIME_MS)),
+                        )
                         .await
                         .is_ok()
                 }
@@ -98,7 +129,12 @@ fn run(speed: f64) -> Row {
 
         let airtime = fabric.radio_bus().unwrap().total_airtime();
         fabric.shutdown().await;
-        Row { speed, attempts, delivered, airtime_ms: airtime.as_secs_f64() * 1000.0 }
+        Row {
+            speed,
+            attempts,
+            delivered,
+            airtime_ms: airtime.as_secs_f64() * 1000.0,
+        }
     })
 }
 
@@ -107,13 +143,27 @@ fn main() {
         "NDR mobility sweep — N={N}, disc r={REGION_R}m, comm r={COMM_R}m, strategy={}, {ROUNDS} rounds\n",
         strategy()
     );
-    println!("{:>8}  {:>9}  {:>9}  {:>11}  {:>16}", "speed", "delivered", "attempts", "deliv-ratio", "airtime/deliv(ms)");
+    println!(
+        "{:>8}  {:>9}  {:>9}  {:>11}  {:>16}",
+        "speed", "delivered", "attempts", "deliv-ratio", "airtime/deliv(ms)"
+    );
     for &speed in &[0.0, 1.0, 5.0, 15.0, 30.0] {
         let row = run(speed);
         let ratio = row.delivered as f64 / row.attempts.max(1) as f64;
-        let apd = if row.delivered > 0 { row.airtime_ms / row.delivered as f64 } else { f64::NAN };
-        println!("{:>8.1}  {:>9}  {:>9}  {:>11.3}  {:>16.3}", row.speed, row.delivered, row.attempts, ratio, apd);
+        let apd = if row.delivered > 0 {
+            row.airtime_ms / row.delivered as f64
+        } else {
+            f64::NAN
+        };
+        println!(
+            "{:>8.1}  {:>9}  {:>9}  {:>11.3}  {:>16.3}",
+            row.speed, row.delivered, row.attempts, ratio, apd
+        );
     }
-    println!("\nBaseline = flooding. The reachability-prior strategy should hold delivery-ratio while cutting");
-    println!("airtime/deliv (it scopes the flood). A/B by swapping STRATEGY once that strategy is registered.");
+    println!(
+        "\nBaseline = flooding. The reachability-prior strategy should hold delivery-ratio while cutting"
+    );
+    println!(
+        "airtime/deliv (it scopes the flood). A/B by swapping STRATEGY once that strategy is registered."
+    );
 }

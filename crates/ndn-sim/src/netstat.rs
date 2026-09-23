@@ -76,7 +76,10 @@ impl PrefixStats {
 
     /// A table grouping names to `max_components`.
     pub fn with_grouping(max_components: usize) -> Arc<Self> {
-        Arc::new(Self { inner: Mutex::new(HashMap::new()), grouping: max_components.max(1) })
+        Arc::new(Self {
+            inner: Mutex::new(HashMap::new()),
+            grouping: max_components.max(1),
+        })
     }
 
     /// The name-grouping depth this table counts at.
@@ -85,8 +88,13 @@ impl PrefixStats {
     }
 
     fn count(&self, node: &str, prefix: &str, outbound: bool, kind: WireKind, bytes: usize) {
-        let mut map = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let c = map.entry((node.to_string(), prefix.to_string())).or_default();
+        let mut map = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let c = map
+            .entry((node.to_string(), prefix.to_string()))
+            .or_default();
         if outbound {
             c.out_bytes += bytes as u64;
             match kind {
@@ -106,7 +114,10 @@ impl PrefixStats {
 
     /// Deterministically ordered snapshot of every `(node, prefix)` row.
     pub fn snapshot(&self) -> Vec<PrefixSample> {
-        let map = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let map = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut rows: Vec<PrefixSample> = map
             .iter()
             .map(|((node, prefix), counters)| PrefixSample {
@@ -140,8 +151,16 @@ pub struct PrefixTap {
 }
 
 impl PrefixTap {
-    pub(crate) fn new(stats: Arc<PrefixStats>, node: impl Into<String>, max_components: usize) -> Self {
-        Self { stats, node: node.into(), max_components: max_components.max(1) }
+    pub(crate) fn new(
+        stats: Arc<PrefixStats>,
+        node: impl Into<String>,
+        max_components: usize,
+    ) -> Self {
+        Self {
+            stats,
+            node: node.into(),
+            max_components: max_components.max(1),
+        }
     }
 
     /// Observe one frame on this face: `outbound` = the node is emitting it.
@@ -151,7 +170,8 @@ impl PrefixTap {
             .as_deref()
             .map(|n| group_prefix(n, self.max_components))
             .unwrap_or_else(|| "(unparsed)".into());
-        self.stats.count(&self.node, &prefix, outbound, kind, wire.len());
+        self.stats
+            .count(&self.node, &prefix, outbound, kind, wire.len());
     }
 }
 
@@ -212,7 +232,10 @@ mod tests {
     fn group_prefix_keeps_the_first_n_components() {
         assert_eq!(group_prefix("/edu/ucla/data/seg/0", 3), "/edu/ucla/data");
         assert_eq!(group_prefix("/a/b", 3), "/a/b"); // shorter than n: no pad, no panic
-        assert_eq!(group_prefix("/muas/v3/iuas-01/telemetry/live", 4), "/muas/v3/iuas-01/telemetry");
+        assert_eq!(
+            group_prefix("/muas/v3/iuas-01/telemetry/live", 4),
+            "/muas/v3/iuas-01/telemetry"
+        );
         assert_eq!(group_prefix("/", 3), "/");
         assert_eq!(group_prefix("/x", 1), "/x");
     }
@@ -221,15 +244,24 @@ mod tests {
     fn classify_reads_names_through_lp_wrapping() {
         let name: Name = "/svc/telemetry/live".parse().expect("name");
         let interest = encode_interest(&name, None);
-        assert_eq!(classify(&interest), (WireKind::Interest, Some("/svc/telemetry/live".into())));
+        assert_eq!(
+            classify(&interest),
+            (WireKind::Interest, Some("/svc/telemetry/live".into()))
+        );
 
         let data = encode_data_unsigned(&name, b"payload");
-        assert_eq!(classify(&data), (WireKind::Data, Some("/svc/telemetry/live".into())));
+        assert_eq!(
+            classify(&data),
+            (WireKind::Data, Some("/svc/telemetry/live".into()))
+        );
 
         // Hand-rolled LPv2 wrap: LP_PACKET(0x64) { Fragment(0x50) { data } }.
         let mut lp = vec![0x64, (data.len() + 2) as u8, 0x50, data.len() as u8];
         lp.extend_from_slice(&data);
-        assert_eq!(classify(&lp), (WireKind::Data, Some("/svc/telemetry/live".into())));
+        assert_eq!(
+            classify(&lp),
+            (WireKind::Data, Some("/svc/telemetry/live".into()))
+        );
 
         // Junk is unattributable, never panics.
         assert_eq!(classify(&[0xff, 0x00]).0, WireKind::Other);

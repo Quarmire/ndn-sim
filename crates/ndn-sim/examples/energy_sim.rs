@@ -55,7 +55,10 @@ fn scenario(filtered: bool, producers: u64) -> (EnergyAccounts, f64) {
     world.place(NodeId(SINK as usize), Position::xy(0.0, 0.0));
     for i in 1..n {
         let ang = i as f64 * std::f64::consts::TAU / (n - 1) as f64;
-        world.place(NodeId(i as usize), Position::xy(30.0 * ang.cos(), 30.0 * ang.sin()));
+        world.place(
+            NodeId(i as usize),
+            Position::xy(30.0 * ang.cos(), 30.0 * ang.sin()),
+        );
     }
     let bus = RadioBus::with_interference_on(
         world.clone(),
@@ -78,11 +81,23 @@ fn scenario(filtered: bool, producers: u64) -> (EnergyAccounts, f64) {
     for _ in 0..ROUNDS {
         for p in FIRST_PRODUCER..FIRST_PRODUCER + producers {
             // Each producer's frame carries its own name-group (= its node id).
-            bus.transmit_named(NodeId(p as usize), MCS, p, Bytes::from(vec![0u8; PAYLOAD]), t);
+            bus.transmit_named(
+                NodeId(p as usize),
+                MCS,
+                p,
+                Bytes::from(vec![0u8; PAYLOAD]),
+                t,
+            );
             t += spacing;
             frames += 1;
             // The relay retransmits it under the same group (its cooperative contribution).
-            bus.transmit_named(NodeId(RELAY as usize), MCS, p, Bytes::from(vec![0u8; PAYLOAD]), t);
+            bus.transmit_named(
+                NodeId(RELAY as usize),
+                MCS,
+                p,
+                Bytes::from(vec![0u8; PAYLOAD]),
+                t,
+            );
             t += spacing;
             frames += 1;
         }
@@ -91,7 +106,9 @@ fn scenario(filtered: bool, producers: u64) -> (EnergyAccounts, f64) {
 }
 
 fn leaf(acct: &EnergyAccounts) -> EnergyAccount {
-    acct.get(&NodeId(LEAF as usize)).copied().unwrap_or_default()
+    acct.get(&NodeId(LEAF as usize))
+        .copied()
+        .unwrap_or_default()
 }
 
 fn main() {
@@ -102,8 +119,16 @@ fn main() {
     // ---- Part 1: per-node breakdown (promiscuous) ------------------------------------------------
     let (acct, dur) = scenario(false, producers);
     let idle_j = idle_w * dur;
-    println!("energy over the named-data radio — {} senders + relay, {ROUNDS} rounds, {PAYLOAD} B @ MCS{MCS}", producers);
-    println!("  duration {:.1} ms, idle {:.2} W → {:.1} mJ/node\n", dur * 1e3, idle_w, idle_j * 1e3);
+    println!(
+        "energy over the named-data radio — {} senders + relay, {ROUNDS} rounds, {PAYLOAD} B @ MCS{MCS}",
+        producers
+    );
+    println!(
+        "  duration {:.1} ms, idle {:.2} W → {:.1} mJ/node\n",
+        dur * 1e3,
+        idle_w,
+        idle_j * 1e3
+    );
     let role = |n: u64| match n {
         SINK => "sink   (listen only)",
         RELAY => "relay  (forwards all)",
@@ -123,13 +148,20 @@ fn main() {
             a.total_j(idle_w, dur) * 1e3
         );
     }
-    let relay_tx = acct.get(&NodeId(RELAY as usize)).map(|a| a.tx_j).unwrap_or(0.0);
+    let relay_tx = acct
+        .get(&NodeId(RELAY as usize))
+        .map(|a| a.tx_j)
+        .unwrap_or(0.0);
     println!(
         "\n§4 cooperation-vs-power: the relay spends {:.2} mJ TRANSMITTING (forwarding for others);",
         relay_tx * 1e3
     );
-    println!("   a leaf transmits nothing. And host-processing cost is set by filter WIDTH — a relay");
-    println!("   that carries many groups pays host energy for each; a narrow leaf pays for one (Parts 2–3).");
+    println!(
+        "   a leaf transmits nothing. And host-processing cost is set by filter WIDTH — a relay"
+    );
+    println!(
+        "   that carries many groups pays host energy for each; a narrow leaf pays for one (Parts 2–3)."
+    );
 
     // ---- Part 2: MAC offload A/B on the leaf's host ---------------------------------------------
     let (acct_f, _) = scenario(true, producers);
@@ -163,6 +195,10 @@ fn main() {
             leaf(&a_filt).host_j * 1e3
         );
     }
-    println!("   monitor scales with ambient; the name-filter stays flat — the tax is a monitor-mode");
-    println!("   artifact (the radio drops non-matching frames before the CPU wakes), not the architecture.");
+    println!(
+        "   monitor scales with ambient; the name-filter stays flat — the tax is a monitor-mode"
+    );
+    println!(
+        "   artifact (the radio drops non-matching frames before the CPU wakes), not the architecture."
+    );
 }

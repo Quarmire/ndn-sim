@@ -48,11 +48,12 @@ use ndn_engine::builder::EngineConfig;
 use ndn_packet::Name;
 use ndn_sim::fieldkit::{RestartablePublisher, TwoPhaseReplica, settle};
 use ndn_sim::liveness::{
-    CatchupOpts, CellReport, Ledger, LivenessVerdict, Scoreboard, StepBound,
-    ledgered_catchup, watch,
+    CatchupOpts, CellReport, Ledger, LivenessVerdict, Scoreboard, StepBound, ledgered_catchup,
+    watch,
 };
-use ndn_sim::{FrameMatcher, HoldRule, LinkConfig, NodeId, RunningSimulation, Simulation,
-    VirtualKernel};
+use ndn_sim::{
+    FrameMatcher, HoldRule, LinkConfig, NodeId, RunningSimulation, Simulation, VirtualKernel,
+};
 use tokio_util::sync::CancellationToken;
 
 const GROUP: &str = "/grp";
@@ -89,7 +90,10 @@ async fn build_topology(
     topo: Topo,
     link: LinkConfig,
 ) -> (RunningSimulation, NodeId, Vec<NodeId>) {
-    let mut sim = Simulation::new().without_radio_interference().kernel(k).seed(seed);
+    let mut sim = Simulation::new()
+        .without_radio_interference()
+        .kernel(k)
+        .seed(seed);
     let a = sim.add_node(EngineConfig::default());
     match topo {
         Topo::Pair => {
@@ -370,49 +374,99 @@ fn stall_matrix_scoreboard() {
 
     // Baselines: clean and lossy, pair and relay line.
     board.push(run_simple_cell(
-        "clean/pair", 0xC701, Topo::Pair, LinkConfig::lan(), None, 30,
+        "clean/pair",
+        0xC701,
+        Topo::Pair,
+        LinkConfig::lan(),
+        None,
+        30,
         CatchupOpts::default(),
     ));
     board.push(run_simple_cell(
-        "clean/line3", 0xC702, Topo::Line3, LinkConfig::lan(), None, 30,
+        "clean/line3",
+        0xC702,
+        Topo::Line3,
+        LinkConfig::lan(),
+        None,
+        30,
         CatchupOpts::default(),
     ));
     board.push(run_simple_cell(
-        "drop/pair", 0xC703, Topo::Pair, lossy(), None, 30,
+        "drop/pair",
+        0xC703,
+        Topo::Pair,
+        lossy(),
+        None,
+        30,
         CatchupOpts::default(),
     ));
     board.push(run_simple_cell(
-        "drop/line3", 0xC704, Topo::Line3, lossy(), None, 20,
+        "drop/line3",
+        0xC704,
+        Topo::Line3,
+        lossy(),
+        None,
+        20,
         CatchupOpts::default(),
     ));
 
     // NS-6 row — reorder (delay-without-drop) under the stock name-paired fetch.
     board.push(run_simple_cell(
-        "reorder-ns6/pair", 0xC706, Topo::Pair,
-        LinkConfig { delay: Duration::from_millis(30), ..LinkConfig::default() },
-        Some(reorder_hold()), 12, CatchupOpts::default(),
+        "reorder-ns6/pair",
+        0xC706,
+        Topo::Pair,
+        LinkConfig {
+            delay: Duration::from_millis(30),
+            ..LinkConfig::default()
+        },
+        Some(reorder_hold()),
+        12,
+        CatchupOpts::default(),
     ));
 
     // NS-6 row, WINDOWED (skyfall §6.1): the same reorder fault with 16 fetches in flight.
     // Out-of-order arrival is exactly where a held stale reply could mispair — the
     // name-correlated window must keep the byte-identity invariant green.
     board.push(run_simple_cell(
-        "reorder-ns6-windowed/pair", 0xC716, Topo::Pair,
-        LinkConfig { delay: Duration::from_millis(30), ..LinkConfig::default() },
-        Some(reorder_hold()), 12, CatchupOpts { window: 16, ..CatchupOpts::default() },
+        "reorder-ns6-windowed/pair",
+        0xC716,
+        Topo::Pair,
+        LinkConfig {
+            delay: Duration::from_millis(30),
+            ..LinkConfig::default()
+        },
+        Some(reorder_hold()),
+        12,
+        CatchupOpts {
+            window: 16,
+            ..CatchupOpts::default()
+        },
     ));
 
     // NS-7 row — a 400-Block catch-up through the stock two-phase channels.
     board.push(run_simple_cell(
-        "burst-ns7/pair", 0xC707, Topo::Pair, LinkConfig::lan(), None, 400,
+        "burst-ns7/pair",
+        0xC707,
+        Topo::Pair,
+        LinkConfig::lan(),
+        None,
+        400,
         CatchupOpts::default(),
     ));
 
     // NS-7 row, WINDOWED: the same 400-Block burst with the windowed catch-up ON — the
     // channel-geometry deadlock must stay unreachable when acks arrive in chunk-sized runs.
     board.push(run_simple_cell(
-        "burst-ns7-windowed/pair", 0xC717, Topo::Pair, LinkConfig::lan(), None, 400,
-        CatchupOpts { window: 16, ..CatchupOpts::default() },
+        "burst-ns7-windowed/pair",
+        0xC717,
+        Topo::Pair,
+        LinkConfig::lan(),
+        None,
+        400,
+        CatchupOpts {
+            window: 16,
+            ..CatchupOpts::default()
+        },
     ));
 
     // NS-8 row — publisher restart with the persistent store (the N-13/N-15 regime).
@@ -420,7 +474,12 @@ fn stall_matrix_scoreboard() {
 
     // NS-9 row — slow per-Block processing under the FIXED step shape (bound the wait).
     board.push(run_simple_cell(
-        "slowstore-ns9/pair", 0xC709, Topo::Pair, LinkConfig::lan(), None, 30,
+        "slowstore-ns9/pair",
+        0xC709,
+        Topo::Pair,
+        LinkConfig::lan(),
+        None,
+        30,
         CatchupOpts {
             per_seq_delay: SLOW_STORE,
             step: StepBound::BoundedWait(Duration::from_millis(200)),
@@ -456,7 +515,12 @@ fn stall_matrix_scoreboard() {
 fn watchdog_fires_on_a_wedged_stack_and_stays_silent_on_a_healthy_one() {
     // Healthy twin first: identical cell, stock consumer → converges, invariants hold.
     let healthy = run_simple_cell(
-        "gate-healthy/pair", 0xC7A0, Topo::Pair, LinkConfig::lan(), None, 10,
+        "gate-healthy/pair",
+        0xC7A0,
+        Topo::Pair,
+        LinkConfig::lan(),
+        None,
+        10,
         CatchupOpts::default(),
     );
     assert!(
@@ -467,8 +531,16 @@ fn watchdog_fires_on_a_wedged_stack_and_stays_silent_on_a_healthy_one() {
     // The wedge: a consumer that freezes mid-stream after 4 Blocks — the field deadlock's
     // signature (progress made, then frozen, no error). The watchdog MUST fire.
     let wedged = run_simple_cell(
-        "gate-wedged/pair", 0xC7A1, Topo::Pair, LinkConfig::lan(), None, 10,
-        CatchupOpts { wedge_after: Some(4), ..CatchupOpts::default() },
+        "gate-wedged/pair",
+        0xC7A1,
+        Topo::Pair,
+        LinkConfig::lan(),
+        None,
+        10,
+        CatchupOpts {
+            wedge_after: Some(4),
+            ..CatchupOpts::default()
+        },
     );
     let LivenessVerdict::Stalled { backlog, acks } = wedged.liveness else {
         panic!(
@@ -476,7 +548,10 @@ fn watchdog_fires_on_a_wedged_stack_and_stays_silent_on_a_healthy_one() {
              pre-N-11 red-proof is pinned in git history at ndn-sim dbe14fd): {wedged:?}"
         );
     };
-    assert!(backlog > 0 && acks > 0, "wedged MID-stream: progress made, then frozen");
+    assert!(
+        backlog > 0 && acks > 0,
+        "wedged MID-stream: progress made, then frozen"
+    );
     assert!(!wedged.pass);
 }
 
@@ -504,7 +579,10 @@ fn ns6_row_reddens_with_arrival_paired_pairing() {
             k,
             0xC7A6,
             Topo::Pair,
-            LinkConfig { delay: Duration::from_millis(200), ..LinkConfig::default() },
+            LinkConfig {
+                delay: Duration::from_millis(200),
+                ..LinkConfig::default()
+            },
         )
         .await;
         let cancel = CancellationToken::new();
@@ -586,7 +664,12 @@ fn ns8_row_reddens_with_the_ephemeral_data_plane() {
 #[test]
 fn ns9_row_reddens_with_a_whole_step_bound() {
     let red = run_simple_cell(
-        "gate-ns9-wholestep/pair", 0xC7A9, Topo::Pair, LinkConfig::lan(), None, 30,
+        "gate-ns9-wholestep/pair",
+        0xC7A9,
+        Topo::Pair,
+        LinkConfig::lan(),
+        None,
+        30,
         CatchupOpts {
             per_seq_delay: SLOW_STORE,
             step: StepBound::WholeStep(Duration::from_millis(50)),
@@ -614,7 +697,12 @@ fn ns9_row_reddens_with_a_whole_step_bound() {
 fn scoreboard_is_deterministic() {
     let run = || {
         run_simple_cell(
-            "determinism/drop-pair", 0xC7D0, Topo::Pair, lossy(), None, 20,
+            "determinism/drop-pair",
+            0xC7D0,
+            Topo::Pair,
+            lossy(),
+            None,
+            20,
             CatchupOpts::default(),
         )
         .normative()

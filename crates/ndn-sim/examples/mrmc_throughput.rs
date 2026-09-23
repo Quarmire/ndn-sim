@@ -56,7 +56,13 @@ struct Tx {
 /// Saturated Interest→Data flow through an `h`-hop chain with `radios` per node and `channels`
 /// channels; hop i uses channel `i % channels`. Half-duplex is PER RADIO (a 2-radio node can RX+TX
 /// at once on different channels); interference is per the channel coupling. Objects/slot.
-fn chain_mrmc(hops: i64, channels: usize, radios: usize, cs_range: i64, ch: &dyn ChannelModel) -> f64 {
+fn chain_mrmc(
+    hops: i64,
+    channels: usize,
+    radios: usize,
+    cs_range: i64,
+    ch: &dyn ChannelModel,
+) -> f64 {
     let n = (hops + 1) as usize;
     let hop_ch = |i: i64| (i as usize % channels) as u8;
     let mut fwd = vec![0u64; n];
@@ -71,12 +77,20 @@ fn chain_mrmc(hops: i64, channels: usize, radios: usize, cs_range: i64, ch: &dyn
         let mut cands: Vec<Tx> = Vec::new();
         for i in 0..hops {
             if fwd[i as usize] > 0 {
-                cands.push(Tx { t: i, r: i + 1, ch: hop_ch(i) });
+                cands.push(Tx {
+                    t: i,
+                    r: i + 1,
+                    ch: hop_ch(i),
+                });
             }
         }
         for i in 1..=hops {
             if rev[i as usize] > 0 {
-                cands.push(Tx { t: i, r: i - 1, ch: hop_ch(i - 1) });
+                cands.push(Tx {
+                    t: i,
+                    r: i - 1,
+                    ch: hop_ch(i - 1),
+                });
             }
         }
         if cands.is_empty() {
@@ -131,18 +145,27 @@ fn main() {
     let ortho = OrthogonalChannels;
     let leaky = AdjacentLeakChannel::default(); // adjacent coupling 0.2
 
-    println!("A. parallel pipes — 8 flows in one region, assigned to C channels (aggregate obj/slot)\n");
+    println!(
+        "A. parallel pipes — 8 flows in one region, assigned to C channels (aggregate obj/slot)\n"
+    );
     println!("  channels   orthogonal   adjacent-leak   leak tax");
     for c in [1usize, 2, 3, 4, 6, 8] {
         let o = parallel_pipes(8, c, &ortho);
         let l = parallel_pipes(8, c, &leaky);
         println!(
             "  {:>5}      {:>8.1}×    {:>9.1}×      {:>4.0}%",
-            c, o, l, if o > 0.0 { 100.0 * (1.0 - l / o) } else { 0.0 }
+            c,
+            o,
+            l,
+            if o > 0.0 { 100.0 * (1.0 - l / o) } else { 0.0 }
         );
     }
-    println!("  → orthogonal channels give ~C× parallelism; adjacent-channel leakage cuts it ~in half");
-    println!("    (neighbouring channels still collide) — the honest ndnpipes-on-orthogonal-channels gain.");
+    println!(
+        "  → orthogonal channels give ~C× parallelism; adjacent-channel leakage cuts it ~in half"
+    );
+    println!(
+        "    (neighbouring channels still collide) — the honest ndnpipes-on-orthogonal-channels gain."
+    );
 
     println!("\nB. multi-radio chain — does MRMC break the single-radio multi-hop collapse?\n");
     let base = chain_mrmc(1, 1, 1, 4, &ortho); // single-hop channel capacity (one flow)
@@ -152,12 +175,23 @@ fn main() {
         let b = chain_mrmc(h, 2, 2, 4, &ortho) / base;
         let c = chain_mrmc(h, 2, 2, 4, &leaky) / base;
         let d = chain_mrmc(h, 3, 3, 4, &ortho) / base;
-        println!("  {:>3}    {:>6.3}   {:>10.3}    {:>10.3}    {:>10.3}", h, a, b, c, d);
+        println!(
+            "  {:>3}    {:>6.3}   {:>10.3}    {:>10.3}    {:>10.3}",
+            h, a, b, c, d
+        );
     }
-    println!("\ntakeaway: 1-radio/1-channel is the ~1/8-at-4-hops collapse. Two radios on two alternating");
-    println!("channels let a relay RX+TX at once and stop adjacent hops interfering — the chain pipelines");
-    println!("and capacity climbs back toward the single-hop rate. Leakage claws some back (adjacent hops");
-    println!("aren't perfectly orthogonal). Stock IP/802.11s can't do this natively — the fair MRMC");
+    println!(
+        "\ntakeaway: 1-radio/1-channel is the ~1/8-at-4-hops collapse. Two radios on two alternating"
+    );
+    println!(
+        "channels let a relay RX+TX at once and stop adjacent hops interfering — the chain pipelines"
+    );
+    println!(
+        "and capacity climbs back toward the single-hop rate. Leakage claws some back (adjacent hops"
+    );
+    println!(
+        "aren't perfectly orthogonal). Stock IP/802.11s can't do this natively — the fair MRMC"
+    );
     println!("comparison must be against the research multi-radio routing schemes (#69).");
 
     // JSON (stderr) for the dashboard.
@@ -183,5 +217,9 @@ fn main() {
             )
         })
         .collect();
-    eprintln!("{{\"pipes\":[{}],\"chain\":[{}]}}", pipes.join(","), chain.join(","));
+    eprintln!(
+        "{{\"pipes\":[{}],\"chain\":[{}]}}",
+        pipes.join(","),
+        chain.join(",")
+    );
 }

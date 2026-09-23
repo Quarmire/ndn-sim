@@ -70,7 +70,12 @@ pub struct HoldRule {
 impl HoldRule {
     /// Hold the `n`-th (0-based) matching frame, once.
     pub fn nth(matcher: FrameMatcher, n: u64, delay: Duration) -> Self {
-        Self { matcher, skip: n, count: 1, delay }
+        Self {
+            matcher,
+            skip: n,
+            count: 1,
+            delay,
+        }
     }
 }
 
@@ -113,17 +118,22 @@ impl LinkState {
     }
     /// Override the loss rate (`None` restores the profile's).
     pub fn set_loss(&self, rate: Option<f64>) {
-        self.loss_override_bits.store(rate.unwrap_or(f64::NAN).to_bits(), Ordering::Relaxed);
+        self.loss_override_bits
+            .store(rate.unwrap_or(f64::NAN).to_bits(), Ordering::Relaxed);
     }
     /// Add extra per-frame delay (congestion).
     pub fn set_extra_delay(&self, extra: Duration) {
-        self.extra_delay_ns.store(extra.as_nanos() as u64, Ordering::Relaxed);
+        self.extra_delay_ns
+            .store(extra.as_nanos() as u64, Ordering::Relaxed);
     }
     /// Install (or clear) a targeted [`HoldRule`] — delay matching frames without dropping
     /// them. Replaces any prior rule; the match counter restarts.
     pub fn set_hold(&self, rule: Option<HoldRule>) {
-        *self.hold.lock().unwrap() =
-            rule.map(|rule| HoldActive { rule, matched: 0, held: 0 });
+        *self.hold.lock().unwrap() = rule.map(|rule| HoldActive {
+            rule,
+            matched: 0,
+            held: 0,
+        });
     }
     /// Restore the link to its profile defaults (up, no override, no extra delay, no hold).
     pub fn reset(&self) {
@@ -331,8 +341,11 @@ impl Transport for SimFace {
         } else {
             self.jitter()
         };
-        let mut deliver_at =
-            tx_start + self.config.delay + jitter + self.state.extra_delay() + hold.unwrap_or_default();
+        let mut deliver_at = tx_start
+            + self.config.delay
+            + jitter
+            + self.state.extra_delay()
+            + hold.unwrap_or_default();
 
         // Reliable: never deliver before the previous packet (in-order, HOL-style).
         if self.reliable {

@@ -30,8 +30,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::encode::DataBuilder;
 use ndn_packet::Name;
+use ndn_packet::encode::DataBuilder;
 use ndn_security::{KeyChain, SignWith, TrustSchema, Validator};
 use ndn_sim::adversary::{
     AdversaryBoard, AdversaryCell, CostMeter, amplification_bound, cap_bound, verifying_catchup,
@@ -96,7 +96,9 @@ async fn build_hub(
 fn signed_block(kc: &KeyChain, base: &str, seq: u64, content: &[u8]) -> Bytes {
     let signer = kc.signer().unwrap();
     let dname: Name = format!("{base}/blk/{seq}").parse().unwrap();
-    DataBuilder::new(dname, content).sign_with_sync(&*signer).unwrap()
+    DataBuilder::new(dname, content)
+        .sign_with_sync(&*signer)
+        .unwrap()
 }
 
 /// A bad-SIGNATURE block: validly assembled, then the trailing signature byte is flipped, so
@@ -148,8 +150,12 @@ async fn attach_verifier(
     cancel: &CancellationToken,
 ) {
     let replica = TwoPhaseReplica::attach(
-        fabric, node, &name(GROUP), &name(local),
-        Duration::from_millis(500), cancel,
+        fabric,
+        node,
+        &name(GROUP),
+        &name(local),
+        Duration::from_millis(500),
+        cancel,
     )
     .await
     .expect("verifier attaches");
@@ -184,7 +190,18 @@ fn run_invalid_sig_flood(cell: &str, seed: u64) -> AdversaryCell {
         let e_kc = KeyChain::ephemeral(E_NAME).unwrap();
         let validator = validator_trusting(&[&a_kc]); // trusts A only
 
-        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, VERIFIER_WINDOW, &cancel).await;
+        attach_verifier(
+            &fabric,
+            b,
+            "/nodes/B",
+            "B",
+            &ledger,
+            &validator,
+            &meter,
+            VERIFIER_WINDOW,
+            &cancel,
+        )
+        .await;
         let pub_a = attach_publisher(&fabric, a, A_NAME, &cancel).await;
         let pub_e = attach_publisher(&fabric, e, E_NAME, &cancel).await;
         settle(Duration::from_millis(400)).await;
@@ -245,7 +262,18 @@ fn run_fork_storm(cell: &str, seed: u64) -> AdversaryCell {
         let e_kc = KeyChain::ephemeral(E_NAME).unwrap();
         let validator = validator_trusting(&[&a_kc]);
 
-        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, VERIFIER_WINDOW, &cancel).await;
+        attach_verifier(
+            &fabric,
+            b,
+            "/nodes/B",
+            "B",
+            &ledger,
+            &validator,
+            &meter,
+            VERIFIER_WINDOW,
+            &cancel,
+        )
+        .await;
         let pub_a = attach_publisher(&fabric, a, A_NAME, &cancel).await;
         let pub_e = attach_publisher(&fabric, e, E_NAME, &cancel).await;
         settle(Duration::from_millis(400)).await;
@@ -305,14 +333,29 @@ fn run_ack_withholding(cell: &str, seed: u64) -> AdversaryCell {
         let a_kc = KeyChain::ephemeral(A_NAME).unwrap();
         let validator = validator_trusting(&[&a_kc]);
 
-        attach_verifier(&fabric, b, "/nodes/B", "B", &ledger, &validator, &meter, VERIFIER_WINDOW, &cancel).await;
+        attach_verifier(
+            &fabric,
+            b,
+            "/nodes/B",
+            "B",
+            &ledger,
+            &validator,
+            &meter,
+            VERIFIER_WINDOW,
+            &cancel,
+        )
+        .await;
 
         // B2: a withholding replica — fetch + count serve pressure, but never ack. Modeled with
         // the fieldkit's naive fetch loop wired to a SEPARATE ledger so its (non-)progress does
         // not confound the honest watchdog; every fetch it makes is publisher serve-work.
         let withholder = TwoPhaseReplica::attach(
-            &fabric, e, &name(GROUP), &name("/nodes/B2"),
-            Duration::from_millis(500), &cancel,
+            &fabric,
+            e,
+            &name(GROUP),
+            &name("/nodes/B2"),
+            Duration::from_millis(500),
+            &cancel,
         )
         .await
         .unwrap();
@@ -387,7 +430,8 @@ fn run_storage_poisoning(cell: &str, seed: u64) -> AdversaryCell {
         for i in 0..5000u64 {
             let name: Name = format!("/junk/{i}").parse().unwrap();
             let junk = DataBuilder::new(name.clone(), &[0xAB; 180]).build();
-            cs.insert(junk, Arc::new(name), CsMeta { stale_at: u64::MAX }).await;
+            cs.insert(junk, Arc::new(name), CsMeta { stale_at: u64::MAX })
+                .await;
         }
         let held = cs.current_bytes() as u64;
 
@@ -491,7 +535,10 @@ fn honest_liveness_reddens_when_the_attacker_wins() {
         !cell.invariants.poison_free,
         "storing unverified attacker bytes must redden the poison invariant: {cell:?}"
     );
-    assert!(!cell.pass, "a poisoned cell cannot pass even when liveness reads converged");
+    assert!(
+        !cell.pass,
+        "a poisoned cell cannot pass even when liveness reads converged"
+    );
     println!("poison caught: {:?}", cell.invariants.violations);
 }
 
@@ -501,6 +548,9 @@ fn honest_liveness_reddens_when_the_attacker_wins() {
 fn adversary_is_deterministic() {
     let a = run_fork_storm("determinism/fork", 0xB0D0).normative();
     let b = run_fork_storm("determinism/fork", 0xB0D0).normative();
-    assert_eq!(a, b, "same seed must reproduce the identical normative adversary report");
+    assert_eq!(
+        a, b,
+        "same seed must reproduce the identical normative adversary report"
+    );
     let _ = BTreeMap::<String, f64>::new();
 }

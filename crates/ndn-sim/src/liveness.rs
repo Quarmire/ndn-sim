@@ -418,15 +418,26 @@ async fn process_update(
         let mut next = update.low_seq;
         while next <= update.high_seq {
             let hi = (next + opts.window as u64 - 1).min(update.high_seq);
-            let chunk = replica.fetch_window(&update.name, next, hi, opts.window).await;
+            let chunk = replica
+                .fetch_window(&update.name, next, hi, opts.window)
+                .await;
             let requested = (hi - next + 1) as usize;
             for (i, slot) in chunk.into_iter().take(requested).enumerate() {
                 let seq = next + i as u64;
                 let Some(bytes) = slot else {
                     return events; // hold at the gap; the buffered tail is discarded
                 };
-                ingest_one(replica, ledger, replica_name, &update, seq, bytes, opts, &mut events)
-                    .await;
+                ingest_one(
+                    replica,
+                    ledger,
+                    replica_name,
+                    &update,
+                    seq,
+                    bytes,
+                    opts,
+                    &mut events,
+                )
+                .await;
             }
             next = hi + 1;
         }
@@ -447,7 +458,17 @@ async fn process_update(
                 FetchMode::ArrivalPaired => continue,
             }
         };
-        ingest_one(replica, ledger, replica_name, &update, seq, bytes, opts, &mut events).await;
+        ingest_one(
+            replica,
+            ledger,
+            replica_name,
+            &update,
+            seq,
+            bytes,
+            opts,
+            &mut events,
+        )
+        .await;
     }
     events
 }

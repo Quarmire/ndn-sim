@@ -17,7 +17,9 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_radio_cognition::{ARMS, Context, ContextualBandit, NameContext, TxParams, WifiRate, apply_arm, reward};
+use ndn_radio_cognition::{
+    ARMS, Context, ContextualBandit, NameContext, TxParams, WifiRate, apply_arm, reward,
+};
 use ndn_sim::energy::RadioEnergyModel;
 use ndn_sim::link_model::mcs_phy_rate_bps;
 use ndn_sim::medium::CarrierSenseInterference;
@@ -38,7 +40,12 @@ fn dbm_of(power_idx: u8) -> f64 {
 }
 
 fn base_params() -> TxParams {
-    let mut p = TxParams::wifi(WifiRate { mcs: Some(BASE_MCS), bw: Some(2), nss: Some(1), ..Default::default() });
+    let mut p = TxParams::wifi(WifiRate {
+        mcs: Some(BASE_MCS),
+        bw: Some(2),
+        nss: Some(1),
+        ..Default::default()
+    });
     p.tx_power = Some(MAX_POWER_IDX);
     p
 }
@@ -80,12 +87,21 @@ fn run_baseline(dist: f64) -> Run {
     for r in 0..ROUNDS {
         bus.set_tx_power(NodeId(TX), MAX_DBM);
         dbm_sum += MAX_DBM;
-        let rx = bus.transmit(NodeId(TX), BASE_MCS, Bytes::from(vec![0u8; PAYLOAD]), r * air * 2);
+        let rx = bus.transmit(
+            NodeId(TX),
+            BASE_MCS,
+            Bytes::from(vec![0u8; PAYLOAD]),
+            r * air * 2,
+        );
         if rx.iter().any(|(to, _, ok)| *to == NodeId(SINK) && *ok) {
             delivered += 1;
         }
     }
-    let tx_j = bus.energy_accounts().get(&NodeId(TX)).map(|a| a.tx_j).unwrap_or(0.0);
+    let tx_j = bus
+        .energy_accounts()
+        .get(&NodeId(TX))
+        .map(|a| a.tx_j)
+        .unwrap_or(0.0);
     Run {
         delivery: delivered as f64 / ROUNDS as f64,
         tx_j,
@@ -101,7 +117,11 @@ fn run_bandit(dist: f64) -> (Run, ContextualBandit, Context) {
     // Probe the link once (max power) to fix the context the bandit keys on.
     bus.set_tx_power(NodeId(TX), MAX_DBM);
     let probe = bus.transmit(NodeId(TX), BASE_MCS, Bytes::from(vec![0u8; PAYLOAD]), 0);
-    let rssi = probe.iter().find(|(to, _, _)| *to == NodeId(SINK)).map(|(_, r, _)| *r).unwrap_or(-95.0);
+    let rssi = probe
+        .iter()
+        .find(|(to, _, _)| *to == NodeId(SINK))
+        .map(|(_, r, _)| *r)
+        .unwrap_or(-95.0);
     let ctx = Context::new(rssi.round() as i8, 0, 1, &NameContext::new(0));
 
     let (mut delivered, mut dbm_sum) = (0u64, 0.0);
@@ -113,14 +133,23 @@ fn run_bandit(dist: f64) -> (Run, ContextualBandit, Context) {
         let dbm = dbm_of(p.tx_power.unwrap_or(MAX_POWER_IDX));
         dbm_sum += dbm;
         bus.set_tx_power(NodeId(TX), dbm);
-        let rx = bus.transmit(NodeId(TX), mcs, Bytes::from(vec![0u8; PAYLOAD]), r * air * 2);
+        let rx = bus.transmit(
+            NodeId(TX),
+            mcs,
+            Bytes::from(vec![0u8; PAYLOAD]),
+            r * air * 2,
+        );
         let ok = rx.iter().any(|(to, _, d)| *to == NodeId(SINK) && *d);
         if ok {
             delivered += 1;
         }
         bandit.update(&ctx, arm, reward(ok, &p, MAX_POWER_IDX));
     }
-    let tx_j = bus.energy_accounts().get(&NodeId(TX)).map(|a| a.tx_j).unwrap_or(0.0);
+    let tx_j = bus
+        .energy_accounts()
+        .get(&NodeId(TX))
+        .map(|a| a.tx_j)
+        .unwrap_or(0.0);
     let run = Run {
         delivery: delivered as f64 / ROUNDS as f64,
         tx_j,
@@ -131,28 +160,62 @@ fn run_bandit(dist: f64) -> (Run, ContextualBandit, Context) {
 }
 
 fn main() {
-    println!("contextual bandit vs fixed-max-power baseline — the TX-power dial, {ROUNDS} rounds/link");
-    println!("(reward = airtime + power footprint, miss heavily penalized; power feeds RSSI AND energy)\n");
+    println!(
+        "contextual bandit vs fixed-max-power baseline — the TX-power dial, {ROUNDS} rounds/link"
+    );
+    println!(
+        "(reward = airtime + power footprint, miss heavily penalized; power feeds RSSI AND energy)\n"
+    );
     println!("link       policy      delivery   mean TX   TX energy   TX µJ/bit");
-    for (label, dist) in [("strong (40 m)", 40.0), ("mid (400 m)", 400.0), ("weak (700 m)", 700.0)] {
+    for (label, dist) in [
+        ("strong (40 m)", 40.0),
+        ("mid (400 m)", 400.0),
+        ("weak (700 m)", 700.0),
+    ] {
         let b = run_baseline(dist);
         let (g, bandit, ctx) = run_bandit(dist);
-        let ppb = |run: &Run| if run.delivered_bits > 0.0 { run.tx_j / run.delivered_bits * 1e6 } else { f64::NAN };
+        let ppb = |run: &Run| {
+            if run.delivered_bits > 0.0 {
+                run.tx_j / run.delivered_bits * 1e6
+            } else {
+                f64::NAN
+            }
+        };
         println!(
             "{label:<14} baseline    {:5.0}%    {:5.1} dBm   {:6.2} mJ   {:6.3}",
-            b.delivery * 100.0, b.mean_dbm, b.tx_j * 1e3, ppb(&b)
+            b.delivery * 100.0,
+            b.mean_dbm,
+            b.tx_j * 1e3,
+            ppb(&b)
         );
         println!(
             "{:<14} bandit      {:5.0}%    {:5.1} dBm   {:6.2} mJ   {:6.3}   learned best arm {}",
-            "", g.delivery * 100.0, g.mean_dbm, g.tx_j * 1e3, ppb(&g),
+            "",
+            g.delivery * 100.0,
+            g.mean_dbm,
+            g.tx_j * 1e3,
+            ppb(&g),
             bandit.best(&ctx).unwrap_or(0)
         );
         // Decision observability: the learned per-arm UCB scores for this link's context.
         let choice = bandit.select_traced(&ctx);
-        let scores: Vec<String> = choice.scores.iter().map(|s| {
-            if s.is_infinite() { "  ∞  ".into() } else { format!("{s:5.2}") }
-        }).collect();
-        println!("               ↳ arm UCB [base,rate−,rate+,pwr−6dB,fec+]: [{}]\n", scores.join(", "));
+        let scores: Vec<String> = choice
+            .scores
+            .iter()
+            .map(|s| {
+                if s.is_infinite() {
+                    "  ∞  ".into()
+                } else {
+                    format!("{s:5.2}")
+                }
+            })
+            .collect();
+        println!(
+            "               ↳ arm UCB [base,rate−,rate+,pwr−6dB,fec+]: [{}]\n",
+            scores.join(", ")
+        );
     }
-    println!("arms: 0 baseline · 1 lower rate · 2 higher rate · 3 trim power −6 dB · 4 FEC not rate");
+    println!(
+        "arms: 0 baseline · 1 lower rate · 2 higher rate · 3 trim power −6 dB · 4 FEC not rate"
+    );
 }

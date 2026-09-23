@@ -22,21 +22,33 @@ async fn per_prefix_counts_match_the_injected_pattern() {
     let fabric = sim.start().await.unwrap();
 
     // Producer on B under /svc/telemetry/live (4-component names → group to 3 = /svc/telemetry/live).
-    let producer = fabric.engine_of(b).unwrap().register_producer("/svc/telemetry/live", CancellationToken::new());
+    let producer = fabric
+        .engine_of(b)
+        .unwrap()
+        .register_producer("/svc/telemetry/live", CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
-                let _ = r.respond((*i.name).clone(), bytes::Bytes::from_static(b"sample")).await;
+                let _ = r
+                    .respond((*i.name).clone(), bytes::Bytes::from_static(b"sample"))
+                    .await;
             })
             .await;
     });
 
     // The KNOWN pattern: 3 interests A→B, 3 data B→A.
-    let mut consumer = fabric.engine_of(a).unwrap().app_consumer(CancellationToken::new());
+    let mut consumer = fabric
+        .engine_of(a)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
     for n in 0..3u32 {
         let name: Name = format!("/svc/telemetry/live/{n}").parse().unwrap();
         consumer
-            .fetch_with(InterestBuilder::new(name).must_be_fresh().lifetime(Duration::from_secs(4)))
+            .fetch_with(
+                InterestBuilder::new(name)
+                    .must_be_fresh()
+                    .lifetime(Duration::from_secs(4)),
+            )
             .await
             .expect("fetch");
     }
@@ -47,14 +59,23 @@ async fn per_prefix_counts_match_the_injected_pattern() {
 
     eprintln!("per-prefix rows: {rows:#?}");
     // The consumer's emission + delivery under the grouped prefix.
-    let a_row = rows.iter().find(|r| r.counters.out_interests > 0).expect("a consumer emission row");
-    assert_eq!(a_row.prefix, "/svc/telemetry/live", "grouped to 3 components");
+    let a_row = rows
+        .iter()
+        .find(|r| r.counters.out_interests > 0)
+        .expect("a consumer emission row");
+    assert_eq!(
+        a_row.prefix, "/svc/telemetry/live",
+        "grouped to 3 components"
+    );
     assert_eq!(a_row.counters.out_interests, 3, "3 interests emitted by A");
     assert_eq!(a_row.counters.in_data, 3, "3 data delivered to A");
     assert!(a_row.counters.out_bytes > 0 && a_row.counters.in_bytes > 0);
 
     // The producer's mirror: interests delivered to B, data emitted by B.
-    let b_row = rows.iter().find(|r| r.counters.in_interests > 0).expect("a producer delivery row");
+    let b_row = rows
+        .iter()
+        .find(|r| r.counters.in_interests > 0)
+        .expect("a producer delivery row");
     assert_eq!(b_row.prefix, "/svc/telemetry/live");
     assert_eq!(b_row.counters.in_interests, 3, "3 interests delivered to B");
     assert_eq!(b_row.counters.out_data, 3, "3 data emitted by B");

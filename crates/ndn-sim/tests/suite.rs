@@ -56,6 +56,7 @@ mod feed;
 mod field_faults;
 #[path = "geometry.rs"]
 mod geometry;
+mod ground_truth;
 #[path = "interop_ndnd.rs"]
 mod interop_ndnd;
 #[path = "interop_nfd.rs"]
@@ -68,14 +69,14 @@ mod ip_plane;
 mod mavlink;
 #[path = "mcp.rs"]
 mod mcp;
+#[path = "muas_mesh_svs.rs"]
+mod muas_mesh_svs;
 #[path = "multihop.rs"]
 mod multihop;
 #[path = "named_time_convergence.rs"]
 mod named_time_convergence;
 #[path = "named_time_mesh.rs"]
 mod named_time_mesh;
-#[path = "muas_mesh_svs.rs"]
-mod muas_mesh_svs;
 #[path = "named_time_svs.rs"]
 mod named_time_svs;
 #[path = "ndn_radio_mode.rs"]
@@ -120,4 +121,3 @@ mod wifi_modes;
 mod workload;
 #[path = "world_medium.rs"]
 mod world_medium;
-mod ground_truth;

@@ -35,11 +35,20 @@ fn svs_crosses_a_two_node_link() {
         let fabric = sim.start().await.unwrap();
 
         let cancel = CancellationToken::new();
-        let gcs_node = fabric.engine_of(gcs).unwrap().app_node(cancel.child_token());
+        let gcs_node = fabric
+            .engine_of(gcs)
+            .unwrap()
+            .app_node(cancel.child_token());
         let d1_node = fabric.engine_of(d1).unwrap().app_node(cancel.child_token());
 
-        let publisher = d1_node.publish("/muas", "/muas/v2/iuas-01").await.expect("publish");
-        let mut sub = gcs_node.subscribe("/muas", "/muas/v2/gcs").await.expect("subscribe");
+        let publisher = d1_node
+            .publish("/muas", "/muas/v2/iuas-01")
+            .await
+            .expect("publish");
+        let mut sub = gcs_node
+            .subscribe("/muas", "/muas/v2/gcs")
+            .await
+            .expect("subscribe");
 
         ndn_app::rt::sleep(Duration::from_millis(200)).await;
         publisher.put(b"service-request").await.expect("put");
@@ -86,15 +95,26 @@ fn svs_survives_muas_multicast_to_every_peer() {
         // ...and multicast on /muas, so an Interest fans to all of them
         let muas: Name = "/muas".parse().unwrap();
         for &n in all.iter() {
-            fabric.set_strategy(n, &muas, "multicast").expect("set multicast");
+            fabric
+                .set_strategy(n, &muas, "multicast")
+                .expect("set multicast");
         }
 
         let cancel = CancellationToken::new();
-        let gcs_node = fabric.engine_of(gcs).unwrap().app_node(cancel.child_token());
+        let gcs_node = fabric
+            .engine_of(gcs)
+            .unwrap()
+            .app_node(cancel.child_token());
         let d1_node = fabric.engine_of(d1).unwrap().app_node(cancel.child_token());
 
-        let publisher = d1_node.publish("/muas", "/muas/v2/iuas-01").await.expect("publish");
-        let mut sub = gcs_node.subscribe("/muas", "/muas/v2/gcs").await.expect("subscribe");
+        let publisher = d1_node
+            .publish("/muas", "/muas/v2/iuas-01")
+            .await
+            .expect("publish");
+        let mut sub = gcs_node
+            .subscribe("/muas", "/muas/v2/gcs")
+            .await
+            .expect("subscribe");
 
         ndn_app::rt::sleep(Duration::from_millis(200)).await;
         publisher.put(b"service-request").await.expect("put");

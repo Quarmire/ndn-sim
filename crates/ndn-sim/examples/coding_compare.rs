@@ -142,11 +142,16 @@ fn main() {
         let fwd = mean(forward, e, 11 + i as u64);
         let f1 = mean(f1_e2e, e, 101 + i as u64);
         let f2 = mean(f2_recode, e, 201 + i as u64);
-        eprintln!("  {e:.1}    {fwd:7.1}   {f1:7.1}   {f2:9.1}     {:.2}x", fwd / f2.max(1.0));
+        eprintln!(
+            "  {e:.1}    {fwd:7.1}   {f1:7.1}   {f2:9.1}     {:.2}x",
+            fwd / f2.max(1.0)
+        );
         if i > 0 {
             rows.push(',');
         }
-        rows.push_str(&format!("{{\"e\":{e},\"forward\":{fwd:.1},\"f1\":{f1:.1},\"f2\":{f2:.1}}}"));
+        rows.push_str(&format!(
+            "{{\"e\":{e},\"forward\":{fwd:.1},\"f1\":{f1:.1},\"f2\":{f2:.1}}}"
+        ));
     }
     rows.push(']');
 

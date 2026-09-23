@@ -54,12 +54,10 @@
 
 use std::collections::BTreeMap;
 
-use manifest::model::{
-    Clause, Contract, Document, EdgeForm, Intent, Subject, Term, Vocabulary,
-};
-use manifest::{term_hash, FrozenDag};
+use manifest::model::{Clause, Contract, Document, EdgeForm, Intent, Subject, Term, Vocabulary};
+use manifest::{FrozenDag, term_hash};
 use render_contract::{
-    contract_via, r#match, select_best_for, Budget, Floor, Match, TrustFrontier, Verdict, Via,
+    Budget, Floor, Match, TrustFrontier, Verdict, Via, contract_via, r#match, select_best_for,
 };
 
 use crate::telemetry::FabricGauges;
@@ -91,7 +89,12 @@ pub enum Surface {
 }
 
 fn term(label: &str, doc: &str) -> Term {
-    Term { label: label.into(), doc: Some(doc.into()), ty: None, attrs: Vec::new() }
+    Term {
+        label: label.into(),
+        doc: Some(doc.into()),
+        ty: None,
+        attrs: Vec::new(),
+    }
 }
 
 // ── the native-renderer registry (Via::Native id → a Rust renderer) ──────────
@@ -119,8 +122,10 @@ impl Renderers {
 /// Sparkline lens: the window of radio-airtime over virtual time as an SVG
 /// (reuses ndn-lab's existing [`render_sparkline`](crate::scene::render_sparkline)).
 fn render_sparkline_lens(samples: &[FabricGauges]) -> String {
-    let series: Vec<(u64, f64)> =
-        samples.iter().map(|g| (g.virtual_time_ns, g.radio_airtime_ns as f64)).collect();
+    let series: Vec<(u64, f64)> = samples
+        .iter()
+        .map(|g| (g.virtual_time_ns, g.radio_airtime_ns as f64))
+        .collect();
     crate::scene::render_sparkline(&series, 240, 48)
 }
 
@@ -137,8 +142,11 @@ fn render_otlp_lens(samples: &[FabricGauges]) -> String {
 /// for `series.window`, at the same loss depth as ASCII — so `select`'s tiebreak
 /// (equal depth ⇒ contract hash) has real work to do.
 fn render_thumbnail_lens(samples: &[FabricGauges]) -> String {
-    let series: Vec<(u64, f64)> =
-        samples.iter().step_by(3).map(|g| (g.virtual_time_ns, g.radio_airtime_ns as f64)).collect();
+    let series: Vec<(u64, f64)> = samples
+        .iter()
+        .step_by(3)
+        .map(|g| (g.virtual_time_ns, g.radio_airtime_ns as f64))
+        .collect();
     crate::scene::render_sparkline(&series, 120, 24)
 }
 
@@ -152,7 +160,9 @@ fn render_ascii_lens(samples: &[FabricGauges]) -> String {
         return String::new();
     }
     let vals: Vec<f64> = samples.iter().map(|g| g.radio_airtime_ns as f64).collect();
-    let (min, max) = vals.iter().fold((f64::MAX, f64::MIN), |(mn, mx), &v| (mn.min(v), mx.max(v)));
+    let (min, max) = vals
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(mn, mx), &v| (mn.min(v), mx.max(v)));
     let span = (max - min).max(1e-9);
     vals.iter()
         .map(|&v| BARS[(((v - min) / span) * 7.0).round() as usize % 8])
@@ -202,13 +212,37 @@ impl KeelView {
 
         // Render-side terms (NOT the producer's self-description — these are the
         // lens's concern, so they stay hand-authored per Law #1).
-        let metric_gauge = term_hash(&term("metric-gauge", "A renderable numeric gauge over virtual time.")).unwrap();
-        let ascii_sparkline = term_hash(&term("ascii-sparkline", "A gauge window as Unicode block glyphs.")).unwrap();
-        let loss_glyph = term_hash(&term("glyph-quantization", "Loss: continuous values bucketed to 8 block-glyph levels.")).unwrap();
-        let thumbnail = term_hash(&term("thumbnail-svg", "A small SVG over a decimated gauge window.")).unwrap();
-        let loss_decimate = term_hash(&term("resolution-decimation", "Loss: only every 3rd sample survives.")).unwrap();
+        let metric_gauge = term_hash(&term(
+            "metric-gauge",
+            "A renderable numeric gauge over virtual time.",
+        ))
+        .unwrap();
+        let ascii_sparkline = term_hash(&term(
+            "ascii-sparkline",
+            "A gauge window as Unicode block glyphs.",
+        ))
+        .unwrap();
+        let loss_glyph = term_hash(&term(
+            "glyph-quantization",
+            "Loss: continuous values bucketed to 8 block-glyph levels.",
+        ))
+        .unwrap();
+        let thumbnail = term_hash(&term(
+            "thumbnail-svg",
+            "A small SVG over a decimated gauge window.",
+        ))
+        .unwrap();
+        let loss_decimate = term_hash(&term(
+            "resolution-decimation",
+            "Loss: only every 3rd sample survives.",
+        ))
+        .unwrap();
         let otel_gauge = term_hash(&term("gauge", "An OpenTelemetry gauge data point.")).unwrap();
-        let loss_flatten = term_hash(&term("otel-attribute-flattening", "Loss: NDN structure flattened to OTLP key/value attributes.")).unwrap();
+        let loss_flatten = term_hash(&term(
+            "otel-attribute-flattening",
+            "Loss: NDN structure flattened to OTLP key/value attributes.",
+        ))
+        .unwrap();
 
         // The ndn-lab telemetry vocabulary: the DESCRIBE terms come from the
         // derive (`FabricGauges::manifest_terms()` — retired the hand-built list),
@@ -216,24 +250,55 @@ impl KeelView {
         // ascii-sparkline is a LOSSY maps-to (glyph quantization) — so a lens over
         // it can only Approximate `series.window`, and says why.
         let mut ndnlab_terms = FabricGauges::manifest_terms();
-        ndnlab_terms.push(term("metric-gauge", "A renderable numeric gauge over virtual time."));
-        ndnlab_terms.push(term("ascii-sparkline", "A gauge window as Unicode block glyphs."));
-        ndnlab_terms.push(term("glyph-quantization", "Loss: continuous values bucketed to 8 block-glyph levels."));
-        ndnlab_terms.push(term("thumbnail-svg", "A small SVG over a decimated gauge window."));
-        ndnlab_terms.push(term("resolution-decimation", "Loss: only every 3rd sample survives."));
+        ndnlab_terms.push(term(
+            "metric-gauge",
+            "A renderable numeric gauge over virtual time.",
+        ));
+        ndnlab_terms.push(term(
+            "ascii-sparkline",
+            "A gauge window as Unicode block glyphs.",
+        ));
+        ndnlab_terms.push(term(
+            "glyph-quantization",
+            "Loss: continuous values bucketed to 8 block-glyph levels.",
+        ));
+        ndnlab_terms.push(term(
+            "thumbnail-svg",
+            "A small SVG over a decimated gauge window.",
+        ));
+        ndnlab_terms.push(term(
+            "resolution-decimation",
+            "Loss: only every 3rd sample survives.",
+        ));
         let ndnlab = dag
             .insert_document(&Document::Vocabulary(Vocabulary {
                 label: "ndn-lab".into(),
-                doc: Some("ndn-lab telemetry: derived fabric-gauge terms + their renderable forms.".into()),
+                doc: Some(
+                    "ndn-lab telemetry: derived fabric-gauge terms + their renderable forms."
+                        .into(),
+                ),
                 imports: Vec::new(),
                 terms: ndnlab_terms,
                 // Two 1-hop lossy renderings + a lossless one. ascii and thumbnail
                 // sit at the SAME loss depth (different loss *terms*) — so the
                 // tiebreak between them is the contract-hash key, never severity.
                 edges: vec![
-                    EdgeForm::NarrowerThan { narrower: FabricGauges::schema(), broader: metric_gauge },
-                    EdgeForm::MapsTo { from: metric_gauge, to: ascii_sparkline, loss: loss_glyph, attrs: Vec::new() },
-                    EdgeForm::MapsTo { from: metric_gauge, to: thumbnail, loss: loss_decimate, attrs: Vec::new() },
+                    EdgeForm::NarrowerThan {
+                        narrower: FabricGauges::schema(),
+                        broader: metric_gauge,
+                    },
+                    EdgeForm::MapsTo {
+                        from: metric_gauge,
+                        to: ascii_sparkline,
+                        loss: loss_glyph,
+                        attrs: Vec::new(),
+                    },
+                    EdgeForm::MapsTo {
+                        from: metric_gauge,
+                        to: thumbnail,
+                        loss: loss_decimate,
+                        attrs: Vec::new(),
+                    },
                 ],
                 supersedes: None,
             }))
@@ -247,7 +312,10 @@ impl KeelView {
                 imports: Vec::new(),
                 terms: vec![
                     term("gauge", "An OpenTelemetry gauge data point."),
-                    term("otel-attribute-flattening", "Loss: NDN structure flattened to OTLP key/value attributes."),
+                    term(
+                        "otel-attribute-flattening",
+                        "Loss: NDN structure flattened to OTLP key/value attributes.",
+                    ),
                 ],
                 edges: Vec::new(),
                 supersedes: None,
@@ -260,7 +328,10 @@ impl KeelView {
         let bridge = dag
             .insert_document(&Document::Vocabulary(Vocabulary {
                 label: "ndn-lab-otel-bridge".into(),
-                doc: Some("Maps ndn-lab metric-gauge to an OTLP gauge; the mapping's loss is declared.".into()),
+                doc: Some(
+                    "Maps ndn-lab metric-gauge to an OTLP gauge; the mapping's loss is declared."
+                        .into(),
+                ),
                 imports: vec![ndnlab, otel],
                 terms: Vec::new(),
                 edges: vec![EdgeForm::MapsTo {
@@ -276,7 +347,9 @@ impl KeelView {
         // The self-describing sample, straight from the derive (one; a run streams
         // many past this schema).
         dag.insert_document(&Document::Manifest(
-            FabricGauges::default().to_manifest_default().expect("all-integer gauges never refuse"),
+            FabricGauges::default()
+                .to_manifest_default()
+                .expect("all-integer gauges never refuse"),
         ))
         .expect("manifest encodes");
 
@@ -289,7 +362,10 @@ impl KeelView {
                 imports: vec![ndnlab],
                 binds: vec![Subject::Name("ndn-lab/".into())],
                 clauses: vec![Clause::Express {
-                    intent: Intent { name: INTENT_SERIES_WINDOW.into(), attrs: Vec::new() },
+                    intent: Intent {
+                        name: INTENT_SERIES_WINDOW.into(),
+                        attrs: Vec::new(),
+                    },
                     target: metric_gauge,
                     via: Some(Via::Native(VIA_SPARKLINE.into())),
                     attrs: Vec::new(),
@@ -307,7 +383,10 @@ impl KeelView {
                 imports: vec![ndnlab],
                 binds: vec![Subject::Name("ndn-lab/".into())],
                 clauses: vec![Clause::Express {
-                    intent: Intent { name: INTENT_SERIES_WINDOW.into(), attrs: Vec::new() },
+                    intent: Intent {
+                        name: INTENT_SERIES_WINDOW.into(),
+                        attrs: Vec::new(),
+                    },
                     target: ascii_sparkline,
                     via: Some(Via::Native(VIA_ASCII.into())),
                     attrs: Vec::new(),
@@ -325,7 +404,10 @@ impl KeelView {
                 imports: vec![ndnlab],
                 binds: vec![Subject::Name("ndn-lab/".into())],
                 clauses: vec![Clause::Express {
-                    intent: Intent { name: INTENT_SERIES_WINDOW.into(), attrs: Vec::new() },
+                    intent: Intent {
+                        name: INTENT_SERIES_WINDOW.into(),
+                        attrs: Vec::new(),
+                    },
                     target: thumbnail,
                     via: Some(Via::Native(VIA_THUMBNAIL.into())),
                     attrs: Vec::new(),
@@ -342,7 +424,10 @@ impl KeelView {
                 imports: vec![ndnlab, otel, bridge],
                 binds: vec![Subject::Name("ndn-lab/".into())],
                 clauses: vec![Clause::Express {
-                    intent: Intent { name: INTENT_OTLP_GAUGE.into(), attrs: Vec::new() },
+                    intent: Intent {
+                        name: INTENT_OTLP_GAUGE.into(),
+                        attrs: Vec::new(),
+                    },
                     target: otel_gauge,
                     via: Some(Via::Native(VIA_OTLP.into())),
                     attrs: Vec::new(),
@@ -370,7 +455,12 @@ impl KeelView {
         let matches = r#match(&dag, &contracts, &frontier, Budget::generous())
             .expect("generous budget suffices");
 
-        KeelView { dag, matches, renderers: Renderers::new(), resolves: 1 }
+        KeelView {
+            dag,
+            matches,
+            renderers: Renderers::new(),
+            resolves: 1,
+        }
     }
 
     /// How many times the matcher has run (proof of resolve-once: always 1,
@@ -429,28 +519,62 @@ impl KeelView {
         let picked = self.select_for(INTENT_SERIES_WINDOW, floor);
 
         let mut h = String::new();
-        let _ = write!(h, "<!doctype html><meta charset=utf-8><title>ndn-lab · series.window</title>");
-        let _ = write!(h, "<style>body{{font:14px system-ui;margin:2rem;max-width:40rem}}\
+        let _ = write!(
+            h,
+            "<!doctype html><meta charset=utf-8><title>ndn-lab · series.window</title>"
+        );
+        let _ = write!(
+            h,
+            "<style>body{{font:14px system-ui;margin:2rem;max-width:40rem}}\
             .card{{border:1px solid #ccc;padding:.5rem 1rem;margin:.6rem 0;border-radius:6px}}\
             .pick{{border:2px solid #0a7;background:#f4fffb}}pre{{font-size:1.5rem;margin:.2rem 0}}\
-            .v{{color:#555;font-weight:600}}.loss{{color:#c60}}</style>");
-        let _ = write!(h, "<h1>series.window — one metric, {} offers</h1>", offers.len());
+            .v{{color:#555;font-weight:600}}.loss{{color:#c60}}</style>"
+        );
+        let _ = write!(
+            h,
+            "<h1>series.window — one metric, {} offers</h1>",
+            offers.len()
+        );
         match picked {
             Some(p) => {
-                let _ = write!(h, "<p><b>select(≥{floor:?})</b> chose {}.</p>", explain::document_label(&self.dag, &p.contract));
+                let _ = write!(
+                    h,
+                    "<p><b>select(≥{floor:?})</b> chose {}.</p>",
+                    explain::document_label(&self.dag, &p.contract)
+                );
             }
             None => {
-                let _ = write!(h, "<p><b>select(≥{floor:?})</b> → nothing meets this floor on this surface.</p>");
+                let _ = write!(
+                    h,
+                    "<p><b>select(≥{floor:?})</b> → nothing meets this floor on this surface.</p>"
+                );
             }
         }
         for m in &offers {
             let is_pick = picked.is_some_and(|p| std::ptr::eq(p, *m));
             let body = self.render(m, samples).map(|r| r.body).unwrap_or_default();
-            let _ = write!(h, "<div class=\"card{}\">", if is_pick { " pick" } else { "" });
-            let _ = write!(h, "<div class=v>{} — {:?}</div>", explain::document_label(&self.dag, &m.contract), m.verdict);
+            let _ = write!(
+                h,
+                "<div class=\"card{}\">",
+                if is_pick { " pick" } else { "" }
+            );
+            let _ = write!(
+                h,
+                "<div class=v>{} — {:?}</div>",
+                explain::document_label(&self.dag, &m.contract),
+                m.verdict
+            );
             if let Verdict::Approximate(loss) = &m.verdict {
-                let names: Vec<String> = loss.0.iter().map(|l| explain::term_label(&self.dag, l)).collect();
-                let _ = write!(h, "<div class=loss>declared loss: {}</div>", names.join(" · "));
+                let names: Vec<String> = loss
+                    .0
+                    .iter()
+                    .map(|l| explain::term_label(&self.dag, l))
+                    .collect();
+                let _ = write!(
+                    h,
+                    "<div class=loss>declared loss: {}</div>",
+                    names.join(" · ")
+                );
             }
             if body.contains("<svg") {
                 let _ = write!(h, "{body}");
@@ -469,7 +593,9 @@ impl KeelView {
         // `contract_via` (F54) owns the walk back to the emitting clause,
         // including path-final-hop disambiguation. Only native-via renderers are
         // in this registry; a Wasm-via lens needs the (unbuilt) WASM host.
-        let Via::Native(id) = contract_via(&self.dag, m)? else { return None };
+        let Via::Native(id) = contract_via(&self.dag, m)? else {
+            return None;
+        };
         let renderer = self.renderers.get(id)?;
         Some(Rendered {
             intent: m.intent.clone(),
@@ -481,12 +607,10 @@ impl KeelView {
 
     /// The best lens at or above a fidelity floor (deterministic F46 order).
     pub fn best_lens(&self, floor: Floor) -> Option<&Match> {
-        self.lenses()
-            .into_iter()
-            .find(|m| match floor {
-                Floor::Express => matches!(m.verdict, Verdict::Express),
-                Floor::Approximate => true,
-            })
+        self.lenses().into_iter().find(|m| match floor {
+            Floor::Express => matches!(m.verdict, Verdict::Express),
+            Floor::Approximate => true,
+        })
     }
 }
 
@@ -544,16 +668,21 @@ impl SceneView {
                 doc: Some("Derived scene terms + their renderable map.".into()),
                 imports: Vec::new(),
                 terms,
-                edges: vec![EdgeForm::NarrowerThan { narrower: SceneSnapshot::schema(), broader: map }],
+                edges: vec![EdgeForm::NarrowerThan {
+                    narrower: SceneSnapshot::schema(),
+                    broader: map,
+                }],
                 supersedes: None,
             }))
             .expect("scene vocab encodes");
 
         // The self-describing manifest, straight from the derive.
         let manifest = scene.to_manifest_default()?;
-        let manifest_bytes = manifest::canon::encode_document(&Document::Manifest(manifest.clone()))
-            .expect("nested manifest encodes canonically");
-        dag.insert_document(&Document::Manifest(manifest)).expect("manifest inserts");
+        let manifest_bytes =
+            manifest::canon::encode_document(&Document::Manifest(manifest.clone()))
+                .expect("nested manifest encodes canonically");
+        dag.insert_document(&Document::Manifest(manifest))
+            .expect("manifest inserts");
 
         let topo = dag
             .insert_document(&Document::Contract(Contract {
@@ -562,7 +691,10 @@ impl SceneView {
                 imports: vec![vocab],
                 binds: vec![Subject::Name("ndn-lab/".into())],
                 clauses: vec![Clause::Express {
-                    intent: Intent { name: INTENT_TOPOLOGY_MAP.into(), attrs: Vec::new() },
+                    intent: Intent {
+                        name: INTENT_TOPOLOGY_MAP.into(),
+                        attrs: Vec::new(),
+                    },
                     target: map,
                     via: Some(Via::Native(VIA_TOPOLOGY.into())),
                     attrs: Vec::new(),
@@ -572,17 +704,26 @@ impl SceneView {
 
         let frontier = TrustFrontier::from_vocabularies([vocab]);
         let matches = r#match(&dag, &[topo, t0], &frontier, Budget::generous()).expect("budget");
-        Ok(SceneView { dag, matches, manifest_bytes, render: render_topology_lens })
+        Ok(SceneView {
+            dag,
+            matches,
+            manifest_bytes,
+            render: render_topology_lens,
+        })
     }
 
     /// The resolved topology lens, if the matcher admitted it.
     pub fn topology_lens(&self) -> Option<&Match> {
-        self.matches.iter().find(|m| m.intent == INTENT_TOPOLOGY_MAP)
+        self.matches
+            .iter()
+            .find(|m| m.intent == INTENT_TOPOLOGY_MAP)
     }
 
     /// Render a scene through the resolved lens (native dispatch + explain trace).
     pub fn render(&self, m: &Match, scene: &SceneSnapshot) -> Option<Rendered> {
-        let Via::Native(_) = contract_via(&self.dag, m)? else { return None };
+        let Via::Native(_) = contract_via(&self.dag, m)? else {
+            return None;
+        };
         Some(Rendered {
             intent: m.intent.clone(),
             verdict: m.verdict.clone(),
@@ -620,12 +761,28 @@ mod tests {
     fn series_window_has_competing_offers_svg_expresses_others_approximate() {
         let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
         let offers = view.offers_for(INTENT_SERIES_WINDOW);
-        assert_eq!(offers.len(), 3, "SVG + thumbnail + ASCII all offer series.window");
+        assert_eq!(
+            offers.len(),
+            3,
+            "SVG + thumbnail + ASCII all offer series.window"
+        );
         // select prefers the lossless SVG; the ASCII offer names its glyph loss.
-        let best = view.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap();
-        assert_eq!(best.verdict, Verdict::Express, "select picks the lossless SVG");
-        let ascii = offers.into_iter().find(|m| explain::trace(&view.dag, m).contains("glyph-quantization")).unwrap();
-        assert!(matches!(ascii.verdict, Verdict::Approximate(_)), "the ASCII offer is lossy");
+        let best = view
+            .select_for(INTENT_SERIES_WINDOW, Floor::Approximate)
+            .unwrap();
+        assert_eq!(
+            best.verdict,
+            Verdict::Express,
+            "select picks the lossless SVG"
+        );
+        let ascii = offers
+            .into_iter()
+            .find(|m| explain::trace(&view.dag, m).contains("glyph-quantization"))
+            .unwrap();
+        assert!(
+            matches!(ascii.verdict, Verdict::Approximate(_)),
+            "the ASCII offer is lossy"
+        );
         // OTLP still Approximate via the bridge, loss named.
         let otlp = view.lens_for(INTENT_OTLP_GAUGE).expect("otlp offered");
         assert!(explain::trace(&view.dag, otlp).contains("otel-attribute-flattening"));
@@ -635,14 +792,32 @@ mod tests {
     fn select_picks_svg_but_degrades_honestly_on_thinner_surfaces() {
         // Full graphical: select picks the lossless SVG; an Express floor is met.
         let gui = KeelView::for_fabric_gauges(true, Surface::Graphical);
-        assert_eq!(gui.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap().verdict, Verdict::Express);
-        assert!(gui.select_for(INTENT_SERIES_WINDOW, Floor::Express).is_some(), "GUI meets an Express floor");
+        assert_eq!(
+            gui.select_for(INTENT_SERIES_WINDOW, Floor::Approximate)
+                .unwrap()
+                .verdict,
+            Verdict::Express
+        );
+        assert!(
+            gui.select_for(INTENT_SERIES_WINDOW, Floor::Express)
+                .is_some(),
+            "GUI meets an Express floor"
+        );
 
         // CLI: no SVG contract ⇒ series.window honestly degrades to ASCII, and an
         // Express floor filters the terminal out entirely.
         let cli = KeelView::for_fabric_gauges(true, Surface::Cli);
-        assert!(matches!(cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap().verdict, Verdict::Approximate(_)));
-        assert!(cli.select_for(INTENT_SERIES_WINDOW, Floor::Express).is_none(), "CLI can't meet Express");
+        assert!(matches!(
+            cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate)
+                .unwrap()
+                .verdict,
+            Verdict::Approximate(_)
+        ));
+        assert!(
+            cli.select_for(INTENT_SERIES_WINDOW, Floor::Express)
+                .is_none(),
+            "CLI can't meet Express"
+        );
     }
 
     #[test]
@@ -652,14 +827,37 @@ mod tests {
         let thin = KeelView::for_fabric_gauges(true, Surface::ThinGraphical);
         let offers = thin.offers_for(INTENT_SERIES_WINDOW);
         assert_eq!(offers.len(), 2, "thumbnail + ASCII, no full SVG");
-        assert!(offers.iter().all(|m| matches!(m.verdict, Verdict::Approximate(_))), "both Approximate");
-        assert!(offers.iter().all(|m| m.verdict.loss_len() == 1), "equal loss depth");
+        assert!(
+            offers
+                .iter()
+                .all(|m| matches!(m.verdict, Verdict::Approximate(_))),
+            "both Approximate"
+        );
+        assert!(
+            offers.iter().all(|m| m.verdict.loss_len() == 1),
+            "equal loss depth"
+        );
         // The pick is the lower contract hash, and it is stable across builds.
-        let pick = thin.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap();
-        let expect_lower = offers.iter().min_by(|a, b| a.contract.cmp(&b.contract)).unwrap();
-        assert_eq!(pick.contract, expect_lower.contract, "tiebreak = min contract hash");
+        let pick = thin
+            .select_for(INTENT_SERIES_WINDOW, Floor::Approximate)
+            .unwrap();
+        let expect_lower = offers
+            .iter()
+            .min_by(|a, b| a.contract.cmp(&b.contract))
+            .unwrap();
+        assert_eq!(
+            pick.contract, expect_lower.contract,
+            "tiebreak = min contract hash"
+        );
         let again = KeelView::for_fabric_gauges(true, Surface::ThinGraphical);
-        assert_eq!(pick.contract, again.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap().contract, "deterministic");
+        assert_eq!(
+            pick.contract,
+            again
+                .select_for(INTENT_SERIES_WINDOW, Floor::Approximate)
+                .unwrap()
+                .contract,
+            "deterministic"
+        );
     }
 
     #[test]
@@ -673,48 +871,97 @@ mod tests {
                 assert!(!r.body.is_empty());
             }
         }
-        assert_eq!(view.resolves(), 1, "matched once; samples are Sparks past the resolved schema");
+        assert_eq!(
+            view.resolves(),
+            1,
+            "matched once; samples are Sparks past the resolved schema"
+        );
     }
 
     #[test]
     fn native_dispatch_produces_the_real_artifacts() {
         let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
         let s = samples();
-        let svg = view.render(view.select_for(INTENT_SERIES_WINDOW, Floor::Express).unwrap(), &s).unwrap();
-        assert!(svg.body.contains("<svg") && svg.body.contains("polyline"), "real sparkline SVG");
-        let otlp = view.render(view.lens_for(INTENT_OTLP_GAUGE).unwrap(), &s).unwrap();
-        assert!(otlp.body.contains("ndn.radio.airtime_us"), "real OTLP gauge JSON");
+        let svg = view
+            .render(
+                view.select_for(INTENT_SERIES_WINDOW, Floor::Express)
+                    .unwrap(),
+                &s,
+            )
+            .unwrap();
+        assert!(
+            svg.body.contains("<svg") && svg.body.contains("polyline"),
+            "real sparkline SVG"
+        );
+        let otlp = view
+            .render(view.lens_for(INTENT_OTLP_GAUGE).unwrap(), &s)
+            .unwrap();
+        assert!(
+            otlp.body.contains("ndn.radio.airtime_us"),
+            "real OTLP gauge JSON"
+        );
         // The ASCII lens renders block glyphs (the CLI surface's series.window).
         let cli = KeelView::for_fabric_gauges(true, Surface::Cli);
-        let ascii = cli.render(cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate).unwrap(), &s).unwrap();
-        assert!(!ascii.body.is_empty() && ascii.body.chars().all(|c| "▁▂▃▄▅▆▇█".contains(c)), "real ASCII: {}", ascii.body);
+        let ascii = cli
+            .render(
+                cli.select_for(INTENT_SERIES_WINDOW, Floor::Approximate)
+                    .unwrap(),
+                &s,
+            )
+            .unwrap();
+        assert!(
+            !ascii.body.is_empty() && ascii.body.chars().all(|c| "▁▂▃▄▅▆▇█".contains(c)),
+            "real ASCII: {}",
+            ascii.body
+        );
         // The browser surface composes an HTML page with the pick + fallbacks.
         let html = view.render_html(&s, Floor::Approximate);
-        assert!(html.contains("<!doctype html") && html.contains("class=\"card pick") && html.contains("<svg"));
+        assert!(
+            html.contains("<!doctype html")
+                && html.contains("class=\"card pick")
+                && html.contains("<svg")
+        );
     }
 
     #[test]
     fn c10_frontier_divergence_is_honest() {
         // Admit the bridge ⇒ SVG + thumbnail + ASCII + OTLP all resolve.
         let with = KeelView::for_fabric_gauges(true, Surface::Graphical);
-        assert_eq!(with.lenses().len(), 4, "sparkline + thumbnail + ascii + otlp");
+        assert_eq!(
+            with.lenses().len(),
+            4,
+            "sparkline + thumbnail + ascii + otlp"
+        );
 
         // Withhold the bridge ⇒ the OTLP path is gone; the three series.window
         // lenses survive. Consumers diverge honestly.
         let without = KeelView::for_fabric_gauges(false, Surface::Graphical);
         let otlp = without.lens_for(INTENT_OTLP_GAUGE);
         assert!(
-            otlp.is_none() || !matches!(otlp.unwrap().verdict, Verdict::Express | Verdict::Approximate(_)),
+            otlp.is_none()
+                || !matches!(
+                    otlp.unwrap().verdict,
+                    Verdict::Express | Verdict::Approximate(_)
+                ),
             "without the bridge, OTLP has no renderable verdict"
         );
-        assert_eq!(without.lenses().len(), 3, "SVG + thumbnail + ASCII survive; OTLP gone");
+        assert_eq!(
+            without.lenses().len(),
+            3,
+            "SVG + thumbnail + ASCII survive; OTLP gone"
+        );
     }
 
     #[test]
     fn best_lens_prefers_express() {
         let view = KeelView::for_fabric_gauges(true, Surface::Graphical);
-        let best = view.best_lens(Floor::Approximate).expect("a lens at or above the floor");
-        assert_eq!(best.intent, INTENT_SERIES_WINDOW, "Express (SVG) beats Approximate in F46 order");
+        let best = view
+            .best_lens(Floor::Approximate)
+            .expect("a lens at or above the floor");
+        assert_eq!(
+            best.intent, INTENT_SERIES_WINDOW,
+            "Express (SVG) beats Approximate in F46 order"
+        );
     }
 
     // ── the nested topology slice ────────────────────────────────────────────
@@ -724,15 +971,48 @@ mod tests {
         SceneSnapshot {
             virtual_time_ns: 5_000_000,
             nodes: vec![
-                SceneNode { id: 0, label: "consumer".into(), x: 0.0, y: 0.0, faces: 1, pit_depth: 2, cs_hit_rate: 0.5, in_interests: 3, out_data: 1 },
-                SceneNode { id: 1, label: "producer".into(), x: 10.0, y: 5.0, faces: 2, pit_depth: 0, cs_hit_rate: 0.0, in_interests: 1, out_data: 3 },
+                SceneNode {
+                    id: 0,
+                    label: "consumer".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    faces: 1,
+                    pit_depth: 2,
+                    cs_hit_rate: 0.5,
+                    in_interests: 3,
+                    out_data: 1,
+                },
+                SceneNode {
+                    id: 1,
+                    label: "producer".into(),
+                    x: 10.0,
+                    y: 5.0,
+                    faces: 2,
+                    pit_depth: 0,
+                    cs_hit_rate: 0.0,
+                    in_interests: 1,
+                    out_data: 3,
+                },
             ],
             links: vec![
-                SceneLink { from: 0, to: 1, distance_m: Some(11.18) }, // Some ⇒ 1-element list
-                SceneLink { from: 1, to: 0, distance_m: None },        // None ⇒ empty list
+                SceneLink {
+                    from: 0,
+                    to: 1,
+                    distance_m: Some(11.18),
+                }, // Some ⇒ 1-element list
+                SceneLink {
+                    from: 1,
+                    to: 0,
+                    distance_m: None,
+                }, // None ⇒ empty list
             ],
             radio_links: Vec::new(),
-            bounds: SceneBounds { min_x: 0.0, min_y: 0.0, max_x: 10.0, max_y: 5.0 },
+            bounds: SceneBounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 10.0,
+                max_y: 5.0,
+            },
         }
     }
 
@@ -741,9 +1021,16 @@ mod tests {
         let s = scene();
         let view = SceneView::for_scene(&s).expect("finite scene describes");
         let m = view.topology_lens().expect("topology.map offered");
-        assert_eq!(m.verdict, Verdict::Express, "scene narrows to topology-map losslessly");
+        assert_eq!(
+            m.verdict,
+            Verdict::Express,
+            "scene narrows to topology-map losslessly"
+        );
         let r = view.render(m, &s).expect("renders");
-        assert!(r.body.contains("<svg") && r.body.contains("</svg>"), "real topology SVG");
+        assert!(
+            r.body.contains("<svg") && r.body.contains("</svg>"),
+            "real topology SVG"
+        );
     }
 
     #[test]
@@ -753,7 +1040,11 @@ mod tests {
         let mut s = scene();
         s.nodes[0].x = f64::NAN;
         match SceneView::for_scene(&s) {
-            Err(e) => assert_eq!(e, DescribeError::NonFinite { field: "x" }, "NaN refused, never a guess"),
+            Err(e) => assert_eq!(
+                e,
+                DescribeError::NonFinite { field: "x" },
+                "NaN refused, never a guess"
+            ),
             Ok(_) => panic!("a NaN coordinate must not describe"),
         }
     }
@@ -768,7 +1059,11 @@ mod tests {
         assert!(!bytes.is_empty(), "nested manifest encoded");
         let decoded = manifest::canon::decode_document(bytes).expect("decodes");
         let reencoded = manifest::canon::encode_decoded(&decoded).expect("re-encodes");
-        assert_eq!(bytes, reencoded.as_slice(), "decode ∘ encode is byte identity (R13)");
+        assert_eq!(
+            bytes,
+            reencoded.as_slice(),
+            "decode ∘ encode is byte identity (R13)"
+        );
     }
 
     // ── the retirement: producers derive; the schema is frozen by a pin ──────
@@ -791,20 +1086,46 @@ mod tests {
         assert_eq!(SceneSnapshot::schema(), SceneSnapshot::schema());
 
         // Freeze pins (regenerate deliberately if a schema is intentionally versioned).
-        assert_eq!(hex(&FabricGauges::schema()), "d58bdcdc5bd70f4e662d6996178e308d0f46e5becdc48bd7219aff72ec894570");
-        assert_eq!(hex(&SceneSnapshot::schema()), "badb3407d302e2ec2ab56b43f52846ad720f35194445f51467e2f1ea766d902e");
-        assert_eq!(hex(&SceneNode::record_schema()), "fbc93f3a1528f6910cbda5c70d8f5f5cc2ed2400df6b20a3c6b1d07717bee949");
-        assert_eq!(hex(&SceneLink::record_schema()), "d3253e38b57e0a409cbdff01dbf2cbcfef875fa5fc39c3e3960c2a6fa1f7a46b");
-        assert_eq!(hex(&RadioLink::record_schema()), "b709ea9594f6893f1d4bcaa18ec6ba03da51683806133328d405d2f4049390ba");
-        assert_eq!(hex(&SceneBounds::record_schema()), "bccb0b687f58b7e3cebdfa312e02d1c38203e5d9eb71d2a7f83af20fbdf64ec7");
+        assert_eq!(
+            hex(&FabricGauges::schema()),
+            "d58bdcdc5bd70f4e662d6996178e308d0f46e5becdc48bd7219aff72ec894570"
+        );
+        assert_eq!(
+            hex(&SceneSnapshot::schema()),
+            "badb3407d302e2ec2ab56b43f52846ad720f35194445f51467e2f1ea766d902e"
+        );
+        assert_eq!(
+            hex(&SceneNode::record_schema()),
+            "fbc93f3a1528f6910cbda5c70d8f5f5cc2ed2400df6b20a3c6b1d07717bee949"
+        );
+        assert_eq!(
+            hex(&SceneLink::record_schema()),
+            "d3253e38b57e0a409cbdff01dbf2cbcfef875fa5fc39c3e3960c2a6fa1f7a46b"
+        );
+        assert_eq!(
+            hex(&RadioLink::record_schema()),
+            "b709ea9594f6893f1d4bcaa18ec6ba03da51683806133328d405d2f4049390ba"
+        );
+        assert_eq!(
+            hex(&SceneBounds::record_schema()),
+            "bccb0b687f58b7e3cebdfa312e02d1c38203e5d9eb71d2a7f83af20fbdf64ec7"
+        );
     }
 
     #[test]
     fn derived_producers_encode_canonically() {
         // Flat (FabricGauges) and nested (SceneSnapshot) both derive a manifest
         // that canonically round-trips — decode ∘ encode is byte identity (R13).
-        let g = FabricGauges { virtual_time_ns: 5_000_000, radio_airtime_ns: 7_405_000, handoffs: 2, association_overhead_ns: 240_000_000 };
-        for m in [g.to_manifest_default().expect("gauges never refuse"), scene().to_manifest_default().expect("finite scene")] {
+        let g = FabricGauges {
+            virtual_time_ns: 5_000_000,
+            radio_airtime_ns: 7_405_000,
+            handoffs: 2,
+            association_overhead_ns: 240_000_000,
+        };
+        for m in [
+            g.to_manifest_default().expect("gauges never refuse"),
+            scene().to_manifest_default().expect("finite scene"),
+        ] {
             let bytes = manifest::canon::encode_document(&Document::Manifest(m)).unwrap();
             let decoded = manifest::canon::decode_document(&bytes).unwrap();
             let re = manifest::canon::encode_decoded(&decoded).unwrap();

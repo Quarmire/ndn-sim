@@ -83,8 +83,12 @@ impl ndn_runtime::Spawn for ImmediateRuntime {
         // future handed here awaits only our instantaneous `sleep`, so it is Ready within a poll or
         // two. The bounded loop is a guard against a future that genuinely needs a reactor (which
         // would be a misuse of this runtime, per the doc above).
-        const VT: RawWakerVTable =
-            RawWakerVTable::new(|_| RawWaker::new(std::ptr::null(), &VT), |_| {}, |_| {}, |_| {});
+        const VT: RawWakerVTable = RawWakerVTable::new(
+            |_| RawWaker::new(std::ptr::null(), &VT),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VT)) };
         let mut cx = Context::from_waker(&waker);
         for _ in 0..64 {
@@ -92,7 +96,10 @@ impl ndn_runtime::Spawn for ImmediateRuntime {
                 return;
             }
         }
-        debug_assert!(false, "ImmediateRuntime: future did not complete inline — needs a reactor");
+        debug_assert!(
+            false,
+            "ImmediateRuntime: future did not complete inline — needs a reactor"
+        );
     }
 }
 

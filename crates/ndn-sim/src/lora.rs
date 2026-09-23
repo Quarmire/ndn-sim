@@ -87,14 +87,23 @@ pub struct LoraConfig {
 impl LoraConfig {
     /// Defaults: 125 kHz, 4/5 coding, 8-symbol preamble.
     pub fn new(sf: SpreadingFactor) -> Self {
-        LoraConfig { sf, bandwidth_hz: 125_000.0, coding_rate: CodingRate::default(), preamble_symbols: 8 }
+        LoraConfig {
+            sf,
+            bandwidth_hz: 125_000.0,
+            coding_rate: CodingRate::default(),
+            preamble_symbols: 8,
+        }
     }
     /// The on-air time of a `payload` byte frame — the **Semtech LoRa airtime formula**.
     pub fn airtime(&self, payload: usize) -> Duration {
         let sf = self.sf.factor() as f64;
         let t_sym = 2f64.powf(sf) / self.bandwidth_hz; // symbol duration (s)
         let t_preamble = (self.preamble_symbols as f64 + 4.25) * t_sym;
-        let de = if self.sf.low_data_rate_opt(self.bandwidth_hz) { 1.0 } else { 0.0 };
+        let de = if self.sf.low_data_rate_opt(self.bandwidth_hz) {
+            1.0
+        } else {
+            0.0
+        };
         let cr = self.coding_rate.0 as f64;
         // Number of payload symbols (header enabled, CRC on).
         let num = 8.0 * payload as f64 - 4.0 * sf + 28.0 + 16.0;
@@ -217,7 +226,10 @@ impl LoraLinkConfig {
         }
     }
     /// Swap the propagation backend (free-space, log-distance, …).
-    pub fn with_propagation(mut self, p: std::sync::Arc<dyn crate::phy::PropagationBackend>) -> Self {
+    pub fn with_propagation(
+        mut self,
+        p: std::sync::Arc<dyn crate::phy::PropagationBackend>,
+    ) -> Self {
         self.propagation = p;
         self
     }
@@ -352,9 +364,7 @@ impl LoraMedium {
         let air_ns = air.as_nanos() as u64;
         let mut g = self.inner.lock().unwrap();
         // Duty-cycle gate: the regulator's mandatory off-time must have elapsed since the last TX.
-        if self.duty_enforced
-            && node < g.next_allowed_ns.len()
-            && now_ns < g.next_allowed_ns[node]
+        if self.duty_enforced && node < g.next_allowed_ns.len() && now_ns < g.next_allowed_ns[node]
         {
             drop(g);
             self.duty_gated.fetch_add(1, Ordering::Relaxed);
@@ -369,7 +379,14 @@ impl LoraMedium {
         let end_ns = now_ns.saturating_add(air_ns);
         let sf = self.cfg.cfg.sf.factor();
         let channel = self.channel;
-        g.windows.push(TxWindow { id, node, start_ns: now_ns, end_ns, sf, channel });
+        g.windows.push(TxWindow {
+            id,
+            node,
+            start_ns: now_ns,
+            end_ns,
+            sf,
+            channel,
+        });
         if self.duty_enforced && node < g.next_allowed_ns.len() {
             // Actuate DutyCycle::off_time: the radio must stay off until end + off_time(airtime).
             let off = self.cfg.duty.off_time(air).as_nanos() as u64;
@@ -412,7 +429,8 @@ impl LoraMedium {
         }
         // Capture: my frame survives iff it is at least capture_margin stronger than the loudest
         // overlapping interferer at the receiver.
-        let survive = self.rssi_dbm(&g.positions, node, rx) >= max_intf_rssi + self.capture_margin_db;
+        let survive =
+            self.rssi_dbm(&g.positions, node, rx) >= max_intf_rssi + self.capture_margin_db;
         drop(g);
         if !survive {
             self.collisions.fetch_add(1, Ordering::Relaxed);
@@ -453,10 +471,16 @@ impl LoraMedium {
 /// A LoRa channel (sub-GHz). The general [`Channel`](crate::phy::Channel) covers the spectral
 /// relationships; this is a convenience for the common bands.
 pub fn eu868_channel() -> crate::phy::Channel {
-    crate::phy::Channel { center_hz: 868.1e6, bandwidth_hz: 125_000.0 }
+    crate::phy::Channel {
+        center_hz: 868.1e6,
+        bandwidth_hz: 125_000.0,
+    }
 }
 pub fn us915_channel(ch: u8) -> crate::phy::Channel {
-    crate::phy::Channel { center_hz: 902.3e6 + ch as f64 * 200_000.0, bandwidth_hz: 125_000.0 }
+    crate::phy::Channel {
+        center_hz: 902.3e6 + ch as f64 * 200_000.0,
+        bandwidth_hz: 125_000.0,
+    }
 }
 
 #[cfg(test)]
@@ -490,7 +514,11 @@ mod tests {
         // Strong link ⇒ SF7 (fastest); marginal ⇒ a high SF; hopeless ⇒ None.
         assert_eq!(adr_select(10.0, 3.0), Some(SpreadingFactor::Sf7));
         assert_eq!(adr_select(-16.0, 3.0), Some(SpreadingFactor::Sf12));
-        assert_eq!(adr_select(-30.0, 3.0), None, "even SF12 can't close a −30 dB link");
+        assert_eq!(
+            adr_select(-30.0, 3.0),
+            None,
+            "even SF12 can't close a −30 dB link"
+        );
     }
 
     #[test]
@@ -498,7 +526,9 @@ mod tests {
         let ui = Duration::from_secs(60); // uplink once a minute
         let (a, b, c) = (
             DeviceClass::A,
-            DeviceClass::B { ping_period: Duration::from_secs(2) },
+            DeviceClass::B {
+                ping_period: Duration::from_secs(2),
+            },
             DeviceClass::C,
         );
         // Latency: Class A (wait for uplink) ≫ Class B (ping slot) ≫ Class C (always listening).
@@ -517,15 +547,30 @@ mod tests {
         // A lossy (exponent-3.5) 1 km link: SF7 (needs high SNR) can't close it; SF12, decoding below
         // the noise floor, can. And LoRa's airtime is far beyond Wi-Fi's — the link latency reflects it.
         let far = 1000.0;
-        let prop = || Arc::new(LogDistance { exponent: 3.5, ref_loss_db: 40.0, ref_dist_m: 1.0 });
+        let prop = || {
+            Arc::new(LogDistance {
+                exponent: 3.5,
+                ref_loss_db: 40.0,
+                ref_dist_m: 1.0,
+            })
+        };
         let sf7 = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf7).with_propagation(prop());
         let sf12 = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12).with_propagation(prop());
         let (loss7, air7) = sf7.link_cost(far);
         let (loss12, air12) = sf12.link_cost(far);
         assert!(loss7 > 0.5, "SF7 can't close the lossy 1 km link ({loss7})");
-        assert!(loss12 < 0.2, "SF12 closes it below the noise floor ({loss12})");
-        assert!(air12 > air7, "SF12 pays for the range in airtime ({air12:?} vs {air7:?})");
-        assert!(air12 > Duration::from_millis(500), "LoRa SF12 airtime is very long: {air12:?}");
+        assert!(
+            loss12 < 0.2,
+            "SF12 closes it below the noise floor ({loss12})"
+        );
+        assert!(
+            air12 > air7,
+            "SF12 pays for the range in airtime ({air12:?} vs {air7:?})"
+        );
+        assert!(
+            air12 > Duration::from_millis(500),
+            "LoRa SF12 airtime is very long: {air12:?}"
+        );
     }
 
     #[test]
@@ -533,7 +578,10 @@ mod tests {
         let air = LoraConfig::new(SpreadingFactor::Sf12).airtime(20);
         let off = DutyCycle::EU868_1PCT.off_time(air);
         // At 1 %, off-time ≈ 99× the airtime.
-        assert!(off > air * 90 && off < air * 110, "1% duty ⇒ ~99× off-time ({off:?} for {air:?})");
+        assert!(
+            off > air * 90 && off < air * 110,
+            "1% duty ⇒ ~99× off-time ({off:?} for {air:?})"
+        );
     }
 
     fn on_air(tx: LoraTx) -> u64 {
@@ -547,13 +595,23 @@ mod tests {
     fn shared_medium_both_overlapping_equal_power_frames_collide() {
         // Receiver (node 0) at origin; two senders equidistant ⇒ equal RSSI ⇒ no capture ⇒ BOTH lose
         // (pure ALOHA). Deterministic — a pure function of the windows + geometry.
-        let positions =
-            vec![Position::xy(0.0, 0.0), Position::xy(-100.0, 0.0), Position::xy(100.0, 0.0)];
-        let m = LoraMedium::new(LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12), positions, false);
+        let positions = vec![
+            Position::xy(0.0, 0.0),
+            Position::xy(-100.0, 0.0),
+            Position::xy(100.0, 0.0),
+        ];
+        let m = LoraMedium::new(
+            LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12),
+            positions,
+            false,
+        );
         let a = on_air(m.begin_tx(1, 0)); // both start at t=0 ⇒ overlap
         let b = on_air(m.begin_tx(2, 0));
         assert!(!m.resolve(a, 1, 0), "overlapping equal-power frame is lost");
-        assert!(!m.resolve(b, 2, 0), "the other overlapping frame is also lost");
+        assert!(
+            !m.resolve(b, 2, 0),
+            "the other overlapping frame is also lost"
+        );
         assert_eq!(m.collisions(), 2);
     }
 
@@ -561,20 +619,36 @@ mod tests {
     fn shared_medium_capture_saves_the_much_stronger_frame() {
         // A near (strong) and a far (weak) sender overlap at the receiver: capture demodulates the
         // strong one, the weak one is lost.
-        let positions =
-            vec![Position::xy(0.0, 0.0), Position::xy(50.0, 0.0), Position::xy(4000.0, 0.0)];
-        let m = LoraMedium::new(LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12), positions, false);
+        let positions = vec![
+            Position::xy(0.0, 0.0),
+            Position::xy(50.0, 0.0),
+            Position::xy(4000.0, 0.0),
+        ];
+        let m = LoraMedium::new(
+            LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12),
+            positions,
+            false,
+        );
         let near = on_air(m.begin_tx(1, 0));
         let far = on_air(m.begin_tx(2, 0));
-        assert!(m.resolve(near, 1, 0), "the much-stronger near frame captures the receiver");
-        assert!(!m.resolve(far, 2, 0), "the weak far frame loses the collision");
+        assert!(
+            m.resolve(near, 1, 0),
+            "the much-stronger near frame captures the receiver"
+        );
+        assert!(
+            !m.resolve(far, 2, 0),
+            "the weak far frame loses the collision"
+        );
         assert_eq!(m.collisions(), 1);
     }
 
     #[test]
     fn shared_medium_non_overlapping_frames_do_not_collide() {
-        let positions =
-            vec![Position::xy(0.0, 0.0), Position::xy(-100.0, 0.0), Position::xy(100.0, 0.0)];
+        let positions = vec![
+            Position::xy(0.0, 0.0),
+            Position::xy(-100.0, 0.0),
+            Position::xy(100.0, 0.0),
+        ];
         let cfg = LoraLinkConfig::new(10_000.0, SpreadingFactor::Sf12);
         let air_ns = cfg.cfg.airtime(cfg.payload_bytes).as_nanos() as u64;
         let m = LoraMedium::new(cfg, positions, false);
@@ -593,7 +667,10 @@ mod tests {
         let air = cfg.cfg.airtime(cfg.payload_bytes);
         let air_ns = air.as_nanos() as u64;
         let m = LoraMedium::new(cfg, positions, true);
-        assert!(matches!(m.begin_tx(0, 0), LoraTx::OnAir { .. }), "first TX is within budget");
+        assert!(
+            matches!(m.begin_tx(0, 0), LoraTx::OnAir { .. }),
+            "first TX is within budget"
+        );
         assert!(
             matches!(m.begin_tx(0, air_ns), LoraTx::Gated),
             "a second TX before the off-time is gated"

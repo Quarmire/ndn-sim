@@ -48,7 +48,11 @@ fn cbr_traffic_source_measures_rtt_and_throughput() {
     let rtt = stats.mean_rtt_ms();
     assert!((90.0..300.0).contains(&rtt), "mean RTT ≈ 100 ms, got {rtt}");
     assert!(stats.throughput_bps() > 0.0, "goodput measured: {stats:?}");
-    assert!(stats.bytes >= 100 * 18, "content bytes accumulated: {}", stats.bytes);
+    assert!(
+        stats.bytes >= 100 * 18,
+        "content bytes accumulated: {}",
+        stats.bytes
+    );
 }
 
 /// A Poisson source draws the same request stream twice under the same seed (reproducible on DES).
@@ -66,7 +70,10 @@ fn poisson_source_is_deterministic() {
                 a,
                 AppSpec::TrafficSource {
                     prefix: "/p".into(),
-                    pattern: TrafficPattern::Poisson { mean_interval_ms: 20, seed: 7 },
+                    pattern: TrafficPattern::Poisson {
+                        mean_interval_ms: 20,
+                        seed: 7,
+                    },
                     count: 30,
                     lifetime_ms: Some(1000),
                 },
@@ -78,7 +85,11 @@ fn poisson_source_is_deterministic() {
             (s.sent, s.received, s.bytes, s.rtt_sum_ns)
         })
     };
-    assert_eq!(run(), run(), "a Poisson workload replays identically on DES");
+    assert_eq!(
+        run(),
+        run(),
+        "a Poisson workload replays identically on DES"
+    );
 }
 
 /// A lossy link surfaces as loss in the flow stats (single-shot fetches don't retransmit).
@@ -91,7 +102,11 @@ fn lossy_link_shows_loss() {
         sim.link(
             a,
             b,
-            LinkConfig { delay: Duration::from_millis(5), loss_rate: 0.4, ..Default::default() },
+            LinkConfig {
+                delay: Duration::from_millis(5),
+                loss_rate: 0.4,
+                ..Default::default()
+            },
         );
         sim.add_route(a, "/lossy", b);
         sim.add_app(b, producer("/lossy", 10));
@@ -112,8 +127,14 @@ fn lossy_link_shows_loss() {
     });
 
     assert!(stats.sent >= 28, "most requests issued: {stats:?}");
-    assert!(stats.lost > 0, "the 40%-loss link produced timeouts: {stats:?}");
-    assert!(stats.loss_rate() > 0.0 && stats.loss_rate() < 1.0, "loss rate in (0,1): {stats:?}");
+    assert!(
+        stats.lost > 0,
+        "the 40%-loss link produced timeouts: {stats:?}"
+    );
+    assert!(
+        stats.loss_rate() > 0.0 && stats.loss_rate() < 1.0,
+        "loss rate in (0,1): {stats:?}"
+    );
 }
 
 /// A benchmark gate: a ValidationSpec asserts a workload's mean RTT and delivery via Flow probes —
@@ -172,5 +193,8 @@ value = 12.0
     )
     .unwrap();
     let report = run_validation(&spec).unwrap();
-    assert!(report.passed, "the workload met its RTT + delivery gates: {report:?}");
+    assert!(
+        report.passed,
+        "the workload met its RTT + delivery gates: {report:?}"
+    );
 }

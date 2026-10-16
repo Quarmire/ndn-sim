@@ -91,7 +91,8 @@ impl RunningSimulation {
     /// Run an NFD-style **UDP channel** on `node`, bound to `bind_addr`: it accepts inbound
     /// datagrams from any peer and auto-creates a per-peer face, so external devices / NFD /
     /// NDNts can dial in. Spawned on the kernel runtime; runs until `cancel` fires. Use a fixed
-    /// port (e.g. `0.0.0.0:6363`) so peers know where to reach it.
+    /// port (e.g. `0.0.0.0:6363`) so peers know where to reach it. Fails if the port is held by
+    /// another process (e.g. a forwarder already listening there).
     pub fn bridge_udp_listener(
         &self,
         node: NodeId,
@@ -104,7 +105,9 @@ impl RunningSimulation {
         if bind_addr.port() == 0 {
             bail!("bridge_udp_listener needs a fixed port so peers can reach it");
         }
-        tokio::spawn(ndn_mgmt::run_udp_listener(bind_addr, engine, cancel, 0));
+        let listener = ndn_mgmt::bind_udp_listener(bind_addr, 0)
+            .map_err(|e| anyhow::anyhow!("bridge_udp_listener {bind_addr}: {e}"))?;
+        tokio::spawn(ndn_mgmt::run_udp_listener(listener, engine, cancel));
         Ok(())
     }
 

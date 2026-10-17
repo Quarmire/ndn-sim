@@ -387,7 +387,11 @@ fn run_storage_poisoning(cell: &str, seed: u64) -> AdversaryCell {
         for i in 0..5000u64 {
             let name: Name = format!("/junk/{i}").parse().unwrap();
             let junk = DataBuilder::new(name.clone(), &[0xAB; 180]).build();
-            cs.insert(junk, Arc::new(name), CsMeta { stale_at: u64::MAX }).await;
+            let meta = CsMeta {
+                stale_at: u64::MAX,
+                revocation_epoch: None,
+            };
+            cs.insert(junk, Arc::new(name), meta).await;
         }
         let held = cs.current_bytes() as u64;
 

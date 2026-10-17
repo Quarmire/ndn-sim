@@ -35,7 +35,6 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use ndn_app::{Consumer, DemuxConnection, EngineAppExt, Publisher, PublisherConfig};
 use ndn_packet::encode::InterestBuilder;
-use ndn_packet::lp::{LpPacket, is_lp_packet};
 use ndn_packet::{Data, Interest, Name};
 use ndn_sync::{
     DataStore, MemoryStore, SvsConfig, SyncHandle, join_svs_group, svs_data_name,
@@ -256,7 +255,7 @@ impl TwoPhaseReplica {
     }
 
     /// Windowed fetch of `(publisher_base, lo..=hi)`: up to `window` Interests in flight over
-    /// the name-correlating demux (each reply routed to its waiter **by name**, so N
+    /// the node's demux (each fetch receives exactly the reply to its own Interest, so N
     /// outstanding can never mispair), contents returned in seq order (`None` = that seq
     /// couldn't be fetched). Rides ndn-sync's one windowed pipeline
     /// (`transfer::windowed_fetch_wires`) — the consumer-side mirror of the NDF
@@ -271,15 +270,16 @@ impl TwoPhaseReplica {
     ) -> Vec<Option<Bytes>> {
         let demux = Arc::clone(&self.demux);
         let express: ndn_sync::transfer::Express = Arc::new(move |name: Name| {
-            let demux = Arc::clone(&demux);
+            let mut consumer = Consumer::new(demux.clone());
             Box::pin(async move {
-                let wire = InterestBuilder::new(name.clone())
+                let wire = InterestBuilder::new(name)
                     .lifetime(Duration::from_secs(4))
                     .build();
-                demux
-                    .fetch_correlated(name, wire, Duration::from_millis(4500))
+                consumer
+                    .fetch_wire(wire, Duration::from_millis(4500))
                     .await
                     .ok()
+                    .map(|data| data.raw().clone())
             }) as ndn_sync::transfer::ExpressFut
         });
         ndn_sync::transfer::windowed_fetch_wires(
@@ -291,16 +291,7 @@ impl TwoPhaseReplica {
         )
         .await
         .into_iter()
-        .map(|w| {
-            w.and_then(|reply| {
-                let raw = if is_lp_packet(&reply) {
-                    LpPacket::decode(reply).ok()?.fragment?
-                } else {
-                    reply
-                };
-                Data::decode(raw).ok().and_then(|d| d.content().cloned())
-            })
-        })
+        .map(|w| w.and_then(|raw| Data::decode(raw).ok().and_then(|d| d.content().cloned())))
         .collect()
     }
 

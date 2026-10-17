@@ -7,11 +7,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_app::EngineAppExt;
+use ndn_engine::UnsolicitedDataPolicy;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{AppSpec, DesKernel, Position, RangeThreshold, SimKernel, Simulation, WifiMode};
 use tokio_util::sync::CancellationToken;
+
+/// A radio node's engine. A neighbour is served by overheard Data only if it caches Data it did not
+/// ask for: NFD's `admit-network` unsolicited-Data policy. The default `drop-all` discards it.
+fn radio_node() -> EngineConfig {
+    EngineConfig { unsolicited_data: UnsolicitedDataPolicy::AdmitNetwork, ..EngineConfig::default() }
+}
 
 /// One producer + three consumers, fully connected on the radio (every transmission has 3 in-range
 /// receivers). Returns `(fetches_delivered, total_airtime)`.
@@ -20,11 +27,11 @@ fn run(mode: WifiMode) -> (u32, Duration) {
         let mut sim = Simulation::new()
             .kernel(k)
             .with_radio_medium(Arc::new(RangeThreshold { range_m: 50.0, tx_power_dbm: 20.0 }), 7);
-        let p = sim.add_radio_node(EngineConfig::default(), Position::xy(0.0, 0.0));
+        let p = sim.add_radio_node(radio_node(), Position::xy(0.0, 0.0));
         let consumers = [
-            sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 0.0)),
-            sim.add_radio_node(EngineConfig::default(), Position::xy(20.0, 0.0)),
-            sim.add_radio_node(EngineConfig::default(), Position::xy(10.0, 10.0)),
+            sim.add_radio_node(radio_node(), Position::xy(10.0, 0.0)),
+            sim.add_radio_node(radio_node(), Position::xy(20.0, 0.0)),
+            sim.add_radio_node(radio_node(), Position::xy(10.0, 10.0)),
         ];
         sim.add_app(
             p,

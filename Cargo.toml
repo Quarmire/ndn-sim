@@ -86,3 +86,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 strip = "symbols"
 lto = "thin"
 codegen-units = 1
+
+# Line tables keep backtraces and panics readable; full debug info made the
+# shared target directory grow by hundreds of GB across the workspaces.
+[profile.dev]
+debug = "line-tables-only"

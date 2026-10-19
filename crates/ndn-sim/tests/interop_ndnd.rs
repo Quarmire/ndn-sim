@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_app::{AppError, EngineAppExt};
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{NodeId, RealTimeKernel, RunningSimulation, SimKernel, Simulation};
 use tokio_util::sync::CancellationToken;
@@ -330,7 +330,7 @@ async fn lp_fragmentation_reassembles_in_both_directions() {
     // fragment; ndnd's forwarder reassembles and its ping client verifies.
     let engine = fabric.engine_of(node).unwrap();
     let _ = face; // bridge face already clamped to 1200 B at attach time
-    let producer = engine.register_producer("/rev", CancellationToken::new());
+    let producer = engine.register_producer(name!("/rev"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

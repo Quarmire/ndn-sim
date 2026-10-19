@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_signals_core::SignalView;
 use ndn_sim::{FreeSpacePathLoss, Position, Simulation};
 use tokio_util::sync::CancellationToken;
@@ -28,7 +28,7 @@ async fn builder_attaches_radios_and_two_nodes_exchange_over_the_air() {
         .unwrap();
 
     let eng_b = fabric.engine_of(b).unwrap();
-    let producer = eng_b.register_producer("/app", CancellationToken::new());
+    let producer = eng_b.register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

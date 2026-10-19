@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_sim::{
     LinkConfig, MetricsLog, MetricsSample, SimKernel, Simulation, VirtualKernel, compare_metrics,
 };
@@ -44,7 +44,7 @@ async fn scenario(kernel: Arc<dyn SimKernel>) -> RunTrace {
     let producer = fabric
         .engine_of(b)
         .unwrap()
-        .register_producer("/svc", CancellationToken::new());
+        .register_producer(name!("/svc"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

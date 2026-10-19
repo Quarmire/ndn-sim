@@ -42,7 +42,7 @@ use ndn_app::error::AppError;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::encode::{DataBuilder, InterestBuilder};
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_security::{KeyChain, SignWith, TrustSchema, ValidationResult, Validator};
 use ndn_sim::fieldkit::{
     CatchupOutcome, Progress, RestartablePublisher, TwoPhaseReplica, drive_until_or_stall,
@@ -98,7 +98,7 @@ fn held_reply_is_discarded_never_mispaired() {
         let producer = fabric
             .engine_of(a)
             .unwrap()
-            .register_producer("/svc", cancel.child_token());
+            .register_producer(name!("/svc"), cancel.child_token());
         tokio::spawn(async move {
             let _ = producer
                 .serve(|interest, responder| async move {

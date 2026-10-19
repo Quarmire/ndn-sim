@@ -88,7 +88,7 @@ async fn run_config(channels: u8, leaky: bool) -> Metrics {
         bus.set_channel(*cons, ch);
         let name: Name = prefix.parse().unwrap();
         fabric.route_over_radio(*cons, &name).unwrap();
-        let producer = fabric.engine_of(*prod).unwrap().register_producer(prefix.as_str(), CancellationToken::new());
+        let producer = fabric.engine_of(*prod).unwrap().register_producer(name, CancellationToken::new());
         serves.push(tokio::spawn(async move {
             let _ = producer
                 .serve(|i, r| async move {

@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_sim::{LinkConfig, NodeId, RealTimeKernel, SimKernel, Simulation};
 use tokio_util::sync::CancellationToken;
 
@@ -48,7 +48,7 @@ async fn governor_runs_a_fabric_on_a_logical_clock_at_real_pace() {
     let producer = fabric
         .engine_of(b)
         .unwrap()
-        .register_producer("/app", CancellationToken::new());
+        .register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

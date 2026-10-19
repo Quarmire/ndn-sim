@@ -22,6 +22,7 @@ use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::Data;
 use ndn_packet::encode::DataBuilder;
+use ndn_packet::{Name, name};
 use ndn_security::{KeyChain, SignWith, TrustSchema, ValidationResult, Validator};
 use ndn_sim::{LinkConfig, Simulation, VirtualKernel};
 use ndn_time::provenance::{Authenticity, KeyId, MeasurementProvenance, PathId};
@@ -49,8 +50,14 @@ fn svs_publication_crosses_a_real_link() {
         let a_node = fabric.engine_of(a).unwrap().app_node(cancel.child_token());
         let b_node = fabric.engine_of(b).unwrap().app_node(cancel.child_token());
 
-        let publisher = a_node.publish("/time", "/n/0").await.expect("publish");
-        let mut sub = b_node.subscribe("/time", "/n/1").await.expect("subscribe");
+        let publisher = a_node
+            .publish(name!("/time"), name!("/n/0"))
+            .await
+            .expect("publish");
+        let mut sub = b_node
+            .subscribe(name!("/time"), name!("/n/1"))
+            .await
+            .expect("subscribe");
 
         ndn_app::rt::sleep(Duration::from_millis(200)).await;
         publisher.put(b"beacon-payload").await.expect("put");
@@ -92,8 +99,16 @@ fn svs_dual_role_crosses_a_hub() {
         let mut subs = Vec::new();
         for (i, &s) in spokes.iter().enumerate() {
             let node = fabric.engine_of(s).unwrap().app_node(cancel.child_token());
-            pubs.push(node.publish("/time", format!("/n/{i}")).await.unwrap());
-            subs.push(node.subscribe("/time", format!("/sub/{i}")).await.unwrap());
+            pubs.push(
+                node.publish(name!("/time"), format!("/n/{i}").parse::<Name>().unwrap())
+                    .await
+                    .unwrap(),
+            );
+            subs.push(
+                node.subscribe(name!("/time"), format!("/sub/{i}").parse::<Name>().unwrap())
+                    .await
+                    .unwrap(),
+            );
         }
         ndn_app::rt::sleep(Duration::from_millis(500)).await;
         pubs[0].put(b"hi-from-0").await.unwrap();
@@ -234,7 +249,7 @@ fn nodes_converge_over_real_svs_beacon_carriage() {
             if i == 0 {
                 // The GNSS reference: publishes its signed beacon; never steers.
                 // Single-role (publish only) so there is no same-node SvSync pair.
-                let publisher = node.publish("/time", "/n/0").await.unwrap();
+                let publisher = node.publish(name!("/time"), name!("/n/0")).await.unwrap();
                 let signer = keychains[0].signer().unwrap();
                 let st_pub = st.clone();
                 let k_pub = k.clone();
@@ -284,7 +299,10 @@ fn nodes_converge_over_real_svs_beacon_carriage() {
             } else {
                 // An oscillator: subscribes to the reference's beacons (single
                 // role, subscribe only) and disciplines its clock toward them.
-                let mut subscriber = node.subscribe("/time", format!("/sub/{i}")).await.unwrap();
+                let mut subscriber = node
+                    .subscribe(name!("/time"), format!("/sub/{i}").parse::<Name>().unwrap())
+                    .await
+                    .unwrap();
                 let st_sub = st.clone();
                 let val = validator.clone();
                 let ingests_sub = ingests.clone();

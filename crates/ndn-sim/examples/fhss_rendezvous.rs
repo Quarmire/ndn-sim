@@ -84,7 +84,7 @@ async fn run(hopping: bool, jam: bool) -> (Vec<f64>, f64) {
         bus.set_channel(*cons, ch);
         let name: Name = prefix.parse().unwrap();
         fabric.route_over_radio(*cons, &name).unwrap();
-        let producer = fabric.engine_of(*prod).unwrap().register_producer(prefix.as_str(), CancellationToken::new());
+        let producer = fabric.engine_of(*prod).unwrap().register_producer(name, CancellationToken::new());
         serves.push(tokio::spawn(async move {
             let _ = producer.serve(|i, r| async move {
                 let _ = r.respond((*i.name).clone(), bytes::Bytes::from(vec![0x5au8; 2048])).await;

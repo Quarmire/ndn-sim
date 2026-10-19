@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ndn_app::EngineAppExt;
-use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_sim::{FaceProfile, LinkConfig, Scenario, SimLink, WallClockKernel};
 use ndn_transport::{FaceId, FaceKind, LinkType, Transport};
 use tokio_util::sync::CancellationToken;
@@ -107,7 +107,7 @@ nexthop = 1
     let producer = fabric
         .engine_of(ndn_sim::NodeId(1))
         .unwrap()
-        .register_producer("/app", CancellationToken::new());
+        .register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

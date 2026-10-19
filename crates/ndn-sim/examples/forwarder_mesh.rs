@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{FreeSpacePathLoss, Position, Simulation};
 use tokio_util::sync::CancellationToken;
@@ -43,7 +43,7 @@ async fn main() {
         let fabric = sim.start().await.unwrap();
         fabric.route_over_radio(c, &"/clip".parse::<Name>().unwrap()).unwrap();
 
-        let prod = fabric.engine_of(p).unwrap().register_producer("/clip", CancellationToken::new());
+        let prod = fabric.engine_of(p).unwrap().register_producer(name!("/clip"), CancellationToken::new());
         let serve = tokio::spawn(async move {
             let _ = prod
                 .serve(|i, r| async move {
@@ -95,7 +95,7 @@ async fn main() {
             Arc::new(ndn_strategy::BroadcastStrategy::new()) as Arc<dyn ndn_strategy::ErasedStrategy>,
         );
 
-        let prod = fabric.engine_of(p).unwrap().register_producer("/relayed", CancellationToken::new());
+        let prod = fabric.engine_of(p).unwrap().register_producer(name!("/relayed"), CancellationToken::new());
         let serve = tokio::spawn(async move {
             let _ = prod.serve(|i, rp| async move {
                 let _ = rp.respond((*i.name).clone(), bytes::Bytes::from_static(b"two-hop")).await;

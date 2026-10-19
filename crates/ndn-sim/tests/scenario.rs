@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_app::EngineAppExt;
-use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_sim::{NodeId, Scenario, SimKernel, VirtualKernel, WallClockKernel};
 use tokio_util::sync::CancellationToken;
 
@@ -40,7 +40,7 @@ async fn scenario_toml_builds_a_runnable_fabric() {
     let producer = fabric
         .engine_of(NodeId(1))
         .unwrap()
-        .register_producer("/app", CancellationToken::new());
+        .register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
@@ -103,7 +103,7 @@ radio = true
     let producer = fabric
         .engine_of(NodeId(1))
         .unwrap()
-        .register_producer("/svc", CancellationToken::new());
+        .register_producer(name!("/svc"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
@@ -144,7 +144,7 @@ fn scenario_runs_under_the_virtual_kernel() {
             let producer = fabric
                 .engine_of(NodeId(1))
                 .unwrap()
-                .register_producer("/app", CancellationToken::new());
+                .register_producer(name!("/app"), CancellationToken::new());
             tokio::spawn(async move {
                 let _ = producer
                     .serve(|i, r| async move {

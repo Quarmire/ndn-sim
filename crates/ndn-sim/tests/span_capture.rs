@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_sim::{
     CapturedSpan, ControlPlane, LinkConfig, SimKernel, SimMcp, Simulation, SpanLog, VirtualKernel,
     capture_engine_spans,
@@ -33,7 +33,7 @@ async fn exchange(k: Arc<dyn SimKernel>) -> ndn_sim::RunningSimulation {
     let producer = fabric
         .engine_of(b)
         .unwrap()
-        .register_producer("/app", CancellationToken::new());
+        .register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

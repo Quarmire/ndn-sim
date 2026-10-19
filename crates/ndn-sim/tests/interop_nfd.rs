@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_app::{AppError, EngineAppExt};
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{RealTimeKernel, SimKernel, Simulation};
 use tokio_util::sync::CancellationToken;
@@ -217,7 +217,7 @@ async fn differential_ndn_rs_relay_vs_nfd_forwarder_agree() {
         sim.add_route(c, "/diff", r);
         sim.add_route(r, "/diff", p);
         let fabric = sim.start().await.unwrap();
-        tokio::spawn(serve(fabric.engine_of(p).unwrap().register_producer("/diff/obj", CancellationToken::new())));
+        tokio::spawn(serve(fabric.engine_of(p).unwrap().register_producer(name!("/diff/obj"), CancellationToken::new())));
         let mut consumer = fabric.engine_of(c).unwrap().app_consumer(CancellationToken::new());
         let got = fetch_n(&mut consumer, N).await;
         fabric.shutdown().await;
@@ -238,7 +238,7 @@ async fn differential_ndn_rs_relay_vs_nfd_forwarder_agree() {
         // Producer node P listens on a FIXED port so NFD can route toward it.
         let p_port = 28401u16;
         fabric.bridge_udp(p, format!("127.0.0.1:{p_port}").parse().unwrap(), nfd_addr.parse().unwrap()).await.unwrap();
-        tokio::spawn(serve(fabric.engine_of(p).unwrap().register_producer("/diff/obj", CancellationToken::new())));
+        tokio::spawn(serve(fabric.engine_of(p).unwrap().register_producer(name!("/diff/obj"), CancellationToken::new())));
         // Consumer node C bridges to NFD; route /diff over that face.
         let c_face = fabric.bridge_udp(c, "127.0.0.1:0".parse().unwrap(), nfd_addr.parse().unwrap()).await.unwrap();
         fabric.engine_of(c).unwrap().fib().add_nexthop(&"/diff".parse::<Name>().unwrap(), c_face, 10);

@@ -8,8 +8,8 @@ use std::time::Duration;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_observability::{SpanPublisher, SpanRetention};
-use ndn_packet::Name;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_sim::{
     LinkConfig, MetricsLog, MetricsSample, SimKernel, SimSpanEmitter, Simulation, VirtualKernel,
 };
@@ -35,7 +35,7 @@ async fn metrics_scenario(kernel: Arc<dyn SimKernel>) -> Vec<MetricsSample> {
     let producer = fabric
         .engine_of(b)
         .unwrap()
-        .register_producer("/app", CancellationToken::new());
+        .register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

@@ -12,7 +12,7 @@ use ndn_app::{Consumer, EngineBuilder, Producer};
 use ndn_coding::FecPolicy;
 use ndn_engine::EngineConfig;
 use ndn_face::local::InProcFace;
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_sim::{LinkConfig, SimLink};
 use ndn_transport::FaceId;
 
@@ -74,7 +74,10 @@ async fn ghl_gives_each_node_its_hop_index() {
 
     let mut pc = PipeConsumer::new(Consumer::from_handle(consumer_handle));
     let pipe = pc
-        .open("/sensors/temp", PipeParams::default().with_fec(8, 12))
+        .open(
+            name!("/sensors/temp"),
+            PipeParams::default().with_fec(8, 12),
+        )
         .await
         .expect("pipe establishes across the relay");
 
@@ -96,7 +99,7 @@ async fn ghl_gives_each_node_its_hop_index() {
 
     // Data plane still flows through the relay while it serves the control band.
     let got = pc
-        .fetch(&pipe, "/v=42")
+        .fetch(&pipe, name!("/v=42"))
         .await
         .expect("bulk arrives through the relay");
     assert_eq!(

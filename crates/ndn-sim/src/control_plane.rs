@@ -652,7 +652,7 @@ impl ControlPlane {
     pub fn serve_ndn(self: &Arc<Self>, engine: &ForwarderEngine, cancel: CancellationToken) {
         Arc::clone(&self.notifications).install(engine, cancel.clone());
 
-        let producer = engine.register_producer("/localhop/sim/control", cancel);
+        let producer = engine.register_producer(ndn_packet::name!("/localhop/sim/control"), cancel);
         let me = Arc::clone(self);
         tokio::spawn(async move {
             let result = producer

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::name;
 use ndn_sim::{LinkConfig, SimKernel, Simulation, VirtualKernel};
 use tokio_util::sync::CancellationToken;
 
@@ -45,7 +46,7 @@ async fn scenario(kernel: std::sync::Arc<dyn SimKernel>, delay: Duration) -> Out
     let producer = fabric
         .engine_of(b)
         .unwrap()
-        .register_producer("/app", CancellationToken::new());
+        .register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|interest, responder| async move {

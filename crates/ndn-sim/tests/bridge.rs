@@ -8,7 +8,7 @@ use std::time::Duration;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::{EngineBuilder, EngineConfig};
 use ndn_face::net::UdpFace;
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{NodeId, Simulation};
 use tokio_util::sync::CancellationToken;
@@ -51,7 +51,7 @@ async fn external_forwarder_fetches_from_a_simulated_node_over_udp() {
     let producer = fabric
         .engine_of(node)
         .unwrap()
-        .register_producer("/ext", CancellationToken::new());
+        .register_producer(name!("/ext"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {
@@ -118,7 +118,7 @@ async fn scenario_declared_bridge_attaches_and_routes() {
         .unwrap();
     let sock_ext = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let addr_ext = sock_ext.local_addr().unwrap();
-    let producer = external.register_producer("/ext", CancellationToken::new());
+    let producer = external.register_producer(name!("/ext"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

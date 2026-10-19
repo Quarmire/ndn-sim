@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{FreeSpacePathLoss, Position, Simulation};
 use ndn_strategy::{BroadcastStrategy, ErasedStrategy};
@@ -69,7 +69,7 @@ async fn run_chain(n: usize) -> Row {
         );
     }
     // Producer at the far end.
-    let prod = fabric.engine_of(nodes[n - 1]).unwrap().register_producer("/mesh", CancellationToken::new());
+    let prod = fabric.engine_of(nodes[n - 1]).unwrap().register_producer(name!("/mesh"), CancellationToken::new());
     let serve = tokio::spawn(async move {
         let _ = prod
             .serve(|i, r| async move {

@@ -12,6 +12,7 @@ use std::time::Duration;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::name;
 use ndn_signals_core::SignalView;
 use ndn_sim::{
     FreeSpacePathLoss, NodeId, Position, RadioBus, RadioMcs, SimRadioFace, Simulation, World,
@@ -55,7 +56,7 @@ async fn two_radios_exchange_signed_data_and_publish_link_signals() {
         .fib()
         .add_nexthop(&"/app".parse().unwrap(), face_a_id, 10);
 
-    let producer = eng_b.register_producer("/app", CancellationToken::new());
+    let producer = eng_b.register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|interest, responder| async move {

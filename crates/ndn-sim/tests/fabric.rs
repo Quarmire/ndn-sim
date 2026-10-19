@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
+use ndn_packet::name;
 use ndn_sim::{EventKind, FabricControl, LinkConfig, NodeProfile, Simulation};
 use tokio_util::sync::CancellationToken;
 
@@ -93,7 +94,7 @@ async fn two_node_interest_data_roundtrip() {
 
     // Producer on node B serves /app, echoing the request name with a fixed payload.
     let p_engine = fabric.engine_of(producer_node).unwrap();
-    let producer = p_engine.register_producer("/app", CancellationToken::new());
+    let producer = p_engine.register_producer(name!("/app"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|interest, responder| async move {
@@ -109,7 +110,7 @@ async fn two_node_interest_data_roundtrip() {
     // Consumer on node A fetches /app/ping; the Interest routes A→B, Data returns B→A.
     let c_engine = fabric.engine_of(consumer_node).unwrap();
     let mut consumer = c_engine.app_consumer(CancellationToken::new());
-    let data = tokio::time::timeout(Duration::from_secs(2), consumer.fetch("/app/ping"))
+    let data = tokio::time::timeout(Duration::from_secs(2), consumer.fetch(name!("/app/ping")))
         .await
         .expect("fetch did not time out")
         .expect("fetch ok");

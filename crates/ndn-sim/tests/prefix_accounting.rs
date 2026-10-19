@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::EngineConfig;
-use ndn_packet::Name;
+use ndn_packet::{Name, name};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::Simulation;
 use tokio_util::sync::CancellationToken;
@@ -22,7 +22,7 @@ async fn per_prefix_counts_match_the_injected_pattern() {
     let fabric = sim.start().await.unwrap();
 
     // Producer on B under /svc/telemetry/live (4-component names → group to 3 = /svc/telemetry/live).
-    let producer = fabric.engine_of(b).unwrap().register_producer("/svc/telemetry/live", CancellationToken::new());
+    let producer = fabric.engine_of(b).unwrap().register_producer(name!("/svc/telemetry/live"), CancellationToken::new());
     tokio::spawn(async move {
         let _ = producer
             .serve(|i, r| async move {

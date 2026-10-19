@@ -25,8 +25,9 @@
 //! - **NS-8 restart starvation**: row = a publisher restart with the persistent store
 //!   (N-13/N-15) → green. Red gate: `RestartablePublisher::new_ephemeral` (the stock per-boot
 //!   data plane) → the lagging peer starves → the **watchdog** fires.
-//! - **NS-9 step-timeout event loss**: row = slow per-Block processing under
-//!   `StepBound::BoundedWait` (bound the wait, not the processing) → green. Red gate:
+//! - **NS-9 step-timeout event loss**: row = slow per-Block processing of a backlog range (a
+//!   burst published across a partition, healed) under `StepBound::BoundedWait` (bound the
+//!   wait, not the processing) → green. Red gate:
 //!   `StepBound::WholeStep` (the `Follow::step` shape from the field) → the deadline fires
 //!   mid-range, stores/acks survive but the step's events are dropped → the **event-integrity
 //!   invariant** reddens while liveness converges (the field symptom: a view sitting stale on
@@ -335,6 +336,57 @@ fn run_lag_cell(cell: &str, seed: u64) -> CellReport {
     })
 }
 
+/// The NS-9 row runner: a BACKLOG catch-up under slow per-Block processing. The replica is
+/// attached and synced, then the A–B link is cut while `blocks` are published and healed
+/// before the watch, so the first advertisement the replica sees after the heal is ONE
+/// multi-seq range (`1..=blocks`), not `blocks` single-seq increments.
+///
+/// Why the burst can't simply be published live (as `run_simple_cell` does): each live `put`
+/// emits its own Sync Interest, the replica's update channel has room for all of them, and the
+/// per-Block cost model charges only NEW Blocks (`ingest_one`: a re-advertised range's
+/// re-walk is free). So a live burst arrives as `1..=1, 1..=2, …, 1..=n`, every step carries
+/// exactly one new Block (15 ms < any sane step deadline), and the whole-step bound can never
+/// fire mid-range — the scenario would no longer model NS-9 at all. The field bug was a
+/// `Follow::step` deadline expiring while a catch-up RANGE was being committed Block by Block
+/// (FS-5 ~15 ms each); a reconnect after a partition is exactly what hands a follower such a
+/// range, so that is the shape both the green row and its red gate run here.
+fn run_backlog_cell(cell: &str, seed: u64, blocks: usize, opts: CatchupOpts) -> CellReport {
+    fastrand::seed(seed);
+    let kernel = VirtualKernel::new();
+    let cell = cell.to_string();
+    kernel.run(move |k| async move {
+        let (fabric, a, replicas) = build_topology(k, seed, Topo::Pair, LinkConfig::lan()).await;
+        let cancel = CancellationToken::new();
+        let ledger = Arc::new(Ledger::new());
+        let rnames = Topo::Pair.replica_names();
+
+        attach_replicas(&fabric, &replicas, &rnames, &ledger, opts, &cancel).await;
+        let publisher = fabric
+            .engine_of(a)
+            .unwrap()
+            .app_node(cancel.child_token())
+            .publish(name(GROUP), name(PUBLISHER))
+            .await
+            .expect("publisher");
+        settle(Duration::from_millis(300)).await;
+
+        // The backlog: publish into a cut link, and keep it cut until the per-put Sync
+        // Interests have actually left the publisher (`put` returns before its announcement
+        // reaches the wire) — every one of them is dropped. Then heal.
+        fabric.set_link_up(a, replicas[0], false).unwrap();
+        publish_ledgered(&publisher, &ledger, blocks, "w").await;
+        settle(Duration::from_millis(300)).await;
+        fabric.set_link_up(a, replicas[0], true).unwrap();
+
+        let liveness = watch(&ledger, &rnames, STALL_WINDOW, BUDGET).await;
+        let report = CellReport::evaluate(cell, seed, &ledger, &rnames, liveness);
+
+        cancel.cancel();
+        fabric.shutdown().await;
+        report
+    })
+}
+
 fn lossy() -> LinkConfig {
     LinkConfig {
         delay: Duration::from_millis(20),
@@ -418,9 +470,10 @@ fn stall_matrix_scoreboard() {
     // NS-8 row — publisher restart with the persistent store (the N-13/N-15 regime).
     board.push(run_restart_cell("restart-ns8/pair", 0xC708, true));
 
-    // NS-9 row — slow per-Block processing under the FIXED step shape (bound the wait).
-    board.push(run_simple_cell(
-        "slowstore-ns9/pair", 0xC709, Topo::Pair, LinkConfig::lan(), None, 30,
+    // NS-9 row — a backlog range committed under slow per-Block processing, with the FIXED
+    // step shape (bound the wait).
+    board.push(run_backlog_cell(
+        "slowstore-ns9/pair", 0xC709, 30,
         CatchupOpts {
             per_seq_delay: SLOW_STORE,
             step: StepBound::BoundedWait(Duration::from_millis(200)),
@@ -585,8 +638,8 @@ fn ns8_row_reddens_with_the_ephemeral_data_plane() {
 /// but the caller never learns: event integrity reddens while liveness is green.
 #[test]
 fn ns9_row_reddens_with_a_whole_step_bound() {
-    let red = run_simple_cell(
-        "gate-ns9-wholestep/pair", 0xC7A9, Topo::Pair, LinkConfig::lan(), None, 30,
+    let red = run_backlog_cell(
+        "gate-ns9-wholestep/pair", 0xC7A9, 30,
         CatchupOpts {
             per_seq_delay: SLOW_STORE,
             step: StepBound::WholeStep(Duration::from_millis(50)),

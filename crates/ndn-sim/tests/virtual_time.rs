@@ -2,8 +2,8 @@
 //! virtual scheduling. These are plain `#[test]`s (the kernel owns its own paused runtime;
 //! a `#[tokio::test]` would nest runtimes and panic).
 //!
-//! Security note (same as the fabric tests): default node config keeps a real accept-all
-//! validator — signatures are still verified; nothing is disabled.
+//! Security note (same as the fabric tests): nodes keep the default fail-closed validator; the
+//! Data here is digest-signed and its digest verified. Nothing is disabled.
 
 use std::time::{Duration, Instant};
 

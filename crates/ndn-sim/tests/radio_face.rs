@@ -3,8 +3,8 @@
 //! wired link, no driver — and the receiving face publishes [`LinkSignals`] (rssi/snr/mcs)
 //! into a `SignalsTable`, exactly as the real monitor-wifi face would.
 //!
-//! Security: default node config keeps the real accept-all validator; the Data is
-//! digest-signed and genuinely verified. Nothing disabled.
+//! Security: nodes keep the default fail-closed validator; the Data is digest-signed and
+//! genuinely verified. Nothing disabled.
 
 use std::sync::Arc;
 use std::time::Duration;

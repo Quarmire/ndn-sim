@@ -1,11 +1,11 @@
 //! Slice-1 fabric tests (ndn-lab): the control plane (spawn / remove / connect / route /
 //! topology) + the tracer, and an end-to-end Interest/Data exchange across two nodes.
 //!
-//! Security note: these use a node's *default* engine config, which installs a real
-//! accept-all validator (`TrustSchema::accept_all`) — signatures are still cryptographically
-//! verified (the producer's Data is DigestSha256-signed and the digest is checked); the
-//! trust *schema* is permissive only because no trust context is configured. Nothing here
-//! disables security; a scenario that wants to exercise trust configures a SecurityManager.
+//! Security note: these use a node's *default* profile, `SecurityProfile::Default` with no
+//! security manager, which fails closed: key-signed Data crossing a link is refused
+//! `untrusted-root`. The producers here answer DigestSha256-signed Data, whose digest the
+//! validator checks; nothing disables security. A scenario that exercises trust gives its nodes
+//! anchors, or chooses `AcceptSigned`/`Disabled` explicitly (`NodeProfile::with_security_profile`).
 
 use std::time::Duration;
 
@@ -121,4 +121,75 @@ async fn two_node_interest_data_roundtrip() {
     );
 
     fabric.shutdown().await;
+}
+
+/// A consumer on `consumer` fetches `/app/ping`, which a producer on another node answers with
+/// Data signed by a key nobody certified, across a production (UDP, non-local) link.
+async fn fetch_key_signed_across_a_link(
+    consumer: NodeProfile,
+) -> Result<ndn_packet::Data, ndn_app::AppError> {
+    use ndn_packet::SignatureType;
+    use ndn_security::{Ed25519Signer, Signer};
+
+    let mut sim = Simulation::new();
+    let consumer_node = sim.add_node_profile(consumer);
+    let producer_node = sim.add_node(EngineConfig::default());
+    sim.link(consumer_node, producer_node, LinkConfig::lan());
+    sim.add_route(consumer_node, "/app", producer_node);
+    let fabric = sim.start().await.unwrap();
+
+    let p_engine = fabric.engine_of(producer_node).unwrap();
+    let producer = p_engine.register_producer(name!("/app"), CancellationToken::new());
+    tokio::spawn(async move {
+        let signer = Ed25519Signer::from_seed(&[3; 32], name!("/app/KEY/k"));
+        let _ = producer
+            .serve(move |interest, responder| {
+                let wire = ndn_packet::encode::DataBuilder::new((*interest.name).clone(), b"pong")
+                    .sign_sync(
+                        SignatureType::SignatureEd25519,
+                        Some(signer.key_name()),
+                        |region| signer.sign_sync(region).unwrap(),
+                    );
+                async move {
+                    let _ = responder.respond_bytes(wire).await;
+                }
+            })
+            .await;
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let c_engine = fabric.engine_of(consumer_node).unwrap();
+    let mut consumer = c_engine.app_consumer(CancellationToken::new());
+    let got = tokio::time::timeout(Duration::from_secs(2), consumer.fetch(name!("/app/ping")))
+        .await
+        .expect("answered (Data or refusal) before the timeout");
+    fabric.shutdown().await;
+    got
+}
+
+/// A plain node is `Default` with no security manager: it fails closed, refusing key-signed
+/// Data from a link `untrusted-root` at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plain_node_refuses_key_signed_data_from_a_link() {
+    let got = fetch_key_signed_across_a_link(NodeProfile::new("consumer")).await;
+    assert!(
+        matches!(
+            got,
+            Err(ndn_app::AppError::Refused {
+                reason: ndn_packet::Refusal::UntrustedRoot
+            })
+        ),
+        "got {got:?}"
+    );
+}
+
+/// A node whose profile disables validation explicitly takes the same Data.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_node_with_validation_disabled_takes_key_signed_data_from_a_link() {
+    let got = fetch_key_signed_across_a_link(
+        NodeProfile::new("consumer").with_security_profile(ndn_security::SecurityProfile::Disabled),
+    )
+    .await
+    .expect("Data delivered");
+    assert_eq!(got.content().map(|c| c.as_ref()), Some(&b"pong"[..]));
 }

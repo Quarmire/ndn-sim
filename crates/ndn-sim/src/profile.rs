@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use ndn_engine::builder::EngineConfig;
+use ndn_security::SecurityProfile;
 use ndn_transport::FaceFactory;
 
 /// A template for instantiating a fabric node. (Not `Clone`: `EngineConfig` isn't `Clone`;
@@ -24,21 +25,38 @@ pub struct NodeProfile {
     /// engine. `Arc<dyn FaceFactory>` is cheaply cloneable, so it does not reintroduce the
     /// non-`Clone` constraint `EngineConfig` imposes.
     pub factories: Vec<Arc<dyn FaceFactory>>,
+    /// How the node validates Data arriving on its sim links (non-local faces). Default
+    /// [`SecurityProfile::Default`], as a forwarder's: a plain node has no security manager,
+    /// hence no trust anchors, so it fails closed — every key-signed Data crossing a link into
+    /// it is refused `untrusted-root` (DigestSha256 Data passes; its own apps' Data, on local
+    /// faces, is never validated). Choose [`SecurityProfile::AcceptSigned`] (signature only) or
+    /// [`SecurityProfile::Disabled`] (the application validates end to end) explicitly with
+    /// [`Self::with_security_profile`], or add anchors to the node's validator. A config-booted
+    /// node takes its `[security]` table instead.
+    pub security: SecurityProfile,
 }
 
 impl NodeProfile {
-    /// A profile with the given label and a default engine config.
+    /// A profile with the given label, a default engine config and the `Default` security
+    /// profile.
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
             config: EngineConfig::default(),
             factories: Vec::new(),
+            security: SecurityProfile::Default,
         }
     }
 
     /// Override the engine config.
     pub fn with_config(mut self, config: EngineConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Override how the node validates Data from its links (see [`Self::security`]).
+    pub fn with_security_profile(mut self, profile: SecurityProfile) -> Self {
+        self.security = profile;
         self
     }
 

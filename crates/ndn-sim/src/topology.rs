@@ -353,6 +353,11 @@ impl Simulation {
     /// ([`FaceProfile::udp`]: UDP + NDNLPv2 fragmentation + LP reliability + Permanent), carrying
     /// `config`'s delay/jitter/loss/bandwidth. An in-process app-style channel is an explicit
     /// opt-in: `link_profiled(a, b, FaceProfile::internal().with_link(config))`.
+    ///
+    /// The link is a non-local face, so Data crossing it is validated under the receiving node's
+    /// security profile: a plain node ([`NodeProfile::security`](crate::NodeProfile::security),
+    /// `Default` with no security manager) fails closed and refuses every key-signed Data
+    /// `untrusted-root`. Choose `AcceptSigned`/`Disabled` on the node, or give it anchors.
     pub fn link(&mut self, a: NodeId, b: NodeId, config: LinkConfig) {
         self.links.push(PendingLink {
             a,
@@ -438,7 +443,9 @@ impl Simulation {
         // *before* faces are added so their FaceUp events are captured.
         for (i, profile) in self.profiles.into_iter().enumerate() {
             let id = NodeId(i);
-            let mut builder = EngineBuilder::new(profile.config).runtime(self.kernel.runtime());
+            let mut builder = EngineBuilder::new(profile.config)
+                .runtime(self.kernel.runtime())
+                .security_profile(profile.security);
             // A config-booted node also takes ndn-fwd's data-path policy (`[security]` validation
             // profile + schema rules, `[cs]` admission). Without it the engine validated forwarded
             // Data (then with no certificate fetcher, so signed Data crossing a UDP hop was dropped
@@ -1759,7 +1766,9 @@ impl RunningSimulation {
     pub async fn spawn_node(&self, profile: NodeProfile) -> Result<NodeId> {
         let id = NodeId(self.next_node.fetch_add(1, Ordering::Relaxed));
         // Build off-lock (async), then insert under the lock.
-        let mut builder = EngineBuilder::new(profile.config).runtime(self.kernel.runtime());
+        let mut builder = EngineBuilder::new(profile.config)
+            .runtime(self.kernel.runtime())
+            .security_profile(profile.security);
         for factory in &profile.factories {
             builder = builder.face_factory(Arc::clone(factory));
         }

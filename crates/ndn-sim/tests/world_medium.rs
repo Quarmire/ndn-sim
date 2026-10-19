@@ -1,14 +1,26 @@
 //! Slice-3 integration: a [`World`] declared on the [`Simulation`] builder rides onto the
-//! running fabric, where a [`WirelessMedium`] does position-driven, range-limited broadcast.
-//! (Wiring this medium *into* an engine face is slice 4 — the named-radio face.)
+//! running fabric, where the shared radio medium ([`RadioBus`]) does position-driven,
+//! range-limited broadcast against it — and tracks scripted motion per transmit.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_engine::builder::EngineConfig;
-use ndn_sim::{
-    NodeId, Position, RangeThreshold, Simulation, WaypointMobility, WirelessMedium, World,
-};
+use ndn_sim::{NodeId, Position, RadioBus, RangeThreshold, Simulation, WaypointMobility, World};
+
+fn range_100m() -> Arc<RangeThreshold> {
+    Arc::new(RangeThreshold {
+        range_m: 100.0,
+        tx_power_dbm: 20.0,
+    })
+}
+
+/// The in-range receivers of one transmit (delivered or not — the propagation verdict).
+fn heard_by(out: &[(NodeId, f64, bool)]) -> Vec<NodeId> {
+    let mut v: Vec<NodeId> = out.iter().map(|(n, _, _)| *n).collect();
+    v.sort_by_key(|n| n.0);
+    v
+}
 
 #[tokio::test]
 async fn fabric_carries_world_and_medium_fans_out_by_range() {
@@ -23,24 +35,15 @@ async fn fabric_carries_world_and_medium_fans_out_by_range() {
     let _c = sim.add_node(EngineConfig::default());
     let fabric = sim.start().await.unwrap();
 
-    // The declared world is reachable on the live fabric.
-    let world = fabric.world();
-    let medium = WirelessMedium::new(
-        world,
-        Arc::new(RangeThreshold {
-            range_m: 100.0,
-            tx_power_dbm: 20.0,
-        }),
-        0,
-    );
-    let mut near = medium.attach(NodeId(1));
-    let mut far = medium.attach(NodeId(2));
+    // The declared world is reachable on the live fabric, and a medium built over it sees the
+    // declared placement.
+    let bus = RadioBus::new(fabric.world(), range_100m(), 0, 1);
+    let mut near = bus.attach(NodeId(1));
+    let mut far = bus.attach(NodeId(2));
 
-    let hit = medium.transmit(NodeId(0), bytes::Bytes::from_static(b"beacon"), 0);
-    assert_eq!(
-        hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-        vec![NodeId(1)]
-    );
+    // MCS 0 at −4 dBm RSSI (40 m on a 100 m disc) is far above every decode threshold.
+    let out = bus.transmit(NodeId(0), 0, bytes::Bytes::from_static(b"beacon"), 0);
+    assert_eq!(heard_by(&out), vec![NodeId(1)]);
 
     assert_eq!(
         tokio::time::timeout(Duration::from_millis(50), near.recv())
@@ -61,7 +64,7 @@ async fn fabric_carries_world_and_medium_fans_out_by_range() {
 }
 
 /// A scripted (waypoint) mover starts unreachable, then arrives into range — the medium's
-/// per-transmit snapshot tracks it. Deterministic time so this is reproducible.
+/// per-transmit world snapshot tracks it. Deterministic time so this is reproducible.
 #[tokio::test(start_paused = true)]
 async fn waypoint_mover_comes_into_range() {
     let world = World::new();
@@ -75,26 +78,13 @@ async fn waypoint_mover_comes_into_range() {
             ],
         }),
     );
-    let medium = WirelessMedium::new(
-        Arc::new(world),
-        Arc::new(RangeThreshold {
-            range_m: 100.0,
-            tx_power_dbm: 20.0,
-        }),
-        0,
-    );
-    medium.attach(NodeId(1));
+    let bus = RadioBus::new(Arc::new(world), range_100m(), 0, 1);
+    bus.attach(NodeId(1));
 
     // t=0s: at 300 m ⇒ silent.
-    assert!(
-        medium
-            .transmit(NodeId(0), bytes::Bytes::from_static(b"a"), 0)
-            .is_empty()
-    );
+    let out = bus.transmit(NodeId(0), 0, bytes::Bytes::from_static(b"a"), 0);
+    assert!(heard_by(&out).is_empty());
     // t=8s: interpolated to 300·(1 − 0.8) = 60 m ⇒ in range.
-    let hit = medium.transmit(NodeId(0), bytes::Bytes::from_static(b"b"), 8_000_000_000);
-    assert_eq!(
-        hit.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-        vec![NodeId(1)]
-    );
+    let out = bus.transmit(NodeId(0), 0, bytes::Bytes::from_static(b"b"), 8_000_000_000);
+    assert_eq!(heard_by(&out), vec![NodeId(1)]);
 }

@@ -65,7 +65,11 @@ pub fn growth_bound(
     high: (u64, f64),
     max_ratio: f64,
 ) -> BoundCheck {
-    let ratio = if low.1 > 0.0 { high.1 / low.1 } else { f64::INFINITY };
+    let ratio = if low.1 > 0.0 {
+        high.1 / low.1
+    } else {
+        f64::INFINITY
+    };
     BoundCheck {
         name: name.into(),
         claim: claim.into(),
@@ -215,7 +219,7 @@ pub async fn latency_catchup(
     }
 }
 
-/// A percentile over an unsorted sample set (nearest-rank). `q` in [0,1].
+/// A percentile over an unsorted sample set (nearest-rank). `q` in `[0, 1]`.
 pub fn percentile(samples: &mut [f64], q: f64) -> f64 {
     if samples.is_empty() {
         return f64::NAN;

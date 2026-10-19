@@ -5,12 +5,13 @@
 //! kernel owns the clock and task spawning. Swapping the kernel swaps the entire time model
 //! without touching nodes, faces, or apps.
 //!
-//! - [`WallClockKernel`] (this slice) = the production `TokioRuntime`: real time,
-//!   emulation-grade, can talk to real devices/other NDN impls. The default.
-//! - A future `VirtualKernel` will supply a virtual-time runtime + event scheduler for
-//!   deterministic, faster-than-real, single-steppable runs. Because the engine's clock now
-//!   flows entirely through the [`Runtime`] seam (ndn-lab slices 0a–0c), it can drop in here
-//!   with no engine changes.
+//! - [`WallClockKernel`] = the production `TokioRuntime`: real time, emulation-grade, can talk to
+//!   real devices/other NDN impls. The default.
+//! - [`VirtualKernel`] / [`SteppableKernel`] = tokio's paused clock: deterministic,
+//!   faster-than-real, single-steppable runs; [`RealTimeKernel`] = real pace over a logical clock
+//!   (hosts live devices). The from-scratch discrete-event executor is
+//!   [`DesKernel`](crate::DesKernel). All of them drop in with no engine changes because the
+//!   engine's clock flows entirely through the [`Runtime`] seam (ndn-lab slices 0a–0c).
 
 use std::sync::Arc;
 
@@ -83,8 +84,12 @@ impl ndn_runtime::Spawn for ImmediateRuntime {
         // future handed here awaits only our instantaneous `sleep`, so it is Ready within a poll or
         // two. The bounded loop is a guard against a future that genuinely needs a reactor (which
         // would be a misuse of this runtime, per the doc above).
-        const VT: RawWakerVTable =
-            RawWakerVTable::new(|_| RawWaker::new(std::ptr::null(), &VT), |_| {}, |_| {}, |_| {});
+        const VT: RawWakerVTable = RawWakerVTable::new(
+            |_| RawWaker::new(std::ptr::null(), &VT),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VT)) };
         let mut cx = Context::from_waker(&waker);
         for _ in 0..64 {
@@ -92,7 +97,10 @@ impl ndn_runtime::Spawn for ImmediateRuntime {
                 return;
             }
         }
-        debug_assert!(false, "ImmediateRuntime: future did not complete inline — needs a reactor");
+        debug_assert!(
+            false,
+            "ImmediateRuntime: future did not complete inline — needs a reactor"
+        );
     }
 }
 
@@ -210,7 +218,7 @@ const DEFAULT_VIRTUAL_EPOCH_NS: u64 = 1_700_000_000_000_000_000;
 ///
 /// How it composes with the rest of ndn-lab:
 /// - The engine's clock already flows entirely through the [`Runtime`] seam (slices 0a–0c),
-///   so [`runtime`](VirtualKernel::runtime) returns a [`VirtualRuntime`] whose `now`/
+///   so [`runtime`](VirtualKernel::runtime) returns a `VirtualRuntime` whose `now`/
 ///   `unix_nanos` are *logical* (tokio's paused clock only virtualizes its own `time`, not
 ///   the engine's `web_time`/epoch — hence the wrapper).
 /// - `SimFace` link delay/bandwidth use `tokio::time`, which is virtual under the paused

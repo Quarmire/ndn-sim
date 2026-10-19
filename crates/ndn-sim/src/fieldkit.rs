@@ -36,9 +36,7 @@ use bytes::Bytes;
 use ndn_app::{Consumer, DemuxConnection, EngineAppExt, Publisher, PublisherConfig};
 use ndn_packet::encode::InterestBuilder;
 use ndn_packet::{Data, Interest, Name};
-use ndn_sync::{
-    DataStore, MemoryStore, SvsConfig, SyncHandle, join_svs_group, svs_data_name,
-};
+use ndn_sync::{DataStore, MemoryStore, SvsConfig, SyncHandle, join_svs_group, svs_data_name};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 

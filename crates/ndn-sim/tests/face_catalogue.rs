@@ -17,7 +17,9 @@ use tokio_util::sync::CancellationToken;
 async fn profiles_report_distinct_engine_visible_behavior() {
     let (udp, _) = SimLink::pair_profiled(FaceId(1), FaceId(2), &FaceProfile::udp(), 8);
     assert_eq!(udp.kind(), FaceKind::Udp);
-    assert_eq!(udp.send_mtu(), Some(1420));
+    // The sim UDP face must advertise the MTU production `UdpFace` does, so LP fragments at the
+    // same boundary a deployed forwarder would.
+    assert_eq!(udp.send_mtu(), Some(ndn_packet::fragment::DEFAULT_UDP_MTU));
     assert_eq!(udp.link_type(), LinkType::PointToPoint);
 
     let (tcp, _) = SimLink::pair_profiled(FaceId(3), FaceId(4), &FaceProfile::tcp(), 8);

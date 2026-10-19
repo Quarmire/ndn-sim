@@ -1,6 +1,6 @@
 //! # Geometry-aware radio: line-of-sight obstruction (axis 3, slice 3c)
 //!
-//! A pluggable [`PropagationModel`](crate::medium::PropagationModel) backend that layers **line-of-
+//! A pluggable [`PropagationModel`] backend that layers **line-of-
 //! sight** on top of any base channel model: a frame whose transmitter→receiver path crosses an
 //! obstacle (a building, a hill, terrain) is attenuated or blocked. Combined with co-simulated
 //! mobility (an ArduPilot swarm from 3b), this is the realistic capstone — a drone flying behind a

@@ -3,7 +3,7 @@
 //! Feature-gated behind `mavlink` so the core build never pulls the MAVLink stack. This is the first
 //! *external* [`MobilitySource`](crate::MobilitySource): it connects to a MAVLink telemetry stream
 //! (ArduPilot SITL, a real autopilot, MAVProxy, …), maps each vehicle's position reports to
-//! [`NodeState`](crate::NodeState)s, and feeds them into a [`ChannelSource`](crate::ChannelSource).
+//! [`NodeState`]s, and feeds them into a [`ChannelSource`].
 //! Ride it on the [`RealTimeKernel`](crate::RealTimeKernel) governor via
 //! [`drive_mobility`](crate::RunningSimulation::drive_mobility) (clock mode B — the autopilot is the
 //! clock master; the sim follows), record the [`MobilityTrace`](crate::MobilityTrace), and replay it

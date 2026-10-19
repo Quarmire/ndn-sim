@@ -17,16 +17,23 @@ use tokio_util::sync::CancellationToken;
 /// A radio node's engine. A neighbour is served by overheard Data only if it caches Data it did not
 /// ask for: NFD's `admit-network` unsolicited-Data policy. The default `drop-all` discards it.
 fn radio_node() -> EngineConfig {
-    EngineConfig { unsolicited_data: UnsolicitedDataPolicy::AdmitNetwork, ..EngineConfig::default() }
+    EngineConfig {
+        unsolicited_data: UnsolicitedDataPolicy::AdmitNetwork,
+        ..EngineConfig::default()
+    }
 }
 
 /// One producer + three consumers, fully connected on the radio (every transmission has 3 in-range
 /// receivers). Returns `(fetches_delivered, total_airtime)`.
 fn run(mode: WifiMode) -> (u32, Duration) {
     DesKernel::new().run(move |k: Arc<dyn SimKernel>| async move {
-        let mut sim = Simulation::new()
-            .kernel(k)
-            .with_radio_medium(Arc::new(RangeThreshold { range_m: 50.0, tx_power_dbm: 20.0 }), 7);
+        let mut sim = Simulation::new().kernel(k).with_radio_medium(
+            Arc::new(RangeThreshold {
+                range_m: 50.0,
+                tx_power_dbm: 20.0,
+            }),
+            7,
+        );
         let p = sim.add_radio_node(radio_node(), Position::xy(0.0, 0.0));
         let consumers = [
             sim.add_radio_node(radio_node(), Position::xy(10.0, 0.0)),
@@ -35,15 +42,24 @@ fn run(mode: WifiMode) -> (u32, Duration) {
         ];
         sim.add_app(
             p,
-            AppSpec::Producer { prefix: "/svc".into(), content: Some("air".into()), freshness_ms: None },
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("air".into()),
+                freshness_ms: None,
+            },
         );
         let fabric = sim.start().await.unwrap();
         fabric.radio_bus().unwrap().set_mac_mode(mode);
 
         let mut delivered = 0u32;
         for c in consumers {
-            fabric.route_over_radio(c, &"/svc".parse::<Name>().unwrap()).unwrap();
-            let mut consumer = fabric.engine_of(c).unwrap().app_consumer(CancellationToken::new());
+            fabric
+                .route_over_radio(c, &"/svc".parse::<Name>().unwrap())
+                .unwrap();
+            let mut consumer = fabric
+                .engine_of(c)
+                .unwrap()
+                .app_consumer(CancellationToken::new());
             let ok = consumer
                 .fetch_with(
                     InterestBuilder::new("/svc/0".parse::<Name>().unwrap())

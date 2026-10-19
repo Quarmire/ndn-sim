@@ -1,0 +1,50 @@
+[package]
+name = "ndn-sim-studies"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Research studies on top of ndn-sim: the IP plane, radio-model experiments, dashboards"
+publish = false
+# Same compile-cost rule as the core crate: every tests/*.rs file rides the single `suite` binary.
+autotests = false
+
+[package.metadata.scope]
+classification = "research"
+
+[dependencies]
+# The core simulator. Studies depend on it — never the reverse.
+ndn-sim       = { path = "../ndn-sim" }
+ndn-app       = { workspace = true }
+ndn-runtime   = { workspace = true }
+ndn-transport = { workspace = true }
+# The cognition bridge (src/cognition.rs) drives the real sense→decide→act control plane.
+ndn-radio-cognition = { workspace = true }
+bytes      = { workspace = true }
+rand       = "0.9"
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tokio      = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+ndn-engine        = { workspace = true }
+ndn-face          = { workspace = true }
+ndn-observability = { workspace = true }
+ndn-packet        = { workspace = true, features = ["std"] }
+ndn-security      = { workspace = true }
+ndn-strategy      = { workspace = true }
+ndn-sync          = { workspace = true }
+# The soft-prefix-reach forwarding strategy — force-linked in the ndr_* examples so its linkme
+# registration is included (so `set_strategy("soft-prefix-reach")` resolves for the flood-vs-prior A/B).
+ndn-strategy-reach = { path = "../../../ndn-radio/crates/strategies/ndn-strategy-reach" }
+# Named-time studies (tests/named_time_*.rs, examples/clock_*.rs) drive real Timekeepers + beacon wire.
+ndn-time         = { workspace = true }
+ndn-time-sources = { workspace = true }
+ndn-timekeeper   = { workspace = true }
+futures    = { workspace = true }
+tokio      = { workspace = true, features = ["full"] }
+
+[[test]]
+name = "suite"
+path = "tests/suite.rs"

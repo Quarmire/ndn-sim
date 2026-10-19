@@ -12,10 +12,15 @@ use ndn_sim::{AppSpec, DesKernel, LinkConfig, NodeId, SimKernel, Simulation};
 use tokio_util::sync::CancellationToken;
 
 async fn fetch_ok(fabric: &ndn_sim::RunningSimulation, node: NodeId, name: &str) -> bool {
-    let mut c = fabric.engine_of(node).unwrap().app_consumer(CancellationToken::new());
-    c.fetch_with(InterestBuilder::new(name.parse::<Name>().unwrap()).lifetime(Duration::from_millis(500)))
-        .await
-        .is_ok()
+    let mut c = fabric
+        .engine_of(node)
+        .unwrap()
+        .app_consumer(CancellationToken::new());
+    c.fetch_with(
+        InterestBuilder::new(name.parse::<Name>().unwrap()).lifetime(Duration::from_millis(500)),
+    )
+    .await
+    .is_ok()
 }
 
 /// A cut link drops the flow; healing it restores delivery — link state (FIB) survives the cut.
@@ -29,7 +34,11 @@ fn set_link_cut_and_heal() {
         sim.add_route(a, "/svc", b);
         sim.add_app(
             b,
-            AppSpec::Producer { prefix: "/svc".into(), content: Some("hi".into()), freshness_ms: Some(0) },
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("hi".into()),
+                freshness_ms: Some(0),
+            },
         );
         let fabric = sim.start().await.unwrap();
 
@@ -62,7 +71,11 @@ fn partition_isolates_then_heals() {
         sim.add_route(r, "/svc", p);
         sim.add_app(
             p,
-            AppSpec::Producer { prefix: "/svc".into(), content: Some("hi".into()), freshness_ms: Some(0) },
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("hi".into()),
+                freshness_ms: Some(0),
+            },
         );
         let fabric = sim.start().await.unwrap();
 
@@ -75,7 +88,10 @@ fn partition_isolates_then_heals() {
         fabric.shutdown().await;
         (before, during, after)
     });
-    assert!(before && !during && after, "before={before} during={during} after={after}");
+    assert!(
+        before && !during && after,
+        "before={before} during={during} after={after}"
+    );
 }
 
 /// Degrading a link to 100% loss makes the flow fail; healing clears the override.
@@ -89,7 +105,11 @@ fn degrade_link_injects_loss() {
         sim.add_route(a, "/svc", b);
         sim.add_app(
             b,
-            AppSpec::Producer { prefix: "/svc".into(), content: Some("hi".into()), freshness_ms: Some(0) },
+            AppSpec::Producer {
+                prefix: "/svc".into(),
+                content: Some("hi".into()),
+                freshness_ms: Some(0),
+            },
         );
         let fabric = sim.start().await.unwrap();
 
@@ -102,5 +122,8 @@ fn degrade_link_injects_loss() {
         fabric.shutdown().await;
         (before, during, after)
     });
-    assert!(before && !during && after, "before={before} during={during} after={after}");
+    assert!(
+        before && !during && after,
+        "before={before} during={during} after={after}"
+    );
 }

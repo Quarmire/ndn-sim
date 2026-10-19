@@ -30,25 +30,26 @@ pub struct ScenePoint {
 }
 
 /// A node as the GUI draws it: where it is + the metric badges worth showing at a glance.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
-#[manifest(ty = "scene-node")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "keel", derive(manifest_derive::Manifest))]
+#[cfg_attr(feature = "keel", manifest(ty = "scene-node"))]
 pub struct SceneNode {
     /// Node id.
     pub id: usize,
     /// Human label.
     pub label: String,
     /// x position (m).
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub x: f64,
     /// y position (m).
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub y: f64,
     /// Attached face count.
     pub faces: u64,
     /// PIT depth.
     pub pit_depth: u64,
     /// Content-store hit rate.
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub cs_hit_rate: f64,
     /// Interests received.
     pub in_interests: u64,
@@ -58,33 +59,35 @@ pub struct SceneNode {
 
 /// An undirected link edge between two nodes; `distance_m` is set when both ends are placed
 /// (the basis for "links light up by RSSI" once a propagation model is consulted).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
-#[manifest(ty = "scene-link")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "keel", derive(manifest_derive::Manifest))]
+#[cfg_attr(feature = "keel", manifest(ty = "scene-link"))]
 pub struct SceneLink {
     /// Source node id.
     pub from: usize,
     /// Destination node id.
     pub to: usize,
     /// Link distance (m), when both ends are placed.
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub distance_m: Option<f64>,
 }
 
 /// The world extent the GUI viewports onto.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
-#[manifest(ty = "scene-bounds")]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "keel", derive(manifest_derive::Manifest))]
+#[cfg_attr(feature = "keel", manifest(ty = "scene-bounds"))]
 pub struct SceneBounds {
     /// Minimum x (m).
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub min_x: f64,
     /// Minimum y (m).
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub min_y: f64,
     /// Maximum x (m).
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub max_x: f64,
     /// Maximum y (m).
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub max_y: f64,
 }
 
@@ -99,21 +102,26 @@ impl SceneBounds {
 
 /// A radio reachability edge: `from` can hear `to` at `rssi_dbm` (from positions + propagation).
 /// This is what "links light up by RSSI" draws — distinct from wired [`SceneLink`]s.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
-#[manifest(ty = "radio-link")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "keel", derive(manifest_derive::Manifest))]
+#[cfg_attr(feature = "keel", manifest(ty = "radio-link"))]
 pub struct RadioLink {
     /// Source node id.
     pub from: usize,
     /// Destination node id.
     pub to: usize,
     /// Received signal strength (dBm).
-    #[field(decimal(places = 4))]
+    #[cfg_attr(feature = "keel", field(decimal(places = 4)))]
     pub rssi_dbm: f64,
 }
 
 /// A renderable snapshot of the fabric — the `world_snapshot()` the GUI draws each frame.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, manifest_derive::Manifest)]
-#[manifest(ty = "scene", describes = "ndn-lab/run/scene")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "keel", derive(manifest_derive::Manifest))]
+#[cfg_attr(
+    feature = "keel",
+    manifest(ty = "scene", describes = "ndn-lab/run/scene")
+)]
 pub struct SceneSnapshot {
     /// Snapshot time (ns).
     pub virtual_time_ns: u64,

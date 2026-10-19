@@ -10,13 +10,14 @@
 # (The rigorous drop-and-recover-under-motion proof is tests/geometry.rs; this is the CLI-visible,
 # declarative form.)
 #
-# Run it:   ndn-lab check examples/checks/urban-canyon.toml   (from the crate root)
+# Run it:   ndn-lab check examples/checks/urban-canyon.toml   (from any directory — the trace path
+#           below resolves relative to this file)
 
 duration_ms = 7000
 kernels = ["des"]
 
 [scenario]
-mobility_trace = "examples/checks/urban-canyon.trace.json"
+mobility_trace = "urban-canyon.trace.json"
 
 [scenario.kernel]
 kind = "des"

@@ -1,0 +1,48 @@
+# miniMUAS fleet forwarder: iuas-01 (airframe, 10.42.0.12) on the shared managed Wi-Fi cell.
+# Modelled on the deployed ndn-fwd configs: a UDP listener, one pre-connected UDP face per
+# peer on :6363, /muas routed to every peer, multicast on /muas (docs/nfd-divergence-findings.md).
+
+[cs]
+capacity_mb = 64
+# Trust is enforced above the forwarder (NAC-ABE), so unverified Data is cacheable; with the
+# default (false) the fleet's CS admitted nothing (0.17% hit rate, 37 entries).
+admit_unverified = true
+
+# face 0: the wildcard listener
+[[face]]
+kind = "udp"
+bind = "0.0.0.0:6363"
+
+# face 1: gcs
+[[face]]
+kind = "udp"
+bind = "0.0.0.0:6363"
+remote = "10.42.0.11:6363"
+
+# face 2: iuas-02
+[[face]]
+kind = "udp"
+bind = "0.0.0.0:6363"
+remote = "10.42.0.13:6363"
+
+# face 3: wuas-01
+[[face]]
+kind = "udp"
+bind = "0.0.0.0:6363"
+remote = "10.42.0.14:6363"
+
+[[route]]
+prefix = "/muas"
+face = 1
+
+[[route]]
+prefix = "/muas"
+face = 2
+
+[[route]]
+prefix = "/muas"
+face = 3
+
+[[strategy]]
+prefix = "/muas"
+strategy = "/localhost/nfd/strategy/multicast"

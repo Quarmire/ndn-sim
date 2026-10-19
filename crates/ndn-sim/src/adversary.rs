@@ -22,7 +22,7 @@
 //!    are recorded; only the *bound* is CI-normative).
 //!
 //! Reuses instrument (c)'s [`Ledger`]/[`watch`](crate::liveness::watch)/[`Invariants`] and
-//! instrument (a)'s [`BoundCheck`](crate::ceiling::BoundCheck) rather than forking either — an
+//! instrument (a)'s [`BoundCheck`] rather than forking either — an
 //! [`AdversaryCell`] is a `liveness` verdict + `ceiling` bounds glued by a cost meter, with the
 //! same seed-per-cell + normative-projection determinism discipline.
 
@@ -184,7 +184,11 @@ impl AdversaryCell {
         };
         let mut s = format!(
             "{}|seed={}|honest={}|poison_free={}|event_integrity={}",
-            self.cell, self.seed, verdict, self.invariants.poison_free, self.invariants.event_integrity
+            self.cell,
+            self.seed,
+            verdict,
+            self.invariants.poison_free,
+            self.invariants.event_integrity
         );
         for b in &self.cost {
             s.push_str(&format!("|{}={}", b.name, b.pass));

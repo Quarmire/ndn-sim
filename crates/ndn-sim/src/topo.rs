@@ -52,7 +52,7 @@ pub fn line(n: usize) -> Scenario {
     s
 }
 
-/// A ring: a [`line`] with the ends joined (`… — (n-1) — 0`). Needs `n >= 3` to add the closing link.
+/// A ring: a [`line()`] with the ends joined (`… — (n-1) — 0`). Needs `n >= 3` to add the closing link.
 pub fn ring(n: usize) -> Scenario {
     let mut s = line(n);
     if n >= 3 {

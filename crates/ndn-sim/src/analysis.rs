@@ -69,17 +69,27 @@ pub fn throughput(recs: &[RadioDelivery]) -> Option<Throughput> {
         .filter(|r| seen_tx.insert((r.from, r.t_ns)))
         .map(|r| r.frame_len as u64 * 8)
         .sum();
-    let delivered_bits: u64 =
-        recs.iter().filter(|r| r.delivered).map(|r| r.frame_len as u64 * 8).sum();
+    let delivered_bits: u64 = recs
+        .iter()
+        .filter(|r| r.delivered)
+        .map(|r| r.frame_len as u64 * 8)
+        .sum();
     // H3: delivery fraction over DECODABLE candidates (detectable receivers), not every node inside the
     // logging bound — OutOfRange/Obstructed nodes were never candidates and would dilute the ratio toward
     // geometry (it would move just by adding a distant bystander).
-    let decodable = recs.iter().filter(|r| r.reason.is_decodable_candidate()).count() as f64;
+    let decodable = recs
+        .iter()
+        .filter(|r| r.reason.is_decodable_candidate())
+        .count() as f64;
     let delivered = recs.iter().filter(|r| r.delivered).count() as f64;
     Some(Throughput {
         offered_bps: offered_bits as f64 / secs,
         goodput_bps: delivered_bits as f64 / secs,
-        delivery_fraction: if decodable > 0.0 { delivered / decodable } else { 0.0 },
+        delivery_fraction: if decodable > 0.0 {
+            delivered / decodable
+        } else {
+            0.0
+        },
         span_ns,
     })
 }
@@ -473,16 +483,40 @@ mod tests {
         // Four 100-byte frames over a 3 ms span; two delivered. Offered counts all, goodput only the
         // delivered half, and the delivery fraction ties them together.
         let recs = vec![
-            RadioDelivery { t_ns: 0, frame_len: 100, delivered: true, ..rec(1, 2, true, DeliveryReason::Delivered) },
-            RadioDelivery { t_ns: 1_000_000, frame_len: 100, delivered: false, ..rec(1, 2, false, DeliveryReason::Collision) },
-            RadioDelivery { t_ns: 2_000_000, frame_len: 100, delivered: true, ..rec(1, 2, true, DeliveryReason::Delivered) },
-            RadioDelivery { t_ns: 3_000_000, frame_len: 100, delivered: false, ..rec(1, 2, false, DeliveryReason::Erased) },
+            RadioDelivery {
+                t_ns: 0,
+                frame_len: 100,
+                delivered: true,
+                ..rec(1, 2, true, DeliveryReason::Delivered)
+            },
+            RadioDelivery {
+                t_ns: 1_000_000,
+                frame_len: 100,
+                delivered: false,
+                ..rec(1, 2, false, DeliveryReason::Collision)
+            },
+            RadioDelivery {
+                t_ns: 2_000_000,
+                frame_len: 100,
+                delivered: true,
+                ..rec(1, 2, true, DeliveryReason::Delivered)
+            },
+            RadioDelivery {
+                t_ns: 3_000_000,
+                frame_len: 100,
+                delivered: false,
+                ..rec(1, 2, false, DeliveryReason::Erased)
+            },
         ];
         let t = throughput(&recs).expect("span");
         assert_eq!(t.span_ns, 3_000_000);
         assert_eq!(t.delivery_fraction, 0.5);
         // offered = 4·100·8 bits / 3 ms = 1.0667 Mb/s; goodput = half that.
-        assert!((t.offered_bps - 1_066_666.6).abs() < 1.0, "offered={}", t.offered_bps);
+        assert!(
+            (t.offered_bps - 1_066_666.6).abs() < 1.0,
+            "offered={}",
+            t.offered_bps
+        );
         assert!((t.goodput_bps - t.offered_bps / 2.0).abs() < 1.0);
     }
 

@@ -3,7 +3,7 @@
 //! MCP builds a room → a city.
 //!
 //! It is deliberately *not* a separate integration: each MCP tool is a near-1:1 projection of a
-//! [`SimCommand`](crate::SimCommand) / [`SimQuery`](crate::SimQuery), plus read/reason tools and
+//! [`SimCommand`] / [`SimQuery`], plus read/reason tools and
 //! a machine-readable **capability catalogue** so the model can discover the palette. MCP, the
 //! NDN-native control names, the RPC codec, and (later) the GUI all drive the *same*
 //! `FabricControl` — a thing one can do, all can do.

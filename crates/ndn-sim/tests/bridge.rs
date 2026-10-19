@@ -8,8 +8,8 @@ use std::time::Duration;
 use ndn_app::EngineAppExt;
 use ndn_engine::builder::{EngineBuilder, EngineConfig};
 use ndn_face::net::UdpFace;
-use ndn_packet::{Name, name};
 use ndn_packet::encode::InterestBuilder;
+use ndn_packet::{Name, name};
 use ndn_sim::{NodeId, Simulation};
 use tokio_util::sync::CancellationToken;
 
@@ -176,7 +176,10 @@ async fn scenario_declared_bridge_attaches_and_routes() {
         )
         .await
         .expect("fetch over the scenario-declared bridge");
-    assert_eq!(data.content().map(|c| c.to_vec()).unwrap_or_default(), b"declared");
+    assert_eq!(
+        data.content().map(|c| c.to_vec()).unwrap_or_default(),
+        b"declared"
+    );
 
     // The fence: a virtual-time scenario declaring bridges refuses to apply them
     // (checked on the scenario's kernel spec, before any face is touched).

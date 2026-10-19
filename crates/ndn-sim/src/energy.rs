@@ -130,7 +130,11 @@ mod tests {
         let m = RadioEnergyModel::default();
         let air = Duration::from_millis(1);
         // 20 dBm = 100 mW radiated; at 25% PA that is 0.4 W of PA draw + 1.1 W baseline = 1.5 W.
-        assert!((m.tx_energy_j(air, 20.0, 5) - 1.5e-3).abs() < 1e-5, "{}", m.tx_energy_j(air, 20.0, 5));
+        assert!(
+            (m.tx_energy_j(air, 20.0, 5) - 1.5e-3).abs() < 1e-5,
+            "{}",
+            m.tx_energy_j(air, 20.0, 5)
+        );
         // Doubling airtime doubles energy; raising power raises it.
         assert!(m.tx_energy_j(Duration::from_millis(2), 20.0, 5) > m.tx_energy_j(air, 20.0, 5));
         assert!(m.tx_energy_j(air, 23.0, 5) > m.tx_energy_j(air, 20.0, 5));
@@ -145,7 +149,12 @@ mod tests {
 
     #[test]
     fn account_total_adds_idle_over_time() {
-        let a = EnergyAccount { tx_j: 1.0, rx_j: 2.0, host_j: 4.0, ..Default::default() };
+        let a = EnergyAccount {
+            tx_j: 1.0,
+            rx_j: 2.0,
+            host_j: 4.0,
+            ..Default::default()
+        };
         assert_eq!(a.active_j(), 7.0); // tx + rx + host
         assert_eq!(a.total_j(0.7, 10.0), 7.0 + 7.0); // + idle 0.7 W · 10 s
     }

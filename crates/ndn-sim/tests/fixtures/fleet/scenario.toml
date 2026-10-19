@@ -1,0 +1,40 @@
+# The miniMUAS fleet: a GCS and three airframes, each booted from its own ndn-fwd config, on ONE
+# managed Wi-Fi cell. Every node's per-peer UDP faces share the cell's airtime (logical model, not
+# calibrated) and see 5% loss per full-size (1500 B) frame — the order the fleet measured on Wi-Fi
+# before LP recovery. Loss follows frame size: the fleet measured NDNLPv2 Acks (~45 B frames)
+# delivered at 99.8% on that cell, which (1-0.05)^(45/1500) reproduces; a size-blind 5% killed
+# 1 Ack in 20, and those lost one-shot Acks were 129 of the 130 spurious LP retransmissions.
+
+seed = 7
+
+[kernel]
+kind = "virtual"
+
+[[channels]]
+name = "muas-cell"
+rate_bps = 24000000
+frame_overhead_us = 150
+
+[peer_links]
+delay_ms = 2
+jitter_ms = 1
+loss_rate = 0.05
+loss_frame_bytes = 1500
+channel = "muas-cell"
+lp_reliability = true
+
+[[nodes]]
+config = "gcs.toml"
+addr = "10.42.0.11"
+
+[[nodes]]
+config = "iuas-01.toml"
+addr = "10.42.0.12"
+
+[[nodes]]
+config = "iuas-02.toml"
+addr = "10.42.0.13"
+
+[[nodes]]
+config = "wuas-01.toml"
+addr = "10.42.0.14"

@@ -515,6 +515,16 @@ impl Simulation {
             })
             .collect();
 
+        // Then, as ndn-fwd does once its engine is built, give each config-booted node's
+        // data-path validator a certificate fetcher over the node's own faces, so it fetches a
+        // signer certificate it has not cached instead of dropping the Data at the pending-cert
+        // deadline. The builder cannot attach it (the engine it fetches over did not exist yet).
+        // A no-op under `profile = "disabled"` (no validator).
+        for c in &self.configured {
+            let entry = &nodes[&c.node];
+            ndn_app::install_engine_cert_fetcher(&entry.engine, entry.handle.cancel_token());
+        }
+
         let mut links: HashMap<(NodeId, NodeId), FaceId> = HashMap::new();
         let mut link_states: HashMap<(NodeId, NodeId), std::sync::Arc<crate::sim_face::LinkState>> =
             HashMap::new();

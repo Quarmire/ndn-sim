@@ -26,8 +26,10 @@ const TELEMETRY: &str = "/fleet/uav/telemetry/1";
 const PAYLOAD: &[u8] = b"lat=47.1 lon=8.5";
 const UAV_KEY: &str = "/fleet/uav/KEY/k1";
 const ROOT_KEY: &str = "/fleet/KEY/root";
-/// The identity every node's PIB holds (`[security] identity`).
-const NODE_IDENTITY: &str = "/fleet/node/KEY/1";
+/// The identity every node's PIB holds (`[security] identity`): an identity name, whose signing
+/// key the PIB stores under `<identity>/KEY/`.
+const NODE_IDENTITY: &str = "/fleet/node";
+const NODE_KEY: &str = "/fleet/node/KEY/1";
 
 fn name(s: &str) -> Name {
     s.parse().unwrap()
@@ -52,7 +54,7 @@ fn cert_wire(subject: &Ed25519Signer, issuer: &Ed25519Signer) -> Bytes {
 /// certificate as its trust anchor (`ndn-sec anchor add`).
 fn provision_pib(dir: &Path, root: &Ed25519Signer) {
     let pib = FilePib::new(dir).unwrap();
-    pib.generate_ed25519(&name(NODE_IDENTITY)).unwrap();
+    pib.generate_ed25519(&name(NODE_KEY)).unwrap();
     let anchor = Certificate::decode(&Data::decode(cert_wire(root, root)).unwrap()).unwrap();
     pib.add_trust_anchor(&anchor.name, &anchor).unwrap();
 }

@@ -1169,23 +1169,28 @@ hold_ratio = 1.0
     fn hold_ratio_makes_a_property_statistical() {
         let spec = ValidationSpec::from_toml(LOSSY).unwrap();
         let report = run_validation(&spec).unwrap();
-        let mean = report.runs[0].properties[0].observed_mean.unwrap();
-        // A threshold just above the mean fails as an invariant (some seeds miss it) but passes as a
-        // statistical property that only a fraction of seeds must clear.
+        let p = &report.runs[0].properties[0];
+        let (min, max) = (p.observed_min.unwrap(), p.observed_max.unwrap());
+        assert!(min < max, "the seeds must vary the completed count");
+        // The best realization as the threshold: as an invariant it fails (the seeds below it miss
+        // it), but it passes as a statistical property that a quarter of the seeds must clear (at
+        // least one of the four reaches it). Not `mean + 1`: on the LP-reliable link the
+        // realizations sit within one Interest of each other, so no seed clears the mean by a
+        // whole unit.
         let mut strict = ValidationSpec::from_toml(LOSSY).unwrap();
-        strict.properties[0].value = mean + 1.0;
+        strict.properties[0].value = max;
         strict.properties[0].hold_ratio = 1.0;
         assert!(
             !run_validation(&strict).unwrap().passed,
-            "invariant above the mean should fail"
+            "an invariant some seeds miss should fail"
         );
 
         let mut lenient = ValidationSpec::from_toml(LOSSY).unwrap();
-        lenient.properties[0].value = mean + 1.0;
+        lenient.properties[0].value = max;
         lenient.properties[0].hold_ratio = 0.25;
         assert!(
             run_validation(&lenient).unwrap().passed,
-            "a 25%-of-seeds threshold above the mean should hold"
+            "a threshold a quarter of the seeds clear should hold at a 25% hold ratio"
         );
     }
 

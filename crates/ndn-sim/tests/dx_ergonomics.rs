@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use ndn_engine::builder::EngineConfig;
-use ndn_sim::{AppSpec, FaceKind, Simulation, Strategy};
+use ndn_sim::{AppSpec, FaceKind, Simulation, Strategy, VirtualKernel};
 
 /// Two producers on the same prefix on one node → two local app faces. Under best-route the
 /// forwarder silently delivers each Interest to only one; `explain_route` flags exactly that.
@@ -108,33 +108,43 @@ async fn explain_route_reports_no_route() {
 }
 
 /// `face_stats` exposes per-face counters classified by kind; `clock()` is a cheap virtual-time handle.
-#[tokio::test]
-async fn face_stats_and_clock_are_readable() {
-    let mut sim = Simulation::new().without_radio_interference();
-    let a = sim.add_node(EngineConfig::default());
-    let b = sim.add_node(EngineConfig::default());
-    sim.link(a, b, ndn_sim::LinkConfig::lan());
-    sim.add_route(a, "/demo", b);
-    let fabric = Arc::new(sim.start().await.unwrap());
+/// Runs on the `VirtualKernel`: under the default wall-clock kernel two reads a few ns apart differ.
+#[test]
+fn face_stats_and_clock_are_readable() {
+    let kernel = VirtualKernel::new();
+    kernel.run(|k| async move {
+        let mut sim = Simulation::new().without_radio_interference().kernel(k);
+        let a = sim.add_node(EngineConfig::default());
+        let b = sim.add_node(EngineConfig::default());
+        sim.link(a, b, ndn_sim::LinkConfig::lan());
+        sim.add_route(a, "/demo", b);
+        let fabric = Arc::new(sim.start().await.unwrap());
 
-    // Node a has one link face toward b.
-    let stats = fabric.face_stats(a).unwrap();
-    assert!(
-        stats
-            .iter()
-            .any(|s| s.kind == FaceKind::Link { toward: b.0 }),
-        "a's face toward b is classified as a link: {stats:?}"
-    );
+        // Node a has one link face toward b.
+        let stats = fabric.face_stats(a).unwrap();
+        assert!(
+            stats
+                .iter()
+                .any(|s| s.kind == FaceKind::Link { toward: b.0 }),
+            "a's face toward b is classified as a link: {stats:?}"
+        );
 
-    // The clock handle is clone + reads virtual time.
-    let clock = fabric.clock();
-    let t = clock.now_ns();
-    assert!(t > 0, "the clock reads virtual time");
-    assert_eq!(
-        clock.clone().now_ns(),
-        clock.now_ns(),
-        "clone reads the same clock"
-    );
+        // The clock handle is clone + reads virtual time.
+        let clock = fabric.clock();
+        let t = clock.now_ns();
+        assert!(t > 0, "the clock reads virtual time");
+        assert_eq!(
+            clock.clone().now_ns(),
+            clock.now_ns(),
+            "clone reads the same clock"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert_eq!(
+            clock.now_ns() - t,
+            1_000_000_000,
+            "the clock advances with virtual time"
+        );
 
-    fabric.shutdown().await;
+        fabric.shutdown().await;
+    });
 }

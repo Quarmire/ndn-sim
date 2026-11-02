@@ -312,6 +312,13 @@ impl Simulation {
         id
     }
 
+    /// Give `node` a wall clock that is off by `skew` (see [`crate::clock_skew`]); it can then be
+    /// changed on the live fabric with [`RunningSimulation::set_clock_skew`]. Panics if `node` was
+    /// not added to this simulation.
+    pub fn set_clock_skew(&mut self, node: NodeId, skew: crate::ClockSkew) {
+        self.profiles[node.0].clock_skew = Some(skew);
+    }
+
     /// Add a node booted from an **ndn-fwd config**, the way the deployed forwarder boots:
     /// its `EngineConfig` comes from [`ndn_config::boot::engine_config`]; at
     /// [`start`](Self::start) the node gets `addr` and a UDP stack: its `[[face]] kind = "udp"`
@@ -443,8 +450,10 @@ impl Simulation {
         // *before* faces are added so their FaceUp events are captured.
         for (i, profile) in self.profiles.into_iter().enumerate() {
             let id = NodeId(i);
+            let (runtime, skewed) =
+                crate::clock_skew::node_runtime(self.kernel.runtime(), profile.clock_skew);
             let mut builder = EngineBuilder::new(profile.config)
-                .runtime(self.kernel.runtime())
+                .runtime(runtime)
                 .security_profile(profile.security);
             // A config-booted node also takes ndn-fwd's data-path policy (`[security]` validation
             // profile + schema rules, `[cs]` admission). Without it the engine validated forwarded
@@ -503,6 +512,7 @@ impl Simulation {
                     engine,
                     handle,
                     label: profile.label,
+                    skew: skewed,
                 },
             );
         }
@@ -734,6 +744,8 @@ struct NodeEntry {
     engine: ForwarderEngine,
     handle: ShutdownHandle,
     label: String,
+    /// The node's own skewed clock, if it was declared with one.
+    skew: Option<Arc<crate::clock_skew::SkewedRuntime>>,
 }
 
 struct FabricInner {
@@ -1111,6 +1123,45 @@ impl RunningSimulation {
         Clock {
             rt: self.kernel.runtime(),
         }
+    }
+
+    /// `node`'s own clock: the fabric clock as that node reads it, i.e. with its
+    /// [`ClockSkew`](crate::ClockSkew) applied to `now_ns`. Errors if there is no such node.
+    pub fn node_clock(&self, node: NodeId) -> Result<Clock> {
+        let guard = self.inner.lock().unwrap();
+        let entry = guard
+            .nodes
+            .get(&node)
+            .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?;
+        Ok(Clock {
+            rt: entry.engine.runtime(),
+        })
+    }
+
+    /// Step `node`'s wall clock to `skew` from now on (offset applied now, drift accumulating from
+    /// now). Errors if there is no such node, or if it was built without a clock of its own
+    /// ([`NodeProfile::with_clock_skew`] / [`Simulation::set_clock_skew`]).
+    pub fn set_clock_skew(&self, node: NodeId, skew: crate::ClockSkew) -> Result<()> {
+        let guard = self.inner.lock().unwrap();
+        let entry = guard
+            .nodes
+            .get(&node)
+            .ok_or_else(|| anyhow::anyhow!("no such node {node}"))?;
+        let clock = entry.skew.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "node {node} reads the kernel clock directly: declare a clock skew \
+                 (ClockSkew::NONE is fine) before it is built to adjust it later"
+            )
+        })?;
+        clock.set(skew);
+        Ok(())
+    }
+
+    /// The clock skew in force on `node`; `None` if it reads the kernel clock directly or there is
+    /// no such node.
+    pub fn clock_skew(&self, node: NodeId) -> Option<crate::ClockSkew> {
+        let guard = self.inner.lock().unwrap();
+        guard.nodes.get(&node)?.skew.as_ref().map(|s| s.skew())
     }
 
     /// The fabric's spatial [`World`] (empty unless declared via [`Simulation::world`]).
@@ -1766,8 +1817,10 @@ impl RunningSimulation {
     pub async fn spawn_node(&self, profile: NodeProfile) -> Result<NodeId> {
         let id = NodeId(self.next_node.fetch_add(1, Ordering::Relaxed));
         // Build off-lock (async), then insert under the lock.
+        let (runtime, skewed) =
+            crate::clock_skew::node_runtime(self.kernel.runtime(), profile.clock_skew);
         let mut builder = EngineBuilder::new(profile.config)
-            .runtime(self.kernel.runtime())
+            .runtime(runtime)
             .security_profile(profile.security);
         for factory in &profile.factories {
             builder = builder.face_factory(Arc::clone(factory));
@@ -1783,6 +1836,7 @@ impl RunningSimulation {
                 engine,
                 handle,
                 label: profile.label,
+                skew: skewed,
             },
         );
         self.tracer

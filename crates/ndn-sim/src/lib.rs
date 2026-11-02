@@ -93,6 +93,7 @@
 //! |--------|-------------|
 //! | [`kernel`]   | `SimKernel` / `WallClock` / `Virtual` / `RealTime` / `Steppable` — the execution + time engine |
 //! | [`profile`]  | `NodeProfile` — named node template |
+//! | [`clock_skew`] | `ClockSkew` — per-node wall-clock offset + drift (lying clocks) |
 //! | [`control`]  | `FabricControl` — the one control + introspection surface |
 //! | [`app`]      | `AppSpec` / `AppHandle` — declarative producers/consumers on a node |
 //! | [`control_plane`] | `ControlPlane` — declarative JSON commands/queries over NDN / RPC / in-proc |
@@ -129,6 +130,7 @@ pub mod app;
 pub mod bridge;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ceiling;
+pub mod clock_skew;
 mod config_boot;
 pub mod control;
 pub mod control_plane;
@@ -176,6 +178,7 @@ pub use analysis::{
     RunCapture, RunDiff, Throughput, diff_runs, explain_link, throughput,
 };
 pub use app::{AppHandle, AppId, AppSpec, FlowStats, TrafficPattern};
+pub use clock_skew::ClockSkew;
 pub use control::{FabricControl, LinkInfo, NodeInfo, TopologySnapshot};
 pub use control_plane::{
     ControlPlane, LinkSpec, SimCommand, SimNotification, SimQuery, SimRequest, SimResponse,

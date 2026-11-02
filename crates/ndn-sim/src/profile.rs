@@ -12,6 +12,8 @@ use ndn_engine::builder::EngineConfig;
 use ndn_security::SecurityProfile;
 use ndn_transport::FaceFactory;
 
+use crate::clock_skew::ClockSkew;
+
 /// A template for instantiating a fabric node. (Not `Clone`: `EngineConfig` isn't `Clone`;
 /// build a fresh profile per node.)
 pub struct NodeProfile {
@@ -34,6 +36,10 @@ pub struct NodeProfile {
     /// [`Self::with_security_profile`], or add anchors to the node's validator. A config-booted
     /// node takes its `[security]` table instead.
     pub security: SecurityProfile,
+    /// The node's wall-clock error, if it has one (see [`crate::clock_skew`]). `None` = the node
+    /// reads the kernel's clock directly and its skew cannot be changed later; `Some` (even
+    /// [`ClockSkew::NONE`]) gives it its own clock, adjustable on the live fabric.
+    pub clock_skew: Option<ClockSkew>,
 }
 
 impl NodeProfile {
@@ -45,6 +51,7 @@ impl NodeProfile {
             config: EngineConfig::default(),
             factories: Vec::new(),
             security: SecurityProfile::Default,
+            clock_skew: None,
         }
     }
 
@@ -64,6 +71,12 @@ impl NodeProfile {
     /// builds a real face on the node itself (rather than returning `NoFactory`). Chainable.
     pub fn with_face_factory(mut self, factory: Arc<dyn FaceFactory>) -> Self {
         self.factories.push(factory);
+        self
+    }
+
+    /// Give the node a wall clock that is off by `skew` (see [`crate::clock_skew`]). Chainable.
+    pub fn with_clock_skew(mut self, skew: ClockSkew) -> Self {
+        self.clock_skew = Some(skew);
         self
     }
 }

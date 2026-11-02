@@ -3,10 +3,12 @@
 //! Every person gets a namespace key (`/<person>/KEY/…`, self-signed) that certifies each of
 //! their devices' keys (`/<person>/<device>/KEY/…`). Every forwarder — the hub and each device —
 //! holds every person's namespace key as a trust anchor and every device certificate in its cache,
-//! so its fail-closed validator admits exactly the case's people. Every person's sync group
-//! (`/<person>/32=sync`) is routed from each device to the hub, with multicast. Each device's data layer runs on
-//! its own node over two in-process app faces (fetch/serve, and sync), verifies with that node's
-//! validator, keeps entries in memory and dates them by the node's own (possibly lying) clock.
+//! so its fail-closed validator admits exactly the case's people. Nothing is set up for a
+//! person's sync group (`/<person>/32=sync`): each device's forwarder carries it by its own rule
+//! (spec §12) over the default route the topology gives it toward the hub, which stands in for
+//! the network between devices. Each device's data layer runs on its own node over two
+//! in-process app faces (fetch/serve, and sync), verifies with that node's validator, keeps
+//! entries in memory and dates them by the node's own (possibly lying) clock.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -146,16 +148,6 @@ impl Provider for Reference {
             }
             for cert in &certs {
                 validator.cert_cache().insert(cert.clone());
-            }
-        }
-        // Each person's sync group reaches every device through the hub: a device's own sync
-        // face registers the group, so the group needs its own route (the default route is
-        // shadowed by that registration) and multicast between the two faces.
-        for spec in devices {
-            for person in anchors.keys() {
-                let group = ndn_data::wire::group_name(person);
-                fabric.route(spec.node, &group, hub)?;
-                fabric.set_strategy(spec.node, &group, "multicast")?;
             }
         }
         *self.case.lock().expect("the provider's lock") = case;

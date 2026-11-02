@@ -1,6 +1,7 @@
 //! Conformance cases for the `ndn-data` contract.
 //!
-//! The data-layer study played twelve use cases through its model and left three items open. Each
+//! The data-layer study played twelve use cases through its model and left three items open; a
+//! fourth (a reader keeping up with a writer that never pauses) came out of slice 1. Each
 //! is written here as a deterministic ndn-sim scenario against the [`ndn_data::DataLayer`] trait:
 //! real forwarders on a virtual-time kernel, devices that go offline, per-device wall clocks that
 //! lie ([`ndn_sim::ClockSkew`]), and a thief holding a copy of a stolen device's key. Every case

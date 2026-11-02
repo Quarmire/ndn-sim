@@ -1,6 +1,6 @@
-//! The cases, in study order: the twelve use cases (`c1`…`c12`) and the three items left open
-//! after the model's fixes (`o1`…`o3`). Each file states the story, the devices, and the
-//! invariant it asserts.
+//! The cases, in study order: the twelve use cases (`c1`…`c12`) and the items left open after
+//! the model's fixes (`o1`…`o4`). Each file states the story, the devices, and the invariant it
+//! asserts.
 
 use std::time::Duration;
 
@@ -28,6 +28,7 @@ mod c12_still_pass;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
+mod o4_sustained_writes;
 
 /// Every case, in study order.
 pub const CASES: &[Case] = &[
@@ -46,6 +47,7 @@ pub const CASES: &[Case] = &[
     o1_cut_recheck::CASE,
     o2_readmit::CASE,
     o3_many_writers::CASE,
+    o4_sustained_writes::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

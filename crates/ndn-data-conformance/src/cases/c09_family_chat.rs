@@ -17,6 +17,7 @@ pub(super) const CASE: Case = Case {
     id: "c9",
     title: "A family chat across three people",
     slice: 2,
+    needs: &[Feature::Log, Feature::WritersAcrossPrefixes],
     model: &["M1", "M2"],
     guards: "A log collection is the union of exactly its members' logs: every member's message \
              reaches the other members, and a non-member's post under the same name reaches no \

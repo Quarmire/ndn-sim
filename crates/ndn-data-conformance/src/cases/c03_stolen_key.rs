@@ -18,6 +18,7 @@ pub(super) const CASE: Case = Case {
     id: "c3",
     title: "Phone stolen, key extracted",
     slice: 5,
+    needs: &[Feature::Merge, Feature::Revocation],
     model: &["M3"],
     guards: "Revocation is a causal cut: what others had seen from the key stays valid; nothing \
              the thief signs with it afterwards is accepted, whatever date it claims.",

@@ -115,6 +115,9 @@ impl Report {
                 "  {:<4} slice {}  {:<16} {}\n",
                 c.id, c.slice, status, c.title
             ));
+            if c.status != Status::Pass && !c.detail.is_empty() {
+                out.push_str(&format!("         {}\n", c.detail));
+            }
         }
         out.push_str(&format!(
             "{} pass, {} fail, {} not implemented\n",

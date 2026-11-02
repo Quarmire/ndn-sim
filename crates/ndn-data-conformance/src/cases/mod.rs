@@ -11,6 +11,7 @@ use ndn_data::{
 };
 
 use crate::case::{Case, Failure};
+use crate::feature::Feature;
 
 mod c01_offline_notes;
 mod c02_removed_offline;

@@ -17,6 +17,7 @@ pub(super) const CASE: Case = Case {
     id: "c4",
     title: "Calendar shows meeting notes",
     slice: 2,
+    needs: &[Feature::Merge, Feature::Seal],
     model: &["M4"],
     guards: "Seal audiences are people, devices and groups: the host opens the note the person \
              pointed at, opening it adds no audience, and a device outside the audience cannot \

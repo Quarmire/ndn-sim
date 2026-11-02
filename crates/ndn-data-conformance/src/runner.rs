@@ -11,12 +11,11 @@ use crate::provider::Provider;
 use crate::report::{CaseResult, Cost, Report, Status};
 use crate::world::World;
 
-/// The implementations the runner knows, by constructor. Empty: no implementation of the
-/// `ndn-data` contract exists yet. Slice 1 adds the first.
-pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[];
+/// The implementations the runner knows, by constructor.
+pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[crate::reference::Reference::provider];
 
-/// Run one case against `provider`. Without a provider, or with one that does not implement the
-/// case's slice, the scenario does not run and the case is [`Status::NotImplemented`].
+/// Run one case against `provider`. Without a provider, or with one that does not implement a
+/// feature the case needs, the scenario does not run and the case is [`Status::NotImplemented`].
 pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult {
     let result = |status, detail: String, cost| CaseResult {
         id: case.id,
@@ -38,13 +37,19 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
             Cost::default(),
         );
     };
-    if !provider.implements(case.slice) {
+    let missing: Vec<String> = case
+        .needs
+        .iter()
+        .filter(|f| !provider.supports(**f))
+        .map(|f| format!("{} (slice {})", f.label(), f.slice()))
+        .collect();
+    if !missing.is_empty() {
         return result(
             Status::NotImplemented,
             format!(
-                "{} does not implement slice {}",
+                "{} does not implement {}",
                 provider.name(),
-                case.slice
+                missing.join(", ")
             ),
             Cost::default(),
         );
@@ -66,7 +71,7 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
             };
             let start = world.mark();
             let outcome = (case.run)(&world).await;
-            let cost = world.cost_since(start);
+            let cost = world.reported_cost(start);
             world.shutdown().await;
             (outcome, cost)
         })
@@ -88,8 +93,14 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
 
 /// Run every case, in study order, against `provider`.
 pub fn run_all(provider: Option<Arc<dyn Provider>>) -> Report {
+    run_only(provider, &[])
+}
+
+/// Run the cases whose ids are in `only` (every case when it is empty), in study order.
+pub fn run_only(provider: Option<Arc<dyn Provider>>, only: &[String]) -> Report {
     let cases = CASES
         .iter()
+        .filter(|c| only.is_empty() || only.iter().any(|id| id == c.id))
         .map(|c| run_case(c, provider.as_ref()))
         .collect();
     Report::new(provider.map(|p| p.name().to_owned()), cases)

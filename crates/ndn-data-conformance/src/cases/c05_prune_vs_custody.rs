@@ -19,6 +19,7 @@ pub(super) const CASE: Case = Case {
     id: "c5",
     title: "Deleting a photo the repo promised to keep",
     slice: 3,
+    needs: &[Feature::Log, Feature::Custody, Feature::Prune],
     model: &["M5"],
     guards: "No custody lease outlives the data's keep; after the owner prunes a photo, readers \
              that know the prune report it pruned instead of serving it, while photos outside the \

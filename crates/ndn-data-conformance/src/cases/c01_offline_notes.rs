@@ -16,6 +16,7 @@ pub(super) const CASE: Case = Case {
     id: "c1",
     title: "Notes on laptop and phone, both offline",
     slice: 1,
+    needs: &[Feature::Merge],
     model: &["M1"],
     guards: "A writer is one key: two devices' offline edits are distinct versions (writer, seq), \
              each naming the common parent; they merge into one state on both devices and are \

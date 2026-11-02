@@ -5,6 +5,8 @@ use std::sync::Arc;
 use ndn_data::{DataLayer, Name};
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 
+use crate::feature::Feature;
+
 /// One device in a case: a person's device, or a thief's node.
 #[derive(Clone, Debug)]
 pub struct DeviceSpec {
@@ -52,9 +54,9 @@ pub trait Provider: Send + Sync {
     /// The implementation's name, as the report shows it.
     fn name(&self) -> &str;
 
-    /// Whether it implements everything slice `slice` of the plan adds. A case runs only when its
-    /// slice is implemented.
-    fn implements(&self, slice: u8) -> bool;
+    /// Whether it implements `feature`. A case runs only when every feature it needs is
+    /// implemented; otherwise the report names what is missing.
+    fn supports(&self, feature: Feature) -> bool;
 
     /// The forwarder profile for a node (its engine config and data-path security). The default
     /// is a plain node with the forwarder's fail-closed default validation.
@@ -63,6 +65,19 @@ pub trait Provider: Send + Sync {
             NodeRole::Hub => NodeProfile::new("hub"),
             NodeRole::Device(d) => NodeProfile::new(format!("{}/{}", d.person, d.device)),
         }
+    }
+
+    /// Set up what spans devices once the fabric runs and before any device attaches: keys,
+    /// certificates, trust anchors on every node (`hub` included), routes. The default does
+    /// nothing.
+    async fn prepare(
+        &self,
+        fabric: &Fabric,
+        hub: NodeId,
+        devices: &[DeviceSpec],
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, hub, devices);
+        Ok(())
     }
 
     /// The data layer of `device`, on its node in `fabric`, signing with the device's own key.

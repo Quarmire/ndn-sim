@@ -15,6 +15,7 @@ pub(super) const CASE: Case = Case {
     id: "c7",
     title: "An older lens edits a newer note",
     slice: 1,
+    needs: &[Feature::Merge],
     model: &["M7"],
     guards: "A writer keeps every field it does not know: after a type-1 edit of a type-2 note, \
              the type-2 field is still there, on every device, beside the new text.",

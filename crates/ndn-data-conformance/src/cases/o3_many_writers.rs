@@ -19,6 +19,7 @@ pub(super) const CASE: Case = Case {
     id: "o3",
     title: "Completeness with many writers",
     slice: 2,
+    needs: &[Feature::Log, Feature::WritersAcrossPrefixes],
     model: &["M8"],
     guards: "Completeness is per writer: each member signs a summary of its own log, a reader \
              holds exactly what each member's newest summary covers, and a member offline is a \

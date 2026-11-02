@@ -16,6 +16,7 @@ pub(super) const CASE: Case = Case {
     id: "o2",
     title: "Owner re-admits honest work",
     slice: 5,
+    needs: &[Feature::Merge, Feature::Revocation, Feature::Readmit],
     model: &["M3"],
     guards: "Versions outside a revocation cut are refused until the owner signs specific ones \
              back in; exactly those return, and the thief's versions stay out.",

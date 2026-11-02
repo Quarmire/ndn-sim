@@ -203,6 +203,7 @@ pub struct World {
     provider: Arc<dyn Provider>,
     gestures: Cell<u64>,
     converge: Cell<Option<Duration>>,
+    reported_from: Cell<Option<Mark>>,
 }
 
 impl World {
@@ -217,6 +218,7 @@ impl World {
             provider.node_profile(NodeRole::Device(spec))
         })
         .await?;
+        provider.prepare(&net.fabric, net.hub, &net.specs).await?;
         let mut layers = Vec::with_capacity(plan.devices.len());
         for (i, p) in plan.devices.iter().enumerate() {
             let spec = &net.specs[i];
@@ -236,6 +238,7 @@ impl World {
             provider,
             gestures: Cell::new(0),
             converge: Cell::new(None),
+            reported_from: Cell::new(None),
         })
     }
 
@@ -266,6 +269,15 @@ impl World {
     /// Let `d` of virtual time pass.
     pub async fn sleep(&self, d: Duration) {
         tokio::time::sleep(d).await;
+    }
+
+    /// Let `d` of virtual time pass at once, as for a world whose devices all slept through it:
+    /// every timer due within `d` fires once, at its end, instead of every periodic tick in
+    /// between being simulated. For long absences (months) whose ticks a case does not observe —
+    /// an idle fabric costs its forwarders' housekeeping ticks, about 2 minutes of real time per
+    /// virtual day. Nothing that would have happened in `d` is asserted by such a case.
+    pub async fn skip(&self, d: Duration) {
+        tokio::time::advance(d).await;
     }
 
     /// Wait until `check` holds, polling every 100 ms of virtual time, for at most `limit`;
@@ -321,6 +333,18 @@ impl World {
             wire: self.net.wire(),
             tally: self.provider.tally(),
         }
+    }
+
+    /// Report the case's cost from `mark` on rather than from its start: for a case whose setup
+    /// (populating thousands of notes, say) is not the workload it measures.
+    pub fn report_from(&self, mark: Mark) {
+        self.reported_from.set(Some(mark));
+    }
+
+    /// What the case reports it cost: since the mark it chose ([`Self::report_from`]), else
+    /// since `start`.
+    pub fn reported_cost(&self, start: Mark) -> Cost {
+        self.cost_since(self.reported_from.get().unwrap_or(start))
     }
 
     /// What the case cost since `start`.

@@ -18,6 +18,12 @@ pub(super) const CASE: Case = Case {
     id: "o1",
     title: "Cut re-checked on arrival",
     slice: 2,
+    needs: &[
+        Feature::Merge,
+        Feature::WritersAcrossPrefixes,
+        Feature::RemovalCut,
+        Feature::CutRecheck,
+    ],
     model: &["M3"],
     guards: "When a cut arrives, a reader re-checks what it already accepted from the cut's keys: \
              a version it accepted before the cut and the cut refuses is withdrawn from its state \

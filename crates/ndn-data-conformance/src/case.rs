@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use ndn_data::DataError;
 
+use crate::feature::Feature;
 use crate::world::{Plan, World};
 
 /// The scenario's future, borrowing the world it runs in.
@@ -18,6 +19,8 @@ pub struct Case {
     pub title: &'static str,
     /// The plan slice whose implementation makes it pass.
     pub slice: u8,
+    /// What it needs of an implementation; it runs only when all are supported.
+    pub needs: &'static [Feature],
     /// The model changes it motivated (`M1`…`M10`).
     pub model: &'static [&'static str],
     /// The invariant it asserts, from the use case's fix.

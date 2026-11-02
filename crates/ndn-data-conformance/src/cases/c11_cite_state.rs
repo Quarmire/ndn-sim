@@ -17,7 +17,12 @@ use crate::world::{Dev, Plan, World};
 pub(super) const CASE: Case = Case {
     id: "c11",
     title: "Citing the plan as it stood on Friday",
-    slice: 2,
+    slice: 1,
+    needs: &[
+        Feature::Merge,
+        Feature::WritersAcrossPrefixes,
+        Feature::Snapshot,
+    ],
     model: &["M10"],
     guards: "get on a merge collection answers the merged state at a frontier; a snapshot pins \
              that state, and opening the pin on any device answers the same frontier and value \

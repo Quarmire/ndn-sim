@@ -17,6 +17,7 @@ pub(super) const CASE: Case = Case {
     id: "c8",
     title: "A laptop returns after four months",
     slice: 1,
+    needs: &[Feature::Merge],
     model: &["M8"],
     guards: "Watching a folder after a long absence descends only into changed branches: it \
              reports exactly the changed notes, never an unchanged note's summary, and costs far \
@@ -73,7 +74,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         drop(feed);
 
         w.net().offline(LAPTOP);
-        w.sleep(120 * DAY).await;
+        w.skip(120 * DAY).await;
         let changed: BTreeSet<Name> = (0..CHANGED)
             .map(|k| note_name(k * NOTES / CHANGED))
             .collect();
@@ -85,6 +86,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().online(LAPTOP);
 
         let start = w.mark();
+        // The workload is the laptop catching up; populating the notes is setup.
+        w.report_from(start);
         let mut stream = laptop.watch(&folder, &had).await?;
         let mut after = Vec::new();
         let took = drain_until(

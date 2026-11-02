@@ -19,6 +19,11 @@ pub(super) const CASE: Case = Case {
     id: "c2",
     title: "Shared document: Bob removed while offline",
     slice: 2,
+    needs: &[
+        Feature::Merge,
+        Feature::WritersAcrossPrefixes,
+        Feature::RemovalCut,
+    ],
     model: &["M2", "M3"],
     guards: "Removing a member is a cut: his versions inside it stay in the document, and a \
              later version by him is refused at every reader, whatever date it claims.",

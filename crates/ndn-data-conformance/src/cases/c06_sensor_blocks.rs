@@ -16,6 +16,7 @@ pub(super) const CASE: Case = Case {
     id: "c6",
     title: "Soil sensor, 1 reading per second",
     slice: 4,
+    needs: &[Feature::OneKey, Feature::Blocks],
     model: &["M6"],
     guards: "Readings share signatures in blocks: signatures grow with blocks, not readings; no \
              reading waits longer than the delay its producer accepts; every reading reaches the \

@@ -18,6 +18,11 @@ pub(super) const CASE: Case = Case {
     id: "c10",
     title: "Alice deletes Bob's comment",
     slice: 2,
+    needs: &[
+        Feature::Merge,
+        Feature::WritersAcrossPrefixes,
+        Feature::Prune,
+    ],
     model: &["M9"],
     guards: "Prune covers only the pruner's own writes and says to edit instead; removing \
              another member's comment is a merge edit every reader applies, and the author's own \

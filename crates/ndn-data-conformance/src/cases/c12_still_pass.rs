@@ -19,6 +19,12 @@ pub(super) const CASE: Case = Case {
     id: "c12",
     title: "Offline photo browsing, a summary service, a revoked tablet",
     slice: 6,
+    needs: &[
+        Feature::Merge,
+        Feature::Seal,
+        Feature::Revocation,
+        Feature::Functions,
+    ],
     model: &[],
     guards: "Offline reads answer held data with an age measured without the wall clock; a \
              service's answer is readable only by its input's audience; a revoked reader cannot \

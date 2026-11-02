@@ -98,6 +98,17 @@ strip = "symbols"
 lto = "thin"
 codegen-units = 1
 
+# Signing and verifying are unusably slow unoptimized: the data-layer
+# conformance cases sign and verify tens of thousands of packets (c8 took
+# 20 minutes in a dev build). Optimize just the hashing and signature crates,
+# as ndn-rs does for its key-derivation crates.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+
 # Line tables keep backtraces and panics readable; full debug info made the
 # shared target directory grow by hundreds of GB across the workspaces.
 [profile.dev]

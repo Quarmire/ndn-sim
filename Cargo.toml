@@ -3,9 +3,11 @@ resolver = "2"
 members = [
     "crates/ndn-sim",
     "crates/ndn-sim-studies",
+    "crates/ndn-data-conformance",
 ]
 # Plain `cargo build`/`cargo test` at the root covers the core simulator only; the research
-# studies build with `-p ndn-sim-studies` or `--workspace`.
+# studies build with `-p ndn-sim-studies`, the data-layer conformance cases with
+# `-p ndn-data-conformance`, or all with `--workspace`.
 default-members = [
     "crates/ndn-sim",
 ]
@@ -53,6 +55,8 @@ ndn-sync         = { path = "../ndn-rs/crates/protocols/ndn-sync" }
 # Test-only: the D-42 history-serving gates drive a real `ndn-repo` in two-phase mode.
 # `default-features = false` drops the fjall on-disk store — the gates use `MemoryStore`.
 ndn-repo         = { path = "../ndn-repo/crates/ndn-repo", default-features = false }
+# ndn-data-conformance: the data-layer contract its cases are written against.
+ndn-data         = { path = "../ndn-rs/crates/app/ndn-data" }
 
 # Core async runtime — individual crates enable only the features they need
 tokio      = { version = "1", default-features = false }

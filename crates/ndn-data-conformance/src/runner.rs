@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(report.totals.not_implemented, 16);
         assert_eq!((report.totals.pass, report.totals.fail), (0, 0));
         let ids: BTreeSet<&str> = report.cases.iter().map(|c| c.id).collect();
-        assert_eq!(ids.len(), 16, "case ids are unique");
+        assert_eq!(ids.len(), 19, "case ids are unique");
         for c in &report.cases {
             assert_eq!(c.status, Status::NotImplemented);
             assert!(

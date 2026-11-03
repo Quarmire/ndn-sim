@@ -1,5 +1,6 @@
 //! The cases, in study order: the twelve use cases (`c1`…`c12`), the items left open after the
-//! model's fixes (`o1`…`o4`), and the attacks the slice-2 security review found (`r1`…`r3`).
+//! model's fixes (`o1`…`o4`), and the slice-2 security review (`r1`…`r4`): the attacks it found
+//! and the concurrent share its merge must keep.
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -32,6 +33,7 @@ mod o4_sustained_writes;
 mod r1_concurrent_shares;
 mod r2_group_removal;
 mod r3_own_device_removed;
+mod r4_concurrent_add_remove;
 
 /// Every case, in study order.
 pub const CASES: &[Case] = &[
@@ -54,6 +56,7 @@ pub const CASES: &[Case] = &[
     r1_concurrent_shares::CASE,
     r2_group_removal::CASE,
     r3_own_device_removed::CASE,
+    r4_concurrent_add_remove::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

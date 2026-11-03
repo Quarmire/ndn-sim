@@ -16,6 +16,11 @@
 //!
 //! Each run also records cost — round trips, bytes, signatures, copies, time to converge and
 //! person gestures ([`Cost`]) — so the Results page can show what each slice pays.
+//!
+//! A case's cost and measures are the same every run, alone or in the suite: the kernel is
+//! virtual, the sync jitter is seeded before each case, and nothing on the way picks in hash or
+//! random order. `--check-determinism` checks it, running each case again alone in a fresh
+//! process and failing on any difference ([`differences`]).
 
 pub mod case;
 pub mod cases;
@@ -31,5 +36,5 @@ pub use feature::Feature;
 pub use provider::{DeviceSpec, NodeRole, Provider, Tally};
 pub use reference::Reference;
 pub use report::{CaseResult, Cost, Report, Status};
-pub use runner::{run_all, run_case, run_only};
+pub use runner::{differences, run_all, run_case, run_only};
 pub use world::{Dev, Net, Plan, World};

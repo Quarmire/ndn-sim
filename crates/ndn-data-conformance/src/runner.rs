@@ -130,6 +130,59 @@ pub fn run_only(provider: Option<Arc<dyn Provider>>, only: &[String]) -> Report 
     Report::new(provider.map(|p| p.name().to_owned()), cases)
 }
 
+/// What differs between a case run alone and the same case run in a suite (`in_suite`): its
+/// status, each cost field and each measure, one line per difference; empty when they agree.
+/// `alone` is the case's entry in the JSON report of a run of that case by itself (another
+/// process, so nothing a suite leaves behind can reach it), compared with `in_suite` serialized
+/// the same way.
+pub fn differences(alone: &serde_json::Value, in_suite: &CaseResult) -> Vec<String> {
+    let suite = serde_json::to_value(in_suite).expect("a case result serializes");
+    let mut out = Vec::new();
+    if alone["status"] != suite["status"] {
+        out.push(format!(
+            "status: alone {}, in the suite {}",
+            alone["status"], suite["status"]
+        ));
+    }
+    let fields = suite["cost"].as_object().into_iter().flat_map(|c| c.keys());
+    for field in fields {
+        let (a, s) = (&alone["cost"][field], &suite["cost"][field]);
+        if a != s {
+            out.push(format!("cost {field}: alone {a}, in the suite {s}"));
+        }
+    }
+    let measures = |report: &serde_json::Value| -> Vec<(String, serde_json::Value)> {
+        report["measured"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|m| {
+                let what = m["what"].as_str().unwrap_or_default().to_owned();
+                (what, m["value"].clone())
+            })
+            .collect()
+    };
+    let (alone_m, suite_m) = (measures(alone), measures(&suite));
+    let value = |list: &[(String, serde_json::Value)], what: &str| {
+        list.iter()
+            .find(|(w, _)| w == what)
+            .map_or_else(|| "nothing".to_owned(), |(_, v)| v.to_string())
+    };
+    let mut whats: Vec<&str> = suite_m.iter().map(|(w, _)| w.as_str()).collect();
+    for (w, _) in &alone_m {
+        if !whats.contains(&w.as_str()) {
+            whats.push(w);
+        }
+    }
+    for what in whats {
+        let (a, s) = (value(&alone_m, what), value(&suite_m, what));
+        if a != s {
+            out.push(format!("measure {what:?}: alone {a}, in the suite {s}"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -179,5 +232,50 @@ mod tests {
         for case in CASES {
             assert!(!(case.plan)().is_empty(), "{} plans no device", case.id);
         }
+    }
+
+    fn ran(round_trips: u64, interests: u64) -> CaseResult {
+        CaseResult {
+            id: "o3",
+            title: "t",
+            slice: 2,
+            model: &[],
+            guards: "g",
+            status: Status::Pass,
+            detail: String::new(),
+            cost: Cost {
+                round_trips: Some(round_trips),
+                bytes: Some(100),
+                ..Cost::default()
+            },
+            measured: vec![crate::report::Measure {
+                what: "one new version, 8 writers: Interests".into(),
+                value: interests,
+                unit: "round trips",
+            }],
+        }
+    }
+
+    #[test]
+    fn a_case_alone_and_in_the_suite_agree_or_each_difference_is_named() {
+        let alone = serde_json::to_value(ran(10, 6)).unwrap();
+        assert!(differences(&alone, &ran(10, 6)).is_empty());
+        assert_eq!(
+            differences(&alone, &ran(11, 5)),
+            [
+                "cost round_trips: alone 10, in the suite 11",
+                "measure \"one new version, 8 writers: Interests\": alone 6, in the suite 5",
+            ]
+        );
+        let mut failed = ran(10, 6);
+        failed.status = Status::Fail;
+        failed.measured.clear();
+        assert_eq!(
+            differences(&alone, &failed),
+            [
+                "status: alone \"pass\", in the suite \"fail\"",
+                "measure \"one new version, 8 writers: Interests\": alone 6, in the suite nothing",
+            ]
+        );
     }
 }

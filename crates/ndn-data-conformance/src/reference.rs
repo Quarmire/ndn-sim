@@ -3,12 +3,16 @@
 //! Every person gets a namespace key (`/<person>/KEY/…`, self-signed) that certifies each of
 //! their devices' keys (`/<person>/<device>/KEY/…`). Every forwarder — the hub and each device —
 //! holds every person's namespace key as a trust anchor and every device certificate in its cache,
-//! so its fail-closed validator admits exactly the case's people. Nothing is set up for a
-//! person's sync group (`/<person>/32=sync`): each device's forwarder carries it by its own rule
-//! (spec §12) over the default route the topology gives it toward the hub, which stands in for
-//! the network between devices. Each device's data layer runs on its own node over two
-//! in-process app faces (fetch/serve, and sync), verifies with that node's validator, keeps
-//! entries in memory and dates them by the node's own (possibly lying) clock.
+//! so its fail-closed validator admits exactly the case's people. A device's link to the hub
+//! stands in for its links to the other devices of every namespace it holds, so each person's
+//! sync group (`/<person>/32=sync`, spec §12) is set up on it by the libraries a daemon uses: the
+//! trust-context library runs the group with the multicast strategy
+//! (`ndn_namespace::sync_group::carry`) and the link library routes it over the link
+//! (`ndn_link::group_routes`, added through `EngineFaces` as a daemon's links add theirs). The
+//! hub's default routes stand in for the network between devices. Each device's data layer runs
+//! on its own node over two in-process app faces (fetch/serve, and sync), verifies with that
+//! node's validator, keeps entries in memory and dates them by the node's own (possibly lying)
+//! clock.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use ndn_app::EngineAppExt;
 use ndn_data::{Config, DataLayer, Device, Name, Timestamp, Transport};
+use ndn_link::{EngineFaces, FaceSink};
 use ndn_security::{Certificate, SecurityManager};
 use ndn_sim::{Fabric, NodeId};
 use ndn_sync::{MemoryStore, SvsConfig};
@@ -149,6 +154,19 @@ impl Provider for Reference {
             for cert in &certs {
                 validator.cert_cache().insert(cert.clone());
             }
+        }
+        // Every device holds every person's namespace, and its link to the hub carries them all.
+        for spec in devices {
+            let engine = fabric
+                .engine_of(spec.node)
+                .with_context(|| format!("no engine on node {}", spec.node))?;
+            let link = fabric
+                .face_between(spec.node, hub)
+                .with_context(|| format!("node {} has no link to the hub", spec.node))?;
+            for person in anchors.keys() {
+                ndn_namespace::sync_group::carry(&engine, person);
+            }
+            EngineFaces(engine).add_routes(link, &ndn_link::group_routes(anchors.keys(), 0));
         }
         *self.case.lock().expect("the provider's lock") = case;
         Ok(())

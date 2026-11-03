@@ -57,6 +57,10 @@ ndn-sync         = { path = "../ndn-rs/crates/protocols/ndn-sync" }
 ndn-repo         = { path = "../ndn-repo/crates/ndn-repo", default-features = false }
 # ndn-data-conformance: the data-layer contract its cases are written against.
 ndn-data         = { path = "../ndn-rs/crates/app/ndn-data" }
+# ndn-data-conformance: the libraries a daemon sets a namespace's sync group up with — the
+# trust-context library (its strategy) and the link library (its route over a link).
+ndn-namespace    = { path = "../ndn-rs/crates/security/ndn-namespace" }
+ndn-link         = { path = "../ndn-ext/crates/faces/ndn-link", features = ["engine"] }
 
 # Core async runtime — individual crates enable only the features they need
 tokio      = { version = "1", default-features = false }

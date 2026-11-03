@@ -1,5 +1,5 @@
 //! The cases, in study order: the twelve use cases (`c1`…`c12`), with slice 3's custody of
-//! large data (`h1`…`h6`) beside the use case it grew from (c5), the items left open after the
+//! large data (`h1`…`h7`) beside the use case it grew from (c5), the items left open after the
 //! model's fixes (`o1`…`o4`), and the slice-2 security review (`r1`…`r4`): the attacks it found
 //! and the concurrent share its merge must keep.
 //! Each file states the story, the devices, and the invariant it asserts.
@@ -34,6 +34,7 @@ mod h3_subset_holder;
 mod h4_lease_keep;
 mod h5_prune_ends_leases;
 mod h6_sealed_non_reader;
+mod h7_lost_single_copy;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
@@ -56,6 +57,7 @@ pub const CASES: &[Case] = &[
     h4_lease_keep::CASE,
     h5_prune_ends_leases::CASE,
     h6_sealed_non_reader::CASE,
+    h7_lost_single_copy::CASE,
     c06_sensor_blocks::CASE,
     c07_unknown_fields::CASE,
     c08_nested_summaries::CASE,

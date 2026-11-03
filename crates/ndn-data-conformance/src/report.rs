@@ -35,7 +35,7 @@ pub struct Cost {
 /// One case's line in the report.
 #[derive(Clone, Debug, Serialize)]
 pub struct CaseResult {
-    /// `c1`…`c12`, `h1`…`h6`, `o1`…`o4`, `r1`…`r4`.
+    /// `c1`…`c12`, `h1`…`h7`, `o1`…`o4`, `r1`…`r4`.
     pub id: &'static str,
     /// The use case's title.
     pub title: &'static str,

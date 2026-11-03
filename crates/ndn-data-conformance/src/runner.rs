@@ -194,13 +194,13 @@ mod tests {
         let report = run_all(None);
         assert_eq!(
             report.cases.len(),
-            26,
-            "twelve use cases, six custody cases, four open items and four review cases"
+            27,
+            "twelve use cases, seven custody cases, four open items and four review cases"
         );
-        assert_eq!(report.totals.not_implemented, 26);
+        assert_eq!(report.totals.not_implemented, 27);
         assert_eq!((report.totals.pass, report.totals.fail), (0, 0));
         let ids: BTreeSet<&str> = report.cases.iter().map(|c| c.id).collect();
-        assert_eq!(ids.len(), 26, "case ids are unique");
+        assert_eq!(ids.len(), 27, "case ids are unique");
         for c in &report.cases {
             assert_eq!(c.status, Status::NotImplemented);
             assert!(

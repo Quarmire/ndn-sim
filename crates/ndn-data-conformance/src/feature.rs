@@ -22,6 +22,9 @@ pub enum Feature {
     Seal,
     /// The log rule: a collection is the union of its members' logs.
     Log,
+    /// `prune` refusing versions another key signed (`DataError::NotOwnWrites`, model change
+    /// M9): removing someone else's data in a shared collection is an edit instead.
+    PruneScope,
     /// Custody leases (`hold`), capped by keep.
     Custody,
     /// `prune` of one's own writes, and `DataError::Pruned` for readers.
@@ -43,7 +46,11 @@ impl Feature {
     pub fn slice(self) -> u8 {
         match self {
             Feature::Merge | Feature::WritersAcrossPrefixes | Feature::Snapshot => 1,
-            Feature::RemovalCut | Feature::CutRecheck | Feature::Seal | Feature::Log => 2,
+            Feature::RemovalCut
+            | Feature::CutRecheck
+            | Feature::Seal
+            | Feature::Log
+            | Feature::PruneScope => 2,
             Feature::Custody | Feature::Prune => 3,
             Feature::Blocks | Feature::OneKey => 4,
             Feature::Revocation | Feature::Readmit => 5,
@@ -61,6 +68,7 @@ impl Feature {
             Feature::CutRecheck => "re-check on cut arrival",
             Feature::Seal => "seal",
             Feature::Log => "log rule",
+            Feature::PruneScope => "prune scope",
             Feature::Custody => "custody",
             Feature::Prune => "prune",
             Feature::Blocks => "signed blocks",

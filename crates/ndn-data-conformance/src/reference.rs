@@ -107,7 +107,14 @@ impl Provider for Reference {
     fn supports(&self, feature: Feature) -> bool {
         matches!(
             feature,
-            Feature::Merge | Feature::WritersAcrossPrefixes | Feature::Snapshot
+            Feature::Merge
+                | Feature::WritersAcrossPrefixes
+                | Feature::Snapshot
+                | Feature::RemovalCut
+                | Feature::CutRecheck
+                | Feature::Seal
+                | Feature::Log
+                | Feature::PruneScope
         )
     }
 

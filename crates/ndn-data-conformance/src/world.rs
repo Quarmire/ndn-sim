@@ -6,7 +6,7 @@
 //! device can reach any name another device serves. Going offline cuts a device's link; every
 //! device has its own wall clock, which a case can set wrong at any time.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use ndn_sim::{
 
 use crate::case::Failure;
 use crate::provider::{DeviceSpec, NodeRole, Provider, Tally};
-use crate::report::Cost;
+use crate::report::{Cost, Measure};
 
 /// A device of a [`Plan`], by position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -188,6 +188,41 @@ impl Net {
         }
         w
     }
+
+    /// One device's link counters now: the Interests it sent and the bytes it received.
+    pub fn device_wire(&self, d: Dev) -> DeviceWire {
+        let mut w = DeviceWire::default();
+        for f in self
+            .fabric
+            .face_stats(self.specs[d.0].node)
+            .unwrap_or_default()
+        {
+            if matches!(f.kind, FaceKind::Link { .. }) {
+                w.interests += f.out_interests;
+                w.in_bytes += f.in_bytes;
+            }
+        }
+        w
+    }
+}
+
+/// One device's link counters, for [`Net::device_wire`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeviceWire {
+    /// Interests the device sent onto its links.
+    pub interests: u64,
+    /// Bytes the device received from its links.
+    pub in_bytes: u64,
+}
+
+impl std::ops::Sub for DeviceWire {
+    type Output = DeviceWire;
+    fn sub(self, before: DeviceWire) -> DeviceWire {
+        DeviceWire {
+            interests: self.interests - before.interests,
+            in_bytes: self.in_bytes - before.in_bytes,
+        }
+    }
 }
 
 /// What the cost counters read at one moment.
@@ -205,6 +240,7 @@ pub struct World {
     gestures: Cell<u64>,
     converge: Cell<Option<Duration>>,
     reported_from: Cell<Option<Mark>>,
+    measured: RefCell<Vec<Measure>>,
 }
 
 impl World {
@@ -240,6 +276,7 @@ impl World {
             gestures: Cell::new(0),
             converge: Cell::new(None),
             reported_from: Cell::new(None),
+            measured: RefCell::new(Vec::new()),
         })
     }
 
@@ -321,6 +358,20 @@ impl World {
         let took = self.until(what, limit, check).await?;
         self.converged(took);
         Ok(took)
+    }
+
+    /// Record one quantity the case measured for an open question it answers.
+    pub fn measure(&self, what: impl Into<String>, value: u64, unit: &'static str) {
+        self.measured.borrow_mut().push(Measure {
+            what: what.into(),
+            value,
+            unit,
+        });
+    }
+
+    /// What the case measured.
+    pub fn measured(&self) -> Vec<Measure> {
+        self.measured.borrow().clone()
     }
 
     /// Record `took` as the case's time to converge.

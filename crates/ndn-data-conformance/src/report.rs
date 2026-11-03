@@ -51,6 +51,19 @@ pub struct CaseResult {
     pub detail: String,
     /// What it cost.
     pub cost: Cost,
+    /// What the case measured beyond its cost, for an open question it answers.
+    pub measured: Vec<Measure>,
+}
+
+/// One quantity a case measured.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Measure {
+    /// What was measured, in words.
+    pub what: String,
+    /// The value.
+    pub value: u64,
+    /// Its unit (`round trips`, `bytes`, `ms`, `signatures`, …).
+    pub unit: &'static str,
 }
 
 /// Counts by status.

@@ -17,7 +17,7 @@ pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[crate::reference::Referenc
 /// Run one case against `provider`. Without a provider, or with one that does not implement a
 /// feature the case needs, the scenario does not run and the case is [`Status::NotImplemented`].
 pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult {
-    let result = |status, detail: String, cost| CaseResult {
+    let result = |status, detail: String, cost, measured| CaseResult {
         id: case.id,
         title: case.title,
         slice: case.slice,
@@ -26,6 +26,7 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
         status,
         detail,
         cost,
+        measured,
     };
     let Some(provider) = provider else {
         return result(
@@ -35,6 +36,7 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
                 case.slice
             ),
             Cost::default(),
+            Vec::new(),
         );
     };
     let missing: Vec<String> = case
@@ -52,6 +54,7 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
                 missing.join(", ")
             ),
             Cost::default(),
+            Vec::new(),
         );
     }
 
@@ -66,27 +69,39 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
                     return (
                         Err(Failure::new(format!("setup failed: {e:#}"))),
                         Cost::default(),
+                        Vec::new(),
                     );
                 }
             };
             let start = world.mark();
             let outcome = (case.run)(&world).await;
             let cost = world.reported_cost(start);
+            let measured = world.measured();
             world.shutdown().await;
-            (outcome, cost)
+            (outcome, cost, measured)
         })
     }));
     match ran {
-        Ok(Ok((Ok(()), cost))) => result(Status::Pass, String::new(), cost),
-        Ok(Ok((Err(f), cost))) => result(Status::Fail, f.0, cost),
-        Ok(Err(exceeded)) => result(Status::Fail, exceeded.to_string(), Cost::default()),
+        Ok(Ok((Ok(()), cost, measured))) => result(Status::Pass, String::new(), cost, measured),
+        Ok(Ok((Err(f), cost, measured))) => result(Status::Fail, f.0, cost, measured),
+        Ok(Err(exceeded)) => result(
+            Status::Fail,
+            exceeded.to_string(),
+            Cost::default(),
+            Vec::new(),
+        ),
         Err(panic) => {
             let msg = panic
                 .downcast_ref::<String>()
                 .map(String::as_str)
                 .or_else(|| panic.downcast_ref::<&str>().copied())
                 .unwrap_or("non-string panic");
-            result(Status::Fail, format!("panicked: {msg}"), Cost::default())
+            result(
+                Status::Fail,
+                format!("panicked: {msg}"),
+                Cost::default(),
+                Vec::new(),
+            )
         }
     }
 }

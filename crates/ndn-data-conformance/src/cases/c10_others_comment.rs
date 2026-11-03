@@ -21,7 +21,7 @@ pub(super) const CASE: Case = Case {
     needs: &[
         Feature::Merge,
         Feature::WritersAcrossPrefixes,
-        Feature::Prune,
+        Feature::PruneScope,
     ],
     model: &["M9"],
     guards: "Prune covers only the pruner's own writes and says to edit instead; removing \

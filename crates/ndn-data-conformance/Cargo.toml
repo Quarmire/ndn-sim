@@ -33,6 +33,8 @@ serde_json  = { workspace = true }
 tokio       = { workspace = true, features = ["rt", "time", "macros", "test-util"] }
 # Seeds ndn-sync's thread-local jitter before each case, so a case replays identically (`runner`).
 fastrand    = "2"
+# The reference provider's seeded audit randomness: SHA-256 over the device name and a counter.
+sha2        = "0.11"
 # The runner's diagnostics: `RUST_LOG=ndn_data=debug` shows why a case's devices refused or
 # missed something.
 tracing-subscriber = { workspace = true }

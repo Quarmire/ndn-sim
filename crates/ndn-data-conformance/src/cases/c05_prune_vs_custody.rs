@@ -13,7 +13,7 @@ use ndn_data::{DataError, Hold, Timestamp};
 use super::*;
 use crate::case::CaseFuture;
 use crate::ensure;
-use crate::world::{Dev, Plan, World};
+use crate::world::{Dev, World};
 
 pub(super) const CASE: Case = Case {
     id: "c5",
@@ -25,31 +25,12 @@ pub(super) const CASE: Case = Case {
              that know the prune report it pruned instead of serving it, while photos outside the \
              prune stay readable.",
     budget: Duration::from_secs(3600),
-    plan,
+    plan: custody_plan,
     run,
 };
 
 const PHONE: Dev = Dev(0);
 const LAPTOP: Dev = Dev(2);
-
-fn plan() -> Plan {
-    let mut p = Plan::new();
-    p.device("alice", "phone");
-    p.device("alice", "repo");
-    p.device("alice", "laptop");
-    p
-}
-
-fn photo(keep: Keep) -> PutOptions {
-    PutOptions {
-        type_id: TypeId {
-            name: n("/types/photo"),
-            revision: 1,
-        },
-        keep,
-        batch: None,
-    }
-}
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
@@ -89,6 +70,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             )
             .await?;
         ensure!(!custody.leases.is_empty(), "no holder leased the photos");
+        w.measure("copies: live leases", custody.leases.len() as u64, "leases");
         for lease in &custody.leases {
             ensure!(
                 lease.until <= keep_until,

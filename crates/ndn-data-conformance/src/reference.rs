@@ -18,15 +18,18 @@
 //! the node's own (possibly lying) clock.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use ndn_app::EngineAppExt;
-use ndn_data::{Config, DataLayer, Device, Name, Timestamp, Transport};
+use ndn_data::wire::{parse_log_name, parse_piece_name};
+use ndn_data::{Config, DataLayer, Device, Entropy, Name, Timestamp, Transport};
 use ndn_link::{EngineFaces, FaceSink};
 use ndn_security::{Certificate, SecurityManager, SignedTrustContext};
 use ndn_sim::{Fabric, NodeId};
-use ndn_sync::{MemoryStore, SvsConfig};
+use ndn_sync::{DataStore, MemoryStore, SvsConfig};
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::feature::Feature;
@@ -40,8 +43,15 @@ const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
 struct Case {
     /// Each device's key store, by device name.
     keys: HashMap<Name, Arc<SecurityManager>>,
-    /// Every data layer attached, for the counters.
-    devices: Vec<Device>,
+    /// Every data layer attached, with its store, by node (a thief's layer carries its victim's
+    /// name, so names do not tell them apart).
+    devices: BTreeMap<NodeId, Attached>,
+}
+
+/// One attached data layer and the store it keeps its packets in.
+struct Attached {
+    layer: Device,
+    store: Arc<MemoryStore>,
 }
 
 /// `ndn-data`'s [`Device`] as a conformance provider.
@@ -62,6 +72,7 @@ impl Reference {
         node: NodeId,
         device: Name,
         keys: Arc<SecurityManager>,
+        hold_for: Vec<Name>,
     ) -> anyhow::Result<Arc<dyn DataLayer>> {
         let engine = fabric
             .engine_of(node)
@@ -78,14 +89,17 @@ impl Reference {
         let config = Config {
             clock: Arc::new(move || Timestamp(clock.now_ns() / 1_000_000)),
             svs: SvsConfig::default(),
+            hold_for,
+            entropy: seeded(&device),
             ..Config::new()
         };
+        let store = Arc::new(MemoryStore::new());
         let layer = Device::start(
             transport,
             device.clone(),
             keys,
             validator,
-            Arc::new(MemoryStore::new()),
+            Arc::clone(&store) as Arc<dyn DataStore>,
             config,
         )
         .await
@@ -94,9 +108,60 @@ impl Reference {
             .lock()
             .expect("the provider's lock")
             .devices
-            .push(layer.clone());
+            .insert(
+                node,
+                Attached {
+                    layer: layer.clone(),
+                    store,
+                },
+            );
         Ok(Arc::new(layer))
     }
+
+    /// The store of the layer attached on `device`'s node.
+    fn store(&self, device: &DeviceSpec) -> Arc<MemoryStore> {
+        let case = self.case.lock().expect("the provider's lock");
+        let attached = case
+            .devices
+            .get(&device.node)
+            .unwrap_or_else(|| panic!("{} has no data layer attached", device.name()));
+        Arc::clone(&attached.store)
+    }
+}
+
+/// Randomness that replays: SHA-256 over the device's name and a counter, block after block, so
+/// an audit samples the same pieces with the same nonces every run (`--check-determinism`).
+fn seeded(device: &Name) -> Entropy {
+    let seed = device.to_string();
+    let counter = AtomicU64::new(0);
+    Arc::new(move |buf: &mut [u8]| {
+        for block in buf.chunks_mut(32) {
+            let n = counter.fetch_add(1, Ordering::Relaxed);
+            let mut h = Sha256::new();
+            h.update(seed.as_bytes());
+            h.update(n.to_be_bytes());
+            let digest: [u8; 32] = h.finalize().into();
+            block.copy_from_slice(&digest[..block.len()]);
+        }
+    })
+}
+
+/// The stored pieces of `prefix` among `stored` (in name order): of a version's name (a log
+/// entry name), that entry and its chunks and manifest nodes; of a collection, every log entry
+/// of any writer about it and their chunks and manifest nodes.
+fn pieces_of<'s>(
+    stored: &'s [(Name, bytes::Bytes)],
+    prefix: &'s Name,
+) -> impl Iterator<Item = &'s (Name, bytes::Bytes)> {
+    let version = parse_log_name(prefix).is_some();
+    stored.iter().filter(move |(name, _)| {
+        if version {
+            name == prefix || parse_piece_name(name).is_some_and(|p| p.version == *prefix)
+        } else {
+            parse_log_name(name).is_some_and(|l| l.subject.as_ref() == Some(prefix))
+                || parse_piece_name(name).is_some_and(|p| p.log.subject.as_ref() == Some(prefix))
+        }
+    })
 }
 
 #[async_trait::async_trait]
@@ -116,6 +181,9 @@ impl Provider for Reference {
                 | Feature::Seal
                 | Feature::Log
                 | Feature::PruneScope
+                | Feature::Custody
+                | Feature::Prune
+                | Feature::LargePayloads
         )
     }
 
@@ -217,7 +285,14 @@ impl Provider for Reference {
             .get(&device.name())
             .cloned()
             .with_context(|| format!("{} was not prepared", device.name()))?;
-        self.start(fabric, device.node, device.name(), keys).await
+        // A holder keeps the collections of its own person's namespace.
+        let hold_for = if device.holds {
+            vec![device.person.clone()]
+        } else {
+            Vec::new()
+        };
+        self.start(fabric, device.node, device.name(), keys, hold_for)
+            .await
     }
 
     async fn attach_stolen(
@@ -234,7 +309,8 @@ impl Provider for Reference {
             .get(&victim.name())
             .cloned()
             .with_context(|| format!("{} was not prepared", victim.name()))?;
-        self.start(fabric, thief.node, victim.name(), keys).await
+        self.start(fabric, thief.node, victim.name(), keys, Vec::new())
+            .await
     }
 
     async fn revoke(
@@ -253,8 +329,53 @@ impl Provider for Reference {
     fn tally(&self) -> Tally {
         let case = self.case.lock().expect("the provider's lock");
         Tally {
-            signatures: case.devices.iter().map(Device::signatures).sum(),
-            copies: case.devices.iter().map(Device::held).sum(),
+            signatures: case.devices.values().map(|a| a.layer.signatures()).sum(),
+            copies: case.devices.values().map(|a| a.layer.held()).sum(),
         }
+    }
+
+    async fn release(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        name: &Name,
+    ) -> anyhow::Result<u64> {
+        let layer = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .devices
+            .get(&device.node)
+            .map(|a| a.layer.clone())
+            .with_context(|| format!("{} has no data layer attached", device.name()))?;
+        match layer.release(name).await {
+            Ok(released) => Ok(u64::from(released.pieces)),
+            Err(e) => anyhow::bail!(
+                "{} refused to release {name}: {e} (next step: {:?})",
+                device.name(),
+                e.next()
+            ),
+        }
+    }
+
+    fn lose(&self, device: &DeviceSpec, collection: &Name, every: u32) -> u64 {
+        let store = self.store(device);
+        let stored = store.scan_under(&Name::root(), 0);
+        let every = every.max(1) as usize;
+        let mut lost = 0;
+        for (i, (name, _)) in pieces_of(&stored, collection).enumerate() {
+            if (i + 1) % every == 0 {
+                store.remove(name);
+                lost += 1;
+            }
+        }
+        lost
+    }
+
+    fn stored(&self, device: &DeviceSpec, prefix: &Name) -> u64 {
+        let stored = self.store(device).scan_under(&Name::root(), 0);
+        pieces_of(&stored, prefix)
+            .map(|(_, wire)| wire.len() as u64)
+            .sum()
     }
 }

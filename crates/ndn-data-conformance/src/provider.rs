@@ -16,6 +16,9 @@ pub struct DeviceSpec {
     pub device: String,
     /// Its forwarder in the fabric.
     pub node: NodeId,
+    /// A holder: it keeps its person's collections for their owners under custody leases
+    /// (answers their hold asks and audits).
+    pub holds: bool,
 }
 
 impl DeviceSpec {
@@ -108,4 +111,25 @@ pub trait Provider: Send + Sync {
 
     /// The implementation's counters now.
     fn tally(&self) -> Tally;
+
+    /// `device`'s host drops its own copies of the pieces of the large versions under `name` (a
+    /// version's name or a collection), leaving them to the holders that keep them: the host's
+    /// storage policy, not a verb. Returns how many pieces it dropped; a refusal (nothing it
+    /// audited as kept holds them) is an error naming why.
+    async fn release(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        name: &Name,
+    ) -> anyhow::Result<u64>;
+
+    /// Fault injection: `device`'s storage silently loses every `every`-th stored piece of
+    /// `collection` (1 = all), in name order. A piece is a log entry of any writer about the
+    /// collection, or a chunk or manifest node of such an entry. Returns how many it lost.
+    fn lose(&self, device: &DeviceSpec, collection: &Name, every: u32) -> u64;
+
+    /// The octets of the pieces `device` stores under `prefix`: of a collection, every piece as
+    /// [`lose`](Self::lose) counts them; of a version's name, its log entry and its chunks and
+    /// manifest nodes.
+    fn stored(&self, device: &DeviceSpec, prefix: &Name) -> u64;
 }

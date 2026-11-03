@@ -29,6 +29,9 @@ pub enum Feature {
     Custody,
     /// `prune` of one's own writes, and `DataError::Pruned` for readers.
     Prune,
+    /// Payloads larger than one packet (log rule): a version carrying `Payload::Large`, its
+    /// chunks and manifest verified piece by piece, read whole by `get`.
+    LargePayloads,
     /// Signed blocks of small entries under a producer's accepted delay.
     Blocks,
     /// The one-key rule.
@@ -51,7 +54,7 @@ impl Feature {
             | Feature::Seal
             | Feature::Log
             | Feature::PruneScope => 2,
-            Feature::Custody | Feature::Prune => 3,
+            Feature::Custody | Feature::Prune | Feature::LargePayloads => 3,
             Feature::Blocks | Feature::OneKey => 4,
             Feature::Revocation | Feature::Readmit => 5,
             Feature::Functions => 6,
@@ -71,6 +74,7 @@ impl Feature {
             Feature::PruneScope => "prune scope",
             Feature::Custody => "custody",
             Feature::Prune => "prune",
+            Feature::LargePayloads => "large payloads",
             Feature::Blocks => "signed blocks",
             Feature::OneKey => "one-key rule",
             Feature::Revocation => "revocation",

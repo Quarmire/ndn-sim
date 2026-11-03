@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ndn_data::{DataLayer, Timestamp};
+use ndn_data::{DataLayer, Name, Timestamp};
 use ndn_sim::{
     ClockSkew, Fabric, FaceKind, LinkConfig, NodeId, NodeProfile, SimKernel, Simulation,
 };
@@ -29,6 +29,8 @@ struct Planned {
     device: String,
     /// A thief: holds a copy of this device's key.
     stolen_from: Option<Dev>,
+    /// A holder of its person's collections.
+    holds: bool,
 }
 
 /// The devices a case needs, declared before the fabric starts.
@@ -46,10 +48,21 @@ impl Plan {
     /// Add `person`'s `device` (e.g. `"alice"`, `"laptop"`). The person is a namespace of any
     /// number of components, written without its leading slash (`"home/bob"` is `/home/bob`).
     pub fn device(&mut self, person: &str, device: &str) -> Dev {
+        self.add(person, device, false)
+    }
+
+    /// Add `person`'s `device` as a holder: it keeps the collections of its person's namespace
+    /// for their owners under custody leases (a home repo, a vault).
+    pub fn holder(&mut self, person: &str, device: &str) -> Dev {
+        self.add(person, device, true)
+    }
+
+    fn add(&mut self, person: &str, device: &str, holds: bool) -> Dev {
         self.devices.push(Planned {
             person: person.to_owned(),
             device: device.to_owned(),
             stolen_from: None,
+            holds,
         });
         Dev(self.devices.len() - 1)
     }
@@ -60,6 +73,7 @@ impl Plan {
             person: "thief".to_owned(),
             device: format!("with-{}", self.devices[victim.0].device),
             stolen_from: Some(victim),
+            holds: false,
         });
         Dev(self.devices.len() - 1)
     }
@@ -110,6 +124,7 @@ impl Net {
                 device: p.device.clone(),
                 // The hub is node 0; devices follow in plan order.
                 node: NodeId(i + 1),
+                holds: p.holds,
             };
             let mut node_profile = profile(&spec);
             node_profile.clock_skew.get_or_insert(ClockSkew::NONE);
@@ -302,6 +317,28 @@ impl World {
             .revoke(&self.net.fabric, self.net.spec(by), self.net.spec(device))
             .await
             .map_err(|e| Failure::new(format!("revoke failed: {e:#}")))
+    }
+
+    /// `d`'s host drops its own copies of the large payload pieces under `name` (a version's name
+    /// or a collection), leaving them to the holders (see [`Provider::release`]); returns how
+    /// many pieces it dropped.
+    pub async fn release(&self, d: Dev, name: &Name) -> Result<u64, Failure> {
+        self.provider
+            .release(&self.net.fabric, self.net.spec(d), name)
+            .await
+            .map_err(|e| Failure::new(format!("release failed: {e:#}")))
+    }
+
+    /// `d`'s storage silently loses every `every`-th stored piece of `collection` (1 = all), in
+    /// name order (see [`Provider::lose`]); returns how many it lost.
+    pub fn lose(&self, d: Dev, collection: &Name, every: u32) -> u64 {
+        self.provider.lose(self.net.spec(d), collection, every)
+    }
+
+    /// The octets of the pieces `d` stores under `prefix`, a collection or a version's name (see
+    /// [`Provider::stored`]).
+    pub fn stored(&self, d: Dev, prefix: &Name) -> u64 {
+        self.provider.stored(self.net.spec(d), prefix)
     }
 
     /// Let `d` of virtual time pass.

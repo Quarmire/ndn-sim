@@ -1,4 +1,5 @@
-//! The cases, in study order: the twelve use cases (`c1`…`c12`), the items left open after the
+//! The cases, in study order: the twelve use cases (`c1`…`c12`), with slice 3's custody of
+//! large data (`h1`…`h6`) beside the use case it grew from (c5), the items left open after the
 //! model's fixes (`o1`…`o4`), and the slice-2 security review (`r1`…`r4`): the attacks it found
 //! and the concurrent share its merge must keep.
 //! Each file states the story, the devices, and the invariant it asserts.
@@ -7,12 +8,13 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ndn_data::{
-    Audience, Change, Changes, Content, DataError, DataLayer, Frontier, Got, Keep, Name, Payload,
-    PutOptions, Rule, Share, State, TypeId, Version, VersionId,
+    Answer, Audience, Change, Changes, Content, Custody, DataError, DataLayer, Frontier, Got, Hold,
+    Keep, Lease, Name, Payload, PutOptions, Rule, Share, State, TypeId, Version, VersionId,
 };
 
 use crate::case::{Case, Failure};
 use crate::feature::Feature;
+use crate::world::{Dev, Plan, World};
 
 mod c01_offline_notes;
 mod c02_removed_offline;
@@ -26,6 +28,12 @@ mod c09_family_chat;
 mod c10_others_comment;
 mod c11_cite_state;
 mod c12_still_pass;
+mod h1_large_photo;
+mod h2_dropping_holder;
+mod h3_subset_holder;
+mod h4_lease_keep;
+mod h5_prune_ends_leases;
+mod h6_sealed_non_reader;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
@@ -42,6 +50,12 @@ pub const CASES: &[Case] = &[
     c03_stolen_key::CASE,
     c04_lens_seal::CASE,
     c05_prune_vs_custody::CASE,
+    h1_large_photo::CASE,
+    h2_dropping_holder::CASE,
+    h3_subset_holder::CASE,
+    h4_lease_keep::CASE,
+    h5_prune_ends_leases::CASE,
+    h6_sealed_non_reader::CASE,
     c06_sensor_blocks::CASE,
     c07_unknown_fields::CASE,
     c08_nested_summaries::CASE,
@@ -96,6 +110,150 @@ fn note(revision: u64) -> PutOptions {
     }
 }
 
+/// The photo type: revision 1 has `file` (the photo's name) and `image` (its octets).
+fn photo(keep: Keep) -> PutOptions {
+    PutOptions {
+        type_id: TypeId {
+            name: n("/types/photo"),
+            revision: 1,
+        },
+        keep,
+        batch: None,
+    }
+}
+
+/// A photo's octets for the custody cases: about 1.6 MB, some 390 chunks of 4096 octets.
+const IMAGE: usize = 1_600_000;
+
+/// A photo named `file` of `len` octets, the same every run: the octets come from a generator
+/// (xorshift) seeded by the name.
+fn picture(file: &str, len: usize) -> Content {
+    let mut x = file.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    let mut image = Vec::with_capacity(len + 8);
+    while image.len() < len {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        image.extend_from_slice(&x.to_le_bytes());
+    }
+    image.truncate(len);
+    Content::new()
+        .with("file", bytes::Bytes::copy_from_slice(file.as_bytes()))
+        .with("image", bytes::Bytes::from(image))
+}
+
+/// The custody cases' devices: Alice's phone (`Dev(0)`, which writes the photos and asks for
+/// custody), her home repo (`Dev(1)`, a holder) and her laptop (`Dev(2)`, a reader).
+fn custody_plan() -> Plan {
+    let mut p = Plan::new();
+    p.device("alice", "phone");
+    p.holder("alice", "repo");
+    p.device("alice", "laptop");
+    p
+}
+
+/// Whether `lease` is signed by a key of the device named `device`.
+fn leased_by(lease: &Lease, device: &Name) -> bool {
+    lease.holder.key().has_prefix(device)
+}
+
+/// `d` asks for custody of `prefix`, recording what the call cost `d` on its links (the hold
+/// asks it sent, every audit it ran, any repair) as `<what>: Interests` and `<what>: bytes
+/// received`.
+async fn hold_on(
+    w: &World,
+    d: Dev,
+    prefix: &Name,
+    want: Hold,
+    what: &str,
+) -> Result<Custody, Failure> {
+    let before = w.net().device_wire(d);
+    let custody = w.at(d).hold(prefix, want).await?;
+    let spent = w.net().device_wire(d) - before;
+    w.measure(format!("{what}: Interests"), spent.interests, "round trips");
+    w.measure(format!("{what}: bytes received"), spent.in_bytes, "bytes");
+    Ok(custody)
+}
+
+/// The version `id` of `collection` as `layer` lists it: a device lists its own writes at once.
+async fn listed(
+    layer: &dyn DataLayer,
+    collection: &Name,
+    id: &VersionId,
+) -> Result<Version, Failure> {
+    let seen = look(layer, collection, &Frontier::new(), LOOK).await?;
+    version(&seen, id).cloned().ok_or_else(|| {
+        Failure::new(format!(
+            "the writer's own watch of {collection} does not list version {} it wrote",
+            id.seq.0
+        ))
+    })
+}
+
+/// The octets a version carries in pieces; `None` when it is carried inline.
+fn large(v: &Version) -> Option<u64> {
+    match v.payload {
+        Payload::Large { size } => Some(size),
+        _ => None,
+    }
+}
+
+/// What `holders` store of `prefix`, per mille of the `payload` octets it carries.
+fn overhead(w: &World, holders: &[Dev], prefix: &Name, payload: u64) -> u64 {
+    holders.iter().map(|d| w.stored(*d, prefix)).sum::<u64>() * 1000 / payload.max(1)
+}
+
+/// `d` reads the version `name` whole: `get` until it answers the entry `expected` (while no
+/// path or holder answers, it asks again). Records the read's cost to `d` on its links as
+/// `<what>: Interests` and `<what>: bytes received`.
+async fn read_whole(
+    w: &World,
+    d: Dev,
+    name: &Name,
+    expected: &Content,
+    what: &str,
+) -> Result<(), Failure> {
+    let layer = w.at(d);
+    let before = w.net().device_wire(d);
+    w.until(what, LIMIT, || async {
+        match layer.get(name).await {
+            Ok(Answer {
+                got: Got::Version(v),
+                ..
+            }) => match &v.payload {
+                Payload::Entry(c) if c == expected => Ok(true),
+                Payload::Entry(c) => Err(Failure::new(format!(
+                    "{what}: {name} read as other content than was written ({} octets of \
+                     `image`, {} written)",
+                    c.get("image").map_or(0, |b| b.len()),
+                    expected.get("image").map_or(0, |b| b.len())
+                ))),
+                Payload::Large { size } => Err(Failure::new(format!(
+                    "{what}: get of {name} answered its size ({size} octets), not the entry \
+                     read whole"
+                ))),
+                Payload::Block(entries) => Err(Failure::new(format!(
+                    "{what}: get of {name} answered a block of {} entries, not the photo",
+                    entries.len()
+                ))),
+            },
+            Ok(answer) => Err(Failure::new(format!(
+                "{what}: get of version {name} answered {:?}, not the version",
+                answer.got
+            ))),
+            Err(DataError::Unavailable { .. } | DataError::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    })
+    .await?;
+    let spent = w.net().device_wire(d) - before;
+    w.measure(format!("{what}: Interests"), spent.interests, "round trips");
+    w.measure(format!("{what}: bytes received"), spent.in_bytes, "bytes");
+    Ok(())
+}
+
 fn content(fields: &[(&str, &str)]) -> Content {
     fields.iter().fold(Content::new(), |c, (k, v)| {
         c.with(*k, bytes::Bytes::copy_from_slice(v.as_bytes()))
@@ -136,18 +294,20 @@ async fn state_now(layer: &dyn DataLayer, collection: &Name) -> Result<Option<St
     }
 }
 
-/// The field `f` of any entry a version carries.
+/// The field `f` of any entry a version carries inline (a large payload carries none: `get` of
+/// the version's name reads it).
 fn field_of<'v>(v: &'v Version, f: &str) -> Option<&'v str> {
     match &v.payload {
         Payload::Entry(c) => field(c, f),
         Payload::Block(entries) => entries.iter().find_map(|c| field(c, f)),
+        Payload::Large { .. } => None,
     }
 }
 
-/// How many entries a version carries.
+/// How many entries a version carries (a large payload is one entry, carried in pieces).
 fn entries(v: &Version) -> usize {
     match &v.payload {
-        Payload::Entry(_) => 1,
+        Payload::Entry(_) | Payload::Large { .. } => 1,
         Payload::Block(e) => e.len(),
     }
 }

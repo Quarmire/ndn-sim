@@ -42,9 +42,9 @@ fn schedule(hops: i64, channels: i64, radios: usize) -> f64 {
             }
             let c = ch(t);
             // co-channel interferer within CS span (or carrier-sensed) blocks it
-            let conflict = active.iter().any(|&(at, ac)| {
-                ac == c && (at - r).abs() <= CS || ac == c && (at - t).abs() <= CS
-            });
+            let conflict = active
+                .iter()
+                .any(|&(at, ac)| ac == c && ((at - r).abs() <= CS || (at - t).abs() <= CS));
             if !conflict {
                 radio_use[t as usize] += 1;
                 radio_use[r as usize] += 1;

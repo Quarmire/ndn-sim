@@ -53,7 +53,7 @@ fn photo(keep: Keep) -> PutOptions {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let photos = n("/alice/photos");
+        let photos = n("/alice/32=data/photos");
         let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         phone
             .share(

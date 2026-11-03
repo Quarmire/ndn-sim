@@ -54,7 +54,7 @@ fn plan() -> Plan {
 }
 
 fn note_name(i: usize) -> Name {
-    n(&format!("/alice/notes/n{i}"))
+    n(&format!("/alice/32=data/notes/n{i}"))
 }
 
 /// Read `feed` until every id of `want` is among the versions it reported (`held`), for at most
@@ -94,7 +94,7 @@ async fn until_held(
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n("/alice/notes");
+        let folder = n("/alice/32=data/notes");
         let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         let written: RefCell<Vec<VersionId>> = RefCell::new(Vec::new());
         for i in 0..NOTES {

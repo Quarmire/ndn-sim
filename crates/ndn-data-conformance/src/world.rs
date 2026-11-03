@@ -43,7 +43,8 @@ impl Plan {
         Self::default()
     }
 
-    /// Add `person`'s `device` (e.g. `"alice"`, `"laptop"`).
+    /// Add `person`'s `device` (e.g. `"alice"`, `"laptop"`). The person is a namespace of any
+    /// number of components, written without its leading slash (`"home/bob"` is `/home/bob`).
     pub fn device(&mut self, person: &str, device: &str) -> Dev {
         self.devices.push(Planned {
             person: person.to_owned(),

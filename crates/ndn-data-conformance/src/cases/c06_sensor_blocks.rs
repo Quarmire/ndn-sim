@@ -56,7 +56,7 @@ fn reading() -> PutOptions {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let soil = n("/alice/garden/soil");
+        let soil = n("/alice/32=data/garden/soil");
         let (sensor, repo) = (w.at(SENSOR), w.at(REPO));
         sensor
             .share(

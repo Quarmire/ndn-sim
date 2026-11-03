@@ -62,7 +62,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let alice = person("/alice");
 
         // 1. Offline browsing on a phone whose clock is a year fast.
-        let album = n("/alice/photos/trip");
+        let album = n("/alice/32=data/photos/trip");
         laptop
             .share(
                 &album,
@@ -97,7 +97,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().set_clock(PHONE, ClockSkew::NONE);
 
         // 2. A summary service reads a note it was shared and answers under its own name.
-        let note_name = n("/alice/notes/meeting");
+        let note_name = n("/alice/32=data/notes/meeting");
         let audience = Seal {
             any_of: vec![
                 alice.clone(),
@@ -114,7 +114,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             has(&*service, &note_name, &input)
         })
         .await?;
-        let answer = n("/summarizer/answers/meeting");
+        let answer = n("/summarizer/32=data/answers/meeting");
         service
             .share(
                 &answer,

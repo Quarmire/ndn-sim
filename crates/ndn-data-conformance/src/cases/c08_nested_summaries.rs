@@ -44,12 +44,12 @@ fn plan() -> Plan {
 }
 
 fn note_name(i: usize) -> Name {
-    n(&format!("/alice/notes/n{i}"))
+    n(&format!("/alice/32=data/notes/n{i}"))
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n("/alice/notes");
+        let folder = n("/alice/32=data/notes");
         let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         let mut feed = laptop.watch(&folder, &Frontier::new()).await?;
         for i in 0..NOTES {

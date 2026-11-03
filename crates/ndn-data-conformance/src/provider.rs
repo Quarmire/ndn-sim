@@ -10,7 +10,7 @@ use crate::feature::Feature;
 /// One device in a case: a person's device, or a thief's node.
 #[derive(Clone, Debug)]
 pub struct DeviceSpec {
-    /// The person whose device it is, by namespace (`/alice`).
+    /// The person whose device it is, by namespace (`/alice`, `/home/bob`).
     pub person: Name,
     /// The device's label within the person (`laptop`, `phone`, `repo`).
     pub device: String,
@@ -20,8 +20,8 @@ pub struct DeviceSpec {
 
 impl DeviceSpec {
     /// The device's name: the person's namespace plus the device label
-    /// (`/alice/laptop`). Cases name a device in a seal audience by it, so a provider must use
-    /// it as the device's name.
+    /// (`/alice/laptop`, `/home/bob/laptop`). Cases name a device in a seal audience by it, so a
+    /// provider must use it as the device's name.
     pub fn name(&self) -> Name {
         self.person.clone().append(self.device.as_bytes())
     }

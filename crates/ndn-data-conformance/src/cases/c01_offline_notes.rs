@@ -1,9 +1,11 @@
 //! Case 1 — notes on laptop and phone, both offline.
 //!
-//! Alice edits the same note on the plane (laptop) and in the taxi (phone). Under the draft model
+//! Bob edits the same note on the plane (laptop) and in the taxi (phone). Under the draft model
 //! both edits were "v=18" by one writer — equivocation for an ordinary offline edit. The fix (M1):
 //! a writer is a key; the edits are (laptop, n) and (phone, m), each naming the shared version as
-//! parent, and the merge rule combines them.
+//! parent, and the merge rule combines them. Bob's namespace is `/home/bob`, of two components:
+//! the collection's `32=data` marks where it ends (spec §3), and his devices take it from the
+//! trust context that governs them.
 
 use std::time::Duration;
 
@@ -31,17 +33,20 @@ const PHONE: Dev = Dev(1);
 
 fn plan() -> Plan {
     let mut p = Plan::new();
-    p.device("alice", "laptop");
-    p.device("alice", "phone");
+    p.device("home/bob", "laptop");
+    p.device("home/bob", "phone");
     p
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let doc = n("/alice/notes/trip/day1");
+        let doc = n("/home/bob/32=data/notes/trip/day1");
         let (laptop, phone) = (w.at(LAPTOP), w.at(PHONE));
         laptop
-            .share(&doc, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &doc,
+                members(merge(), &["/home/bob"], &[person("/home/bob")]),
+            )
             .await?;
         let v17 = laptop.put(&doc, text("day 1"), note(1)).await?;
         w.until("the phone holds the shared version", LIMIT, || {

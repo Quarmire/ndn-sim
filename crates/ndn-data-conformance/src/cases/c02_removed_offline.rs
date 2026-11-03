@@ -44,7 +44,7 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let doc = n("/alice/docs/plan");
+        let doc = n("/alice/32=data/docs/plan");
         let (alice, bob) = (w.at(ALICE), w.at(BOB));
         alice
             .share(

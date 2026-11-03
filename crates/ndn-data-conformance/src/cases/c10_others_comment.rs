@@ -49,7 +49,7 @@ const COMMENT: &str = "comment/bob-1";
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let plan_doc = n("/alice/docs/plan");
+        let plan_doc = n("/alice/32=data/docs/plan");
         let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
         let all = [person("/alice"), person("/bob"), person("/carol")];
         alice

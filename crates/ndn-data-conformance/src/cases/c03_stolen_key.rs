@@ -41,7 +41,7 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let journal = n("/alice/journal");
+        let journal = n("/alice/32=data/journal");
         let (phone, laptop, thief) = (w.at(PHONE), w.at(LAPTOP), w.at(THIEF));
         laptop
             .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))

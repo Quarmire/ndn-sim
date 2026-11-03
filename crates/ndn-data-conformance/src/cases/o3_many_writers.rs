@@ -61,7 +61,7 @@ fn newest_by_signer(changes: &[Change]) -> BTreeMap<Writer, Summary> {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n("/alice/shared/garden-club");
+        let folder = n("/alice/32=data/shared/garden-club");
         let alice = w.at(Dev(0));
         let writers: Vec<String> = PEOPLE.iter().map(|p| format!("/{p}")).collect();
         let writer_refs: Vec<&str> = writers.iter().map(String::as_str).collect();

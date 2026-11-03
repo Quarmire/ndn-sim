@@ -39,7 +39,7 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let notes = n("/alice/notes/meeting-0412");
+        let notes = n("/alice/32=data/notes/meeting-0412");
         let (host, bob) = (w.at(HOST), w.at(BOB));
         let audience = ndn_data::Seal {
             any_of: vec![person("/alice")],

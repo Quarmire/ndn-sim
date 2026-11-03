@@ -54,7 +54,7 @@ fn message() -> PutOptions {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let chat = n("/alice/chat/family");
+        let chat = n("/alice/32=data/chat/family");
         let (alice, bob, carol, mallory) = (w.at(ALICE), w.at(BOB), w.at(CAROL), w.at(MALLORY));
         let readers = |names: &[&str]| names.iter().map(|p| person(p)).collect::<Vec<_>>();
 

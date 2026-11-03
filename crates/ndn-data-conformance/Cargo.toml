@@ -38,6 +38,5 @@ sha2        = "0.11"
 # The runner's diagnostics: `RUST_LOG=ndn_data=debug` shows why a case's devices refused or
 # missed something.
 tracing-subscriber = { workspace = true }
-
-[dev-dependencies]
+# The audit relay the reference provider injects signs and asks with packets of its own.
 ndn-packet = { workspace = true }

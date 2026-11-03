@@ -341,6 +341,15 @@ impl World {
         self.provider.stored(self.net.spec(d), prefix)
     }
 
+    /// From now on `d` answers audits by relaying each asked piece from the network instead of
+    /// from its store (see [`Provider::relay_audits`]).
+    pub async fn relay_audits(&self, d: Dev) -> Result<(), Failure> {
+        self.provider
+            .relay_audits(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot relay audits: {e:#}")))
+    }
+
     /// Let `d` of virtual time pass.
     pub async fn sleep(&self, d: Duration) {
         tokio::time::sleep(d).await;

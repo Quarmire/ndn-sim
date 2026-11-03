@@ -66,6 +66,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                 Hold {
                     copies: 1,
                     until: Timestamp(today + 365 * DAY.as_millis() as u64),
+                    holders: custody_holders(w),
                 },
             )
             .await?;

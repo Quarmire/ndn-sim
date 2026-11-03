@@ -22,10 +22,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use ndn_app::EngineAppExt;
-use ndn_data::wire::{parse_log_name, parse_piece_name};
+use ndn_app::{Consumer, EngineAppExt, Node, ServeGuard};
+use ndn_data::wire::{
+    AuditAnswer, AuditAsk, NONCE_LEN, Record, audit_ask_name, decode_record, encode_audit_answer,
+    parse_audit_ask_name, parse_log_name, parse_piece_name, piece_names, version_proof,
+};
 use ndn_data::{Config, DataLayer, Device, Entropy, Name, Timestamp, Transport};
 use ndn_link::{EngineFaces, FaceSink};
+use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_security::{Certificate, SecurityManager, SignedTrustContext};
 use ndn_sim::{Fabric, NodeId};
 use ndn_sync::{DataStore, MemoryStore, SvsConfig};
@@ -46,6 +50,8 @@ struct Case {
     /// Every data layer attached, with its store, by node (a thief's layer carries its victim's
     /// name, so names do not tell them apart).
     devices: BTreeMap<NodeId, Attached>,
+    /// The audit relays injected ([`Provider::relay_audits`]), served while the case runs.
+    relays: Vec<(Node, ServeGuard)>,
 }
 
 /// One attached data layer and the store it keeps its packets in.
@@ -377,5 +383,98 @@ impl Provider for Reference {
         pieces_of(&stored, prefix)
             .map(|(_, wire)| wire.len() as u64)
             .sum()
+    }
+
+    async fn relay_audits(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
+        let name = device.name();
+        let keys = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .keys
+            .get(&name)
+            .cloned()
+            .with_context(|| format!("{name} was not prepared"))?;
+        let identity = keys.signing_identity_for(&name)?;
+        let engine = fabric
+            .engine_of(device.node)
+            .with_context(|| format!("no engine on node {}", device.node))?;
+        let node = engine.app_node(CancellationToken::new());
+        // `<device>/32=audit`: longer than the device's own prefix, so every audit ask reaches
+        // the relay, not the data layer.
+        let any = audit_ask_name(
+            &name,
+            &AuditAsk {
+                nonce: [0; NONCE_LEN],
+                piece: name.clone(),
+                whole: false,
+                asker: bytes::Bytes::new(),
+            },
+        );
+        let prefix = Name::from_components(any.components()[..any.len() - 1].iter().cloned());
+        let fetcher = node.connection();
+        let guard = node
+            .serve(prefix, move |interest, responder| {
+                let (fetcher, identity) = (fetcher.clone(), identity.clone());
+                async move {
+                    let Some((_, ask)) = parse_audit_ask_name(&interest.name) else {
+                        return;
+                    };
+                    // Every packet asked is fetched fresh: from a device that serves it, past
+                    // every cache.
+                    let fresh = |name: Name| {
+                        let fetcher = fetcher.clone();
+                        async move {
+                            let b = InterestBuilder::new(name)
+                                .must_be_fresh()
+                                .lifetime(std::time::Duration::from_secs(2));
+                            Consumer::new(fetcher).fetch_with(b).await.ok()
+                        }
+                    };
+                    let answer = if ask.whole {
+                        // A proof over every piece: the log entry, then each piece it lists.
+                        let Some(entry) = fresh(ask.piece.clone()).await else {
+                            return;
+                        };
+                        let chunks = entry
+                            .content()
+                            .and_then(|c| decode_record(c.clone()).ok())
+                            .and_then(|r| match r {
+                                Record::Version(v) => v.chunks,
+                                _ => None,
+                            });
+                        let Some(chunks) = chunks else { return };
+                        let mut wires = vec![entry.raw().clone()];
+                        for p in piece_names(&ask.piece, &chunks) {
+                            let Some(d) = fresh(p).await else { return };
+                            wires.push(d.raw().clone());
+                        }
+                        AuditAnswer::Proof(version_proof(
+                            &ask.nonce,
+                            wires.iter().map(|w| w.as_ref()),
+                        ))
+                    } else {
+                        let Some(piece) = fresh(ask.piece.clone()).await else {
+                            return;
+                        };
+                        AuditAnswer::Piece(piece.raw().clone())
+                    };
+                    let answer = encode_audit_answer(&answer);
+                    let signer = &identity.signer;
+                    let wire = DataBuilder::new((*interest.name).clone(), &answer)
+                        .freshness(std::time::Duration::ZERO)
+                        .sign_sync(signer.sig_type(), Some(&identity.key), |region| {
+                            signer.sign_sync(region).unwrap_or_default()
+                        });
+                    let _ = responder.respond_bytes(wire).await;
+                }
+            })
+            .await?;
+        self.case
+            .lock()
+            .expect("the provider's lock")
+            .relays
+            .push((node, guard));
+        Ok(())
     }
 }

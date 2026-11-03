@@ -62,8 +62,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let want = Hold {
             copies: 1,
             until: Timestamp(today + 365 * DAY.as_millis() as u64),
+            holders: custody_holders(w),
         };
-        let custody = hold_on(w, PHONE, &photos, want, "hold on a non-reader").await?;
+        let custody = hold_on(w, PHONE, &photos, &want, "hold on a non-reader").await?;
         ensure!(
             custody
                 .leases

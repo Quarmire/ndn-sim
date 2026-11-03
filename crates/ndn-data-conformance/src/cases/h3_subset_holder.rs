@@ -53,8 +53,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let want = Hold {
             copies: 1,
             until: Timestamp(today + 365 * DAY.as_millis() as u64),
+            holders: custody_holders(w),
         };
-        let kept = phone.hold(&photos, want).await?;
+        let kept = phone.hold(&photos, want.clone()).await?;
         let sample = match kept.leases.iter().find(|l| leased_by(l, &repo)) {
             Some(lease) => match lease.audit {
                 Audit::Kept { pieces } => pieces,
@@ -81,7 +82,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                 w,
                 PHONE,
                 &photos,
-                want,
+                &want,
                 &format!("audit {audit} of the subset"),
             )
             .await?;

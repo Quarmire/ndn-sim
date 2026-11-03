@@ -65,8 +65,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let want = Hold {
             copies: 1,
             until: Timestamp(today + 365 * DAY.as_millis() as u64),
+            holders: custody_holders(w),
         };
-        let custody = phone.hold(&photos, want).await?;
+        let custody = phone.hold(&photos, want.clone()).await?;
         ensure!(!custody.leases.is_empty(), "no holder leased the photos");
         w.measure("copies: live leases", custody.leases.len() as u64, "leases");
         for lease in &custody.leases {
@@ -82,7 +83,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The month passes. A lease that holds the month-kept photos (and nothing kept longer)
         // still ends at their keep, so none is live.
         w.skip(31 * DAY).await;
-        let after = phone.hold(&photos, want).await?;
+        let after = phone.hold(&photos, want.clone()).await?;
         let now = w.net().date(PHONE);
         for lease in &after.leases {
             if month.iter().any(|id| lease.holds.contains(id)) {
@@ -116,7 +117,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                 photo(Keep::Forever),
             )
             .await?;
-        let custody = phone.hold(&photos, want).await?;
+        let custody = phone.hold(&photos, want.clone()).await?;
         let holding: Vec<_> = custody
             .leases
             .iter()

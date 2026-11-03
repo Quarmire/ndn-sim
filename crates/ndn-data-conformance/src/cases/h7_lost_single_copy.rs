@@ -58,8 +58,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let want = Hold {
             copies: 1,
             until: Timestamp(today + 365 * DAY.as_millis() as u64),
+            holders: custody_holders(w),
         };
-        let kept = hold_on(w, PHONE, &photos, want, "first hold").await?;
+        let kept = hold_on(w, PHONE, &photos, &want, "first hold").await?;
         ensure!(
             kept.leases.len() == 1 && leased_by(&kept.leases[0], &repo),
             "one copy asked of a repo that holds for Alice: {} leases, by {:?}",
@@ -99,7 +100,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         ensure!(lost > 0, "the repo stored nothing of the photos to lose");
         w.measure("pieces the repo lost", lost, "pieces");
 
-        let after = hold_on(w, PHONE, &photos, want, "hold that audits the loss").await?;
+        let after = hold_on(w, PHONE, &photos, &want, "hold that audits the loss").await?;
         let caught = after.broken.iter().find(|l| leased_by(l, &repo));
         ensure!(
             caught.is_some_and(|l| matches!(

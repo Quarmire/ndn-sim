@@ -132,4 +132,17 @@ pub trait Provider: Send + Sync {
     /// [`lose`](Self::lose) counts them; of a version's name, its log entry and its chunks and
     /// manifest nodes.
     fn stored(&self, device: &DeviceSpec, prefix: &Name) -> u64;
+
+    /// Fault injection: from now on `device` answers the audit asks addressed to it through a
+    /// relay that keeps nothing: it fetches each asked piece from the network, fresh (past every
+    /// cache, so from a device that serves it), and signs it as `device`'s answer. The holder
+    /// that stores nothing yet passes audits by fetching from the auditor (spec §13.4). A
+    /// provider that cannot inject it says so.
+    async fn relay_audits(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot make {} answer audits by relaying",
+            device.name()
+        )
+    }
 }

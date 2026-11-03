@@ -65,8 +65,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let want = Hold {
             copies: 1,
             until: Timestamp(today + 365 * DAY.as_millis() as u64),
+            holders: custody_holders(w),
         };
-        let custody = phone.hold(&photos, want).await?;
+        let custody = phone.hold(&photos, want.clone()).await?;
         ensure!(
             custody
                 .leases
@@ -104,7 +105,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
 
         // The lease still promises the sunset; its audit asks for nothing pruned.
-        let after = hold_on(w, PHONE, &photos, want, "audit after the prune").await?;
+        let after = hold_on(w, PHONE, &photos, &want, "audit after the prune").await?;
         ensure!(
             after.broken.is_empty(),
             "after the prune, the audit reported {:?} broken: it asked for pruned pieces",

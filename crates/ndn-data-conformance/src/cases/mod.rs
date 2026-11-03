@@ -35,6 +35,8 @@ mod h4_lease_keep;
 mod h5_prune_ends_leases;
 mod h6_sealed_non_reader;
 mod h7_lost_single_copy;
+mod h8_relaying_holder;
+mod h9_prune_before_auditor;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
@@ -58,6 +60,8 @@ pub const CASES: &[Case] = &[
     h5_prune_ends_leases::CASE,
     h6_sealed_non_reader::CASE,
     h7_lost_single_copy::CASE,
+    h8_relaying_holder::CASE,
+    h9_prune_before_auditor::CASE,
     c06_sensor_blocks::CASE,
     c07_unknown_fields::CASE,
     c08_nested_summaries::CASE,
@@ -155,6 +159,11 @@ fn custody_plan() -> Plan {
     p.device("alice", "laptop");
     p
 }
+/// The holders the phone names in its hold records: the custody plan's repo (`Dev(1)`), the
+/// owner's choice (spec §13.2).
+fn custody_holders(w: &World) -> Vec<Name> {
+    vec![w.net().spec(Dev(1)).name()]
+}
 
 /// Whether `lease` is signed by a key of the device named `device`.
 fn leased_by(lease: &Lease, device: &Name) -> bool {
@@ -168,11 +177,11 @@ async fn hold_on(
     w: &World,
     d: Dev,
     prefix: &Name,
-    want: Hold,
+    want: &Hold,
     what: &str,
 ) -> Result<Custody, Failure> {
     let before = w.net().device_wire(d);
-    let custody = w.at(d).hold(prefix, want).await?;
+    let custody = w.at(d).hold(prefix, want.clone()).await?;
     let spent = w.net().device_wire(d) - before;
     w.measure(format!("{what}: Interests"), spent.interests, "round trips");
     w.measure(format!("{what}: bytes received"), spent.in_bytes, "bytes");

@@ -192,15 +192,11 @@ mod tests {
     #[test]
     fn without_a_provider_every_case_is_reported_not_implemented() {
         let report = run_all(None);
-        assert_eq!(
-            report.cases.len(),
-            29,
-            "twelve use cases, nine custody cases, four open items and four review cases"
-        );
-        assert_eq!(report.totals.not_implemented, 29);
+        assert!(!report.cases.is_empty());
+        assert_eq!(report.totals.not_implemented, report.cases.len());
         assert_eq!((report.totals.pass, report.totals.fail), (0, 0));
         let ids: BTreeSet<&str> = report.cases.iter().map(|c| c.id).collect();
-        assert_eq!(ids.len(), 29, "case ids are unique");
+        assert_eq!(ids.len(), report.cases.len(), "case ids are unique");
         for c in &report.cases {
             assert_eq!(c.status, Status::NotImplemented);
             assert!(

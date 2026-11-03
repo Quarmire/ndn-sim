@@ -13,8 +13,9 @@
 //! (`ndn_link::group_routes`, added through `EngineFaces` as a daemon's links add theirs). The
 //! hub's default routes stand in for the network between devices. Each device's data layer runs
 //! on its own node over two in-process app faces (fetch/serve, and sync), verifies with that
-//! node's validator, keeps entries in memory and dates them by the node's own (possibly lying)
-//! clock.
+//! node's validator, keeps entries in memory and its seal (X25519 recipient) secret in its key
+//! store beside its signing key (`SecurityManager::put_secret`, in memory), and dates entries by
+//! the node's own (possibly lying) clock.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

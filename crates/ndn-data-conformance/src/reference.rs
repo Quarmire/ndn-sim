@@ -17,7 +17,7 @@
 //! store beside its signing key (`SecurityManager::put_secret`, in memory), and dates entries by
 //! the node's own (possibly lying) clock.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
@@ -125,7 +125,10 @@ impl Provider for Reference {
         hub: NodeId,
         devices: &[DeviceSpec],
     ) -> anyhow::Result<()> {
-        let mut anchors: HashMap<Name, (Arc<SecurityManager>, Name, Certificate)> = HashMap::new();
+        // Ordered by person, so trust contexts, carried groups and group routes are set up in the
+        // same order every run.
+        let mut anchors: BTreeMap<Name, (Arc<SecurityManager>, Name, Certificate)> =
+            BTreeMap::new();
         let mut certs = Vec::new();
         let mut case = Case::default();
         for spec in devices {

@@ -14,6 +14,14 @@ use crate::world::World;
 /// The implementations the runner knows, by constructor.
 pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[crate::reference::Reference::provider];
 
+/// The seed of the thread-local RNG `ndn-sync` draws its jitter from (the periodic sync interval
+/// and the suppression delay), set before each case. Unseeded, it is seeded per process from the
+/// OS, and in a suite it carries over from the case before: a case's devices would send their sync
+/// notices at different moments each run, and the Interests and bytes a case measures would
+/// depend on the run and on the cases before it. The case runs on the calling thread (the
+/// kernel's runtime is single-threaded), so seeding this thread pins the draws.
+const JITTER_SEED: u64 = 0x6e64_6e2d_6461_7461;
+
 /// Run one case against `provider`. Without a provider, or with one that does not implement a
 /// feature the case needs, the scenario does not run and the case is [`Status::NotImplemented`].
 pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult {
@@ -61,6 +69,7 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
     let plan = (case.plan)();
     let provider = Arc::clone(provider);
     let kernel = VirtualKernel::new();
+    fastrand::seed(JITTER_SEED);
     let ran = std::panic::catch_unwind(AssertUnwindSafe(|| {
         kernel.run_capped(case.budget, |k| async move {
             let world = match World::build(k, &plan, provider).await {

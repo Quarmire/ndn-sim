@@ -31,6 +31,8 @@ futures     = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true, features = ["rt", "time", "macros", "test-util"] }
+# Seeds ndn-sync's thread-local jitter before each case, so a case replays identically (`runner`).
+fastrand    = "2"
 # The runner's diagnostics: `RUST_LOG=ndn_data=debug` shows why a case's devices refused or
 # missed something.
 tracing-subscriber = { workspace = true }

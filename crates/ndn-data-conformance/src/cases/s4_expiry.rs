@@ -41,7 +41,7 @@ pub(super) const CASE: Case = Case {
     ],
     model: &["M6"],
     guards: "A version whose keep passed by a device's own clock is dropped there — stored \
-             nowhere, `get` answers Expired, watch reports it, a range read lists it expired — \
+             nowhere, get answers Expired, watch reports it, a range read lists it expired — \
              and a holder whose clock is slow and still serves it makes no right-clock reader \
              keep it.",
     budget: Duration::from_secs(2 * 3600),

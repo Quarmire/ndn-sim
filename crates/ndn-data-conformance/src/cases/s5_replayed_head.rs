@@ -31,7 +31,7 @@ pub(super) const CASE: Case = Case {
     needs: &[Feature::OneKey],
     model: &[],
     guards: "A one-key reader refuses a head older than one it verified: a cache replaying an \
-             old signed head neither makes `get` answer an older version than one already \
+             old signed head neither makes get answer an older version than one already \
              verified nor makes the answer look confirmed.",
     budget: Duration::from_secs(1800),
     plan,

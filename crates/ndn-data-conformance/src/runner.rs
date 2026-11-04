@@ -230,6 +230,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_case_passes_from_the_slice_of_the_latest_feature_it_needs() {
+        for case in CASES {
+            let latest = case.needs.iter().map(|f| f.slice()).max();
+            assert!(
+                latest.is_some_and(|s| s <= case.slice),
+                "{} names slice {} but needs {:?}",
+                case.id,
+                case.slice,
+                case.needs
+            );
+        }
+    }
+
     fn ran(round_trips: u64, interests: u64) -> CaseResult {
         CaseResult {
             id: "o3",

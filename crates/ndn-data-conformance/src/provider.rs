@@ -48,6 +48,28 @@ pub struct Tally {
     pub copies: u64,
 }
 
+/// How a malicious holder alters the packet of a block it stores ([`Provider::tamper`]). Either
+/// way the packet keeps the block's name and its signature bytes, so it claims the writer's
+/// signature over content the writer never signed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Tamper {
+    /// The entry at index `entry` has a field value altered.
+    Forge {
+        /// The entry's 0-based index in the block.
+        entry: u32,
+    },
+    /// The entry at index `entry` is replaced by the entry at index `their` of block `from`
+    /// (another block of the same writer, genuinely signed there).
+    Splice {
+        /// The entry's 0-based index in the block.
+        entry: u32,
+        /// The block the substitute entry comes from, by its name.
+        from: Name,
+        /// The substitute's index in `from`.
+        their: u32,
+    },
+}
+
 /// An implementation of the data layer, as the cases drive it.
 ///
 /// Keys, trust anchors, trust schemas and routes beyond the harness's default topology are the
@@ -112,6 +134,10 @@ pub trait Provider: Send + Sync {
     /// The implementation's counters now.
     fn tally(&self) -> Tally;
 
+    /// The signatures `device`'s data layer has made, cumulative: what a constrained producer
+    /// pays in signing.
+    fn signed_by(&self, device: &DeviceSpec) -> u64;
+
     /// `device`'s host drops its own copies of the pieces of the large versions under `name` (a
     /// version's name or a collection), leaving them to the holders that keep them: the host's
     /// storage policy, not a verb. Returns how many pieces it dropped; a refusal (nothing it
@@ -142,6 +168,34 @@ pub trait Provider: Send + Sync {
         let _ = fabric;
         anyhow::bail!(
             "this provider cannot make {} answer audits by relaying",
+            device.name()
+        )
+    }
+
+    /// Fault injection: the packet of block `version` in `device`'s store is replaced as `how`
+    /// says, keeping its name and signature bytes: a malicious holder serving a forged or spliced
+    /// entry under the writer's signature. A provider that cannot inject it says so.
+    fn tamper(&self, device: &DeviceSpec, version: &Name, how: Tamper) -> anyhow::Result<()> {
+        let _ = how;
+        anyhow::bail!(
+            "this provider cannot make {} alter the stored block {version}",
+            device.name()
+        )
+    }
+
+    /// Fault injection: `device`'s node fetches now, fresh (past every cache), the packet
+    /// answering `prefix` (CanBePrefix), and from then on answers every Interest under `prefix`
+    /// that reaches it with that packet, ignoring its FreshnessPeriod: a replaying cache. A
+    /// provider that cannot inject it says so.
+    async fn replay(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        prefix: &Name,
+    ) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot make {} replay what answers {prefix}",
             device.name()
         )
     }

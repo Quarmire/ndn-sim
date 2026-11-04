@@ -24,11 +24,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use ndn_app::{Consumer, EngineAppExt, Node, ServeGuard};
 use ndn_data::wire::{
-    AuditAnswer, AuditAsk, NONCE_LEN, Record, audit_ask_name, decode_record, encode_audit_answer,
-    parse_audit_ask_name, parse_log_name, parse_piece_name, piece_names, version_proof,
+    AuditAnswer, AuditAsk, NONCE_LEN, Record, VersionBody, audit_ask_name, decode_record,
+    encode_audit_answer, encode_record, parse_audit_ask_name, parse_log_name, parse_piece_name,
+    piece_names, version_proof,
 };
 use ndn_data::{Config, DataLayer, Device, Entropy, Name, Timestamp, Transport};
 use ndn_link::{EngineFaces, FaceSink};
+use ndn_packet::Data;
 use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_security::{Certificate, SecurityManager, SignedTrustContext};
 use ndn_sim::{Fabric, NodeId};
@@ -37,7 +39,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::feature::Feature;
-use crate::provider::{DeviceSpec, Provider, Tally};
+use crate::provider::{DeviceSpec, Provider, Tally, Tamper};
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
 const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
@@ -50,7 +52,8 @@ struct Case {
     /// Every data layer attached, with its store, by node (a thief's layer carries its victim's
     /// name, so names do not tell them apart).
     devices: BTreeMap<NodeId, Attached>,
-    /// The audit relays injected ([`Provider::relay_audits`]), served while the case runs.
+    /// The audit relays and replaying caches injected ([`Provider::relay_audits`],
+    /// [`Provider::replay`]), served while the case runs.
     relays: Vec<(Node, ServeGuard)>,
 }
 
@@ -190,6 +193,10 @@ impl Provider for Reference {
                 | Feature::Custody
                 | Feature::Prune
                 | Feature::LargePayloads
+                | Feature::Blocks
+                | Feature::OneKey
+                | Feature::Expiry
+                | Feature::RangeReads
         )
     }
 
@@ -340,6 +347,13 @@ impl Provider for Reference {
         }
     }
 
+    fn signed_by(&self, device: &DeviceSpec) -> u64 {
+        let case = self.case.lock().expect("the provider's lock");
+        case.devices
+            .get(&device.node)
+            .map_or(0, |a| a.layer.signatures())
+    }
+
     async fn release(
         &self,
         _fabric: &Fabric,
@@ -383,6 +397,75 @@ impl Provider for Reference {
         pieces_of(&stored, prefix)
             .map(|(_, wire)| wire.len() as u64)
             .sum()
+    }
+
+    fn tamper(&self, device: &DeviceSpec, version: &Name, how: Tamper) -> anyhow::Result<()> {
+        let store = self.store(device);
+        let block = |name: &Name| -> anyhow::Result<(Data, VersionBody)> {
+            let wire = store
+                .get(name)
+                .with_context(|| format!("{} stores no packet {name}", device.name()))?;
+            let data = Data::decode(wire).map_err(|e| anyhow::anyhow!("{name}: {e:?}"))?;
+            let content = data.content().cloned().unwrap_or_default();
+            let Record::Version(body) = decode_record(content)? else {
+                anyhow::bail!("{name} is no version");
+            };
+            anyhow::ensure!(
+                body.sealed.is_none(),
+                "{name} is sealed: its entries are inside the ciphertext, which a holder cannot \
+                 alter entry by entry"
+            );
+            anyhow::ensure!(body.block.is_some(), "{name} is no block");
+            Ok((data, body))
+        };
+        let (data, mut body) = block(version)?;
+        let entries = body.block.as_mut().expect("checked a block");
+        let (Tamper::Forge { entry } | Tamper::Splice { entry, .. }) = how;
+        let len = entries.len();
+        anyhow::ensure!(
+            (entry as usize) < len,
+            "{version} has {len} entries, none at {entry}"
+        );
+        let e = &mut entries[entry as usize];
+        match how {
+            Tamper::Forge { .. } => {
+                let (field, value) = e
+                    .fields
+                    .fields()
+                    .next()
+                    .map(|(f, v)| (f.to_owned(), v.clone()))
+                    .with_context(|| format!("entry {entry} of {version} has no field"))?;
+                let mut forged = value.to_vec();
+                forged.extend_from_slice(b"-forged");
+                e.fields = std::mem::take(&mut e.fields).with(field, forged);
+            }
+            Tamper::Splice { from, their, .. } => {
+                let (_, other) = block(&from)?;
+                let other = other.block.expect("checked a block");
+                e.fields = other
+                    .get(their as usize)
+                    .with_context(|| {
+                        format!("{from} has {} entries, none at {their}", other.len())
+                    })?
+                    .fields
+                    .clone();
+            }
+        }
+        let content = encode_record(&Record::Version(body));
+        // The same name, freshness and signature info, and the original signature bytes over
+        // content its writer never signed.
+        let sig = data
+            .sig_info()
+            .with_context(|| format!("{version} carries no signature info"))?;
+        let key = sig.key_locator_name();
+        let mut builder = DataBuilder::new((*data.name).clone(), &content);
+        if let Some(f) = data.meta_info().and_then(|m| m.freshness_period) {
+            builder = builder.freshness(f);
+        }
+        let value = bytes::Bytes::copy_from_slice(data.sig_value());
+        let forged = builder.sign_sync(sig.sig_type, key.as_deref(), |_| value);
+        store.insert(version.clone(), forged);
+        Ok(())
     }
 
     async fn relay_audits(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
@@ -467,6 +550,46 @@ impl Provider for Reference {
                             signer.sign_sync(region).unwrap_or_default()
                         });
                     let _ = responder.respond_bytes(wire).await;
+                }
+            })
+            .await?;
+        self.case
+            .lock()
+            .expect("the provider's lock")
+            .relays
+            .push((node, guard));
+        Ok(())
+    }
+
+    async fn replay(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        prefix: &Name,
+    ) -> anyhow::Result<()> {
+        let engine = fabric
+            .engine_of(device.node)
+            .with_context(|| format!("no engine on node {}", device.node))?;
+        let node = engine.app_node(CancellationToken::new());
+        // Fresh, past every cache: what a device serving `prefix` answers now.
+        let ask = InterestBuilder::new(prefix.clone())
+            .can_be_prefix()
+            .must_be_fresh()
+            .lifetime(std::time::Duration::from_secs(2));
+        let packet = Consumer::new(node.connection())
+            .fetch_with(ask)
+            .await
+            .with_context(|| format!("nothing answered {prefix} to replay"))?
+            .raw()
+            .clone();
+        // Served on the device's own node under `prefix`: the hub forwards every Interest to
+        // every device, and this node's longest match for `prefix` is the replayer, not the
+        // device's data layer. Every Interest under it gets the same packet, however stale.
+        let guard = node
+            .serve(prefix.clone(), move |_interest, responder| {
+                let packet = packet.clone();
+                async move {
+                    let _ = responder.respond_bytes(packet).await;
                 }
             })
             .await?;

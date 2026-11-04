@@ -16,7 +16,7 @@ use ndn_sim::{
 };
 
 use crate::case::Failure;
-use crate::provider::{DeviceSpec, NodeRole, Provider, Tally};
+use crate::provider::{DeviceSpec, NodeRole, Provider, Tally, Tamper};
 use crate::report::{Cost, Measure};
 
 /// A device of a [`Plan`], by position.
@@ -37,12 +37,22 @@ struct Planned {
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
     devices: Vec<Planned>,
+    /// Count each device's packets by name, to this many name components
+    /// ([`Plan::count_names`]).
+    names: Option<usize>,
 }
 
 impl Plan {
     /// An empty plan.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Count every packet on every link by name, its first `components` name components, so a
+    /// case can tell which named packets reached a device ([`Net::received`]). It decodes each
+    /// frame, so only the cases that need it ask.
+    pub fn count_names(&mut self, components: usize) {
+        self.names = Some(components);
     }
 
     /// Add `person`'s `device` (e.g. `"alice"`, `"laptop"`). The person is a namespace of any
@@ -103,6 +113,8 @@ pub struct Net {
     fabric: Fabric,
     hub: NodeId,
     specs: Vec<DeviceSpec>,
+    /// Each device's forwarder label, as the fabric's name counters know it.
+    labels: Vec<String>,
 }
 
 impl Net {
@@ -115,9 +127,13 @@ impl Net {
         mut profile: impl FnMut(&DeviceSpec) -> NodeProfile,
     ) -> anyhow::Result<Net> {
         let mut sim = Simulation::new().kernel(kernel);
+        if let Some(components) = plan.names {
+            sim = sim.with_prefix_accounting(components);
+        }
         let hub_node = sim.add_node_profile(hub);
         sim.add_strategy(hub_node, "/", "multicast");
         let mut specs = Vec::with_capacity(plan.devices.len());
+        let mut labels = Vec::with_capacity(plan.devices.len());
         for (i, p) in plan.devices.iter().enumerate() {
             let spec = DeviceSpec {
                 person: format!("/{}", p.person).parse()?,
@@ -128,6 +144,7 @@ impl Net {
             };
             let mut node_profile = profile(&spec);
             node_profile.clock_skew.get_or_insert(ClockSkew::NONE);
+            labels.push(node_profile.label.clone());
             let node = sim.add_node_profile(node_profile);
             debug_assert_eq!(node, spec.node);
             sim.link(node, hub_node, LinkConfig::lan());
@@ -139,6 +156,7 @@ impl Net {
             fabric: sim.start().await?,
             hub: hub_node,
             specs,
+            labels,
         })
     }
 
@@ -204,7 +222,7 @@ impl Net {
         w
     }
 
-    /// One device's link counters now: the Interests it sent and the bytes it received.
+    /// One device's link counters now: the packets and bytes it sent and received.
     pub fn device_wire(&self, d: Dev) -> DeviceWire {
         let mut w = DeviceWire::default();
         for f in self
@@ -214,10 +232,43 @@ impl Net {
         {
             if matches!(f.kind, FaceKind::Link { .. }) {
                 w.interests += f.out_interests;
+                w.data += f.out_data;
+                w.out_bytes += f.out_bytes;
+                w.in_interests += f.in_interests;
+                w.in_data += f.in_data;
                 w.in_bytes += f.in_bytes;
             }
         }
         w
+    }
+
+    /// Every forwarder (the hub's and each device's) evicts what its content store caches under
+    /// `prefix`, as caches do under load or on restart: from then on a packet under `prefix` is
+    /// found only at a device that serves it. Returns how many cached packets were evicted.
+    pub async fn forget_cached(&self, prefix: &Name) -> usize {
+        let mut evicted = 0;
+        let nodes = std::iter::once(self.hub).chain(self.specs.iter().map(|s| s.node));
+        for node in nodes {
+            if let Some(engine) = self.fabric.engine_of(node) {
+                evicted += engine.cs().evict_prefix_erased(prefix, None).await;
+            }
+        }
+        evicted
+    }
+
+    /// How many Data packets named `name` reached `d` over its links so far, whether or not its
+    /// data layer kept them. Needs the plan to count names ([`Plan::count_names`]) to at least
+    /// `name`'s length; a longer name is counted with every other name sharing its first
+    /// components.
+    pub fn received(&self, d: Dev, name: &Name) -> u64 {
+        let stats = self
+            .fabric
+            .prefix_stats()
+            .expect("a case reading names received plans to count them (Plan::count_names)");
+        let group = ndn_sim::netstat::group_prefix(&name.to_string(), stats.grouping());
+        stats
+            .get(&self.labels[d.0], &group)
+            .map_or(0, |c| c.in_data)
     }
 }
 
@@ -226,6 +277,14 @@ impl Net {
 pub struct DeviceWire {
     /// Interests the device sent onto its links.
     pub interests: u64,
+    /// Data packets the device sent onto its links.
+    pub data: u64,
+    /// Bytes the device sent onto its links.
+    pub out_bytes: u64,
+    /// Interests the device received from its links.
+    pub in_interests: u64,
+    /// Data packets the device received from its links.
+    pub in_data: u64,
     /// Bytes the device received from its links.
     pub in_bytes: u64,
 }
@@ -235,6 +294,10 @@ impl std::ops::Sub for DeviceWire {
     fn sub(self, before: DeviceWire) -> DeviceWire {
         DeviceWire {
             interests: self.interests - before.interests,
+            data: self.data - before.data,
+            out_bytes: self.out_bytes - before.out_bytes,
+            in_interests: self.in_interests - before.in_interests,
+            in_data: self.in_data - before.in_data,
             in_bytes: self.in_bytes - before.in_bytes,
         }
     }
@@ -348,6 +411,28 @@ impl World {
             .relay_audits(&self.net.fabric, self.net.spec(d))
             .await
             .map_err(|e| Failure::new(format!("cannot relay audits: {e:#}")))
+    }
+
+    /// The signatures `d`'s data layer has made, cumulative (see [`Provider::signed_by`]).
+    pub fn signed_by(&self, d: Dev) -> u64 {
+        self.provider.signed_by(self.net.spec(d))
+    }
+
+    /// `d`, a malicious holder, replaces the packet of block `version` in its store as `how`
+    /// says, keeping its signature bytes (see [`Provider::tamper`]).
+    pub fn tamper(&self, d: Dev, version: &Name, how: Tamper) -> Result<(), Failure> {
+        self.provider
+            .tamper(self.net.spec(d), version, how)
+            .map_err(|e| Failure::new(format!("cannot tamper: {e:#}")))
+    }
+
+    /// From now on `d`'s node answers Interests under `prefix` with the packet that answers it
+    /// now, fetched fresh: a replaying cache (see [`Provider::replay`]).
+    pub async fn replay(&self, d: Dev, prefix: &Name) -> Result<(), Failure> {
+        self.provider
+            .replay(&self.net.fabric, self.net.spec(d), prefix)
+            .await
+            .map_err(|e| Failure::new(format!("cannot replay: {e:#}")))
     }
 
     /// Let `d` of virtual time pass.

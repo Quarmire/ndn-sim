@@ -32,10 +32,18 @@ pub enum Feature {
     /// Payloads larger than one packet (log rule): a version carrying `Payload::Large`, its
     /// chunks and manifest verified piece by piece, read whole by `get`.
     LargePayloads,
-    /// Signed blocks of small entries under a producer's accepted delay.
+    /// Signed blocks of small entries under a producer's accepted delay (model change M6): one
+    /// signature per block, each entry verifiable through it.
     Blocks,
-    /// The one-key rule.
+    /// The one-key rule: one key writes, and its signed head bounds how fresh `get` is and
+    /// refuses a rollback.
     OneKey,
+    /// Retention by expiry: a version whose keep passed by a device's own clock is dropped there,
+    /// served by none, and answered `DataError::Expired`.
+    Expiry,
+    /// Range reads of a one-key stream by seq and by time (`<C>/32=range/<R>`), fetching the
+    /// blocks in range and a logarithmic search, not the stream.
+    RangeReads,
     /// Revocation as a cut in the trust context.
     Revocation,
     /// The owner re-admitting versions outside a cut.
@@ -55,7 +63,7 @@ impl Feature {
             | Feature::Log
             | Feature::PruneScope => 2,
             Feature::Custody | Feature::Prune | Feature::LargePayloads => 3,
-            Feature::Blocks | Feature::OneKey => 4,
+            Feature::Blocks | Feature::OneKey | Feature::Expiry | Feature::RangeReads => 4,
             Feature::Revocation | Feature::Readmit => 5,
             Feature::Functions => 6,
         }
@@ -77,6 +85,8 @@ impl Feature {
             Feature::LargePayloads => "large payloads",
             Feature::Blocks => "signed blocks",
             Feature::OneKey => "one-key rule",
+            Feature::Expiry => "retention by expiry",
+            Feature::RangeReads => "range reads",
             Feature::Revocation => "revocation",
             Feature::Readmit => "re-admission",
             Feature::Functions => "named functions",

@@ -61,6 +61,8 @@ ndn-data         = { path = "../ndn-rs/crates/app/ndn-data" }
 # trust-context library (its strategy) and the link library (its route over a link).
 ndn-namespace    = { path = "../ndn-rs/crates/security/ndn-namespace" }
 ndn-link         = { path = "../ndn-ext/crates/faces/ndn-link", features = ["engine"] }
+# ndn-data-conformance: trust-context versions signed as the root flow signs them (slice 5).
+ndn-cert         = { path = "../ndn-rs/crates/security/ndn-cert" }
 
 # Core async runtime — individual crates enable only the features they need
 tokio      = { version = "1", default-features = false }

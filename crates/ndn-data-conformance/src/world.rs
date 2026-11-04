@@ -10,13 +10,13 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ndn_data::{DataLayer, Name, Timestamp};
+use ndn_data::{DataLayer, Name, Timestamp, VersionId};
 use ndn_sim::{
     ClockSkew, Fabric, FaceKind, LinkConfig, NodeId, NodeProfile, SimKernel, Simulation,
 };
 
 use crate::case::Failure;
-use crate::provider::{DeviceSpec, NodeRole, Provider, Tally, Tamper};
+use crate::provider::{Certs, DeviceSpec, NodeRole, Provider, Tally, Tamper};
 use crate::report::{Cost, Measure};
 
 /// A device of a [`Plan`], by position.
@@ -27,7 +27,7 @@ pub struct Dev(pub usize);
 struct Planned {
     person: String,
     device: String,
-    /// A thief: holds a copy of this device's key.
+    /// A thief: takes this device, key and storage ([`World::steal`]).
     stolen_from: Option<Dev>,
     /// A holder of its person's collections.
     holds: bool,
@@ -77,7 +77,8 @@ impl Plan {
         Dev(self.devices.len() - 1)
     }
 
-    /// Add a thief's node holding a copy of `victim`'s key.
+    /// Add a thief's node, which takes `victim`'s device — key and storage — when the case
+    /// says so ([`World::steal`]).
     pub fn thief(&mut self, victim: Dev) -> Dev {
         self.devices.push(Planned {
             person: "thief".to_owned(),
@@ -313,7 +314,11 @@ pub struct Mark {
 /// A case's world: the [`Net`] plus each device's data layer from the provider.
 pub struct World {
     net: Net,
-    layers: Vec<Arc<dyn DataLayer>>,
+    /// Each device's data layer; a thief has one once it takes the stolen device
+    /// ([`World::steal`]).
+    layers: RefCell<Vec<Option<Arc<dyn DataLayer>>>>,
+    /// For each device, the device it holds a stolen key of (a thief).
+    victims: Vec<Option<Dev>>,
     provider: Arc<dyn Provider>,
     gestures: Cell<u64>,
     converge: Cell<Option<Duration>>,
@@ -322,8 +327,8 @@ pub struct World {
 }
 
 impl World {
-    /// Start `plan` on `kernel` and attach `provider`'s data layer to every device (a thief's
-    /// with the victim's key).
+    /// Start `plan` on `kernel` and attach `provider`'s data layer to every device but the
+    /// thieves (see [`steal`](Self::steal)).
     pub async fn build(
         kernel: Arc<dyn SimKernel>,
         plan: &Plan,
@@ -336,20 +341,16 @@ impl World {
         provider.prepare(&net.fabric, net.hub, &net.specs).await?;
         let mut layers = Vec::with_capacity(plan.devices.len());
         for (i, p) in plan.devices.iter().enumerate() {
-            let spec = &net.specs[i];
             let layer = match p.stolen_from {
-                Some(victim) => {
-                    provider
-                        .attach_stolen(&net.fabric, &net.specs[victim.0], spec)
-                        .await?
-                }
-                None => provider.attach(&net.fabric, spec).await?,
+                Some(_) => None,
+                None => Some(provider.attach(&net.fabric, &net.specs[i]).await?),
             };
             layers.push(layer);
         }
         Ok(World {
             net,
-            layers,
+            layers: RefCell::new(layers),
+            victims: plan.devices.iter().map(|p| p.stolen_from).collect(),
             provider,
             gestures: Cell::new(0),
             converge: Cell::new(None),
@@ -364,8 +365,19 @@ impl World {
     }
 
     /// The device's data layer.
+    ///
+    /// # Panics
+    ///
+    /// For a thief that has not taken the stolen device yet ([`steal`](Self::steal)).
     pub fn at(&self, d: Dev) -> Arc<dyn DataLayer> {
-        Arc::clone(&self.layers[d.0])
+        let layers = self.layers.borrow();
+        let layer = layers[d.0].as_ref().unwrap_or_else(|| {
+            panic!(
+                "device {} is a thief without a data layer until it steals the device",
+                d.0
+            )
+        });
+        Arc::clone(layer)
     }
 
     /// Record one person gesture: pointing at data, pointing at someone, throwing away.
@@ -373,13 +385,123 @@ impl World {
         self.gestures.set(self.gestures.get() + 1);
     }
 
-    /// `by`, holding the namespace's authority, revokes `device`'s key (see
-    /// [`Provider::revoke`]).
+    /// `by`, holding the namespace's authority, revokes `device`'s key with a cut at what `by`
+    /// holds (see [`Provider::revoke`]), and the new trust-context version reaches every node
+    /// ([`spread_all`](Self::spread_all)).
     pub async fn revoke(&self, by: Dev, device: Dev) -> Result<(), Failure> {
+        self.revoke_at(by, device).await?;
+        self.spread_all().await
+    }
+
+    /// As [`revoke`](Self::revoke), but the new version stays on `by`'s node until
+    /// [`spread`](Self::spread) carries it further: the revocation has not reached the others
+    /// yet.
+    pub async fn revoke_at(&self, by: Dev, device: Dev) -> Result<(), Failure> {
         self.provider
             .revoke(&self.net.fabric, self.net.spec(by), self.net.spec(device))
             .await
             .map_err(|e| Failure::new(format!("revoke failed: {e:#}")))
+    }
+
+    /// The newest trust-context versions reach `d`'s node (see [`Provider::spread`]).
+    pub async fn spread(&self, d: Dev) -> Result<(), Failure> {
+        self.spread_to(self.net.spec(d).node).await
+    }
+
+    /// The newest trust-context versions reach the hub and every device but the thieves': a
+    /// thief's node is the adversary's, which adopts nothing that would stop it.
+    pub async fn spread_all(&self) -> Result<(), Failure> {
+        self.spread_to(self.net.hub).await?;
+        for (i, victim) in self.victims.iter().enumerate() {
+            if victim.is_none() {
+                self.spread_to(self.net.specs[i].node).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn spread_to(&self, node: NodeId) -> Result<(), Failure> {
+        self.provider
+            .spread(&self.net.fabric, node)
+            .await
+            .map_err(|e| Failure::new(format!("a trust-context version did not spread: {e:#}")))
+    }
+
+    /// `by`, holding the namespace's authority, re-admits version `id` of `collection` exactly
+    /// as `from` holds it refused (see [`Provider::readmit`]), and the new trust-context version
+    /// reaches every node.
+    pub async fn readmit(
+        &self,
+        by: Dev,
+        from: Dev,
+        collection: &Name,
+        id: &VersionId,
+    ) -> Result<(), Failure> {
+        self.provider
+            .readmit(
+                &self.net.fabric,
+                self.net.spec(by),
+                self.net.spec(from),
+                collection,
+                id,
+            )
+            .await
+            .map_err(|e| Failure::new(format!("readmit failed: {e:#}")))?;
+        self.spread_all().await
+    }
+
+    /// The thief `thief` takes the device whose key it holds, storage and all (see
+    /// [`Provider::steal`]): [`at`](Self::at) answers its data layer from now on.
+    pub async fn steal(&self, thief: Dev) -> Result<(), Failure> {
+        let victim = self.victims[thief.0]
+            .unwrap_or_else(|| panic!("device {} of the plan is no thief", thief.0));
+        let layer = self
+            .provider
+            .steal(
+                &self.net.fabric,
+                self.net.spec(victim),
+                self.net.spec(thief),
+            )
+            .await
+            .map_err(|e| Failure::new(format!("cannot steal the device: {e:#}")))?;
+        self.layers.borrow_mut()[thief.0] = Some(layer);
+        Ok(())
+    }
+
+    /// `d` renews its certificate (see [`Provider::renew`]).
+    pub async fn renew(&self, d: Dev) -> Result<(), Failure> {
+        self.provider
+            .renew(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("renew failed: {e:#}")))
+    }
+
+    /// `which` certificates of `d`'s key expire (see [`Provider::expire`]).
+    pub async fn expire(&self, d: Dev, which: Certs) -> Result<(), Failure> {
+        self.provider
+            .expire(&self.net.fabric, self.net.spec(d), which)
+            .await
+            .map_err(|e| Failure::new(format!("cannot let the certificates expire: {e:#}")))
+    }
+
+    /// `by` makes a recovery kit for its namespace (see [`Provider::recovery_kit`]), and the new
+    /// trust-context version reaches every node.
+    pub async fn recovery_kit(&self, by: Dev) -> Result<(), Failure> {
+        self.provider
+            .recovery_kit(&self.net.fabric, self.net.spec(by))
+            .await
+            .map_err(|e| Failure::new(format!("making a recovery kit failed: {e:#}")))?;
+        self.spread_all().await
+    }
+
+    /// `by` recovers its namespace with the kit after its root was compromised (see
+    /// [`Provider::recover`]), and the new trust-context versions reach every node.
+    pub async fn recover(&self, by: Dev) -> Result<(), Failure> {
+        self.provider
+            .recover(&self.net.fabric, self.net.spec(by))
+            .await
+            .map_err(|e| Failure::new(format!("recovery failed: {e:#}")))?;
+        self.spread_all().await
     }
 
     /// `d`'s host drops its own copies of the large payload pieces under `name` (a version's name

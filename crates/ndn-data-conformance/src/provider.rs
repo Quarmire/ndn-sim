@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ndn_data::{DataLayer, Name};
+use ndn_data::{DataLayer, Name, VersionId};
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 
 use crate::feature::Feature;
@@ -70,6 +70,15 @@ pub enum Tamper {
     },
 }
 
+/// Which certificates of a device's key [`Provider::expire`] lets expire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Certs {
+    /// Every certificate of the key issued so far.
+    All,
+    /// Every one but the newest: the ones a renewal superseded.
+    Superseded,
+}
+
 /// An implementation of the data layer, as the cases drive it.
 ///
 /// Keys, trust anchors, trust schemas and routes beyond the harness's default topology are the
@@ -112,24 +121,107 @@ pub trait Provider: Send + Sync {
         device: &DeviceSpec,
     ) -> anyhow::Result<Arc<dyn DataLayer>>;
 
-    /// A data layer on `thief`'s node that signs with a copy of `victim`'s key: the stolen-key
-    /// adversary. It may choose any sequence number and dates by its own (skewed) clock.
-    async fn attach_stolen(
-        &self,
-        fabric: &Fabric,
-        victim: &DeviceSpec,
-        thief: &DeviceSpec,
-    ) -> anyhow::Result<Arc<dyn DataLayer>>;
-
-    /// `by`, holding the namespace's authority, revokes `device`'s key in the trust context (what
-    /// `ndn-namespace` revoke does). Revocation is not one of the seven verbs; it reaches the
-    /// layer as a cut (slice 5).
+    /// `by`, holding its namespace's authority, revokes `device`'s key (what `ndn-namespace`
+    /// revoke does): it signs the next version of the namespace's trust context, adding a
+    /// Revocation of the key and its cut — the log entries of that key `by`'s data layer holds
+    /// verified — and `by`'s node adopts it. Other nodes adopt it when [`spread`](Self::spread)
+    /// reaches them. Revocation is not one of the seven verbs; it reaches the layer as a cut.
     async fn revoke(
         &self,
         fabric: &Fabric,
         by: &DeviceSpec,
         device: &DeviceSpec,
     ) -> anyhow::Result<()>;
+
+    /// `node` follows its namespaces' trust contexts to the newest version each has signed (each
+    /// version checked against the one it holds: signed by one of its anchors, newer) and
+    /// adopts them, as context sync brings them to a node. A provider without signed context
+    /// versions says so.
+    async fn spread(&self, fabric: &Fabric, node: NodeId) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot bring new trust-context versions to node {node}")
+    }
+
+    /// `by`, holding its namespace's authority, re-admits the version `id` of `collection`
+    /// exactly: by its name and the implicit digest of the packet `from` holds refused by the
+    /// revocation of its key. It signs the next context version adding that one name to the
+    /// key's cut, and `by`'s node adopts it ([`spread`](Self::spread) brings it to the others).
+    /// A provider that cannot re-admit says so.
+    async fn readmit(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        from: &DeviceSpec,
+        collection: &Name,
+        id: &VersionId,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, from, id);
+        anyhow::bail!(
+            "this provider cannot make {} re-admit a version of {collection}",
+            by.name()
+        )
+    }
+
+    /// The stolen-key adversary: the thief takes `victim`'s device — its key and a copy of
+    /// everything it stores — and from now on a data layer runs on `thief`'s node, signing with
+    /// that key and writing on from the victim's own log, at any date its (skewed) clock gives.
+    /// Until then the thief's node runs no data layer: a key in two places at once is the theft,
+    /// not the setup. Returns the thief's data layer.
+    async fn steal(
+        &self,
+        fabric: &Fabric,
+        victim: &DeviceSpec,
+        thief: &DeviceSpec,
+    ) -> anyhow::Result<Arc<dyn DataLayer>>;
+
+    /// `device` renews its certificate: its namespace's authority now certifies the same key
+    /// again, valid from now, and every node can find the new certificate. A provider that
+    /// cannot says so.
+    async fn renew(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot renew {}'s certificate", device.name())
+    }
+
+    /// `which` certificates of `device`'s key expire: every node, and the device itself, holds
+    /// each of them only with a validity period that ended before now by the host's clock (the
+    /// clock validators read). A provider that cannot says so.
+    async fn expire(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        which: Certs,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, which);
+        anyhow::bail!(
+            "this provider cannot let {}'s certificates expire",
+            device.name()
+        )
+    }
+
+    /// `by`, holding its namespace's authority, makes a recovery kit: the next context version
+    /// adds the kit's key as a recovery anchor, and `by`'s node adopts it. A provider that
+    /// cannot says so.
+    async fn recovery_kit(&self, fabric: &Fabric, by: &DeviceSpec) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot make a recovery kit for {}'s namespace",
+            by.person
+        )
+    }
+
+    /// `by`'s namespace root was compromised; `by` recovers the namespace with its recovery kit
+    /// (what `ndn-namespace` recover with a compromised old root does): the kit signs the next
+    /// version (a new root, the old root removed and revoked, every revocation and cut carried,
+    /// each key revoked with a cut certified again by the new root), and the new root signs
+    /// the one after it. `by`'s node adopts both; the new root is the namespace's authority from
+    /// then on. A provider that cannot recover says so.
+    async fn recover(&self, fabric: &Fabric, by: &DeviceSpec) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot recover {}'s namespace with a recovery kit",
+            by.person
+        )
+    }
 
     /// The implementation's counters now.
     fn tally(&self) -> Tally;

@@ -44,10 +44,20 @@ pub enum Feature {
     /// Range reads of a one-key stream by seq and by time (`<C>/32=range/<R>`), fetching the
     /// blocks in range and a logarithmic search, not the stream.
     RangeReads,
-    /// Revocation as a cut in the trust context.
+    /// Revocation as a cut in the trust context: the key's versions the cut lists stay valid,
+    /// every other packet it signed is refused, whatever date it claims.
     Revocation,
-    /// The owner re-admitting versions outside a cut.
+    /// The owner re-admitting exact versions outside a cut (name and digest, in the trust
+    /// context).
     Readmit,
+    /// A revocation arriving re-checks what a device accepted from the key: a version outside
+    /// the cut is withdrawn (`Change::Withdrawn`).
+    RevocationRecheck,
+    /// Keys over time: a version's validity does not depend on a clock — an expired
+    /// certificate ends nothing, a renewed one continues the key's log.
+    KeyLifetime,
+    /// Recovering a namespace whose root was compromised carries its revocations and cuts.
+    Recovery,
     /// Named functions whose answers are sealed to their inputs' audience.
     Functions,
 }
@@ -64,7 +74,11 @@ impl Feature {
             | Feature::PruneScope => 2,
             Feature::Custody | Feature::Prune | Feature::LargePayloads => 3,
             Feature::Blocks | Feature::OneKey | Feature::Expiry | Feature::RangeReads => 4,
-            Feature::Revocation | Feature::Readmit => 5,
+            Feature::Revocation
+            | Feature::Readmit
+            | Feature::RevocationRecheck
+            | Feature::KeyLifetime
+            | Feature::Recovery => 5,
             Feature::Functions => 6,
         }
     }
@@ -89,6 +103,9 @@ impl Feature {
             Feature::RangeReads => "range reads",
             Feature::Revocation => "revocation",
             Feature::Readmit => "re-admission",
+            Feature::RevocationRecheck => "re-check on revocation arrival",
+            Feature::KeyLifetime => "keys over time",
+            Feature::Recovery => "recovery carries cuts",
             Feature::Functions => "named functions",
         }
     }

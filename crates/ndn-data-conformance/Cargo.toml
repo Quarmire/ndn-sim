@@ -23,6 +23,9 @@ ndn-sync    = { workspace = true }
 # A device's sync groups set up as a daemon's libraries set them up (`reference`).
 ndn-namespace = { workspace = true }
 ndn-link    = { workspace = true }
+# Trust-context versions signed as the root flow signs them: revocations with cuts,
+# re-admissions, recovery kits and recovery (`reference`).
+ndn-cert    = { workspace = true }
 tokio-util  = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }

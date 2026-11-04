@@ -600,8 +600,14 @@ mod tests {
             .unwrap()
             .app_consumer(CancellationToken::new());
         let name = net.spec(to).name().append("ping");
+        // MustBeFresh: the answer is stale at once, so a cache on the way (which now admits
+        // every Data, as NFD's does) never answers for the device; only the device itself can.
         consumer
-            .fetch_with(InterestBuilder::new(name).lifetime(Duration::from_secs(1)))
+            .fetch_with(
+                InterestBuilder::new(name)
+                    .must_be_fresh()
+                    .lifetime(Duration::from_secs(1)),
+            )
             .await
             .is_ok()
     }

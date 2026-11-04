@@ -68,12 +68,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
 
-        // Stolen; the thief's clock is a month slow. The revocation reaches every honest device
-        // (the tablet holds it from the moment it joins).
+        // Stolen; the thief's clock is a month slow. Alice revokes the key with a cut at what her
+        // laptop held when she lost the phone; the revocation reaches every honest device (the
+        // tablet holds it from the moment it joins).
+        let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &journal, &tuesday).await?;
         w.net().offline(PHONE);
         w.net().set_clock(THIEF, ClockSkew::behind(30 * DAY));
-        w.revoke(LAPTOP, PHONE).await?;
+        w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let revoked_at = w.net().true_date();
 

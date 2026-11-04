@@ -60,12 +60,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         // The key leaks with a copy of the phone's storage; the phone goes offline and writes on.
+        let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &notes, &seen).await?;
         w.net().offline(PHONE);
         let honest = phone
             .put(&notes, content(&[("phone", "watered, offline")]), note(1))
             .await?;
-        w.revoke(LAPTOP, PHONE).await?;
+        w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let forged = thief
             .put(&notes, content(&[("thief", "forged")]), note(1))

@@ -63,6 +63,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         // The key leaks with the phone's storage; the phone, offline, writes two more notes.
+        let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &garden, &seen).await?;
         w.net().offline(PHONE);
         let wanted = phone
@@ -76,7 +77,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             "precondition: the two offline notes are neighbours in the phone's log, got \
              {wanted:?} and {neighbour:?}"
         );
-        w.revoke(LAPTOP, PHONE).await?;
+        w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         w.until("the stolen device knows the shared kitchen", LIMIT, || {
             known(&*thief, &kitchen)

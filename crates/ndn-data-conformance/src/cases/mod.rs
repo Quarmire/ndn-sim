@@ -1,10 +1,12 @@
 //! The cases, in study order: the twelve use cases (`c1`…`c12`), with slice 3's custody of
 //! large data (`h1`…`h9`) beside the use case it grew from (c5), slice 4's small constant
 //! streams (`s1`…`s6`: range reads, a malicious holder, expiry, a replayed head, a stopped
-//! stream) beside theirs (c6) and slice 5's keys over time (`k1`…`k6`: an expired certificate, a
-//! backdated version, exact re-admission, a late revocation, a renewal, a recovery) beside theirs
-//! (c3), the items left open after the model's fixes (`o1`…`o4`), and the slice-2 security review
-//! (`r1`…`r4`): the attacks it found and the concurrent share its merge must keep.
+//! stream) beside theirs (c6) and slice 5's keys over time (`k1`…`k10`: an expired certificate, a
+//! backdated version, exact re-admission, a late revocation, a renewal, a recovery, and from its
+//! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
+//! a revoked issuer) beside theirs (c3), the items left open after the model's fixes
+//! (`o1`…`o4`), and the slice-2 security review (`r1`…`r4`): the attacks it found and the
+//! concurrent share its merge must keep.
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -42,12 +44,16 @@ mod h6_sealed_non_reader;
 mod h7_lost_single_copy;
 mod h8_relaying_holder;
 mod h9_prune_before_auditor;
+mod k10_revoked_issuer;
 mod k1_expired_key;
 mod k2_backdated;
 mod k3_exact_readmit;
 mod k4_late_revocation;
 mod k5_renewed_key;
 mod k6_recovery_cut;
+mod k7_bounded_cut;
+mod k8_lapsed_guest;
+mod k9_other_bytes;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
@@ -74,6 +80,10 @@ pub const CASES: &[Case] = &[
     k4_late_revocation::CASE,
     k5_renewed_key::CASE,
     k6_recovery_cut::CASE,
+    k7_bounded_cut::CASE,
+    k8_lapsed_guest::CASE,
+    k9_other_bytes::CASE,
+    k10_revoked_issuer::CASE,
     c04_lens_seal::CASE,
     c05_prune_vs_custody::CASE,
     h1_large_photo::CASE,
@@ -653,4 +663,35 @@ fn equivocation(changes: &[Change]) -> bool {
     changes
         .iter()
         .any(|c| matches!(c, Change::Equivocation { .. }))
+}
+
+// ---- the keys-over-time kit (c3, k1–k10, o2) -----------------------------------------------
+
+/// The time the owner says a device was lost, by the clock of `root` (the namespace's root
+/// device, which bounds the revocation's cut by what it first verified before then): a second
+/// after everything the case saw so far, so what `root` held by now came strictly before it.
+async fn loss_time(w: &World, root: Dev) -> Timestamp {
+    w.sleep(Duration::from_secs(1)).await;
+    w.net().date(root)
+}
+
+/// The log entry name of version `id` of `collection`, which device `writer` wrote
+/// (`<writer>/32=log/<collection>/seq=<n>`): the name a cut and a re-admission speak of.
+fn log_entry(w: &World, writer: Dev, collection: &Name, id: &VersionId) -> Name {
+    ndn_data::wire::log_name(&w.net().spec(writer).name(), Some(collection), id.seq.0)
+}
+
+/// The full name among `names` (each a name plus an implicit digest) of the packet named
+/// `entry`.
+fn full_name_of<'n>(names: &'n [Name], entry: &Name) -> Option<&'n Name> {
+    names
+        .iter()
+        .find(|n| n.len() == entry.len() + 1 && n.has_prefix(entry))
+}
+
+/// Whether `changes` report version `id` withdrawn.
+fn withdrawn(changes: &[Change], id: &VersionId) -> bool {
+    changes
+        .iter()
+        .any(|c| matches!(c, Change::Withdrawn { id: w, .. } if w == id))
 }

@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Change;
+use ndn_data::{Change, Refusal};
 
 use super::*;
 use crate::case::CaseFuture;
@@ -92,9 +92,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             "Carol withdraws Bob's second edit",
             LIMIT,
             |changes| {
-                changes.iter().any(
-                    |c| matches!(c, Change::Withdrawn { id, cut } if *id == outside && cut.refuses(id)),
-                )
+                changes.iter().any(|c| {
+                    matches!(
+                        c,
+                        Change::Withdrawn { id, why: Refusal::OutsideCut(cut) }
+                            if *id == outside && cut.refuses(id)
+                    )
+                })
             },
         )
         .await?;

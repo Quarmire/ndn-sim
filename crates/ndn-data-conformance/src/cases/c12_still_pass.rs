@@ -147,7 +147,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
         let old = state(&*tablet, &album).await?;
-        w.revoke(LAPTOP, TABLET).await?;
+        let lost = loss_time(w, LAPTOP).await;
+        w.revoke(LAPTOP, TABLET, lost).await?;
         w.gesture();
         let fresh = laptop
             .put(&album, content(&[("file", "lighthouse.jpg")]), note(1))

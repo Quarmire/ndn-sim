@@ -70,9 +70,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
 
+        let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &journal, &tuesday).await?;
         w.net().offline(PHONE);
-        w.revoke(LAPTOP, PHONE).await?;
+        w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let before = thief
             .put(

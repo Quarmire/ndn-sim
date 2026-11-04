@@ -72,9 +72,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         // Stolen; Alice revokes on her laptop, and the new version stays there for now.
+        let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &journal, &inside).await?;
         w.net().offline(PHONE);
-        w.revoke_at(LAPTOP, PHONE).await?;
+        w.revoke_at(LAPTOP, PHONE, lost).await?;
         w.gesture();
 
         let mut tablets_feed = tablet.watch(&journal, &Frontier::new()).await?;

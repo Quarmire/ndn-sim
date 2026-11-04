@@ -63,11 +63,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
 
-        // Stolen: the phone leaves the network; the thief has it, and a clock a week slow.
+        // Stolen: the phone leaves the network; the thief has it, and a clock a week slow. Alice
+        // says when she lost it, and revokes the key with a cut at what her laptop held by then.
+        let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &journal, &seen).await?;
         w.net().offline(PHONE);
         w.net().set_clock(THIEF, ClockSkew::behind(7 * DAY));
-        w.revoke(LAPTOP, PHONE).await?;
+        w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let revoked_at = w.net().true_date();
 

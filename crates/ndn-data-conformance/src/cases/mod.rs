@@ -1,9 +1,10 @@
 //! The cases, in study order: the twelve use cases (`c1`…`c12`), with slice 3's custody of
-//! large data (`h1`…`h9`) beside the use case it grew from (c5) and slice 4's small constant
+//! large data (`h1`…`h9`) beside the use case it grew from (c5), slice 4's small constant
 //! streams (`s1`…`s6`: range reads, a malicious holder, expiry, a replayed head, a stopped
-//! stream) beside theirs (c6), the items left open after the model's fixes (`o1`…`o4`), and the
-//! slice-2 security review (`r1`…`r4`): the attacks it found and the concurrent share its merge
-//! must keep.
+//! stream) beside theirs (c6) and slice 5's keys over time (`k1`…`k6`: an expired certificate, a
+//! backdated version, exact re-admission, a late revocation, a renewal, a recovery) beside theirs
+//! (c3), the items left open after the model's fixes (`o1`…`o4`), and the slice-2 security review
+//! (`r1`…`r4`): the attacks it found and the concurrent share its merge must keep.
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -41,6 +42,12 @@ mod h6_sealed_non_reader;
 mod h7_lost_single_copy;
 mod h8_relaying_holder;
 mod h9_prune_before_auditor;
+mod k1_expired_key;
+mod k2_backdated;
+mod k3_exact_readmit;
+mod k4_late_revocation;
+mod k5_renewed_key;
+mod k6_recovery_cut;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
@@ -61,6 +68,12 @@ pub const CASES: &[Case] = &[
     c01_offline_notes::CASE,
     c02_removed_offline::CASE,
     c03_stolen_key::CASE,
+    k1_expired_key::CASE,
+    k2_backdated::CASE,
+    k3_exact_readmit::CASE,
+    k4_late_revocation::CASE,
+    k5_renewed_key::CASE,
+    k6_recovery_cut::CASE,
     c04_lens_seal::CASE,
     c05_prune_vs_custody::CASE,
     h1_large_photo::CASE,
@@ -220,7 +233,6 @@ fn one_key(w: &World, writer: Dev, readers: &[Audience]) -> Share {
         rule: Rule::OneKey,
         writers: vec![w.net().spec(writer).name()],
         readers: readers.to_vec(),
-        readmit: Vec::new(),
     }
 }
 
@@ -468,7 +480,6 @@ fn members(rule: Rule, writers: &[&str], readers: &[Audience]) -> Share {
         rule,
         writers: writers.iter().map(|w| n(w)).collect(),
         readers: readers.to_vec(),
-        readmit: Vec::new(),
     }
 }
 
@@ -522,6 +533,31 @@ async fn has(layer: &dyn DataLayer, collection: &Name, id: &VersionId) -> Result
     Ok(state_now(layer, collection)
         .await?
         .is_some_and(|s| s.at.contains(id)))
+}
+
+/// Whether `layer` holds a state of `collection` at all: it knows the collection's members
+/// record, so its writes go into the collection as shared.
+async fn known(layer: &dyn DataLayer, collection: &Name) -> Result<bool, Failure> {
+    Ok(state_now(layer, collection).await?.is_some())
+}
+
+/// The thief `thief` takes the stolen device and switches it on: its data layer, once it holds
+/// version `id` of `collection` as the device did.
+async fn stolen(
+    w: &World,
+    thief: Dev,
+    collection: &Name,
+    id: &VersionId,
+) -> Result<std::sync::Arc<dyn DataLayer>, Failure> {
+    w.steal(thief).await?;
+    let layer = w.at(thief);
+    w.until(
+        "the stolen device, switched on by the thief, holds what it held",
+        LIMIT,
+        || has(&*layer, collection, id),
+    )
+    .await?;
+    Ok(layer)
 }
 
 /// Whether every layer holds the same merged state, including every id in `ids`.

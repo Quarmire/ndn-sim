@@ -1,9 +1,11 @@
 //! Open item 2 — a cut can drop honest work.
 //!
-//! Alice's phone writes a note entry offline, which nobody sees; then the phone is taken and its
-//! key revoked at what the laptop had seen. The honest offline entry falls outside the cut and is
-//! refused — the price of not trusting clocks. The thief also signs with the key. The candidate
-//! fix: the owner may re-admit specific versions by signing them into the collection.
+//! Alice's phone writes a note entry offline, which nobody sees; meanwhile its key was copied
+//! with its storage, and Alice revokes it at what the laptop had seen. The honest offline entry
+//! falls outside the cut and is refused — the price of not trusting clocks. The thief signs with
+//! the key too, at the very name of the honest entry. The fix (M3): the owner re-admits exact
+//! versions — the namespace root signs the honest entry's name and digest into the cut, so it
+//! returns and nothing else does, not even the thief's version at the same name.
 
 use std::time::Duration;
 
@@ -19,7 +21,8 @@ pub(super) const CASE: Case = Case {
     needs: &[Feature::Merge, Feature::Revocation, Feature::Readmit],
     model: &["M3"],
     guards: "Versions outside a revocation cut are refused until the owner signs specific ones \
-             back in; exactly those return, and the thief's versions stay out.",
+             back in by name and digest; exactly those return, and the thief's versions stay \
+             out, even one at the same name.",
     budget: Duration::from_secs(1800),
     plan,
     run,
@@ -40,10 +43,14 @@ fn plan() -> Plan {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let notes = n("/alice/32=data/notes/garden");
-        let (phone, laptop, thief) = (w.at(PHONE), w.at(LAPTOP), w.at(THIEF));
+        let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         laptop
             .share(&notes, members(merge(), &["/alice"], &[person("/alice")]))
             .await?;
+        w.until("the phone knows the shared notes", LIMIT, || {
+            known(&*phone, &notes)
+        })
+        .await?;
         let seen = phone
             .put(&notes, content(&[("phone", "planted beans")]), note(1))
             .await?;
@@ -52,6 +59,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
 
+        // The key leaks with a copy of the phone's storage; the phone goes offline and writes on.
+        let thief = stolen(w, THIEF, &notes, &seen).await?;
         w.net().offline(PHONE);
         let honest = phone
             .put(&notes, content(&[("phone", "watered, offline")]), note(1))
@@ -61,6 +70,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         let forged = thief
             .put(&notes, content(&[("thief", "forged")]), note(1))
             .await?;
+        ensure!(
+            forged.writer == honest.writer && forged.seq == honest.seq,
+            "precondition: the thief writes at the honest entry's name ({honest:?}), got \
+             {forged:?}"
+        );
         // The phone turns up again and syncs its offline entry.
         w.net().online(PHONE);
         w.sleep(SETTLE).await;
@@ -70,11 +84,9 @@ fn run(w: &World) -> CaseFuture<'_> {
              re-admission"
         );
 
-        // Alice signs the honest entry back in.
+        // Alice signs the honest entry back in, as her phone shows it refused.
         w.gesture();
-        let mut readmit = members(merge(), &["/alice"], &[person("/alice")]);
-        readmit.readmit = vec![honest.clone()];
-        laptop.share(&notes, readmit).await?;
+        w.readmit(LAPTOP, PHONE, &notes, &honest).await?;
         w.converge("the laptop holds the re-admitted entry", LIMIT, || {
             has(&*laptop, &notes, &honest)
         })
@@ -84,7 +96,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let s = state(&*laptop, &notes).await?;
         ensure!(
             s.at.contains(&seen) && s.at.contains(&honest),
-            "the journal lacks the entry inside the cut or the re-admitted one"
+            "the notes lack the entry inside the cut or the re-admitted one"
         );
         ensure!(
             field(&s.value, "thief").is_none(),

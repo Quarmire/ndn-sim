@@ -1,9 +1,10 @@
 //! Case 3 — phone stolen, key extracted.
 //!
-//! The thief signs data with the phone's key on a clock set to last week. Signing-time validity
-//! rested on a timestamp the key holder writes. The fix (M3): revocation is a causal cut — the
-//! phone's versions up to what others had seen stay valid, anything else is refused, and no clock
-//! is trusted.
+//! The thief has the phone — its key and everything it stores — and signs data with the key on a
+//! clock set to last week, writing on from the phone's own log. Signing-time validity rested on a
+//! timestamp the key holder writes. The fix (M3): revocation is a causal cut — the phone's
+//! versions up to what others had seen stay valid, anything else is refused, and no clock is
+//! trusted.
 
 use std::time::Duration;
 
@@ -42,10 +43,14 @@ fn plan() -> Plan {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let journal = n("/alice/32=data/journal");
-        let (phone, laptop, thief) = (w.at(PHONE), w.at(LAPTOP), w.at(THIEF));
+        let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         laptop
             .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
             .await?;
+        w.until("the phone knows the shared journal", LIMIT, || {
+            known(&*phone, &journal)
+        })
+        .await?;
         let seen = phone
             .put(
                 &journal,
@@ -58,7 +63,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
 
-        // Stolen: the phone leaves the network; the thief has its key and a clock a week slow.
+        // Stolen: the phone leaves the network; the thief has it, and a clock a week slow.
+        let thief = stolen(w, THIEF, &journal, &seen).await?;
         w.net().offline(PHONE);
         w.net().set_clock(THIEF, ClockSkew::behind(7 * DAY));
         w.revoke(LAPTOP, PHONE).await?;
@@ -69,10 +75,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             .put(&journal, content(&[("thief", "dated last week")]), note(1))
             .await?;
         ensure!(
-            forged.writer == seen.writer,
-            "precondition: the thief signs as the phone ({:?}), got {:?}",
+            forged.writer == seen.writer && forged.seq > seen.seq,
+            "precondition: the thief signs as the phone ({:?}) past its last seen entry ({:?}), \
+             got {forged:?}",
             seen.writer,
-            forged.writer
+            seen.seq
         );
         let own = look(&*thief, &journal, &Frontier::new(), LOOK).await?;
         if let Some(v) = version(&own, &forged) {

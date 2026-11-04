@@ -1,8 +1,9 @@
 //! The cases, in study order: the twelve use cases (`c1`…`c12`), with slice 3's custody of
 //! large data (`h1`…`h9`) beside the use case it grew from (c5) and slice 4's small constant
-//! streams (`s1`…`s5`: range reads, a malicious holder, expiry, a replayed head) beside theirs
-//! (c6), the items left open after the model's fixes (`o1`…`o4`), and the slice-2 security
-//! review (`r1`…`r4`): the attacks it found and the concurrent share its merge must keep.
+//! streams (`s1`…`s6`: range reads, a malicious holder, expiry, a replayed head, a stopped
+//! stream) beside theirs (c6), the items left open after the model's fixes (`o1`…`o4`), and the
+//! slice-2 security review (`r1`…`r4`): the attacks it found and the concurrent share its merge
+//! must keep.
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -53,6 +54,7 @@ mod s2_forged_entry;
 mod s3_spliced_entry;
 mod s4_expiry;
 mod s5_replayed_head;
+mod s6_stopped_stream;
 
 /// Every case, in study order.
 pub const CASES: &[Case] = &[
@@ -76,6 +78,7 @@ pub const CASES: &[Case] = &[
     s3_spliced_entry::CASE,
     s4_expiry::CASE,
     s5_replayed_head::CASE,
+    s6_stopped_stream::CASE,
     c07_unknown_fields::CASE,
     c08_nested_summaries::CASE,
     c09_family_chat::CASE,
@@ -183,7 +186,7 @@ fn leased_by(lease: &Lease, device: &Name) -> bool {
     lease.holder.key().has_prefix(device)
 }
 
-// ---- the stream cases' kit (c6, s1–s5) --------------------------------------------------------
+// ---- the stream cases' kit (c6, s1–s6) --------------------------------------------------------
 
 /// Alice's garden soil readings: the soil sensor's stream.
 fn soil() -> Name {

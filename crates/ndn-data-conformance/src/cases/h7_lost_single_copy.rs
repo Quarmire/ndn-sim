@@ -2,10 +2,11 @@
 //!
 //! Alice asks for one copy of her photos. The home repo leases them and the phone's audit finds
 //! the lease kept, so the phone releases its own copy of the photo's pieces: from now on the repo
-//! is the only place that has them. Then the repo's disk loses everything of the photos. The
-//! phone's next `hold` audits the lease and reports it broken (signed `Missing`, or unanswered),
-//! and asks the repo again; but the repo can fetch back nothing (the writer released its pieces,
-//! and there is no other holder), and no other device holds for Alice. Custody must not pretend:
+//! (and any cache on the way) is the only place that has them. Then the repo's disk loses
+//! everything of the photos, and the caches evict the pieces. The phone's next `hold` audits the
+//! lease and reports it broken (signed `Missing`, or unanswered), and asks the repo again; but the
+//! repo can fetch back nothing (the writer released its pieces, no cache keeps them, and there is
+//! no other holder), and no other device holds for Alice. Custody must not pretend:
 //! no lease audited kept holds the photo, and the custody names the photo `unkept` — lost unless
 //! a copy turns up; the next step is to put it again from wherever a copy is left.
 
@@ -95,10 +96,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         w.measure("pieces the phone released", released, "pieces");
 
-        // The repo's disk loses everything of the photos; it does not know.
+        // The repo's disk loses everything of the photos; it does not know. Caches on the way,
+        // which admit every Data (as NFD's do), evict the pieces too: no copy is left anywhere.
         let lost = w.lose(REPO, &photos, 1);
         ensure!(lost > 0, "the repo stored nothing of the photos to lose");
         w.measure("pieces the repo lost", lost, "pieces");
+        w.net().forget_cached(&v.name).await;
+        w.net().forget_cached(&held_name(&repo, &v.name)).await;
 
         let after = hold_on(w, PHONE, &photos, &want, "hold that audits the loss").await?;
         let caught = after.broken.iter().find(|l| leased_by(l, &repo));

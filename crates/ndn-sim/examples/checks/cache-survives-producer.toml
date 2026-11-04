@@ -11,8 +11,8 @@
 #    in-network caching, the property that separates content-centric networking from host-centric
 #    transport.
 #
-# (This only works because the producer stamps a FreshnessPeriod — a forwarder's default admission
-# policy, like NFD's, won't cache FreshnessPeriod=0 Data.)
+# (The relay caches the Data whatever its FreshnessPeriod, as NFD does. These consumers' Interests
+# carry no MustBeFresh, so the cached copies answer them even once stale.)
 #
 # Run it:   ndn-lab check examples/checks/cache-survives-producer.toml
 

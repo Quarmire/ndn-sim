@@ -319,10 +319,10 @@ pub enum AppSpec {
         prefix: String,
         #[serde(default)]
         content: Option<String>,
-        /// `FreshnessPeriod` (ms) stamped on served Data (default 4000). A positive freshness is
-        /// what makes forwarders admit the Data into their Content Store — NFD's default admission
-        /// policy (and ndn-rs's) rejects `FreshnessPeriod = 0`. Set `0` to opt a producer out of
-        /// on-path caching.
+        /// `FreshnessPeriod` (ms) stamped on served Data (default 4000). Forwarders cache the
+        /// Data whatever its freshness (NFD's default admission, and ndn-rs's); the period decides
+        /// how long a cached copy answers `MustBeFresh` Interests. `0` makes it stale on arrival:
+        /// cached copies then answer only Interests without `MustBeFresh`.
         #[serde(default)]
         freshness_ms: Option<u64>,
     },
@@ -471,8 +471,8 @@ pub(crate) fn spawn_app(
             let bytes = Bytes::from(content.clone().unwrap_or_else(|| "ndn-lab".to_string()));
             let served = Arc::clone(&stats);
             let clock = Arc::clone(&clock);
-            // Real producers stamp a FreshnessPeriod; without one, forwarders won't cache the Data
-            // (DefaultAdmissionPolicy rejects freshness=0, as NFD does). Default 4 s.
+            // Real producers stamp a FreshnessPeriod. Forwarders cache the Data either way (NFD's
+            // default admission); the period is how long a cached copy answers MustBeFresh. Default 4 s.
             let freshness = Duration::from_millis(freshness_ms.unwrap_or(4000));
             // rt::spawn rides the ambient runtime (virtual / discrete-event) when one is set.
             ndn_app::rt::spawn(async move {

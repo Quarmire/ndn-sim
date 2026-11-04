@@ -81,8 +81,8 @@ async fn run_chain(n: usize) -> Row {
     let serve = tokio::spawn(async move {
         let _ = prod
             .serve(|i, r| async move {
-                // Stamp a FreshnessPeriod so intermediate Content Stores actually admit + cache it
-                // (the DefaultAdmissionPolicy treats freshness=0 as non-cacheable) — the caching axis.
+                // The CS caches it whatever its FreshnessPeriod (NFD's default admission); 30 s
+                // keeps the cached copies fresh, so MustBeFresh Interests hit too — the caching axis.
                 let content = bytes::Bytes::from_static(b"payload");
                 let wire = ndn_packet::encode::DataBuilder::new((*i.name).clone(), &content)
                     .freshness(Duration::from_secs(30))

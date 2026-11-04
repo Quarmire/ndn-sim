@@ -82,17 +82,17 @@ async fn main() {
         let cached =
             tokio::time::timeout(Duration::from_millis(300), fetch(&eng_c, "/clip/seg0")).await;
         println!(
-            "2. CS admission:    producer OFF → /clip/seg0 {} — this Data carried no FreshnessPeriod, so",
+            "2. CS admission:    producer OFF → /clip/seg0 {} — this Data carried no FreshnessPeriod, but",
             match cached {
                 Ok(Some(_)) => "still served (cached)",
                 _ => "gone",
             }
         );
         println!(
-            "                    the DefaultAdmissionPolicy cached nothing (freshness=0 is non-cacheable;"
+            "                    the CS admits it anyway (NFD's default admission): stale, it answers Interests"
         );
         println!(
-            "                    a producer that stamps freshness, as ndn-sim's AppSpec does, gets CS hits)."
+            "                    without MustBeFresh, like this one, and never MustBeFresh ones."
         );
         fabric.shutdown().await;
     }

@@ -17,13 +17,21 @@
 //! store beside its signing key (`SecurityManager::put_secret`, in memory), and dates entries by
 //! the node's own (possibly lying) clock.
 //!
-//! The person's key signs their trust context as version 1, and acts as the namespace's root
-//! device from then on: a revocation (with the cut the revoking device's data layer holds
-//! verified), a re-admission, a recovery kit and a recovery after the root's compromise are the
-//! next versions, signed with `ndn-cert`'s functions as the root flow signs them. A node takes
-//! them one at a time as context sync brings them, each checked against the version it holds
-//! (signed by one of its anchors, newer). A renewed or expired certificate is handed to every
-//! node's cache in place of the copy it held; the validators judge validity by the host's clock.
+//! The person's key signs their trust context as version 1 (listing the guest role, a friend's
+//! device `<person>/guest/<who>`, among those whose data needs a cut once their certificate
+//! lapsed), and acts as the namespace's root device from then on: a revocation (with the cut the
+//! revoking device's data layer first verified before the loss the owner states, and the
+//! manifest binding it to bytes), the end of a lapsed guest key (a revocation whose cut is
+//! bounded at the lapse, signed unattended), a re-admission, a recovery kit and a recovery after
+//! the root's compromise are the next versions, signed with `ndn-cert`'s functions as the root
+//! flow signs them. A node takes them one at a time as context sync brings them, each checked
+//! against the version it holds (signed by one of its anchors, newer), and from then on keeps
+//! and serves the manifest packets of its cuts by full name, as a node keeping contexts does;
+//! like a daemon's, every forwarder fetches what its validator lacks (a certificate, a
+//! manifest packet) through its engine. A renewed or expired certificate is handed to every
+//! node's cache in place of the copy it held; the validators judge validity by the host's
+//! clock. A device's data layer can stop and start again on its store, re-judging what it
+//! restores.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +45,10 @@ use ndn_data::wire::{
     encode_audit_answer, encode_record, log_name, parse_audit_ask_name, parse_log_name,
     parse_piece_name, piece_names, version_proof,
 };
-use ndn_data::{Config, DataLayer, Device, Entropy, Name, Timestamp, Transport, VersionId};
+use ndn_data::{
+    Config, CutBound, CutProposal, DataLayer, Device, Entropy, Name, Timestamp, Transport,
+    VersionId,
+};
 use ndn_link::{EngineFaces, FaceSink};
 use ndn_packet::Data;
 use ndn_packet::encode::{DataBuilder, InterestBuilder};
@@ -63,6 +74,9 @@ struct Case {
     keys: HashMap<Name, Arc<SecurityManager>>,
     /// Every certificate issued for each device's key, oldest first, by device name.
     certs: HashMap<Name, Vec<Issued>>,
+    /// When each device's certificates were let expire ([`Provider::expire`]), by the fabric's
+    /// true clock: the end of its key's authority, for [`Provider::end_keys`].
+    lapsed: HashMap<Name, Timestamp>,
     /// Each person's namespace: its authority and the trust-context versions it signed.
     namespaces: BTreeMap<Name, Namespace>,
     /// Every forwarder: the hub, then each device's.
@@ -70,8 +84,11 @@ struct Case {
     /// Every data layer attached, with its store, by node (a thief's layer carries its victim's
     /// name, so names do not tell them apart).
     devices: BTreeMap<NodeId, Attached>,
-    /// The audit relays and replaying caches injected ([`Provider::relay_audits`],
-    /// [`Provider::replay`]), served while the case runs.
+    /// The cut-manifest packets each node keeps and serves, per namespace, by full name.
+    kept: HashMap<(NodeId, Name), Kept>,
+    /// The audit relays, replaying caches and manifest servers injected
+    /// ([`Provider::relay_audits`], [`Provider::replay`], [`Reference::keep_manifests`]),
+    /// served while the case runs.
     relays: Vec<(Node, ServeGuard)>,
 }
 
@@ -91,12 +108,21 @@ struct Namespace {
     kit: Option<Arc<dyn Signer>>,
     /// The wire of every trust-context version signed, oldest first: version `i + 1` at `i`.
     versions: Vec<bytes::Bytes>,
+    /// The cut-manifest packets each version added, by the version that carries their cut.
+    manifests: Vec<(u64, Vec<bytes::Bytes>)>,
 }
+
+/// The cut-manifest packets a node keeps, by full name, as its server answers them.
+type Kept = Arc<Mutex<BTreeMap<Name, bytes::Bytes>>>;
 
 /// One attached data layer and the store it keeps its packets in.
 struct Attached {
     layer: Device,
     store: Arc<MemoryStore>,
+    /// How many times it started: 1, then one more per [`Provider::restart`].
+    runs: u64,
+    /// Ends its app faces when it stops.
+    cancel: CancellationToken,
 }
 
 /// `ndn-data`'s [`Device`] as a conformance provider.
@@ -131,12 +157,20 @@ impl Reference {
             node: engine.app_node(cancel.child_token()),
             sync: engine.app_face(cancel.child_token()),
         };
+        // A layer started again on its node draws other randomness than its earlier runs.
+        let runs = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .devices
+            .get(&node)
+            .map_or(1, |a| a.runs + 1);
         let clock = fabric.node_clock(node)?;
         let config = Config {
             clock: Arc::new(move || Timestamp(clock.now_ns() / 1_000_000)),
             svs: SvsConfig::default(),
             hold_for,
-            entropy: seeded(&device),
+            entropy: seeded(&device, runs),
             ..Config::new()
         };
         let layer = Device::start(
@@ -158,6 +192,8 @@ impl Reference {
                 Attached {
                     layer: layer.clone(),
                     store,
+                    runs,
+                    cancel,
                 },
             );
         Ok(Arc::new(layer))
@@ -287,6 +323,168 @@ impl Reference {
             .push(issued);
         Ok(())
     }
+
+    /// The cut `by`'s data layer vouches for if `key` is revoked now, bounded by what it first
+    /// verified before `held_before` (by its own clock).
+    fn cut_of(
+        &self,
+        by: &DeviceSpec,
+        key: &Name,
+        held_before: Timestamp,
+    ) -> anyhow::Result<CutProposal> {
+        let bound = CutBound {
+            held_before: Some(held_before),
+            ..CutBound::default()
+        };
+        self.layer(by)?.revocation_cut(key, &bound).map_err(|e| {
+            anyhow::anyhow!(
+                "{} cannot vouch for a cut of {key}: {e} (next step: {:?})",
+                by.name(),
+                e.next()
+            )
+        })
+    }
+
+    /// `by`, holding its namespace's authority, signs the next trust-context version revoking
+    /// each key with its cut, keeps the cuts' manifest packets with that version, and its node
+    /// adopts it (keeping and serving the manifests from then on).
+    async fn sign_revocations(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        revoked: Vec<(Name, CutProposal)>,
+    ) -> anyhow::Result<()> {
+        let (root, held) = self.authority(&by.person)?;
+        let (keys, proposals): (Vec<Name>, Vec<CutProposal>) = revoked.into_iter().unzip();
+        let cuts: Vec<_> = proposals.iter().map(|p| p.cut.clone()).collect();
+        let bump = ndn_cert::bump_context_revoking(root.as_ref(), &held, &keys, &cuts)
+            .await?
+            .with_context(|| format!("{keys:?} are revoked already; nothing to sign"))?;
+        let version = bump.context.version();
+        let manifests = proposals.into_iter().flat_map(|p| p.manifest).collect();
+        self.case
+            .lock()
+            .expect("the provider's lock")
+            .namespaces
+            .get_mut(&by.person)
+            .expect("authority found it")
+            .manifests
+            .push((version, manifests));
+        self.publish(&by.person, [bump.data]);
+        self.spread(fabric, by.node).await
+    }
+
+    /// `by`, holding its namespace's authority, re-admits exactly the packet `full`, which `key`
+    /// signed, and its node adopts the new version.
+    async fn readmit_full(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        key: &Name,
+        full: &Name,
+    ) -> anyhow::Result<()> {
+        let (root, held) = self.authority(&by.person)?;
+        let bump = ndn_cert::bump_context_readmitting(
+            root.as_ref(),
+            &held,
+            key,
+            std::slice::from_ref(full),
+        )
+        .await?
+        .with_context(|| format!("{full} is re-admitted already; nothing to sign"))?;
+        self.publish(&by.person, [bump.data]);
+        self.spread(fabric, by.node).await
+    }
+
+    /// `node`, holding version `upto` of `ns`'s trust context, keeps and serves the manifest
+    /// packets of the cuts in every version up to it, as a node keeping contexts does: an
+    /// Interest by full name (or by name) gets the packet, so a validator missing one fetches it
+    /// from any such node.
+    async fn keep_manifests(
+        &self,
+        fabric: &Fabric,
+        node: NodeId,
+        ns: &Name,
+        upto: u64,
+    ) -> anyhow::Result<()> {
+        let (packets, kept) = {
+            let case = self.case.lock().expect("the provider's lock");
+            let packets: Vec<bytes::Bytes> = case
+                .namespaces
+                .get(ns)
+                .with_context(|| format!("{ns} is no namespace of this case"))?
+                .manifests
+                .iter()
+                .filter(|(v, _)| *v <= upto)
+                .flat_map(|(_, p)| p.iter().cloned())
+                .collect();
+            (packets, case.kept.get(&(node, ns.clone())).cloned())
+        };
+        if packets.is_empty() {
+            return Ok(());
+        }
+        let kept = match kept {
+            Some(kept) => kept,
+            None => {
+                let kept = Kept::default();
+                let engine = fabric
+                    .engine_of(node)
+                    .with_context(|| format!("no engine on node {node}"))?;
+                let app = engine.app_node(CancellationToken::new());
+                let prefix: Name = format!("{ns}/32=trust-context/32=cut")
+                    .parse()
+                    .with_context(|| format!("no cut-manifest prefix under {ns}"))?;
+                let packets = Arc::clone(&kept);
+                let guard = app
+                    .serve(prefix, move |interest, responder| {
+                        let packets = Arc::clone(&packets);
+                        async move {
+                            let asked = &*interest.name;
+                            let wire = {
+                                let held = packets.lock().expect("the manifest store's lock");
+                                held.get(asked)
+                                    .or_else(|| {
+                                        held.iter()
+                                            .find(|(full, _)| {
+                                                full.len() == asked.len() + 1
+                                                    && full.has_prefix(asked)
+                                            })
+                                            .map(|(_, wire)| wire)
+                                    })
+                                    .cloned()
+                            };
+                            if let Some(wire) = wire {
+                                let _ = responder.respond_bytes(wire).await;
+                            }
+                        }
+                    })
+                    .await?;
+                let mut case = self.case.lock().expect("the provider's lock");
+                case.relays.push((app, guard));
+                case.kept.insert((node, ns.clone()), Arc::clone(&kept));
+                kept
+            }
+        };
+        let mut held = kept.lock().expect("the manifest store's lock");
+        for wire in packets {
+            let data = decode_data(&wire)?;
+            let full = (*data.name)
+                .clone()
+                .append_implicit_digest(data.implicit_digest());
+            held.insert(full, wire);
+        }
+        Ok(())
+    }
+}
+
+/// What `device` holds for others: a holder keeps the collections of its own person's
+/// namespace.
+fn hold_for(device: &DeviceSpec) -> Vec<Name> {
+    if device.holds {
+        vec![device.person.clone()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Each device's one key: `<device>/KEY/1`.
@@ -334,9 +532,14 @@ fn decode_data(wire: &bytes::Bytes) -> anyhow::Result<Data> {
 }
 
 /// Randomness that replays: SHA-256 over the device's name and a counter, block after block, so
-/// an audit samples the same pieces with the same nonces every run (`--check-determinism`).
-fn seeded(device: &Name) -> Entropy {
-    let seed = device.to_string();
+/// an audit samples the same pieces with the same nonces every run (`--check-determinism`). A
+/// layer started again on its node (its `run` past the first) seeds with the run too, so it
+/// does not draw its first run's numbers again.
+fn seeded(device: &Name, run: u64) -> Entropy {
+    let seed = match run {
+        1 => device.to_string(),
+        n => format!("{device}#{n}"),
+    };
     let counter = AtomicU64::new(0);
     Arc::new(move |buf: &mut [u8]| {
         for block in buf.chunks_mut(32) {
@@ -397,6 +600,10 @@ impl Provider for Reference {
                 | Feature::RevocationRecheck
                 | Feature::KeyLifetime
                 | Feature::Recovery
+                | Feature::BoundedCut
+                | Feature::CutManifest
+                | Feature::GuestExpiry
+                | Feature::IssuerRecheck
         )
     }
 
@@ -452,10 +659,14 @@ impl Provider for Reference {
         // anchor) on every forwarder: the validator verifies a packet under the context whose
         // namespace is the longest prefix of its name, and a device's data layer takes its own
         // namespace from the context governing its name (spec §3). Its root signs it as version
-        // 1, the version later ones (revocations, a recovery) follow from.
+        // 1, the version later ones (revocations, a recovery) follow from. As a new context from
+        // `ndn-fwd init`, it lists the guest role among those whose data needs a cut once their
+        // certificate lapsed.
         let mut contexts: Vec<Arc<SignedTrustContext>> = Vec::with_capacity(anchors.len());
         for (person, (root, anchor)) in &anchors {
-            let ctx = SignedTrustContext::hierarchical(person.clone()).with_version(1);
+            let ctx = SignedTrustContext::hierarchical(person.clone())
+                .with_version(1)
+                .with_data_requires_cut("guest");
             anyhow::ensure!(
                 ctx.add_anchor(anchor.clone()),
                 "{person}'s namespace key is not valid now"
@@ -467,6 +678,7 @@ impl Provider for Reference {
                     root: Arc::clone(root),
                     kit: None,
                     versions: vec![signed.raw().clone()],
+                    manifests: Vec::new(),
                 },
             );
             contexts.push(Arc::new(ctx));
@@ -475,9 +687,11 @@ impl Provider for Reference {
             .chain(devices.iter().map(|d| d.node))
             .collect();
         for &node in &case.nodes {
-            let validator = fabric
+            let engine = fabric
                 .engine_of(node)
-                .and_then(|e| e.validator())
+                .with_context(|| format!("no engine on node {node}"))?;
+            let validator = engine
+                .validator()
                 .with_context(|| format!("node {node} has no validator to hold the contexts"))?;
             for ctx in &contexts {
                 anyhow::ensure!(
@@ -489,6 +703,9 @@ impl Provider for Reference {
             for cert in &certs {
                 validator.cert_cache().insert(cert.clone());
             }
+            // As a daemon's forwarder does: what its validator lacks (a certificate, a cut's
+            // manifest packet) it fetches through the engine instead of dropping the Data.
+            ndn_app::install_engine_cert_fetcher(&engine, CancellationToken::new());
         }
         // Every device holds every person's namespace, and its link to the hub carries them all.
         for spec in devices {
@@ -520,21 +737,32 @@ impl Provider for Reference {
             .get(&device.name())
             .cloned()
             .with_context(|| format!("{} was not prepared", device.name()))?;
-        // A holder keeps the collections of its own person's namespace.
-        let hold_for = if device.holds {
-            vec![device.person.clone()]
-        } else {
-            Vec::new()
-        };
         self.start(
             fabric,
             device.node,
             device.name(),
             keys,
-            hold_for,
+            hold_for(device),
             Arc::new(MemoryStore::new()),
         )
         .await
+    }
+
+    async fn suspect(
+        &self,
+        _fabric: &Fabric,
+        by: &DeviceSpec,
+        device: &DeviceSpec,
+        since: Timestamp,
+    ) -> anyhow::Result<()> {
+        let key = device_key(&device.name());
+        self.layer(by)?.suspect(&key, since).map_err(|e| {
+            anyhow::anyhow!(
+                "{} cannot suspect {key}: {e} (next step: {:?})",
+                by.name(),
+                e.next()
+            )
+        })
     }
 
     async fn revoke(
@@ -542,7 +770,8 @@ impl Provider for Reference {
         fabric: &Fabric,
         by: &DeviceSpec,
         device: &DeviceSpec,
-    ) -> anyhow::Result<()> {
+        lost: Timestamp,
+    ) -> anyhow::Result<Vec<Name>> {
         anyhow::ensure!(
             by.person == device.person,
             "{} holds the authority of {}, not of {}'s namespace {}: only a namespace's root \
@@ -553,19 +782,13 @@ impl Provider for Reference {
             device.person
         );
         let key = device_key(&device.name());
-        let (root, held) = self.authority(&by.person)?;
-        // The cut is what the root device holds verified of the key, never what it heard listed.
-        let cut = self.layer(by)?.revocation_cut(&key);
-        let bump = ndn_cert::bump_context_revoking(
-            root.as_ref(),
-            &held,
-            std::slice::from_ref(&key),
-            Some(&cut),
-        )
-        .await?
-        .with_context(|| format!("{key} is revoked already; nothing to sign"))?;
-        self.publish(&by.person, [bump.data]);
-        self.spread(fabric, by.node).await
+        // The cut is what the root device first verified of the key before the loss, never what
+        // it heard listed nor what it took after.
+        let proposal = self.cut_of(by, &key, lost)?;
+        let left_out = proposal.left_out.clone();
+        self.sign_revocations(fabric, by, vec![(key, proposal)])
+            .await?;
+        Ok(left_out)
     }
 
     async fn spread(&self, fabric: &Fabric, node: NodeId) -> anyhow::Result<()> {
@@ -616,6 +839,13 @@ impl Provider for Reference {
                         )
                     })?;
             }
+            // A node keeping the context keeps and serves what binds its cuts to bytes.
+            let upto = keyring
+                .contexts()
+                .into_iter()
+                .find(|c| *c.namespace() == ns)
+                .map_or(0, |c| c.version());
+            self.keep_manifests(fabric, node, &ns, upto).await?;
         }
         Ok(())
     }
@@ -644,17 +874,28 @@ impl Provider for Reference {
                     from.name()
                 )
             })?;
-        let (root, held) = self.authority(&by.person)?;
-        let bump = ndn_cert::bump_context_readmitting(
-            root.as_ref(),
-            &held,
-            &key,
-            std::slice::from_ref(&full),
-        )
-        .await?
-        .with_context(|| format!("{full} is re-admitted already; nothing to sign"))?;
-        self.publish(&by.person, [bump.data]);
-        self.spread(fabric, by.node).await
+        self.readmit_full(fabric, by, &key, &full).await
+    }
+
+    async fn readmit_name(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        full: &Name,
+    ) -> anyhow::Result<()> {
+        let entry = Name::from_components(
+            full.components()[..full.len().saturating_sub(1)]
+                .iter()
+                .cloned(),
+        );
+        let log = parse_log_name(&entry).with_context(|| {
+            format!(
+                "{full} names no log entry (<device>/32=log/…/seq=<n>/<digest>); a re-admission \
+                 names one entry of a revoked key exactly"
+            )
+        })?;
+        self.readmit_full(fabric, by, &device_key(&log.device), full)
+            .await
     }
 
     async fn steal(
@@ -740,7 +981,111 @@ impl Provider for Reference {
         for (slot, expired) in held.iter_mut().zip(renamed) {
             slot.cert = expired;
         }
+        if which == Certs::All {
+            let now = Timestamp(fabric.clock().now_ns() / 1_000_000);
+            case.lapsed.insert(name, now);
+        }
         Ok(())
+    }
+
+    async fn end_keys(&self, fabric: &Fabric, by: &DeviceSpec) -> anyhow::Result<Vec<Name>> {
+        let ns = &by.person;
+        let held = fabric
+            .engine_of(by.node)
+            .and_then(|e| e.validator())
+            .with_context(|| format!("node {} has no validator to hold the contexts", by.node))?
+            .keyring()
+            .contexts()
+            .into_iter()
+            .find(|c| c.namespace() == ns)
+            .with_context(|| format!("{} holds no trust context of {ns}", by.name()))?;
+        let (issued, lapsed) = {
+            let case = self.case.lock().expect("the provider's lock");
+            // Every certificate the root issued for the namespace's devices.
+            let issued: Vec<Certificate> = case
+                .certs
+                .iter()
+                .filter(|(device, _)| device.has_prefix(ns))
+                .flat_map(|(_, issued)| issued.iter().map(|i| i.cert.clone()))
+                .collect();
+            (issued, case.lapsed.clone())
+        };
+        let ending = ndn_cert::ending_keys(&held, &issued, host_now_ns() / 1_000_000);
+        anyhow::ensure!(
+            !ending.is_empty(),
+            "no key of {ns} ended without a revocation (none of a role needing a cut lapsed, \
+             none replaced); nothing to sign"
+        );
+        // Validators here read the host's clock, data layers their node's (virtual) one, so a
+        // key's end is the moment the case let its certificates lapse, read on `by`'s clock.
+        let true_now = fabric.clock().now_ns() / 1_000_000;
+        let by_now = fabric.node_clock(by.node)?.now_ns() / 1_000_000;
+        let skew = i64::try_from(i128::from(by_now) - i128::from(true_now))
+            .context("a clock skew beyond ±292 million years")?;
+        let mut revoked = Vec::with_capacity(ending.len());
+        for e in ending {
+            let device = key_device(&e.key)?;
+            let at = lapsed.get(&device).with_context(|| {
+                format!(
+                    "{} ended ({:?}) at a moment this provider cannot place on {}'s clock: it \
+                     ends only keys whose certificates it let expire",
+                    e.key,
+                    e.why,
+                    by.name()
+                )
+            })?;
+            let held_before = Timestamp(at.0.saturating_add_signed(skew));
+            let proposal = self.cut_of(by, &e.key, held_before)?;
+            revoked.push((e.key, proposal));
+        }
+        let keys = revoked.iter().map(|(k, _)| k.clone()).collect();
+        self.sign_revocations(fabric, by, revoked).await?;
+        Ok(keys)
+    }
+
+    async fn stop(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
+        let case = self.case.lock().expect("the provider's lock");
+        let attached = case
+            .devices
+            .get(&device.node)
+            .with_context(|| format!("{} has no data layer attached", device.name()))?;
+        attached.layer.shutdown();
+        attached.cancel.cancel();
+        Ok(())
+    }
+
+    async fn restart(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<Arc<dyn DataLayer>> {
+        let (keys, store) = {
+            let case = self.case.lock().expect("the provider's lock");
+            let attached = case
+                .devices
+                .get(&device.node)
+                .with_context(|| format!("{} has no data layer attached", device.name()))?;
+            anyhow::ensure!(
+                attached.cancel.is_cancelled(),
+                "{}'s data layer runs; stop it before starting it again",
+                device.name()
+            );
+            let keys = case
+                .keys
+                .get(&device.name())
+                .cloned()
+                .with_context(|| format!("{} was not prepared", device.name()))?;
+            (keys, Arc::clone(&attached.store))
+        };
+        self.start(
+            fabric,
+            device.node,
+            device.name(),
+            keys,
+            hold_for(device),
+            store,
+        )
+        .await
     }
 
     async fn recovery_kit(&self, fabric: &Fabric, by: &DeviceSpec) -> anyhow::Result<()> {

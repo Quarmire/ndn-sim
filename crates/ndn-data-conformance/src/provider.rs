@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ndn_data::{DataLayer, Name, VersionId};
+use ndn_data::{DataLayer, Name, Timestamp, VersionId};
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 
 use crate::feature::Feature;
@@ -12,6 +12,10 @@ use crate::feature::Feature;
 pub struct DeviceSpec {
     /// The person whose device it is, by namespace (`/alice`, `/home/bob`).
     pub person: Name,
+    /// The device's role in the namespace when it has one between the namespace and its label
+    /// (`guest` for a friend's device `/alice/guest/bob`); `None` for the person's own devices
+    /// (`/alice/phone`).
+    pub role: Option<String>,
     /// The device's label within the person (`laptop`, `phone`, `repo`).
     pub device: String,
     /// Its forwarder in the fabric.
@@ -22,11 +26,15 @@ pub struct DeviceSpec {
 }
 
 impl DeviceSpec {
-    /// The device's name: the person's namespace plus the device label
-    /// (`/alice/laptop`, `/home/bob/laptop`). Cases name a device in a seal audience by it, so a
-    /// provider must use it as the device's name.
+    /// The device's name: the person's namespace, its role if it has one, and the device label
+    /// (`/alice/laptop`, `/home/bob/laptop`, `/alice/guest/bob`). Cases name a device in a seal
+    /// audience by it, so a provider must use it as the device's name.
     pub fn name(&self) -> Name {
-        self.person.clone().append(self.device.as_bytes())
+        let ns = match &self.role {
+            Some(role) => self.person.clone().append(role.as_bytes()),
+            None => self.person.clone(),
+        };
+        ns.append(self.device.as_bytes())
     }
 }
 
@@ -97,7 +105,7 @@ pub trait Provider: Send + Sync {
     fn node_profile(&self, role: NodeRole<'_>) -> NodeProfile {
         match role {
             NodeRole::Hub => NodeProfile::new("hub"),
-            NodeRole::Device(d) => NodeProfile::new(format!("{}/{}", d.person, d.device)),
+            NodeRole::Device(d) => NodeProfile::new(d.name().to_string()),
         }
     }
 
@@ -121,17 +129,43 @@ pub trait Provider: Send + Sync {
         device: &DeviceSpec,
     ) -> anyhow::Result<Arc<dyn DataLayer>>;
 
+    /// The owner reports `device` lost, and `by`, the namespace's root device, marks its key
+    /// suspected since `since` (by `by`'s own clock): from now on `by`'s data layer takes no new
+    /// log entry of that key — neither fetched, applied nor stored — while it keeps what it
+    /// held, until the revocation is signed. A provider that cannot says so.
+    async fn suspect(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        device: &DeviceSpec,
+        since: Timestamp,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, since);
+        anyhow::bail!(
+            "this provider cannot make {} suspect {}'s key",
+            by.name(),
+            device.name()
+        )
+    }
+
     /// `by`, holding its namespace's authority, revokes `device`'s key (what `ndn-namespace`
     /// revoke does): it signs the next version of the namespace's trust context, adding a
-    /// Revocation of the key and its cut — the log entries of that key `by`'s data layer holds
-    /// verified — and `by`'s node adopts it. Other nodes adopt it when [`spread`](Self::spread)
-    /// reaches them. Revocation is not one of the seven verbs; it reaches the layer as a cut.
+    /// Revocation of the key and its cut, and `by`'s node adopts it. The cut is bounded by `by`'s
+    /// own observation: the log entries of that key `by`'s data layer holds verified and first
+    /// verified strictly before `lost` (the time the owner says the device was lost, by `by`'s
+    /// clock), each bound to its bytes. Other nodes adopt the version, and can fetch what binds
+    /// the cut to bytes, when [`spread`](Self::spread) reaches them. Returns the entries of the
+    /// key `by` holds but left out of the cut (first verified at or after `lost`), each by its
+    /// full name ending in its implicit digest, for the owner to re-admit one by one
+    /// ([`readmit_name`](Self::readmit_name)). Revocation is not one of the seven verbs; it
+    /// reaches the layer as a cut.
     async fn revoke(
         &self,
         fabric: &Fabric,
         by: &DeviceSpec,
         device: &DeviceSpec,
-    ) -> anyhow::Result<()>;
+        lost: Timestamp,
+    ) -> anyhow::Result<Vec<Name>>;
 
     /// `node` follows its namespaces' trust contexts to the newest version each has signed (each
     /// version checked against the one it holds: signed by one of its anchors, newer) and
@@ -162,6 +196,21 @@ pub trait Provider: Send + Sync {
         )
     }
 
+    /// `by`, holding its namespace's authority, re-admits exactly the packet `full` (a log
+    /// entry's full name ending in its implicit digest, as a revocation listed it left out of the
+    /// cut): it signs the next context version adding that one name to the cut of the key that
+    /// signed it, and `by`'s node adopts it ([`spread`](Self::spread) brings it to the others).
+    /// A provider that cannot re-admit says so.
+    async fn readmit_name(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        full: &Name,
+    ) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot make {} re-admit {full}", by.name())
+    }
+
     /// The stolen-key adversary: the thief takes `victim`'s device — its key and a copy of
     /// everything it stores — and from now on a data layer runs on `thief`'s node, signing with
     /// that key and writing on from the victim's own log, at any date its (skewed) clock gives.
@@ -184,7 +233,9 @@ pub trait Provider: Send + Sync {
 
     /// `which` certificates of `device`'s key expire: every node, and the device itself, holds
     /// each of them only with a validity period that ended before now by the host's clock (the
-    /// clock validators read). A provider that cannot says so.
+    /// clock validators read). For [`end_keys`](Self::end_keys), the key's authority ended now,
+    /// in the case's time: what its devices verified before this call came before its end. A
+    /// provider that cannot says so.
     async fn expire(
         &self,
         fabric: &Fabric,
@@ -194,6 +245,44 @@ pub trait Provider: Send + Sync {
         let _ = (fabric, which);
         anyhow::bail!(
             "this provider cannot let {}'s certificates expire",
+            device.name()
+        )
+    }
+
+    /// `by`, the root device of its namespace and able to sign unattended, ends the keys whose
+    /// authority over data ended without a revocation (what the root does for a lapsed guest
+    /// certificate or a replaced key): for each such key of its namespace it signs a
+    /// revoke-with-cut, the cut bounded by what `by`'s data layer first verified before the key's
+    /// end (its certificate's NotAfter, a replacement's enrollment), and `by`'s node adopts it.
+    /// Returns the keys it ended. A provider that cannot says so.
+    async fn end_keys(&self, fabric: &Fabric, by: &DeviceSpec) -> anyhow::Result<Vec<Name>> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot make {} end the lapsed keys of {}",
+            by.name(),
+            by.person
+        )
+    }
+
+    /// `device`'s data layer stops (its host shuts it down): it serves, syncs and adopts nothing
+    /// until [`restart`](Self::restart), and keeps what it stored. A provider that cannot says
+    /// so.
+    async fn stop(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot stop {}'s data layer", device.name())
+    }
+
+    /// `device`'s data layer, stopped ([`stop`](Self::stop)), starts again on what it stored,
+    /// with the same key, judging what it restores against the trust context its node holds
+    /// now. Returns the new data layer. A provider that cannot says so.
+    async fn restart(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<Arc<dyn DataLayer>> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot restart {}'s data layer",
             device.name()
         )
     }

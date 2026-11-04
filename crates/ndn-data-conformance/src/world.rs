@@ -10,7 +10,9 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ndn_app::EngineAppExt;
 use ndn_data::{DataLayer, Name, Timestamp, VersionId};
+use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{
     ClockSkew, Fabric, FaceKind, LinkConfig, NodeId, NodeProfile, SimKernel, Simulation,
 };
@@ -26,6 +28,8 @@ pub struct Dev(pub usize);
 #[derive(Clone, Debug)]
 struct Planned {
     person: String,
+    /// The device's role in the person's namespace, if it has one (`guest`).
+    role: Option<String>,
     device: String,
     /// A thief: takes this device, key and storage ([`World::steal`]).
     stolen_from: Option<Dev>,
@@ -67,9 +71,18 @@ impl Plan {
         self.add(person, device, true)
     }
 
+    /// Add a guest of `person`'s namespace: a friend's device `<person>/guest/<who>`, certified
+    /// by `person` as a guest (a role whose data, once its certificate lapsed, needs a cut).
+    pub fn guest(&mut self, person: &str, who: &str) -> Dev {
+        let d = self.add(person, who, false);
+        self.devices[d.0].role = Some("guest".to_owned());
+        d
+    }
+
     fn add(&mut self, person: &str, device: &str, holds: bool) -> Dev {
         self.devices.push(Planned {
             person: person.to_owned(),
+            role: None,
             device: device.to_owned(),
             stolen_from: None,
             holds,
@@ -82,6 +95,7 @@ impl Plan {
     pub fn thief(&mut self, victim: Dev) -> Dev {
         self.devices.push(Planned {
             person: "thief".to_owned(),
+            role: None,
             device: format!("with-{}", self.devices[victim.0].device),
             stolen_from: Some(victim),
             holds: false,
@@ -138,6 +152,7 @@ impl Net {
         for (i, p) in plan.devices.iter().enumerate() {
             let spec = DeviceSpec {
                 person: format!("/{}", p.person).parse()?,
+                role: p.role.clone(),
                 device: p.device.clone(),
                 // The hub is node 0; devices follow in plan order.
                 node: NodeId(i + 1),
@@ -271,6 +286,21 @@ impl Net {
             .get(&self.labels[d.0], &group)
             .map_or(0, |c| c.in_data)
     }
+
+    /// A passer-by on the network: an app on the hub's own node asks once for the packet named
+    /// exactly `name`, so the hub forwards whatever answers through its validation and its
+    /// content store, as a forwarder on any device's path would. Returns whether a packet came
+    /// back within two seconds of virtual time (one the hub's validation refused does not).
+    pub async fn ask_at_hub(&self, name: &Name) -> bool {
+        let Some(engine) = self.fabric.engine_of(self.hub) else {
+            return false;
+        };
+        let mut consumer = engine.app_consumer(tokio_util::sync::CancellationToken::new());
+        consumer
+            .fetch_with(InterestBuilder::new(name.clone()).lifetime(Duration::from_secs(2)))
+            .await
+            .is_ok()
+    }
 }
 
 /// One device's link counters, for [`Net::device_wire`].
@@ -368,12 +398,14 @@ impl World {
     ///
     /// # Panics
     ///
-    /// For a thief that has not taken the stolen device yet ([`steal`](Self::steal)).
+    /// For a thief that has not taken the stolen device yet ([`steal`](Self::steal)), and for a
+    /// device whose data layer is stopped ([`stop`](Self::stop)).
     pub fn at(&self, d: Dev) -> Arc<dyn DataLayer> {
         let layers = self.layers.borrow();
         let layer = layers[d.0].as_ref().unwrap_or_else(|| {
             panic!(
-                "device {} is a thief without a data layer until it steals the device",
+                "device {} runs no data layer: a thief before it steals the device, or a device \
+                 stopped until it restarts",
                 d.0
             )
         });
@@ -385,20 +417,51 @@ impl World {
         self.gestures.set(self.gestures.get() + 1);
     }
 
+    /// The owner reports `device` lost at `since` (by `by`'s clock), and `by`, the namespace's
+    /// root device, suspects its key from now on (see [`Provider::suspect`]).
+    pub async fn suspect(&self, by: Dev, device: Dev, since: Timestamp) -> Result<(), Failure> {
+        self.provider
+            .suspect(
+                &self.net.fabric,
+                self.net.spec(by),
+                self.net.spec(device),
+                since,
+            )
+            .await
+            .map_err(|e| Failure::new(format!("suspect failed: {e:#}")))
+    }
+
     /// `by`, holding the namespace's authority, revokes `device`'s key with a cut at what `by`
-    /// holds (see [`Provider::revoke`]), and the new trust-context version reaches every node
-    /// ([`spread_all`](Self::spread_all)).
-    pub async fn revoke(&self, by: Dev, device: Dev) -> Result<(), Failure> {
-        self.revoke_at(by, device).await?;
-        self.spread_all().await
+    /// first verified before `lost` (see [`Provider::revoke`]), and the new trust-context
+    /// version reaches every node ([`spread_all`](Self::spread_all)). Returns the entries of the
+    /// key `by` held but left out of the cut, by full name.
+    pub async fn revoke(
+        &self,
+        by: Dev,
+        device: Dev,
+        lost: Timestamp,
+    ) -> Result<Vec<Name>, Failure> {
+        let left_out = self.revoke_at(by, device, lost).await?;
+        self.spread_all().await?;
+        Ok(left_out)
     }
 
     /// As [`revoke`](Self::revoke), but the new version stays on `by`'s node until
     /// [`spread`](Self::spread) carries it further: the revocation has not reached the others
     /// yet.
-    pub async fn revoke_at(&self, by: Dev, device: Dev) -> Result<(), Failure> {
+    pub async fn revoke_at(
+        &self,
+        by: Dev,
+        device: Dev,
+        lost: Timestamp,
+    ) -> Result<Vec<Name>, Failure> {
         self.provider
-            .revoke(&self.net.fabric, self.net.spec(by), self.net.spec(device))
+            .revoke(
+                &self.net.fabric,
+                self.net.spec(by),
+                self.net.spec(device),
+                lost,
+            )
             .await
             .map_err(|e| Failure::new(format!("revoke failed: {e:#}")))
     }
@@ -448,6 +511,52 @@ impl World {
             .await
             .map_err(|e| Failure::new(format!("readmit failed: {e:#}")))?;
         self.spread_all().await
+    }
+
+    /// `by`, holding the namespace's authority, re-admits exactly the packet `full` (see
+    /// [`Provider::readmit_name`]), and the new trust-context version reaches every node.
+    pub async fn readmit_name(&self, by: Dev, full: &Name) -> Result<(), Failure> {
+        self.provider
+            .readmit_name(&self.net.fabric, self.net.spec(by), full)
+            .await
+            .map_err(|e| Failure::new(format!("readmit failed: {e:#}")))?;
+        self.spread_all().await
+    }
+
+    /// `by`, the namespace's root device, ends the keys whose authority over data ended without
+    /// a revocation (see [`Provider::end_keys`]), and the new trust-context versions reach every
+    /// node. Returns the keys it ended.
+    pub async fn end_keys(&self, by: Dev) -> Result<Vec<Name>, Failure> {
+        let ended = self
+            .provider
+            .end_keys(&self.net.fabric, self.net.spec(by))
+            .await
+            .map_err(|e| Failure::new(format!("ending lapsed keys failed: {e:#}")))?;
+        self.spread_all().await?;
+        Ok(ended)
+    }
+
+    /// `d`'s data layer stops, keeping what it stored (see [`Provider::stop`]); [`at`](Self::at)
+    /// has no layer for it until [`restart`](Self::restart).
+    pub async fn stop(&self, d: Dev) -> Result<(), Failure> {
+        self.provider
+            .stop(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot stop the data layer: {e:#}")))?;
+        self.layers.borrow_mut()[d.0] = None;
+        Ok(())
+    }
+
+    /// `d`'s stopped data layer starts again on what it stored (see [`Provider::restart`]);
+    /// [`at`](Self::at) answers the new layer.
+    pub async fn restart(&self, d: Dev) -> Result<Arc<dyn DataLayer>, Failure> {
+        let layer = self
+            .provider
+            .restart(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot restart the data layer: {e:#}")))?;
+        self.layers.borrow_mut()[d.0] = Some(Arc::clone(&layer));
+        Ok(layer)
     }
 
     /// The thief `thief` takes the device whose key it holds, storage and all (see

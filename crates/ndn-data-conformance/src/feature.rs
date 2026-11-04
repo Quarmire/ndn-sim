@@ -58,6 +58,20 @@ pub enum Feature {
     KeyLifetime,
     /// Recovering a namespace whose root was compromised carries its revocations and cuts.
     Recovery,
+    /// A revocation's cut bounded by the root's own observation: the owner states when the
+    /// device was lost, the root suspects the key (takes nothing new of it), and the cut keeps
+    /// only what the root first verified before then; what it left out is listed for exact
+    /// re-admission.
+    BoundedCut,
+    /// A cut binds its ranges to bytes (a root-signed manifest of each entry's digest): other
+    /// bytes at a name in the cut are refused, by data layers and forwarders.
+    CutManifest,
+    /// A guest key's authority over data ends with its certificate: once lapsed, its data is
+    /// refused until the root's revoke-with-cut, which then decides alone.
+    GuestExpiry,
+    /// A later trust-context version that revokes an issuer re-checks what a device holds
+    /// through it, on adoption and on restart.
+    IssuerRecheck,
     /// Named functions whose answers are sealed to their inputs' audience.
     Functions,
 }
@@ -78,7 +92,11 @@ impl Feature {
             | Feature::Readmit
             | Feature::RevocationRecheck
             | Feature::KeyLifetime
-            | Feature::Recovery => 5,
+            | Feature::Recovery
+            | Feature::BoundedCut
+            | Feature::CutManifest
+            | Feature::GuestExpiry
+            | Feature::IssuerRecheck => 5,
             Feature::Functions => 6,
         }
     }
@@ -106,6 +124,10 @@ impl Feature {
             Feature::RevocationRecheck => "re-check on revocation arrival",
             Feature::KeyLifetime => "keys over time",
             Feature::Recovery => "recovery carries cuts",
+            Feature::BoundedCut => "cut bounded by the loss",
+            Feature::CutManifest => "cut binds bytes",
+            Feature::GuestExpiry => "lapsed guest needs a cut",
+            Feature::IssuerRecheck => "re-check on issuer revocation",
             Feature::Functions => "named functions",
         }
     }

@@ -74,6 +74,24 @@ pub enum Feature {
     IssuerRecheck,
     /// Named functions whose answers are sealed to their inputs' audience.
     Functions,
+    /// Merge rules by name: a members record names its rule by a full, versioned name matched
+    /// exactly; a device whose program does not know it holds the collection's versions
+    /// unreadable and answers `DataError::RuleUnknown`, never a state under another rule.
+    RuleByName,
+    /// Operations the app builds (`put_op`): the rule checks each against its past, refuses for
+    /// good, or keeps it shown but not counted until it counts; checkpoints replace the state of
+    /// their past.
+    AppOps,
+    /// Versions of a merge collection carried in pieces, a checkpoint sparing a late reader the
+    /// pieces of what it covers, and release of a merge version's pieces only once a checkpoint
+    /// covering it is proved held.
+    MergePieces,
+    /// Groups (`put_group`): versions of several collections of one folder that count all or
+    /// none, judged alike on every reader.
+    Groups,
+    /// A folder's members record (`share_folder`): one record, one seal epoch and one grant per
+    /// reader for every collection under it, each collection free to narrow it.
+    FolderMembers,
 }
 
 impl Feature {
@@ -97,7 +115,12 @@ impl Feature {
             | Feature::CutManifest
             | Feature::GuestExpiry
             | Feature::IssuerRecheck => 5,
-            Feature::Functions => 6,
+            Feature::RuleByName
+            | Feature::AppOps
+            | Feature::MergePieces
+            | Feature::Groups
+            | Feature::FolderMembers => 6,
+            Feature::Functions => 8,
         }
     }
 
@@ -129,6 +152,11 @@ impl Feature {
             Feature::GuestExpiry => "lapsed guest needs a cut",
             Feature::IssuerRecheck => "re-check on issuer revocation",
             Feature::Functions => "named functions",
+            Feature::RuleByName => "merge rules by name",
+            Feature::AppOps => "app-built operations",
+            Feature::MergePieces => "merge versions in pieces",
+            Feature::Groups => "groups",
+            Feature::FolderMembers => "folder members",
         }
     }
 }

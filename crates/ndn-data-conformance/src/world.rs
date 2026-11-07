@@ -11,14 +11,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_app::EngineAppExt;
-use ndn_data::{DataLayer, Name, Timestamp, VersionId};
+use ndn_data::{DataError, DataLayer, Name, Timestamp, VersionId};
 use ndn_packet::encode::InterestBuilder;
+use ndn_sim::netstat::PrefixCounters;
 use ndn_sim::{
     ClockSkew, Fabric, FaceKind, LinkConfig, NodeId, NodeProfile, SimKernel, Simulation,
 };
 
 use crate::case::Failure;
-use crate::provider::{Certs, DeviceSpec, NodeRole, Provider, Tally, Tamper};
+use crate::provider::{Certs, DeviceSpec, NodeRole, Program, Provider, Tally, Tamper};
 use crate::report::{Cost, Measure};
 
 /// A device of a [`Plan`], by position.
@@ -35,6 +36,8 @@ struct Planned {
     stolen_from: Option<Dev>,
     /// A holder of its person's collections.
     holds: bool,
+    /// The merge rules its program knows beyond the standard ones.
+    program: Program,
 }
 
 /// The devices a case needs, declared before the fabric starts.
@@ -79,6 +82,12 @@ impl Plan {
         d
     }
 
+    /// The merge rules `d`'s program knows beyond the standard ones (every device's program
+    /// knows the element rule unless the case says otherwise).
+    pub fn program(&mut self, d: Dev, program: Program) {
+        self.devices[d.0].program = program;
+    }
+
     fn add(&mut self, person: &str, device: &str, holds: bool) -> Dev {
         self.devices.push(Planned {
             person: person.to_owned(),
@@ -86,6 +95,7 @@ impl Plan {
             device: device.to_owned(),
             stolen_from: None,
             holds,
+            program: Program::default(),
         });
         Dev(self.devices.len() - 1)
     }
@@ -99,6 +109,7 @@ impl Plan {
             device: format!("with-{}", self.devices[victim.0].device),
             stolen_from: Some(victim),
             holds: false,
+            program: Program::default(),
         });
         Dev(self.devices.len() - 1)
     }
@@ -157,6 +168,7 @@ impl Net {
                 // The hub is node 0; devices follow in plan order.
                 node: NodeId(i + 1),
                 holds: p.holds,
+                program: p.program,
             };
             let mut node_profile = profile(&spec);
             node_profile.clock_skew.get_or_insert(ClockSkew::NONE);
@@ -285,6 +297,29 @@ impl Net {
         stats
             .get(&self.labels[d.0], &group)
             .map_or(0, |c| c.in_data)
+    }
+
+    /// What crossed `d`'s links under every counted name group (see [`Plan::count_names`]) for
+    /// which `which` holds, summed: e.g. the grants a device asked for and got
+    /// (`<granter>/32=grant`), whoever the granter.
+    pub fn counted_where(&self, d: Dev, which: impl Fn(&str) -> bool) -> PrefixCounters {
+        let stats = self
+            .fabric
+            .prefix_stats()
+            .expect("a case reading names counted plans to count them (Plan::count_names)");
+        let mut sum = PrefixCounters::default();
+        for row in stats.snapshot() {
+            if row.node == self.labels[d.0] && which(&row.prefix) {
+                let c = row.counters;
+                sum.out_bytes += c.out_bytes;
+                sum.in_bytes += c.in_bytes;
+                sum.out_interests += c.out_interests;
+                sum.out_data += c.out_data;
+                sum.in_interests += c.in_interests;
+                sum.in_data += c.in_data;
+            }
+        }
+        sum
     }
 
     /// A passer-by on the network: an app on the hub's own node asks once for the packet named
@@ -621,6 +656,26 @@ impl World {
             .release(&self.net.fabric, self.net.spec(d), name)
             .await
             .map_err(|e| Failure::new(format!("release failed: {e:#}")))
+    }
+
+    /// As [`release`](Self::release), but a refusal by `d`'s data layer is answered as its
+    /// error, for a case that expects one.
+    pub async fn try_release(
+        &self,
+        d: Dev,
+        name: &Name,
+    ) -> Result<Result<u64, DataError>, Failure> {
+        match self
+            .provider
+            .release(&self.net.fabric, self.net.spec(d), name)
+            .await
+        {
+            Ok(pieces) => Ok(Ok(pieces)),
+            Err(e) => match e.downcast_ref::<DataError>() {
+                Some(refusal) => Ok(Err(refusal.clone())),
+                None => Err(Failure::new(format!("release failed: {e:#}"))),
+            },
+        }
     }
 
     /// `d`'s storage silently loses every `every`-th stored piece of `collection` (1 = all), in

@@ -18,7 +18,7 @@ use crate::world::{Dev, Plan, World};
 pub(super) const CASE: Case = Case {
     id: "c12",
     title: "Offline photo browsing, a summary service, a revoked tablet",
-    slice: 6,
+    slice: 8,
     needs: &[
         Feature::Merge,
         Feature::Seal,

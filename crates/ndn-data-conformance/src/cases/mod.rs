@@ -5,8 +5,10 @@
 //! backdated version, exact re-admission, a late revocation, a renewal, a recovery, and from its
 //! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
 //! a revoked issuer) beside theirs (c3), the items left open after the model's fixes
-//! (`o1`…`o4`), and the slice-2 security review (`r1`…`r4`): the attacks it found and the
-//! concurrent share its merge must keep.
+//! (`o1`…`o4`), the slice-2 security review (`r1`…`r4`): the attacks it found and the
+//! concurrent share its merge must keep, and slice 6's substrate for apps that bring their own
+//! merge (`b1`…`b5`: a rule named by the app, operations it builds, merge versions in pieces;
+//! `g1`…`g3`: groups; `f1`, `f2`: a folder's members record).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -16,13 +18,19 @@ use ndn_data::wire::{Range, entry_name, held_name, range_name};
 use ndn_data::{
     Answer, Audience, Change, Changes, Content, Custody, DataError, DataLayer, Entries, Frontier,
     Got, Hold, Keep, Lease, Name, Payload, PutOptions, Rule, Share, State, Timestamp, TypeId,
-    Version, VersionId,
+    Value, Version, VersionId,
 };
 
 use crate::case::{Case, Failure};
+use crate::element::{self, ElementValue, Operation};
 use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
+mod b1_rule_by_name;
+mod b2_basis_outside_past;
+mod b3_locked_setting;
+mod b4_merge_pieces;
+mod b5_release_merge_pieces;
 mod c01_offline_notes;
 mod c02_removed_offline;
 mod c03_stolen_key;
@@ -35,6 +43,11 @@ mod c09_family_chat;
 mod c10_others_comment;
 mod c11_cite_state;
 mod c12_still_pass;
+mod f1_folder_members;
+mod f2_folder_narrowing;
+mod g1_group_all_or_none;
+mod g2_impossible_group;
+mod g3_group_concurrent_narrowing;
 mod h1_large_photo;
 mod h2_dropping_holder;
 mod h3_subset_holder;
@@ -116,6 +129,16 @@ pub const CASES: &[Case] = &[
     r2_group_removal::CASE,
     r3_own_device_removed::CASE,
     r4_concurrent_add_remove::CASE,
+    b1_rule_by_name::CASE,
+    b2_basis_outside_past::CASE,
+    b3_locked_setting::CASE,
+    b4_merge_pieces::CASE,
+    b5_release_merge_pieces::CASE,
+    g1_group_all_or_none::CASE,
+    g2_impossible_group::CASE,
+    g3_group_concurrent_narrowing::CASE,
+    f1_folder_members::CASE,
+    f2_folder_narrowing::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------
@@ -493,9 +516,29 @@ fn members(rule: Rule, writers: &[&str], readers: &[Audience]) -> Share {
     }
 }
 
+/// What holds named fields: a version's content, or a merged value of fields (`/merge/yrs`).
+trait Fields {
+    /// The fields, if it is made of fields.
+    fn fields_of(&self) -> Option<&Content>;
+}
+
+impl Fields for Content {
+    fn fields_of(&self) -> Option<&Content> {
+        Some(self)
+    }
+}
+
+impl Fields for Value {
+    fn fields_of(&self) -> Option<&Content> {
+        self.fields()
+    }
+}
+
 /// The field `f` of `c` as text.
-fn field<'c>(c: &'c Content, f: &str) -> Option<&'c str> {
-    c.get(f).and_then(|v| std::str::from_utf8(v).ok())
+fn field<'c>(c: &'c impl Fields, f: &str) -> Option<&'c str> {
+    c.fields_of()?
+        .get(f)
+        .and_then(|v| std::str::from_utf8(v).ok())
 }
 
 /// The merged state of a merge collection as `layer` sees it now; `None` while it has nothing.
@@ -694,4 +737,125 @@ fn withdrawn(changes: &[Change], id: &VersionId) -> bool {
     changes
         .iter()
         .any(|c| matches!(c, Change::Withdrawn { id: w, .. } if w == id))
+}
+
+// ---- slice 6's kit: the element rule, app-built operations, groups, folders ------------------
+
+/// A collection merged by the cases' element rule ([`crate::element`]), named by its full,
+/// versioned name.
+fn element_rule() -> Rule {
+    Rule::Merge {
+        function: element::name(),
+    }
+}
+
+/// The element type, as an app writes its operations.
+fn element_type() -> PutOptions {
+    PutOptions {
+        type_id: TypeId {
+            name: n("/types/element"),
+            revision: 1,
+        },
+        keep: Keep::Forever,
+        batch: None,
+    }
+}
+
+/// The state of the element collection `c` as `layer` sees it now, its value decoded; `None`
+/// while it holds nothing of it.
+async fn element_now(
+    layer: &dyn DataLayer,
+    c: &Name,
+) -> Result<Option<(State, ElementValue)>, Failure> {
+    let Some(s) = state_now(layer, c).await? else {
+        return Ok(None);
+    };
+    let v = element::decode(&s.value).map_err(|e| {
+        Failure::new(format!(
+            "the state of {c} is no value of the element rule its record names: {e}"
+        ))
+    })?;
+    Ok(Some((s, v)))
+}
+
+/// The state of the element collection `c`, which `layer` must hold.
+async fn element_state(layer: &dyn DataLayer, c: &Name) -> Result<(State, ElementValue), Failure> {
+    element_now(layer, c)
+        .await?
+        .ok_or_else(|| Failure::new(format!("no state of {c} is held")))
+}
+
+/// The operation `edits` makes of one by `d`, over every head of `c` that `d` holds (as an app
+/// names its basis), or over its own previous version when it holds none.
+async fn element_op(
+    w: &World,
+    d: Dev,
+    c: &Name,
+    edits: impl FnOnce(Operation) -> Operation,
+) -> Result<Operation, Failure> {
+    let op = Operation::by(&w.net().spec(d).name());
+    let op = match element_now(&*w.at(d), c).await? {
+        Some((_, v)) => op.over_heads(&v),
+        None => op,
+    };
+    Ok(edits(op))
+}
+
+/// `d` writes into the element collection `c` the operation `edits` makes (see
+/// [`element_op`]).
+async fn put_element(
+    w: &World,
+    d: Dev,
+    c: &Name,
+    edits: impl FnOnce(Operation) -> Operation,
+) -> Result<VersionId, Failure> {
+    let op = element_op(w, d, c, edits).await?;
+    Ok(w.at(d).put_op(c, op.encode(), element_type()).await?)
+}
+
+/// The setting `s` of an element's merged value.
+fn setting<'v>(v: &'v ElementValue, s: &str) -> Option<&'v str> {
+    v.state.settings.get(s).map(String::as_str)
+}
+
+/// Why `state` holds `id` without counting it, if it does.
+fn not_counted_in<'s>(state: &'s State, id: &VersionId) -> Option<&'s str> {
+    state
+        .not_counted
+        .iter()
+        .find(|(v, _)| v == id)
+        .map(|(_, why)| why.as_str())
+}
+
+/// Whether `changes` report `id` held but not counted.
+fn reported_not_counted(changes: &[Change], id: &VersionId) -> bool {
+    changes
+        .iter()
+        .any(|c| matches!(c, Change::NotCounted { id: v, .. } if v == id))
+}
+
+/// Whether `changes` report `id`, once not counted, counting now.
+fn reported_counted(changes: &[Change], id: &VersionId) -> bool {
+    changes
+        .iter()
+        .any(|c| matches!(c, Change::Counted { id: v } if v == id))
+}
+
+/// `len` characters of text, the same every run: lower-case letters and spaces from a generator
+/// (xorshift) seeded by `seed`.
+fn prose(seed: &str, len: usize) -> String {
+    let mut x = seed.bytes().fold(0x9e37_79b9_7f4a_7c15_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            match x % 27 {
+                26 => ' ',
+                c => char::from(b'a' + c as u8),
+            }
+        })
+        .collect()
 }

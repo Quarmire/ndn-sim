@@ -200,7 +200,7 @@ mod tests {
         for c in &report.cases {
             assert_eq!(c.status, Status::NotImplemented);
             assert!(
-                (1..=7).contains(&c.slice),
+                (1..=8).contains(&c.slice),
                 "{} names slice {}",
                 c.id,
                 c.slice

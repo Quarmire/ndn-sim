@@ -23,6 +23,24 @@ pub struct DeviceSpec {
     /// A holder: it keeps its person's collections for their owners under custody leases
     /// (answers their hold asks and audits).
     pub holds: bool,
+    /// The merge rules its program knows beyond the standard ones.
+    pub program: Program,
+}
+
+/// The merge rules a device's program knows beyond the standard ones every program knows
+/// (`/merge/yrs`). A provider registers them on the device's data layer by their names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Program {
+    /// The cases' element rule ([`crate::element`], `/conformance/merge/element/v=1`), as
+    /// written.
+    #[default]
+    Element,
+    /// None beyond the standard ones: a program older than the element rule.
+    Standard,
+    /// The element rule, named alike, but with a check that refuses nothing
+    /// ([`Element::lax`](crate::element::Element::lax)): a faulty or hostile writer's program,
+    /// whose versions only honest readers judge.
+    LaxElement,
 }
 
 impl DeviceSpec {
@@ -322,7 +340,9 @@ pub trait Provider: Send + Sync {
     /// `device`'s host drops its own copies of the pieces of the large versions under `name` (a
     /// version's name or a collection), leaving them to the holders that keep them: the host's
     /// storage policy, not a verb. Returns how many pieces it dropped; a refusal (nothing it
-    /// audited as kept holds them) is an error naming why.
+    /// audited as kept holds them; for a merge version, no checkpoint covering it proved held) is
+    /// an error naming why, carrying the layer's [`DataError`](ndn_data::DataError) as its
+    /// source (`downcast_ref`).
     async fn release(
         &self,
         fabric: &Fabric,

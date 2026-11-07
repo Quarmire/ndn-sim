@@ -31,7 +31,9 @@
 //! manifest packet) through its engine. A renewed or expired certificate is handed to every
 //! node's cache in place of the copy it held; the validators judge validity by the host's
 //! clock. A device's data layer can stop and start again on its store, re-judging what it
-//! restores.
+//! restores. Each device's program registers the standard merge rules and the ones its
+//! [`Program`] names — the cases' element rule ([`crate::element`]), as written or lax — so a
+//! case can give one device a program that lacks a rule, or one that signs what the rule refuses.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,8 +48,8 @@ use ndn_data::wire::{
     parse_piece_name, piece_names, version_proof,
 };
 use ndn_data::{
-    Config, CutBound, CutProposal, DataLayer, Device, Entropy, Name, Timestamp, Transport,
-    VersionId,
+    Config, CutBound, CutProposal, DataLayer, Device, Entropy, MergeRules, Name, Timestamp,
+    Transport, VersionId,
 };
 use ndn_link::{EngineFaces, FaceSink};
 use ndn_packet::Data;
@@ -59,8 +61,9 @@ use ndn_sync::{DataStore, MemoryStore, SvsConfig};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
+use crate::element::Element;
 use crate::feature::Feature;
-use crate::provider::{Certs, DeviceSpec, Provider, Tally, Tamper};
+use crate::provider::{Certs, DeviceSpec, Program, Provider, Tally, Tamper};
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
 const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
@@ -143,7 +146,7 @@ impl Reference {
         node: NodeId,
         device: Name,
         keys: Arc<SecurityManager>,
-        hold_for: Vec<Name>,
+        host: Host,
         store: Arc<MemoryStore>,
     ) -> anyhow::Result<Arc<dyn DataLayer>> {
         let engine = fabric
@@ -169,7 +172,8 @@ impl Reference {
         let config = Config {
             clock: Arc::new(move || Timestamp(clock.now_ns() / 1_000_000)),
             svs: SvsConfig::default(),
-            hold_for,
+            hold_for: host.hold_for,
+            rules: rules(host.program),
             entropy: seeded(&device, runs),
             ..Config::new()
         };
@@ -477,13 +481,34 @@ impl Reference {
     }
 }
 
-/// What `device` holds for others: a holder keeps the collections of its own person's
-/// namespace.
-fn hold_for(device: &DeviceSpec) -> Vec<Name> {
-    if device.holds {
-        vec![device.person.clone()]
-    } else {
-        Vec::new()
+/// What a device's host configures its data layer with.
+struct Host {
+    /// The namespaces it holds collections of for their owners.
+    hold_for: Vec<Name>,
+    /// The merge rules its program knows beyond the standard ones.
+    program: Program,
+}
+
+/// How `device`'s host configures its layer: a holder keeps the collections of its own person's
+/// namespace; the program registers the merge rules the case gave it.
+fn host(device: &DeviceSpec) -> Host {
+    Host {
+        hold_for: if device.holds {
+            vec![device.person.clone()]
+        } else {
+            Vec::new()
+        },
+        program: device.program,
+    }
+}
+
+/// The merge rules a device running `program` registers.
+fn rules(program: Program) -> MergeRules {
+    let standard = MergeRules::standard();
+    match program {
+        Program::Standard => standard,
+        Program::Element => standard.with(Arc::new(Element::new())),
+        Program::LaxElement => standard.with(Arc::new(Element::lax())),
     }
 }
 
@@ -604,6 +629,11 @@ impl Provider for Reference {
                 | Feature::CutManifest
                 | Feature::GuestExpiry
                 | Feature::IssuerRecheck
+                | Feature::RuleByName
+                | Feature::AppOps
+                | Feature::MergePieces
+                | Feature::Groups
+                | Feature::FolderMembers
         )
     }
 
@@ -742,7 +772,7 @@ impl Provider for Reference {
             device.node,
             device.name(),
             keys,
-            hold_for(device),
+            host(device),
             Arc::new(MemoryStore::new()),
         )
         .await
@@ -928,7 +958,12 @@ impl Provider for Reference {
             }
             (keys, Arc::new(copy))
         };
-        self.start(fabric, thief.node, victim.name(), keys, Vec::new(), copy)
+        // The thief runs the stolen device's program; it holds nothing for others.
+        let thief_host = Host {
+            hold_for: Vec::new(),
+            program: victim.program,
+        };
+        self.start(fabric, thief.node, victim.name(), keys, thief_host, copy)
             .await
     }
 
@@ -1082,7 +1117,7 @@ impl Provider for Reference {
             device.node,
             device.name(),
             keys,
-            hold_for(device),
+            host(device),
             store,
         )
         .await
@@ -1198,11 +1233,13 @@ impl Provider for Reference {
             .with_context(|| format!("{} has no data layer attached", device.name()))?;
         match layer.release(name).await {
             Ok(released) => Ok(u64::from(released.pieces)),
-            Err(e) => anyhow::bail!(
-                "{} refused to release {name}: {e} (next step: {:?})",
-                device.name(),
-                e.next()
-            ),
+            Err(e) => {
+                let next = e.next();
+                Err(anyhow::Error::new(e).context(format!(
+                    "{} refused to release {name} (next step: {next:?})",
+                    device.name()
+                )))
+            }
         }
     }
 

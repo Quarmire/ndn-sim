@@ -100,14 +100,14 @@ impl PrefixStats {
             match kind {
                 WireKind::Interest => c.out_interests += 1,
                 WireKind::Data => c.out_data += 1,
-                WireKind::Other => {}
+                WireKind::Nack | WireKind::Other => {}
             }
         } else {
             c.in_bytes += bytes as u64;
             match kind {
                 WireKind::Interest => c.in_interests += 1,
                 WireKind::Data => c.in_data += 1,
-                WireKind::Other => {}
+                WireKind::Nack | WireKind::Other => {}
             }
         }
     }
@@ -180,6 +180,9 @@ impl PrefixTap {
 enum WireKind {
     Interest,
     Data,
+    /// An LP packet carrying a Nack: its fragment is the Interest refused, so
+    /// its bytes go to that Interest's name, never its count.
+    Nack,
     Other,
 }
 
@@ -201,6 +204,8 @@ fn classify(wire: &[u8]) -> (WireKind, Option<String>) {
             // count as unparsed bytes (never dropped from totals, never
             // mis-attributed to a name).
             Ok(lp) if lp.frag_index.unwrap_or(0) == 0 => match lp.fragment {
+                // A Nack wraps the Interest it refuses: not an Interest sent.
+                Some(inner) if lp.nack.is_some() => (WireKind::Nack, classify(&inner).1),
                 Some(inner) => classify(&inner),
                 None => (WireKind::Other, None),
             },
@@ -261,6 +266,13 @@ mod tests {
         assert_eq!(
             classify(&lp),
             (WireKind::Data, Some("/svc/telemetry/live".into()))
+        );
+
+        // A Nack carries the Interest it refuses: named by it, never counted as one.
+        let nack = ndn_packet::encode::encode_nack(ndn_packet::NackReason::NoRoute, &interest);
+        assert_eq!(
+            classify(&nack),
+            (WireKind::Nack, Some("/svc/telemetry/live".into()))
         );
 
         // Junk is unattributable, never panics.

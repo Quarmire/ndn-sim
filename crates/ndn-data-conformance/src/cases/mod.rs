@@ -8,7 +8,8 @@
 //! (`o1`…`o4`), the slice-2 security review (`r1`…`r4`): the attacks it found and the
 //! concurrent share its merge must keep, and slice 6's substrate for apps that bring their own
 //! merge (`b1`…`b5`: a rule named by the app, operations it builds, merge versions in pieces;
-//! `g1`…`g3`: groups; `f1`, `f2`: a folder's members record).
+//! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
+//! record, and a collection's first own record under it).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -45,9 +46,11 @@ mod c11_cite_state;
 mod c12_still_pass;
 mod f1_folder_members;
 mod f2_folder_narrowing;
+mod f3_first_own_record;
 mod g1_group_all_or_none;
 mod g2_impossible_group;
 mod g3_group_concurrent_narrowing;
+mod g4_seq_reused_across_collections;
 mod h1_large_photo;
 mod h2_dropping_holder;
 mod h3_subset_holder;
@@ -137,8 +140,10 @@ pub const CASES: &[Case] = &[
     g1_group_all_or_none::CASE,
     g2_impossible_group::CASE,
     g3_group_concurrent_narrowing::CASE,
+    g4_seq_reused_across_collections::CASE,
     f1_folder_members::CASE,
     f2_folder_narrowing::CASE,
+    f3_first_own_record::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

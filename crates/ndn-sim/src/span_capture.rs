@@ -12,12 +12,14 @@
 //! `VirtualKernel` runtime that covers every spawned engine task for the guard's lifetime, so the
 //! captured trace is virtual-clocked and reproducible.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use ndn_runtime::Runtime;
 use serde::Serialize;
 use tracing::field::{Field, Visit};
-use tracing::{Event, Subscriber};
+use tracing::level_filters::LevelFilter;
+use tracing::subscriber::Interest;
+use tracing::{Dispatch, Event, Metadata, Subscriber, span};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
@@ -173,13 +175,47 @@ where
 /// dropped. Call it at the top of a [`VirtualKernel::run`](crate::VirtualKernel::run) body (or any
 /// run): under the single-threaded runtime it covers every engine task spawned while the guard is
 /// alive. `clock` should be the kernel's runtime so timestamps are virtual.
+///
+/// A thread-local subscriber alone would miss events in a process with other threads:
+/// tracing-core caches each callsite's interest process-wide, and while exactly one
+/// dispatcher is registered it takes that interest from whichever thread reaches the
+/// callsite first. A thread with no subscriber would then cache the engine's callsites as
+/// never interesting, and this capture would see none of them. So a permanent inert
+/// dispatcher is registered first: with two registered, tracing-core combines every live
+/// dispatcher's interest and asks the current thread's subscriber on each event.
 #[must_use = "capture stops when the returned guard is dropped"]
 pub fn capture_engine_spans(
     clock: Arc<dyn Runtime>,
     log: Arc<SpanLog>,
 ) -> tracing::subscriber::DefaultGuard {
+    static ANCHOR: LazyLock<Dispatch> = LazyLock::new(|| Dispatch::new(Inert));
+    LazyLock::force(&ANCHOR);
     let subscriber = tracing_subscriber::registry().with(EngineSpanLayer::new(clock, log));
     tracing::subscriber::set_default(subscriber)
+}
+
+/// A registered subscriber interested in nothing; see [`capture_engine_spans`]. Its `OFF`
+/// hint keeps the global max level unchanged.
+struct Inert;
+
+impl Subscriber for Inert {
+    fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+        Interest::never()
+    }
+    fn enabled(&self, _: &Metadata<'_>) -> bool {
+        false
+    }
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        Some(LevelFilter::OFF)
+    }
+    fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
+        span::Id::from_u64(1)
+    }
+    fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+    fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+    fn event(&self, _: &Event<'_>) {}
+    fn enter(&self, _: &span::Id) {}
+    fn exit(&self, _: &span::Id) {}
 }
 
 #[cfg(test)]

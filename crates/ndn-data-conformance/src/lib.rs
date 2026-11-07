@@ -34,7 +34,7 @@ pub mod world;
 
 pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;
-pub use provider::{Certs, DeviceSpec, NodeRole, Program, Provider, Tally, Tamper};
+pub use provider::{Certs, DeviceSpec, Grants, NodeRole, Program, Provider, Tally, Tamper};
 pub use reference::Reference;
 pub use report::{CaseResult, Cost, Report, Status};
 pub use runner::{differences, run_all, run_case, run_only};

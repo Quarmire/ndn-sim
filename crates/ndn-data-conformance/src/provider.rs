@@ -74,6 +74,16 @@ pub struct Tally {
     pub copies: u64,
 }
 
+/// One device's seal-key grants, cumulative ([`Provider::grants`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Grants {
+    /// Epoch keys it asked others to grant it: one per epoch asked for, whatever the number of
+    /// devices asked or of collections read in that epoch.
+    pub asked: u64,
+    /// Grants it signed for askers.
+    pub answered: u64,
+}
+
 /// How a malicious holder alters the packet of a block it stores ([`Provider::tamper`]). Either
 /// way the packet keeps the block's name and its signature bytes, so it claims the writer's
 /// signature over content the writer never signed.
@@ -337,6 +347,9 @@ pub trait Provider: Send + Sync {
     /// pays in signing.
     fn signed_by(&self, device: &DeviceSpec) -> u64;
 
+    /// The seal-key grants `device`'s data layer has asked for and answered, cumulative.
+    fn grants(&self, device: &DeviceSpec) -> Grants;
+
     /// `device`'s host drops its own copies of the pieces of the large versions under `name` (a
     /// version's name or a collection), leaving them to the holders that keep them: the host's
     /// storage policy, not a verb. Returns how many pieces it dropped; a refusal (nothing it
@@ -359,6 +372,10 @@ pub trait Provider: Send + Sync {
     /// [`lose`](Self::lose) counts them; of a version's name, its log entry and its chunks and
     /// manifest nodes.
     fn stored(&self, device: &DeviceSpec, prefix: &Name) -> u64;
+
+    /// How many pieces of the version named `version` (its chunks and manifest nodes, not its
+    /// log entry) `device` stores: whether it fetched the payload, not just the signed record.
+    fn pieces_stored(&self, device: &DeviceSpec, version: &Name) -> u64;
 
     /// Fault injection: from now on `device` answers the audit asks addressed to it through a
     /// relay that keeps nothing: it fetches each asked piece from the network, fresh (past every

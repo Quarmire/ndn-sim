@@ -63,7 +63,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::element::Element;
 use crate::feature::Feature;
-use crate::provider::{Certs, DeviceSpec, Program, Provider, Tally, Tamper};
+use crate::provider::{Certs, DeviceSpec, Grants, Program, Provider, Tally, Tamper};
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
 const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
@@ -1217,6 +1217,16 @@ impl Provider for Reference {
             .map_or(0, |a| a.layer.signatures())
     }
 
+    fn grants(&self, device: &DeviceSpec) -> Grants {
+        let case = self.case.lock().expect("the provider's lock");
+        case.devices
+            .get(&device.node)
+            .map_or(Grants::default(), |a| Grants {
+                asked: a.layer.grants_asked(),
+                answered: a.layer.grants_answered(),
+            })
+    }
+
     async fn release(
         &self,
         _fabric: &Fabric,
@@ -1255,6 +1265,14 @@ impl Provider for Reference {
             }
         }
         lost
+    }
+
+    fn pieces_stored(&self, device: &DeviceSpec, version: &Name) -> u64 {
+        let stored = self.store(device).scan_under(&Name::root(), 0);
+        stored
+            .iter()
+            .filter(|(name, _)| parse_piece_name(name).is_some_and(|p| p.version == *version))
+            .count() as u64
     }
 
     fn stored(&self, device: &DeviceSpec, prefix: &Name) -> u64 {

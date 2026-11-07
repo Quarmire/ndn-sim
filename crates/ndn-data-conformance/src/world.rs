@@ -13,13 +13,12 @@ use std::time::Duration;
 use ndn_app::EngineAppExt;
 use ndn_data::{DataError, DataLayer, Name, Timestamp, VersionId};
 use ndn_packet::encode::InterestBuilder;
-use ndn_sim::netstat::PrefixCounters;
 use ndn_sim::{
     ClockSkew, Fabric, FaceKind, LinkConfig, NodeId, NodeProfile, SimKernel, Simulation,
 };
 
 use crate::case::Failure;
-use crate::provider::{Certs, DeviceSpec, NodeRole, Program, Provider, Tally, Tamper};
+use crate::provider::{Certs, DeviceSpec, Grants, NodeRole, Program, Provider, Tally, Tamper};
 use crate::report::{Cost, Measure};
 
 /// A device of a [`Plan`], by position.
@@ -297,29 +296,6 @@ impl Net {
         stats
             .get(&self.labels[d.0], &group)
             .map_or(0, |c| c.in_data)
-    }
-
-    /// What crossed `d`'s links under every counted name group (see [`Plan::count_names`]) for
-    /// which `which` holds, summed: e.g. the grants a device asked for and got
-    /// (`<granter>/32=grant`), whoever the granter.
-    pub fn counted_where(&self, d: Dev, which: impl Fn(&str) -> bool) -> PrefixCounters {
-        let stats = self
-            .fabric
-            .prefix_stats()
-            .expect("a case reading names counted plans to count them (Plan::count_names)");
-        let mut sum = PrefixCounters::default();
-        for row in stats.snapshot() {
-            if row.node == self.labels[d.0] && which(&row.prefix) {
-                let c = row.counters;
-                sum.out_bytes += c.out_bytes;
-                sum.in_bytes += c.in_bytes;
-                sum.out_interests += c.out_interests;
-                sum.out_data += c.out_data;
-                sum.in_interests += c.in_interests;
-                sum.in_data += c.in_data;
-            }
-        }
-        sum
     }
 
     /// A passer-by on the network: an app on the hub's own node asks once for the packet named
@@ -690,6 +666,12 @@ impl World {
         self.provider.stored(self.net.spec(d), prefix)
     }
 
+    /// How many pieces of `version` (chunks and manifest nodes, not its log entry) `d` stores
+    /// (see [`Provider::pieces_stored`]).
+    pub fn pieces_stored(&self, d: Dev, version: &Name) -> u64 {
+        self.provider.pieces_stored(self.net.spec(d), version)
+    }
+
     /// From now on `d` answers audits by relaying each asked piece from the network instead of
     /// from its store (see [`Provider::relay_audits`]).
     pub async fn relay_audits(&self, d: Dev) -> Result<(), Failure> {
@@ -702,6 +684,12 @@ impl World {
     /// The signatures `d`'s data layer has made, cumulative (see [`Provider::signed_by`]).
     pub fn signed_by(&self, d: Dev) -> u64 {
         self.provider.signed_by(self.net.spec(d))
+    }
+
+    /// The seal-key grants `d`'s data layer has asked for and answered, cumulative (see
+    /// [`Provider::grants`]).
+    pub fn grants(&self, d: Dev) -> Grants {
+        self.provider.grants(self.net.spec(d))
     }
 
     /// `d`, a malicious holder, replaces the packet of block `version` in its store as `how`

@@ -6,8 +6,8 @@
 //! or a 100 KiB checkpoint was refused as too large. The fix: a merge version carries its payload
 //! in verifiable pieces like any version; a reader fetches them, waits for the version as for a
 //! missing parent, and applies it once whole. Her tablet, offline throughout, comes back after
-//! the checkpoint: the checkpoint covers the earlier edit, so it need not fetch that edit's
-//! pieces (what it fetched is recorded).
+//! the checkpoint and learns of the edit and the checkpoint together: the checkpoint covers the
+//! edit, so the tablet holds the edit's signed record but never fetches its pieces.
 
 use std::time::Duration;
 
@@ -25,7 +25,8 @@ pub(super) const CASE: Case = Case {
     model: &[],
     guards: "A merge version of any size within the payload limit reaches another device whole \
              and applies there; a checkpoint replaces the state of its past, so a device that \
-             comes back later reaches the same value from it.",
+             comes back later reaches the same value from it, never fetching the pieces of the \
+             edit it covers.",
     budget: Duration::from_secs(1800),
     plan,
     run,
@@ -154,10 +155,16 @@ fn run(w: &World) -> CaseFuture<'_> {
             took.as_millis() as u64,
             "ms",
         );
+        let covered = log_entry(w, LAPTOP, &note, &large);
         w.measure(
             "octets of the covered edit the late tablet stores",
-            w.stored(TABLET, &log_entry(w, LAPTOP, &note, &large)),
+            w.stored(TABLET, &covered),
             "bytes",
+        );
+        ensure!(
+            w.pieces_stored(TABLET, &covered) == 0,
+            "the late tablet fetched {} pieces of the edit the checkpoint it holds covers",
+            w.pieces_stored(TABLET, &covered)
         );
         w.measure(
             "octets of the checkpoint the late tablet stores",

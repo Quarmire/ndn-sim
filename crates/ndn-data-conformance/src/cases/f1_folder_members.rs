@@ -45,8 +45,6 @@ fn plan() -> Plan {
     p.device("bob", "phone");
     p.device("carol", "phone");
     p.device("dave", "phone");
-    // `<granter>/32=grant`: three components, so grants are counted apart from everything else.
-    p.count_names(3);
     p
 }
 
@@ -60,15 +58,6 @@ fn recipe() -> PutOptions {
         keep: Keep::Forever,
         batch: None,
     }
-}
-
-/// Whether a counted name group is a granter's grants (`<granter>/32=grant`, however the
-/// keyword component is spelled).
-fn grants(prefix: &str) -> bool {
-    prefix
-        .rsplit('/')
-        .next()
-        .is_some_and(|c| c == "32=grant" || c == "keyword=grant")
 }
 
 /// Whether `layer` reads recipe `i` as collection `c`'s newest version.
@@ -89,12 +78,12 @@ async fn reads(layer: &dyn DataLayer, c: &Name, i: usize) -> Result<bool, Failur
     }
 }
 
-/// What one way of sharing cost, per reader where it is per reader.
+/// What one way of sharing cost; grants asked per reader, as each reader's layer counts them.
 struct Spent {
     signatures: u64,
     records: u64,
     asked: Vec<u64>,
-    answered: Vec<u64>,
+    answered: u64,
     interests: u64,
     bytes: u64,
     took: Duration,
@@ -121,10 +110,8 @@ async fn share_and_read(
         .collect();
 
     // Readers follow the owner's writes as they come: what they spend is counted from the share.
-    let counted: Vec<_> = READERS
-        .iter()
-        .map(|r| w.net().counted_where(*r, grants))
-        .collect();
+    let asked: Vec<u64> = READERS.iter().map(|r| w.grants(*r).asked).collect();
+    let answered = w.grants(OWNER).answered;
     let wire: Vec<_> = READERS.iter().map(|r| w.net().device_wire(*r)).collect();
     let signed = w.signed_by(OWNER);
     w.gesture();
@@ -160,17 +147,13 @@ async fn share_and_read(
         signatures,
         records,
         asked: Vec::new(),
-        answered: Vec::new(),
+        answered: w.grants(OWNER).answered - answered,
         interests: 0,
         bytes: 0,
         took,
     };
     for (j, r) in READERS.iter().enumerate() {
-        let now = w.net().counted_where(*r, grants);
-        spent
-            .asked
-            .push(now.out_interests - counted[j].out_interests);
-        spent.answered.push(now.in_data - counted[j].in_data);
+        spent.asked.push(w.grants(*r).asked - asked[j]);
         let used = w.net().device_wire(*r) - wire[j];
         spent.interests += used.interests;
         spent.bytes += used.in_bytes;
@@ -189,11 +172,7 @@ fn record(w: &World, way: &str, count: usize, spent: &Spent) {
     w.measure(what("signatures to share"), spent.signatures, "signatures");
     w.measure(what("members records signed"), spent.records, "records");
     w.measure(what("grants asked"), spent.asked.iter().sum(), "grants");
-    w.measure(
-        what("grants answered"),
-        spent.answered.iter().sum(),
-        "grants",
-    );
+    w.measure(what("grants answered"), spent.answered, "grants");
     w.measure(what("reader Interests"), spent.interests, "round trips");
     w.measure(what("reader bytes received"), spent.bytes, "bytes");
     w.measure(
@@ -221,11 +200,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.converged(after.took);
         for (j, r) in READERS.iter().enumerate() {
             ensure!(
-                after.answered[j] == 1,
-                "{} got {} grants to read {FOLDER_N} collections under one folder record: one \
+                after.asked[j] == 1,
+                "{} asked {} grants to read {FOLDER_N} collections under one folder record: one \
                  per reader per folder epoch",
                 w.net().spec(*r).name(),
-                after.answered[j]
+                after.asked[j]
             );
         }
         Ok(())

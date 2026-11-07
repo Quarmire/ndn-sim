@@ -95,6 +95,10 @@ pub enum Feature {
     /// One `watch` of a folder: every collection under it, those created after the watch began
     /// included, every kind of change, each tagged with its collection.
     FolderWatch,
+    /// Joining a folder by a code (`Device::offer`, `Device::join`): a one-use offer, an ask
+    /// sealed to the offering device and proving the code's secret, an answer bound to the
+    /// asker's key; both sides adopt each other's anchor and the owner adds the joiner.
+    Introduction,
 }
 
 impl Feature {
@@ -123,7 +127,8 @@ impl Feature {
             | Feature::MergePieces
             | Feature::Groups
             | Feature::FolderMembers
-            | Feature::FolderWatch => 6,
+            | Feature::FolderWatch
+            | Feature::Introduction => 6,
             Feature::Functions => 8,
         }
     }
@@ -162,6 +167,7 @@ impl Feature {
             Feature::Groups => "groups",
             Feature::FolderMembers => "folder members",
             Feature::FolderWatch => "folder watch",
+            Feature::Introduction => "introduction",
         }
     }
 }

@@ -5,7 +5,12 @@
 //! (`<person>/<device>/KEY/…`). Every forwarder — the hub and each device — holds every person's
 //! trust context (namespace `<person>`, the hierarchical schema, the person's key its anchor) and
 //! every device certificate in its cache, so its fail-closed validator admits exactly the case's
-//! people, and a device's data layer takes its namespace from the context governing its name. A
+//! people, and a device's data layer takes its namespace from the context governing its name. In
+//! a case of strangers ([`DeviceSpec::stranger`]) a device's forwarder holds its own person's
+//! context and certificates only, until an introduction: its host's introducer gives its
+//! namespace's signed context as its anchor and adopts another person's anchor link by
+//! `ndn-cert`'s adoption (checked against the link's fingerprint), then carries and routes that
+//! person's sync group as below. A
 //! device's link to the hub stands in for its links to the other devices of every namespace it
 //! holds, so each person's sync group (`<person>/32=sync`, spec §12) is set up on it by the
 //! libraries a daemon uses: the trust-context library runs the group with the multicast strategy
@@ -42,22 +47,27 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use ndn_app::{Consumer, EngineAppExt, Node, ServeGuard};
 use ndn_cert::{OldRoot, RecoveryPlan, RecoverySeed};
+use ndn_data::intro::Adopting;
 use ndn_data::wire::{
     AuditAnswer, AuditAsk, NONCE_LEN, Record, VersionBody, audit_ask_name, decode_record,
     encode_audit_answer, encode_record, log_name, parse_audit_ask_name, parse_log_name,
     parse_piece_name, piece_names, version_proof,
 };
 use ndn_data::{
-    Config, CutBound, CutProposal, DataLayer, Device, Entropy, MergeRules, Name, Timestamp,
-    Transport, VersionId,
+    Code, Config, CutBound, CutProposal, DataLayer, Device, Entropy, Introducer, Joined,
+    MergeRules, Name, Offer, Timestamp, Transport, VersionId,
 };
 use ndn_link::{EngineFaces, FaceSink};
 use ndn_packet::Data;
 use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_security::cert_name::{DEFAULT_ISSUER, new_cert_name};
-use ndn_security::{Certificate, SecurityManager, SignedTrustContext, Signer, encode_cert_data};
+use ndn_security::{
+    Certificate, SecurityManager, SignedTrustContext, Signer, Validator, anchor_fingerprint,
+    encode_cert_data,
+};
 use ndn_sim::{Fabric, NodeId};
 use ndn_sync::{DataStore, MemoryStore, SvsConfig};
+use ndn_trust_envelope::TrustEnvelope;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
@@ -169,12 +179,14 @@ impl Reference {
             .get(&node)
             .map_or(1, |a| a.runs + 1);
         let clock = fabric.node_clock(node)?;
+        let introducer = self.introducer(fabric, node, &device, &validator)?;
         let config = Config {
             clock: Arc::new(move || Timestamp(clock.now_ns() / 1_000_000)),
             svs: SvsConfig::default(),
             hold_for: host.hold_for,
             rules: rules(host.program),
             entropy: seeded(&device, runs),
+            introducer: Some(introducer),
             ..Config::new()
         };
         let layer = Device::start(
@@ -201,6 +213,48 @@ impl Reference {
                 },
             );
         Ok(Arc::new(layer))
+    }
+
+    /// The introducer of the host of `device` on `node`: its namespace's newest signed trust
+    /// context as the anchor it gives, its node's validator to adopt into, and its link to the
+    /// hub to route an adopted person's sync group over.
+    fn introducer(
+        &self,
+        fabric: &Fabric,
+        node: NodeId,
+        device: &Name,
+        validator: &Arc<Validator>,
+    ) -> anyhow::Result<Arc<dyn Introducer>> {
+        let ns = validator.keyring().context_for(device).namespace().clone();
+        let (anchor, hub) = {
+            let case = self.case.lock().expect("the provider's lock");
+            let anchor = case
+                .namespaces
+                .get(&ns)
+                .and_then(|n| n.versions.last().cloned())
+                .with_context(|| {
+                    format!("{device}'s namespace {ns} is no namespace of this case")
+                })?;
+            (
+                anchor,
+                *case.nodes.first().context("prepare lists the hub first")?,
+            )
+        };
+        let engine = fabric
+            .engine_of(node)
+            .with_context(|| format!("no engine on node {node}"))?;
+        let link = fabric
+            .face_between(node, hub)
+            .with_context(|| format!("node {node} has no link to the hub"))?;
+        Ok(Arc::new(Introduce {
+            anchor,
+            validator: Arc::clone(validator),
+            route: Box::new(move |person: &Name| {
+                ndn_namespace::sync_group::carry(&engine, person);
+                EngineFaces(engine.clone())
+                    .add_routes(link, &ndn_link::group_routes(std::iter::once(person), 0));
+            }),
+        }))
     }
 
     /// The store of the layer attached on `device`'s node.
@@ -502,6 +556,66 @@ fn host(device: &DeviceSpec) -> Host {
     }
 }
 
+/// What a device's host does for introductions (`Config::introducer`): it gives its
+/// namespace's signed trust context as its anchor, and adopts another person's anchor link into
+/// its node's validator — checked against the link's expected fingerprint by `ndn-cert`'s
+/// adoption (`adopt_anchor_envelope`), as `ndn-ctl adopt` adopts one — after which its node
+/// carries that person's sync group and routes it over its link to the hub, as a daemon's link
+/// library does on the trust event.
+struct Introduce {
+    /// The newest signed version of its namespace's trust context when the layer started.
+    anchor: bytes::Bytes,
+    /// Its node's validator.
+    validator: Arc<Validator>,
+    /// Carry and route a newly adopted person's sync group.
+    route: Box<dyn Fn(&Name) + Send + Sync>,
+}
+
+impl Introducer for Introduce {
+    fn anchor(&self) -> Option<bytes::Bytes> {
+        Some(self.anchor.clone())
+    }
+
+    fn adopt<'a>(&'a self, link: &'a TrustEnvelope) -> Adopting<'a> {
+        Box::pin(async move {
+            let TrustEnvelope::Anchor {
+                namespace: Some(ns),
+                fingerprint: Some(fingerprint),
+                ..
+            } = link
+            else {
+                return Err("not an anchor link naming its namespace and fingerprint".into());
+            };
+            let ns: Name = ns
+                .parse()
+                .map_err(|_| format!("the anchor link names {ns}, which is no name"))?;
+            let keyring = self.validator.keyring();
+            match keyring
+                .contexts()
+                .into_iter()
+                .find(|c| *c.namespace() == ns)
+            {
+                Some(held)
+                    if held
+                        .anchors()
+                        .iter()
+                        .any(|a| anchor_fingerprint(a.value()) == *fingerprint) =>
+                {
+                    Ok(())
+                }
+                Some(_) => Err(format!(
+                    "this node trusts {ns} under another anchor than the link's"
+                )),
+                None => {
+                    ndn_cert::adopt_anchor_envelope(keyring, link).map_err(|e| e.to_string())?;
+                    (self.route)(&ns);
+                    Ok(())
+                }
+            }
+        })
+    }
+}
+
 /// The merge rules a device running `program` registers.
 fn rules(program: Program) -> MergeRules {
     let standard = MergeRules::standard();
@@ -635,6 +749,7 @@ impl Provider for Reference {
                 | Feature::Groups
                 | Feature::FolderMembers
                 | Feature::FolderWatch
+                | Feature::Introduction
         )
     }
 
@@ -676,7 +791,7 @@ impl Provider for Reference {
             )
             .await?;
             keys.cert_cache().insert(cert.clone());
-            certs.push(cert.clone());
+            certs.push((spec.person.clone(), cert.clone()));
             case.certs.insert(
                 device.clone(),
                 vec![Issued {
@@ -717,6 +832,15 @@ impl Provider for Reference {
         case.nodes = std::iter::once(hub)
             .chain(devices.iter().map(|d| d.node))
             .collect();
+        // A stranger's node holds its own person's context and certificates only: it validates
+        // nothing of another person until an introduction adopts that person's anchor. The hub
+        // stands in for the network and its relays, which carry every person's packets.
+        let own: HashMap<NodeId, &Name> = devices
+            .iter()
+            .filter(|d| d.stranger)
+            .map(|d| (d.node, &d.person))
+            .collect();
+        let holds = |node: NodeId, person: &Name| own.get(&node).is_none_or(|p| *p == person);
         for &node in &case.nodes {
             let engine = fabric
                 .engine_of(node)
@@ -724,21 +848,22 @@ impl Provider for Reference {
             let validator = engine
                 .validator()
                 .with_context(|| format!("node {node} has no validator to hold the contexts"))?;
-            for ctx in &contexts {
+            for ctx in contexts.iter().filter(|c| holds(node, c.namespace())) {
                 anyhow::ensure!(
                     validator.adopt_context(Arc::clone(ctx)),
                     "node {node} refused {}'s trust context",
                     ctx.namespace()
                 );
             }
-            for cert in &certs {
+            for (_, cert) in certs.iter().filter(|(p, _)| holds(node, p)) {
                 validator.cert_cache().insert(cert.clone());
             }
             // As a daemon's forwarder does: what its validator lacks (a certificate, a cut's
             // manifest packet) it fetches through the engine instead of dropping the Data.
             ndn_app::install_engine_cert_fetcher(&engine, CancellationToken::new());
         }
-        // Every device holds every person's namespace, and its link to the hub carries them all.
+        // Every device holds every person's namespace (a stranger only its own), and its link to
+        // the hub carries them.
         for spec in devices {
             let engine = fabric
                 .engine_of(spec.node)
@@ -746,10 +871,11 @@ impl Provider for Reference {
             let link = fabric
                 .face_between(spec.node, hub)
                 .with_context(|| format!("node {} has no link to the hub", spec.node))?;
-            for person in anchors.keys() {
+            let people: Vec<&Name> = anchors.keys().filter(|p| holds(spec.node, p)).collect();
+            for person in &people {
                 ndn_namespace::sync_group::carry(&engine, person);
             }
-            EngineFaces(engine).add_routes(link, &ndn_link::group_routes(anchors.keys(), 0));
+            EngineFaces(engine).add_routes(link, &ndn_link::group_routes(people, 0));
         }
         *self.case.lock().expect("the provider's lock") = case;
         Ok(())
@@ -1483,5 +1609,30 @@ impl Provider for Reference {
             .relays
             .push((node, guard));
         Ok(())
+    }
+
+    async fn offer(
+        &self,
+        _fabric: &Fabric,
+        by: &DeviceSpec,
+        folder: &Name,
+        offer: Offer,
+    ) -> anyhow::Result<Code> {
+        self.layer(by)?
+            .offer(folder, offer)
+            .await
+            .map_err(anyhow::Error::new)
+    }
+
+    async fn join(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        code: &str,
+    ) -> anyhow::Result<Joined> {
+        self.layer(device)?
+            .join(code)
+            .await
+            .map_err(anyhow::Error::new)
     }
 }

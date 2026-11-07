@@ -63,6 +63,13 @@ mod h6_sealed_non_reader;
 mod h7_lost_single_copy;
 mod h8_relaying_holder;
 mod h9_prune_before_auditor;
+mod i1_join_by_code;
+mod i2_used_code;
+mod i3_expired_code;
+mod i4_wrong_tries;
+mod i5_replayed_code;
+mod i6_forged_ask;
+mod i7_inviter_offline;
 mod k10_revoked_issuer;
 mod k1_expired_key;
 mod k2_backdated;
@@ -152,6 +159,13 @@ pub const CASES: &[Case] = &[
     f2_folder_narrowing::CASE,
     f3_first_own_record::CASE,
     w1_folder_watch::CASE,
+    i1_join_by_code::CASE,
+    i2_used_code::CASE,
+    i3_expired_code::CASE,
+    i4_wrong_tries::CASE,
+    i5_replayed_code::CASE,
+    i6_forged_ask::CASE,
+    i7_inviter_offline::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

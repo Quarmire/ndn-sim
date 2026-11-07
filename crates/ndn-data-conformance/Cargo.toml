@@ -20,6 +20,8 @@ ndn-data    = { workspace = true }
 ndn-app     = { workspace = true }
 ndn-security = { workspace = true }
 ndn-sync    = { workspace = true }
+# Introduction codes the cases alter; anchor links the reference provider adopts.
+ndn-trust-envelope = { workspace = true }
 # A device's sync groups set up as a daemon's libraries set them up (`reference`).
 ndn-namespace = { workspace = true }
 ndn-link    = { workspace = true }

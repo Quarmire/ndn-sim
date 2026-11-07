@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_app::EngineAppExt;
-use ndn_data::{DataError, DataLayer, Name, Timestamp, VersionId};
+use ndn_data::{Code, DataError, DataLayer, Joined, Name, Offer, Timestamp, VersionId};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{
     ClockSkew, Fabric, FaceKind, LinkConfig, NodeId, NodeProfile, SimKernel, Simulation,
@@ -46,6 +46,8 @@ pub struct Plan {
     /// Count each device's packets by name, to this many name components
     /// ([`Plan::count_names`]).
     names: Option<usize>,
+    /// Every person a stranger to the others ([`Plan::strangers`]).
+    strangers: bool,
 }
 
 impl Plan {
@@ -59,6 +61,13 @@ impl Plan {
     /// frame, so only the cases that need it ask.
     pub fn count_names(&mut self, components: usize) {
         self.names = Some(components);
+    }
+
+    /// Make every person a stranger to the others: each device's node holds its own person's
+    /// trust context and certificates only, so it validates nothing of another person until an
+    /// introduction ([`World::join`]) adopts that person's anchor.
+    pub fn strangers(&mut self) {
+        self.strangers = true;
     }
 
     /// Add `person`'s `device` (e.g. `"alice"`, `"laptop"`). The person is a namespace of any
@@ -168,6 +177,7 @@ impl Net {
                 node: NodeId(i + 1),
                 holds: p.holds,
                 program: p.program,
+                stranger: plan.strangers,
             };
             let mut node_profile = profile(&spec);
             node_profile.clock_skew.get_or_insert(ClockSkew::NONE);
@@ -650,6 +660,34 @@ impl World {
             Err(e) => match e.downcast_ref::<DataError>() {
                 Some(refusal) => Ok(Err(refusal.clone())),
                 None => Err(Failure::new(format!("release failed: {e:#}"))),
+            },
+        }
+    }
+
+    /// `by` makes a one-use offer of `folder` and returns its code (see [`Provider::offer`]).
+    /// One gesture: the owner offers.
+    pub async fn offer(&self, by: Dev, folder: &Name, offer: Offer) -> Result<Code, Failure> {
+        self.gesture();
+        self.provider
+            .offer(&self.net.fabric, self.net.spec(by), folder, offer)
+            .await
+            .map_err(|e| Failure::new(format!("offer failed: {e:#}")))
+    }
+
+    /// `d` joins by `code` (its link or its words; see [`Provider::join`]): one gesture, the
+    /// joiner's. A refusal by `d`'s data layer is answered as its error, for a case that
+    /// expects one.
+    pub async fn join(&self, d: Dev, code: &str) -> Result<Result<Joined, DataError>, Failure> {
+        self.gesture();
+        match self
+            .provider
+            .join(&self.net.fabric, self.net.spec(d), code)
+            .await
+        {
+            Ok(joined) => Ok(Ok(joined)),
+            Err(e) => match e.downcast_ref::<DataError>() {
+                Some(refusal) => Ok(Err(refusal.clone())),
+                None => Err(Failure::new(format!("join failed: {e:#}"))),
             },
         }
     }

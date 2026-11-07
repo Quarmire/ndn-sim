@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ndn_data::{DataLayer, Name, Timestamp, VersionId};
+use ndn_data::{Code, DataLayer, Joined, Name, Offer, Timestamp, VersionId};
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 
 use crate::feature::Feature;
@@ -25,6 +25,9 @@ pub struct DeviceSpec {
     pub holds: bool,
     /// The merge rules its program knows beyond the standard ones.
     pub program: Program,
+    /// A stranger to every other person: its node holds its own person's trust context and
+    /// certificates only, until an introduction adopts another's.
+    pub stranger: bool,
 }
 
 /// The merge rules a device's program knows beyond the standard ones every program knows
@@ -414,6 +417,41 @@ pub trait Provider: Send + Sync {
         let _ = fabric;
         anyhow::bail!(
             "this provider cannot make {} replay what answers {prefix}",
+            device.name()
+        )
+    }
+
+    /// `by`, a device of the folder's owner that signs its members records, makes a one-use
+    /// offer of `folder` ([`Device::offer`](ndn_data::Device::offer)) and returns its code. A
+    /// refusal carries the layer's [`DataError`](ndn_data::DataError) as its source. A provider
+    /// without introductions says so.
+    async fn offer(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        folder: &Name,
+        offer: Offer,
+    ) -> anyhow::Result<Code> {
+        let _ = (fabric, folder, offer);
+        anyhow::bail!(
+            "this provider cannot make {} offer a folder by a code",
+            by.name()
+        )
+    }
+
+    /// `device` joins the folder a code offers, given only the code (its link or its words):
+    /// its host adopts the inviter's anchor on its node when the answer comes. A refusal
+    /// carries the layer's [`DataError`](ndn_data::DataError) as its source. A provider without
+    /// introductions says so.
+    async fn join(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        code: &str,
+    ) -> anyhow::Result<Joined> {
+        let _ = (fabric, code);
+        anyhow::bail!(
+            "this provider cannot make {} join a folder by a code",
             device.name()
         )
     }

@@ -29,7 +29,7 @@ pub(super) const CASE: Case = Case {
     title: "An operation made over a version its writer never held",
     slice: 6,
     needs: &[Feature::Merge, Feature::AppOps],
-    model: &[],
+    model: &["M12"],
     guards: "A rule checks an operation's basis against the past its parents give: put_op of an \
              operation naming a version outside it is refused at the writer (BadRequest, nothing \
              signed into its log), and a signed version naming one is refused by every honest \

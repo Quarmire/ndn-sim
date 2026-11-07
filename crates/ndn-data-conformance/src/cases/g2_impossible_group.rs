@@ -24,7 +24,7 @@ pub(super) const CASE: Case = Case {
         Feature::AppOps,
         Feature::Groups,
     ],
-    model: &[],
+    model: &["M14"],
     guards: "put_group refuses a group across two folders, or over collections whose records in \
              force have different readers, with why (BadRequest) and signs nothing: the \
              writer's signatures and seqs are unchanged, and its next group follows its last \

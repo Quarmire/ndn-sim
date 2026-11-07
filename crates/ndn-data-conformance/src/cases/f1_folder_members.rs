@@ -22,7 +22,7 @@ pub(super) const CASE: Case = Case {
     title: "One members record and one grant per reader for a folder of a thousand collections",
     slice: 6,
     needs: &[Feature::Seal, Feature::Log, Feature::FolderMembers],
-    model: &[],
+    model: &["M15"],
     guards: "A folder's members record lets every reader read every collection under it, each \
              reader getting one grant per folder epoch whatever the number of collections; the \
              per-collection way (a record and a grant per collection per reader) is measured \

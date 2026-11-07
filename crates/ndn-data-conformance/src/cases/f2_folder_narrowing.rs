@@ -26,7 +26,7 @@ pub(super) const CASE: Case = Case {
         Feature::AppOps,
         Feature::FolderMembers,
     ],
-    model: &[],
+    model: &["M15"],
     guards: "A collection's own record narrows its folder's on every reader: a writer it drops is \
              refused and a reader it drops opens nothing written after. share refuses a record \
              that would widen the folder's (BadRequest) and changes nothing, and a record that \

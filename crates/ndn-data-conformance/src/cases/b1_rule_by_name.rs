@@ -25,7 +25,7 @@ pub(super) const CASE: Case = Case {
     title: "A merge rule named by the app, and a device whose program lacks it",
     slice: 6,
     needs: &[Feature::Merge, Feature::RuleByName, Feature::AppOps],
-    model: &[],
+    model: &["M11"],
     guards: "Devices whose program knows the rule a members record names converge on one value \
              under it; a device that does not know it holds the versions but answers get, put \
              and put_op with RuleUnknown naming that rule (update the program), never a state \

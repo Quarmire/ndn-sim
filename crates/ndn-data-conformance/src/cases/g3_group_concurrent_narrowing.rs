@@ -27,7 +27,7 @@ pub(super) const CASE: Case = Case {
         Feature::Groups,
         Feature::FolderMembers,
     ],
-    model: &[],
+    model: &["M14"],
     guards: "Readers that received a group and a concurrent narrowing of one member's collection \
              in different orders reach the same verdict on the group (no member counted \
              anywhere) and the same state of every member collection.",

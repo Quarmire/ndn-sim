@@ -37,7 +37,7 @@ pub(super) const CASE: Case = Case {
         Feature::AppOps,
         Feature::Groups,
     ],
-    model: &[],
+    model: &["M14"],
     guards: "A reader holding some members of a group counts none of them (each held, reported \
              not counted with why) until it holds all, then counts all; a member later refused by \
              a cut withdraws every member of the group on every reader, in every collection, \

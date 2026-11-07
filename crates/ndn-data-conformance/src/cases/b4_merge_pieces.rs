@@ -22,7 +22,7 @@ pub(super) const CASE: Case = Case {
     title: "A large operation and a large checkpoint in a merge collection",
     slice: 6,
     needs: &[Feature::Merge, Feature::AppOps, Feature::MergePieces],
-    model: &[],
+    model: &["M13"],
     guards: "A merge version of any size within the payload limit reaches another device whole \
              and applies there; a checkpoint replaces the state of its past, so a device that \
              comes back later reaches the same value from it, never fetching the pieces of the \

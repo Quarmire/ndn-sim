@@ -26,7 +26,7 @@ pub(super) const CASE: Case = Case {
         Feature::MergePieces,
         Feature::Custody,
     ],
-    model: &[],
+    model: &["M13"],
     guards: "Releasing a merge version's pieces is refused (NotHeld, with why) and drops \
              nothing while no checkpoint covering it is proved held by enough audited holders; \
              once one is written and held, the release drops them, and the element's state \

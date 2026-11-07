@@ -23,7 +23,7 @@ pub(super) const CASE: Case = Case {
     title: "An edit of a locked setting is kept, shown, and counts once unlocked",
     slice: 6,
     needs: &[Feature::Merge, Feature::AppOps],
-    model: &[],
+    model: &["M12"],
     guards: "A version the rule does not count is stored, readable by name, reported \
              NotCounted with why and listed in the state's not_counted, outside the value, on \
              every device; once the lock is lifted it is reported Counted and in the value, the \

@@ -26,7 +26,7 @@ pub struct Case {
     pub slice: u8,
     /// What it needs of an implementation; it runs only when all are supported.
     pub needs: &'static [Feature],
-    /// The model changes it motivated (`M1`…`M10`).
+    /// The model changes it motivated (`M1`…`M15`).
     pub model: &'static [&'static str],
     /// The invariant it asserts, from the use case's fix.
     pub guards: &'static str,

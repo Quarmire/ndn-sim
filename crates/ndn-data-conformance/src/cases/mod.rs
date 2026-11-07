@@ -87,6 +87,7 @@ mod s3_spliced_entry;
 mod s4_expiry;
 mod s5_replayed_head;
 mod s6_stopped_stream;
+mod w1_folder_watch;
 
 /// Every case, in study order.
 pub const CASES: &[Case] = &[
@@ -150,6 +151,7 @@ pub const CASES: &[Case] = &[
     f1_folder_members::CASE,
     f2_folder_narrowing::CASE,
     f3_first_own_record::CASE,
+    w1_folder_watch::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------
@@ -849,7 +851,7 @@ fn reported_not_counted(changes: &[Change], id: &VersionId) -> bool {
 fn reported_counted(changes: &[Change], id: &VersionId) -> bool {
     changes
         .iter()
-        .any(|c| matches!(c, Change::Counted { id: v } if v == id))
+        .any(|c| matches!(c, Change::Counted { id: v, .. } if v == id))
 }
 
 /// `len` characters of text, the same every run: lower-case letters and spaces from a generator

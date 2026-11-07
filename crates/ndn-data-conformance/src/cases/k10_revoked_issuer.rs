@@ -132,7 +132,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                     .to_owned(),
             );
         } else if !seen.iter().any(|c| {
-            matches!(c, Change::Withdrawn { id, why: Refusal::Untrusted { .. } } if *id == planted)
+            matches!(c, Change::Withdrawn { id, why: Refusal::Untrusted { .. }, .. } if *id == planted)
         }) {
             wrong.push(
                 "the laptop dropped the intruder's entry without reporting it withdrawn to its \

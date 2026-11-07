@@ -95,8 +95,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                 changes.iter().any(|c| {
                     matches!(
                         c,
-                        Change::Withdrawn { id, why: Refusal::OutsideCut(cut) }
-                            if *id == outside && cut.refuses(&doc, id)
+                        Change::Withdrawn { collection, id, why: Refusal::OutsideCut(cut) }
+                            if *collection == doc && *id == outside && cut.refuses(&doc, id)
                     )
                 })
             },

@@ -634,6 +634,7 @@ impl Provider for Reference {
                 | Feature::MergePieces
                 | Feature::Groups
                 | Feature::FolderMembers
+                | Feature::FolderWatch
         )
     }
 

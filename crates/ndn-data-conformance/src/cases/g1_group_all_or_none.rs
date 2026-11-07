@@ -286,7 +286,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
             ensure!(
                 seen.iter().any(|ch| matches!(ch,
-                    Change::Withdrawn { id: x, why: Refusal::Group { .. } } if x == *id)),
+                    Change::Withdrawn { id: x, why: Refusal::Group { .. }, .. } if x == *id)),
                 "{who} withdrew Bob's member in {c}, but not because its group was refused"
             );
         }

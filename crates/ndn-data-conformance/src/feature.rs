@@ -92,6 +92,9 @@ pub enum Feature {
     /// A folder's members record (`share_folder`): one record, one seal epoch and one grant per
     /// reader for every collection under it, each collection free to narrow it.
     FolderMembers,
+    /// One `watch` of a folder: every collection under it, those created after the watch began
+    /// included, every kind of change, each tagged with its collection.
+    FolderWatch,
 }
 
 impl Feature {
@@ -119,7 +122,8 @@ impl Feature {
             | Feature::AppOps
             | Feature::MergePieces
             | Feature::Groups
-            | Feature::FolderMembers => 6,
+            | Feature::FolderMembers
+            | Feature::FolderWatch => 6,
             Feature::Functions => 8,
         }
     }
@@ -157,6 +161,7 @@ impl Feature {
             Feature::MergePieces => "merge versions in pieces",
             Feature::Groups => "groups",
             Feature::FolderMembers => "folder members",
+            Feature::FolderWatch => "folder watch",
         }
     }
 }

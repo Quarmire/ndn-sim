@@ -1,12 +1,13 @@
-//! Slice 6, b3 — an edit of a locked setting is kept, shown, and counts once unlocked.
+//! Slice 6, b3 — an edit of a locked setting is kept and shown, and never counts.
 //!
-//! Alice locks the card's title while she rewrites it. Bob, who holds her lock, sets the title
-//! anyway. His version is properly signed and made over what he held, so nothing may drop it;
-//! but the app's rule says it does not count while the lock holds. Before slice 6 a rule could
-//! only apply or refuse, so the version was either merged against the lock or lost. The fix: the
-//! rule answers NotCounted with why; the version is applied, stored and readable by name, shown
-//! as `Change::NotCounted` and in `State::not_counted`, kept out of the value — and when Alice
-//! unlocks, it counts (`Change::Counted`), on every device alike.
+//! Alice, the card's owner, locks its title while she rewrites it. Bob, who holds her lock, sets
+//! the title anyway. His version is properly signed and made over what he held, so nothing may
+//! drop it; but the app's rule says a non-owner's write made with the owner's lock in view never
+//! counts. Before slice 6 a rule could only apply or refuse, so the version was either merged
+//! against the lock or lost. The fix: the rule answers NotCounted with why; the version is
+//! applied, stored and readable by name, shown as `Change::NotCounted` and in
+//! `State::not_counted`, kept out of the value — on every device alike, and still after Alice
+//! unlocks, while Bob's write made over her unlock counts.
 
 use std::time::Duration;
 
@@ -20,14 +21,15 @@ use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
     id: "b3",
-    title: "An edit of a locked setting is kept, shown, and counts once unlocked",
+    title: "An edit of a locked setting is kept and shown, and never counts",
     slice: 6,
     needs: &[Feature::Merge, Feature::AppOps],
     model: &["M12"],
     guards: "A version the rule does not count is stored, readable by name, reported \
              NotCounted with why and listed in the state's not_counted, outside the value, on \
-             every device; once the lock is lifted it is reported Counted and in the value, the \
-             same on every device.",
+             every device; a non-owner's write made with the owner's lock in view stays so once \
+             the lock is lifted, while a write made over the unlock counts, the same on every \
+             device.",
     budget: Duration::from_secs(1800),
     plan,
     run,
@@ -113,38 +115,47 @@ fn run(w: &World) -> CaseFuture<'_> {
             }
         }
 
-        // Alice lifts her lock: Bob's version counts everywhere.
+        // Alice lifts her lock: Bob's version made under it still does not count; his next one,
+        // made over the unlock, does.
         let unlocked = put_element(w, ALICE, &card, |op| {
             op.then(0, Edit::Unlock("title".into()))
         })
         .await?;
+        w.until("Bob holds Alice's unlock", LIMIT, || {
+            has(&*layers[1], &card, &unlocked)
+        })
+        .await?;
+        let again = put_element(w, BOB, &card, |op| op.set("title", "bob, unlocked")).await?;
         let start = tokio::time::Instant::now();
-        for ((who, _), (stream, seen)) in DEVICES.iter().zip(watches.iter_mut()) {
-            drain_until(
-                stream,
-                seen,
-                &format!("{who} reports Bob's version counted"),
-                LIMIT,
-                |seen| reported_counted(seen, &bobs),
-            )
-            .await?;
-        }
         w.until("every device agrees on the unlocked card", LIMIT, || {
             let refs: Vec<&dyn DataLayer> = layers.iter().map(|l| &**l).collect();
-            let (card, ids) = (&card, [&bobs, &unlocked]);
+            let (card, ids) = (&card, [&bobs, &unlocked, &again]);
             async move { agree(&refs, card, &ids).await }
         })
         .await?;
         w.converged(start.elapsed());
+        for ((who, _), (stream, seen)) in DEVICES.iter().zip(watches.iter_mut()) {
+            drain(stream, LOOK, seen).await?;
+            ensure!(
+                !reported_counted(seen, &bobs),
+                "{who} reported Bob's version made under the lock counted after the unlock"
+            );
+        }
         for ((who, _), layer) in DEVICES.iter().zip(&layers) {
             let (s, v) = element_state(&**layer, &card).await?;
             ensure!(
-                not_counted_in(&s, &bobs).is_none(),
-                "{who} still lists Bob's version as not counted after the unlock"
+                not_counted_in(&s, &bobs).is_some_and(|why| !why.is_empty()),
+                "{who} counts Bob's version made under the lock once the lock is lifted: {:?}",
+                s.not_counted
             );
             ensure!(
-                setting(&v, "title") == Some("bob's title"),
-                "{who}'s card shows the title {:?}, not Bob's once it counts",
+                not_counted_in(&s, &again).is_none(),
+                "{who} does not count Bob's version made over the unlock: {:?}",
+                s.not_counted
+            );
+            ensure!(
+                setting(&v, "title") == Some("bob, unlocked"),
+                "{who}'s card shows the title {:?}, not Bob's made over the unlock",
                 setting(&v, "title")
             );
         }

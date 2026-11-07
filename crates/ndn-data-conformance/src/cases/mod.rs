@@ -32,6 +32,8 @@ mod b2_basis_outside_past;
 mod b3_locked_setting;
 mod b4_merge_pieces;
 mod b5_release_merge_pieces;
+mod b6_owner_lock;
+mod b7_counting_both_ways;
 mod c01_offline_notes;
 mod c02_removed_offline;
 mod c03_stolen_key;
@@ -51,6 +53,7 @@ mod g1_group_all_or_none;
 mod g2_impossible_group;
 mod g3_group_concurrent_narrowing;
 mod g4_seq_reused_across_collections;
+mod g6_group_under_lock;
 mod h1_large_photo;
 mod h2_dropping_holder;
 mod h3_subset_holder;
@@ -137,10 +140,13 @@ pub const CASES: &[Case] = &[
     b3_locked_setting::CASE,
     b4_merge_pieces::CASE,
     b5_release_merge_pieces::CASE,
+    b6_owner_lock::CASE,
+    b7_counting_both_ways::CASE,
     g1_group_all_or_none::CASE,
     g2_impossible_group::CASE,
     g3_group_concurrent_narrowing::CASE,
     g4_seq_reused_across_collections::CASE,
+    g6_group_under_lock::CASE,
     f1_folder_members::CASE,
     f2_folder_narrowing::CASE,
     f3_first_own_record::CASE,

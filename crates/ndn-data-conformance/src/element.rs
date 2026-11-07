@@ -14,20 +14,30 @@
 //! fixed order, each with its writer, version digest and value) and its **heads** (the versions
 //! no other is made over, whose digests a writer names as the basis of its next operation).
 //!
-//! A version that sets or changes a setting another writer locked (the lock in the version's
-//! past, nothing lifting it) does not count: it is applied, kept and shown
-//! ([`Counting::NotCounted`]), and counts once an `Unlock` of that lock by its writer — or a
-//! checkpoint over the lock that does not keep it — is applied.
+//! **Locks are the owner's.** Only an owner device of the element — a device of the namespace the
+//! collection lies in ([`ndn_data::owns`]) — locks a setting, unlocks it, or writes a checkpoint
+//! (which states the locks); the check refuses such an operation by anyone else, from the
+//! operation alone. Any owner device's lock is the owner's: an owner device's write under it
+//! counts, and any owner device lifts it (`Unlock`, or a checkpoint over it that does not keep
+//! it). A version by a non-owner that sets or changes a locked setting:
+//! - made **with the lock in view** — the lock inside its past and nothing inside its past lifting
+//!   it — never counts ([`Counting::NotCounted`]: applied, kept and shown), whatever arrives later;
+//! - made **apart from the lock** — the lock not in its past, and not made over it — does not
+//!   count while the lock is in force (no applied version lifts it) and no owner version is made
+//!   over it; it counts once an owner unlocks or writes over it. Its counting may thus stop when
+//!   the lock arrives after it, and start again: the rule reports both
+//!   ([`MergeState::counting_changed`]);
+//! - otherwise counts.
 //!
 //! The value is computed from the set of applied versions and what each was made over, never from
-//! the order they arrived in: the same set gives the same value on every device. The encoding is
-//! JSON of ordered maps and lists, so it is deterministic too.
+//! the order they arrived in: the same set gives the same value, and counts the same versions, on
+//! every device. The encoding is JSON of ordered maps and lists, so it is deterministic too.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
 use ndn_data::{
-    Counting, MergeError, MergeRule, MergeState, Name, Op, OpKind, Value, VersionId, Writer,
+    Counting, MergeError, MergeRule, MergeState, Name, Op, OpKind, Value, VersionId, Writer, owns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,9 +64,10 @@ pub enum Edit {
     Place(Place),
     /// The element is removed.
     Remove,
-    /// The writer locks a setting: another writer's later set of it does not count.
+    /// An owner device locks a setting for the owner: a non-owner's set of it does not count
+    /// (see the module).
     Lock(String),
-    /// The writer lifts its lock of a setting.
+    /// An owner device lifts the owner's lock of a setting.
     Unlock(String),
     /// The element's whole state, replacing the state of the operation's past. Alone in its
     /// operation.
@@ -88,7 +99,7 @@ pub struct Place {
 pub struct Lock {
     /// The setting.
     pub setting: String,
-    /// The writer holding it, by key name.
+    /// The owner device that took it, by key name.
     pub by: String,
 }
 
@@ -293,11 +304,12 @@ impl MergeRule for Element {
         &self.function
     }
 
-    fn start(&self, _local: &Writer) -> Box<dyn MergeState> {
+    fn start(&self, collection: &Name, _local: &Writer) -> Box<dyn MergeState> {
         Box::new(Applied {
             lax: self.lax,
+            collection: collection.clone(),
             nodes: Vec::new(),
-            reported: BTreeSet::new(),
+            told: Vec::new(),
         })
     }
 }
@@ -307,6 +319,8 @@ struct Node {
     id: VersionId,
     digest: [u8; 32],
     op: Operation,
+    /// Whether its writer is an owner device of the element ([`owns`]).
+    owner: bool,
     /// The applied versions (by index) inside its past.
     past: BTreeSet<usize>,
 }
@@ -331,9 +345,32 @@ impl Node {
             _ => None,
         })
     }
+
+    /// Whether it unlocks `setting`.
+    fn unlocks(&self, setting: &str) -> bool {
+        self.op
+            .edits
+            .iter()
+            .any(|t| matches!(&t.edit, Edit::Unlock(s) if s == setting))
+    }
+
+    /// Whether it lifts `lock`: an owner's `Unlock` of its setting made over it, or a checkpoint
+    /// made over it that does not keep it.
+    fn lifts(&self, lock: &Held) -> bool {
+        if !self.past.contains(&lock.at) {
+            return false;
+        }
+        if let Some(s) = self.checkpoint() {
+            return !s
+                .locks
+                .iter()
+                .any(|l| l.setting == lock.setting && l.by == lock.by);
+        }
+        self.owner && self.unlocks(&lock.setting)
+    }
 }
 
-/// A lock some applied version holds: `setting`, by `by`, from node `at`.
+/// A lock an owner's applied version holds: `setting`, by `by`, from node `at`.
 struct Held {
     setting: String,
     by: String,
@@ -343,16 +380,19 @@ struct Held {
 /// The applied versions of one element.
 struct Applied {
     lax: bool,
+    /// The element's collection: whose it is ([`owns`]).
+    collection: Name,
     nodes: Vec<Node>,
-    /// Versions answered NotCounted, not yet reported counting.
-    reported: BTreeSet<VersionId>,
+    /// By node, what it was last answered or reported: why it does not count, if it does not.
+    told: Vec<Option<String>>,
 }
 
 impl Applied {
-    /// Every lock an applied version took (a `Lock` edit, or a checkpoint's state).
+    /// Every lock an owner's applied version took (a `Lock` edit, or a checkpoint's state), in
+    /// one order every device computes alike: by the taking version, then setting and holder.
     fn locks(&self) -> Vec<Held> {
         let mut out = Vec::new();
-        for (i, n) in self.nodes.iter().enumerate() {
+        for (i, n) in self.nodes.iter().enumerate().filter(|(_, n)| n.owner) {
             if let Some(s) = n.checkpoint() {
                 out.extend(s.locks.iter().map(|l| Held {
                     setting: l.setting.clone(),
@@ -379,45 +419,58 @@ impl Applied {
                 at: i,
             }));
         }
+        out.sort_by(|a, b| {
+            (&self.nodes[a.at].id, &a.setting, &a.by).cmp(&(
+                &self.nodes[b.at].id,
+                &b.setting,
+                &b.by,
+            ))
+        });
         out
     }
 
-    /// Whether an applied version lifts `lock`: an `Unlock` of it by its holder made over it, or
-    /// a checkpoint made over it that does not keep it.
+    /// Whether an applied version lifts `lock`.
     fn lifted(&self, lock: &Held) -> bool {
-        self.nodes.iter().any(|n| {
-            if !n.past.contains(&lock.at) {
-                return false;
-            }
-            if let Some(s) = n.checkpoint() {
-                return !s
-                    .locks
-                    .iter()
-                    .any(|l| l.setting == lock.setting && l.by == lock.by);
-            }
-            n.id.writer.key().to_string() == lock.by
-                && n.op
-                    .edits
-                    .iter()
-                    .any(|t| matches!(&t.edit, Edit::Unlock(s) if *s == lock.setting))
-        })
+        self.nodes.iter().any(|n| n.lifts(lock))
     }
 
-    /// Why node `i` does not count, if it does not: it writes a setting another writer locked in
-    /// its past, and nothing applied lifts that lock.
+    /// Why node `i` does not count, if it does not (see the module): a non-owner's version
+    /// writing a setting an owner locked, with the lock in view (it never counts), or made apart
+    /// from a lock in force, no owner version made over it (it waits).
     fn not_counted(&self, i: usize, locks: &[Held]) -> Option<String> {
         let n = &self.nodes[i];
-        let me = n.id.writer.key().to_string();
+        if n.owner {
+            return None;
+        }
         let writes: BTreeSet<&str> = n.writes().collect();
-        locks
+        let on = || locks.iter().filter(|l| writes.contains(l.setting.as_str()));
+        let in_view =
+            |l: &&Held| n.past.contains(&l.at) && !n.past.iter().any(|&p| self.nodes[p].lifts(l));
+        if let Some(l) = on().find(in_view) {
+            return Some(format!(
+                "never counts: the setting {} is locked by its owner ({}) in the versions this \
+                 one was made over, and a writer who is not an owner of {} does not write a \
+                 locked setting; write it again over an owner's unlock",
+                l.setting, l.by, self.collection
+            ));
+        }
+        let taken_in = self
+            .nodes
             .iter()
-            .find(|l| {
-                l.by != me
-                    && n.past.contains(&l.at)
-                    && writes.contains(l.setting.as_str())
-                    && !self.lifted(l)
+            .enumerate()
+            .any(|(j, m)| j != i && m.owner && m.past.contains(&i));
+        if taken_in {
+            return None;
+        }
+        on().find(|l| !n.past.contains(&l.at) && !self.lifted(l))
+            .map(|l| {
+                format!(
+                    "waits: the setting {} is locked by its owner ({}) in a version this one was \
+                     not made over; it counts once an owner of {} unlocks it or writes over this \
+                     version",
+                    l.setting, l.by, self.collection
+                )
             })
-            .map(|l| format!("setting {} locked by {}", l.setting, l.by))
     }
 
     /// The applied versions in one order every device computes alike from the set: each after
@@ -436,11 +489,12 @@ impl Applied {
         out
     }
 
-    fn merged(&self) -> ElementValue {
+    /// The value of the versions counted, but `excluded` (held back by the layer).
+    fn merged(&self, excluded: &BTreeSet<VersionId>) -> ElementValue {
         let locks = self.locks();
         let mut slots: BTreeMap<Slot, Vec<(usize, Written)>> = BTreeMap::new();
         for i in self.order() {
-            if self.not_counted(i, &locks).is_some() {
+            if excluded.contains(&self.nodes[i].id) || self.not_counted(i, &locks).is_some() {
                 continue;
             }
             let n = &self.nodes[i];
@@ -634,6 +688,40 @@ impl MergeState for Applied {
                 "a checkpoint stands alone in its operation".to_owned(),
             ));
         }
+        // Locks are the owner's: only an owner device takes, lifts or states them.
+        let c = &self.collection;
+        if !owns(c, &op.id.writer) {
+            if decoded
+                .edits
+                .iter()
+                .any(|t| matches!(t.edit, Edit::Lock(_) | Edit::Unlock(_)))
+            {
+                return Err(MergeError(format!(
+                    "{key} locks or unlocks a setting of {c}, but only an owner device of {c} — \
+                     a device of the namespace before its 32=data — locks or unlocks: write the \
+                     settings without it, or ask the owner to lock"
+                )));
+            }
+            if checkpoint {
+                return Err(MergeError(format!(
+                    "{key} writes a checkpoint of {c}, but a checkpoint states the element's \
+                     locks, which are the owner's: only an owner device of {c} writes one"
+                )));
+            }
+        }
+        if let Some(Edit::Checkpoint(s)) = decoded.edits.first().map(|t| &t.edit)
+            && let Some(l) = s.locks.iter().find(|l| {
+                !l.by
+                    .parse::<Name>()
+                    .is_ok_and(|by| owns(c, &Writer::new(by)))
+            })
+        {
+            return Err(MergeError(format!(
+                "the checkpoint states a lock of {} by {}, which is no owner device of {c}: only \
+                 the owner locks",
+                l.setting, l.by
+            )));
+        }
         Ok(if checkpoint {
             OpKind::Checkpoint
         } else {
@@ -654,42 +742,41 @@ impl MergeState for Applied {
                     id: op.id.clone(),
                     digest: *op.digest,
                     op: decoded,
+                    owner: owns(&self.collection, &op.id.writer),
                     past,
                 });
+                self.told.push(None);
                 self.nodes.len() - 1
             }
         };
-        Ok(match self.not_counted(i, &self.locks()) {
-            Some(why) => {
-                self.reported.insert(op.id.clone());
-                Counting::NotCounted(why)
-            }
+        let why = self.not_counted(i, &self.locks());
+        self.told[i] = why.clone();
+        Ok(match why {
+            Some(why) => Counting::NotCounted(why),
             None => Counting::Counted,
         })
     }
 
-    fn now_counted(&mut self) -> Vec<VersionId> {
+    fn counting_changed(&mut self) -> Vec<(VersionId, Counting)> {
         let locks = self.locks();
-        let counting: Vec<VersionId> = self
-            .reported
-            .iter()
-            .filter(|id| {
-                self.nodes
-                    .iter()
-                    .position(|n| n.id == **id)
-                    .is_some_and(|i| self.not_counted(i, &locks).is_none())
-            })
-            .cloned()
-            .collect();
-        for id in &counting {
-            self.reported.remove(id);
+        let mut changed = Vec::new();
+        for i in 0..self.nodes.len() {
+            let why = self.not_counted(i, &locks);
+            if self.told[i] != why {
+                self.told[i] = why.clone();
+                let counting = match why {
+                    Some(why) => Counting::NotCounted(why),
+                    None => Counting::Counted,
+                };
+                changed.push((self.nodes[i].id.clone(), counting));
+            }
         }
-        counting
+        changed
     }
 
-    fn value(&self) -> Value {
+    fn value(&self, excluded: &BTreeSet<VersionId>) -> Value {
         Value::Rule(Bytes::from(
-            serde_json::to_vec(&self.merged()).expect("an element value serializes"),
+            serde_json::to_vec(&self.merged(excluded)).expect("an element value serializes"),
         ))
     }
 }
@@ -743,8 +830,17 @@ mod tests {
         }
     }
 
+    /// A device: `who`'s laptop, or the device `who` names (`alice/phone`).
     fn device(who: &str) -> Name {
-        format!("/{who}/laptop").parse().unwrap()
+        match who.contains('/') {
+            true => format!("/{who}").parse().unwrap(),
+            false => format!("/{who}/laptop").parse().unwrap(),
+        }
+    }
+
+    /// The element every test writes: Alice's.
+    fn element() -> Name {
+        "/alice/32=data/notes/p1".parse().unwrap()
     }
 
     fn v(all: &[V], who: &str, seq: u64, past: &[usize], edits: Vec<Edit>) -> V {
@@ -766,38 +862,48 @@ mod tests {
         }
     }
 
-    /// Apply `all` in `order` (each after its past), answering what each apply said, what
-    /// counted afterwards, and the value.
-    fn run(all: &[V], order: &[usize]) -> (Vec<Counting>, Vec<VersionId>, ElementValue) {
-        let mut state = Element::new().start(&Writer::new(device("x")));
-        let (mut said, mut counted) = (Vec::new(), Vec::new());
+    /// `all[i]` as the layer hands it to the rule.
+    fn with_op<T>(all: &[V], i: usize, f: impl FnOnce(&Op<'_>) -> T) -> T {
+        let bytes = all[i].op.encode();
         let parents = Frontier::new();
+        let past = InPast {
+            all,
+            past: &all[i].past,
+        };
+        f(&Op {
+            id: &all[i].id,
+            digest: &all[i].digest,
+            parents: &parents,
+            past: &past,
+            bytes: &bytes,
+        })
+    }
+
+    /// Apply `all` in `order` (each after its past), answering what each apply said, every
+    /// counting change reported afterwards, and the value.
+    fn run(
+        all: &[V],
+        order: &[usize],
+    ) -> (Vec<Counting>, Vec<(VersionId, Counting)>, ElementValue) {
+        let mut state = Element::new().start(&element(), &Writer::new(device("x")));
+        let (mut said, mut changed) = (Vec::new(), Vec::new());
         for &i in order {
-            let bytes = all[i].op.encode();
-            let past = InPast {
-                all,
-                past: &all[i].past,
-            };
-            let op = Op {
-                id: &all[i].id,
-                digest: &all[i].digest,
-                parents: &parents,
-                past: &past,
-                bytes: &bytes,
-            };
-            state.check(&op).expect("a valid operation");
-            said.push(state.apply(&op).expect("applies"));
-            counted.extend(state.now_counted());
+            with_op(all, i, |op| {
+                state.check(op).expect("a valid operation");
+                said.push(state.apply(op).expect("applies"));
+            });
+            changed.extend(state.counting_changed());
         }
-        (
-            said,
-            counted,
-            decode(&state.value()).expect("its own value"),
-        )
+        let value = decode(&state.value(&BTreeSet::new())).expect("its own value");
+        (said, changed, value)
     }
 
     fn set(s: &str, value: &str) -> Edit {
         Edit::Set(s.into(), value.into())
+    }
+
+    fn not_counted(c: &Counting) -> bool {
+        matches!(c, Counting::NotCounted(why) if !why.is_empty())
     }
 
     #[test]
@@ -820,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn a_set_under_another_writers_lock_counts_once_unlocked() {
+    fn a_set_made_with_the_owners_lock_in_view_never_counts() {
         let mut all = Vec::new();
         all.push(v(
             &all,
@@ -830,10 +936,10 @@ mod tests {
             vec![set("title", "draft"), Edit::Lock("title".into())],
         ));
         all.push(v(&all, "bob", 1, &[0], vec![set("title", "bob")]));
-        let (said, counted, value) = run(&all, &[0, 1]);
-        assert!(matches!(said[1], Counting::NotCounted(_)));
-        assert!(counted.is_empty());
+        let (said, _, value) = run(&all, &[0, 1]);
+        assert!(not_counted(&said[1]));
         assert_eq!(value.state.settings["title"], "draft");
+        // Alice unlocks: Bob's set made under the lock still never counts.
         all.push(v(
             &all,
             "alice",
@@ -841,15 +947,172 @@ mod tests {
             &[0],
             vec![Edit::Unlock("title".into())],
         ));
-        let (said, counted, unlocked) = run(&all, &[0, 1, 2]);
-        assert!(matches!(said[1], Counting::NotCounted(_)));
-        assert_eq!(counted, vec![all[1].id.clone()]);
-        assert_eq!(unlocked.state.settings["title"], "bob");
-        // Unlocked first, it counts at once, to the same value.
-        let (said, counted, early) = run(&all, &[0, 2, 1]);
-        assert_eq!(said[2], Counting::Counted);
-        assert!(counted.is_empty());
-        assert_eq!(early, unlocked);
+        for order in [[0, 1, 2], [0, 2, 1]] {
+            let (said, changed, value) = run(&all, &order);
+            let bobs = order.iter().position(|&i| i == 1).unwrap();
+            assert!(not_counted(&said[bobs]), "{order:?}");
+            assert!(
+                !changed
+                    .iter()
+                    .any(|(id, c)| *id == all[1].id && *c == Counting::Counted),
+                "{order:?}"
+            );
+            assert_eq!(value.state.settings["title"], "draft", "{order:?}");
+            assert!(value.state.locks.is_empty());
+        }
+        // His set made over the unlock counts.
+        all.push(v(
+            &all,
+            "bob",
+            2,
+            &[0, 1, 2],
+            vec![set("title", "bob, again")],
+        ));
+        let (said, _, value) = run(&all, &[0, 1, 2, 3]);
+        assert_eq!(said[3], Counting::Counted);
+        assert_eq!(value.state.settings["title"], "bob, again");
+    }
+
+    #[test]
+    fn any_owner_device_writes_under_and_lifts_another_owner_devices_lock() {
+        let mut all = Vec::new();
+        all.push(v(
+            &all,
+            "alice/phone",
+            1,
+            &[],
+            vec![set("title", "draft"), Edit::Lock("title".into())],
+        ));
+        all.push(v(&all, "alice", 1, &[0], vec![set("title", "laptop")]));
+        let (said, _, value) = run(&all, &[0, 1]);
+        assert_eq!(said[1], Counting::Counted, "the laptop is the owner too");
+        assert_eq!(value.state.settings["title"], "laptop");
+        all.push(v(
+            &all,
+            "alice",
+            2,
+            &[0, 1],
+            vec![Edit::Unlock("title".into())],
+        ));
+        let (_, _, value) = run(&all, &[0, 1, 2]);
+        assert!(
+            value.state.locks.is_empty(),
+            "the laptop lifts the phone's lock"
+        );
+    }
+
+    /// A set made apart from the lock waits while the lock is in force, in either order — its
+    /// counting stops when the lock arrives after it — and counts once the owner unlocks.
+    #[test]
+    fn a_set_made_apart_from_the_lock_waits_alike_in_either_order() {
+        let mut all = Vec::new();
+        all.push(v(&all, "alice", 1, &[], vec![set("title", "draft")]));
+        let lock = v(&all, "alice", 2, &[0], vec![Edit::Lock("title".into())]);
+        all.push(lock);
+        all.push(v(&all, "bob", 1, &[0], vec![set("title", "bob")]));
+        let (v_first, changed, one) = run(&all, &[0, 2, 1]);
+        assert_eq!(
+            v_first[1],
+            Counting::Counted,
+            "no lock held when it arrived"
+        );
+        assert!(
+            changed
+                .iter()
+                .any(|(id, c)| *id == all[2].id && not_counted(c)),
+            "it stops counting when the lock arrives"
+        );
+        let (l_first, _, two) = run(&all, &[0, 1, 2]);
+        assert!(not_counted(&l_first[2]));
+        assert_eq!(one, two);
+        assert_eq!(one.state.settings["title"], "draft");
+        // The owner unlocks, not over Bob's set: it counts.
+        all.push(v(
+            &all,
+            "alice",
+            3,
+            &[0, 1],
+            vec![Edit::Unlock("title".into())],
+        ));
+        let (_, changed, three) = run(&all, &[0, 1, 2, 3]);
+        assert!(
+            changed
+                .iter()
+                .any(|(id, c)| *id == all[2].id && *c == Counting::Counted)
+        );
+        assert_eq!(three.state.settings["title"], "bob");
+        let (_, _, four) = run(&all, &[0, 1, 3, 2]);
+        assert_eq!(three, four);
+    }
+
+    #[test]
+    fn an_owner_writing_over_a_set_made_apart_from_the_lock_takes_it_in() {
+        let mut all = vec![v(&[], "alice", 1, &[], vec![set("title", "draft")])];
+        all.push(v(&all, "alice", 2, &[0], vec![Edit::Lock("title".into())]));
+        all.push(v(&all, "bob", 1, &[0], vec![set("title", "bob")]));
+        all.push(v(
+            &all,
+            "alice/phone",
+            1,
+            &[0, 1, 2],
+            vec![set("note", "seen")],
+        ));
+        let (said, changed, value) = run(&all, &[0, 1, 2, 3]);
+        assert!(not_counted(&said[2]));
+        assert!(
+            changed
+                .iter()
+                .any(|(id, c)| *id == all[2].id && *c == Counting::Counted)
+        );
+        assert_eq!(value.state.settings["title"], "bob");
+    }
+
+    #[test]
+    fn check_refuses_locks_and_checkpoints_by_a_non_owner() {
+        let mut all = Vec::new();
+        all.push(v(&all, "bob", 1, &[], vec![Edit::Lock("title".into())]));
+        all.push(v(&all, "bob", 2, &[], vec![Edit::Unlock("title".into())]));
+        all.push(v(
+            &all,
+            "bob",
+            3,
+            &[],
+            vec![Edit::Checkpoint(ElementState::default())],
+        ));
+        // An owner's checkpoint stating a lock by a non-owner.
+        let stranger = ElementState {
+            locks: vec![Lock {
+                setting: "title".into(),
+                by: device("bob").append("KEY").append("1").to_string(),
+            }],
+            ..ElementState::default()
+        };
+        all.push(v(&all, "alice", 1, &[], vec![Edit::Checkpoint(stranger)]));
+        let state = Element::new().start(&element(), &Writer::new(device("x")));
+        let lax = Element::lax().start(&element(), &Writer::new(device("x")));
+        for i in 0..all.len() {
+            with_op(&all, i, |op| {
+                assert!(state.check(op).is_err(), "version {i} is refused");
+                assert!(lax.check(op).is_ok(), "the lax copy refuses nothing");
+            });
+        }
+        // The owner's own lock, unlock and checkpoint pass.
+        let mut own = Vec::new();
+        own.push(v(&own, "alice/phone", 1, &[], vec![Edit::Lock("t".into())]));
+        own.push(v(&own, "alice", 1, &[], vec![Edit::Unlock("t".into())]));
+        let kept = ElementState {
+            locks: vec![Lock {
+                setting: "t".into(),
+                by: device("alice/phone").append("KEY").append("1").to_string(),
+            }],
+            ..ElementState::default()
+        };
+        own.push(v(&own, "alice", 2, &[], vec![Edit::Checkpoint(kept)]));
+        for i in 0..own.len() {
+            with_op(&own, i, |op| {
+                assert!(state.check(op).is_ok(), "own {i} passes")
+            });
+        }
     }
 
     #[test]
@@ -861,24 +1124,13 @@ mod tests {
         all[1].op = Operation::by(&device("bob")).over([&outside]).set("t", "2");
         all.push(v(&all, "carol", 1, &[], vec![set("t", "3")]));
         all[2].op.writer = device("alice").to_string();
-        let state = Element::new().start(&Writer::new(device("x")));
-        let lax = Element::lax().start(&Writer::new(device("x")));
-        let parents = Frontier::new();
+        let state = Element::new().start(&element(), &Writer::new(device("x")));
+        let lax = Element::lax().start(&element(), &Writer::new(device("x")));
         for i in [1, 2] {
-            let bytes = all[i].op.encode();
-            let past = InPast {
-                all: &all,
-                past: &all[i].past,
-            };
-            let op = Op {
-                id: &all[i].id,
-                digest: &all[i].digest,
-                parents: &parents,
-                past: &past,
-                bytes: &bytes,
-            };
-            assert!(state.check(&op).is_err(), "version {i} is refused");
-            assert!(lax.check(&op).is_ok(), "the lax copy refuses nothing");
+            with_op(&all, i, |op| {
+                assert!(state.check(op).is_err(), "version {i} is refused");
+                assert!(lax.check(op).is_ok(), "the lax copy refuses nothing");
+            });
         }
     }
 
@@ -899,5 +1151,21 @@ mod tests {
         assert_eq!(replayed, late);
         assert_eq!(late.state.settings["body"], "long");
         assert_eq!(late.state.settings["by"], "bob");
+    }
+
+    #[test]
+    fn a_version_held_back_is_left_out_of_the_value_only() {
+        let mut all = vec![v(&[], "alice", 1, &[], vec![set("title", "draft")])];
+        all.push(v(&all, "bob", 1, &[0], vec![set("title", "bob")]));
+        let mut state = Element::new().start(&element(), &Writer::new(device("x")));
+        for i in [0, 1] {
+            with_op(&all, i, |op| state.apply(op).expect("applies"));
+        }
+        let held: BTreeSet<VersionId> = [all[1].id.clone()].into();
+        let without = decode(&state.value(&held)).unwrap();
+        assert_eq!(without.state.settings["title"], "draft");
+        assert_eq!(without.heads.len(), 1, "still applied: its head stays");
+        let with = decode(&state.value(&BTreeSet::new())).unwrap();
+        assert_eq!(with.state.settings["title"], "bob");
     }
 }

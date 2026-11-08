@@ -6,6 +6,18 @@
 //! newer root, and it would finish only once the phone paused. The fix (§7 of the spec): the
 //! writer serves every node any root it signed lists, the reader finishes the descent it started
 //! against the root it started from and continues from there.
+//!
+//! On a faulty network the phone's pace is the one workload parameter that follows the path
+//! (spec §18.1: a sustained-write case offers the load the path carries): every version is a
+//! packet the laptop fetches by name, and a reader with a bounded number of asks in flight
+//! fetches at most that many per round trip, so a writer saving every 2 ms over a path whose
+//! round trip is over a second outruns any bounded reader. There the phone saves at the pace
+//! [`pace`] derives from the profile and the reader's asks in flight; what is asserted is
+//! unchanged — everything written before the laptop looked is held and reported, and then
+//! every version written up to each later moment, against that pace. A later catch-up's time
+//! bound follows the path by the same rule ([`keep_up`]): a version just saved reaches the
+//! laptop through a chain of exchanges in a row, which alone takes seconds there. Both paces
+//! and both bounds are measured.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -36,8 +48,60 @@ const TABLET: Dev = Dev(2);
 /// Notes in the folder: enough that it is paged and its fuller pages sub-paged, so one root
 /// supersedes a few hundred packets.
 const NOTES: usize = 1_200;
-/// The phone saves one version this often, for as long as the case runs.
+/// The phone saves one version this often on a clean network, for as long as the case runs.
 const PACE: Duration = Duration::from_millis(2);
+/// The packets the laptop fetches per version the phone saves: the version, and the summary
+/// node that lists it, new under every root.
+const VERSION_PACKETS: f64 = 2.0;
+/// The share of what the path carries the phone's saving may take on a faulty network; the
+/// rest carries what the laptop catches up on.
+const WRITER_SHARE: f64 = 0.25;
+/// The time past its lifetime a reader waits for a reply sent just before it ends (spec §17.1).
+const REPLY_SLACK_MS: f64 = 500.0;
+
+/// The phone's pace: [`PACE`] on a clean network. On a faulty one, a sustained-write case offers
+/// the load the path carries (spec §18.1): a reader keeping `in_flight` asks in flight (spec
+/// §17.1) fetches at most `in_flight` packets per mean time a packet takes — its round trip
+/// under the profile (each arrival held a mean of half `delay`, a Data a further half `blocks`,
+/// a reordered packet a further `max(delay, 50)` ms), plus, for every ask that misses (dropped
+/// either way or forged, `1 / ((1 − drop)² (1 − forge)) − 1` per packet), a lifetime and its
+/// slack. The phone saves one version per [`VERSION_PACKETS`] of that rate's
+/// [`WRITER_SHARE`], never faster than [`PACE`].
+fn pace(w: &World) -> Duration {
+    let Some(per_packet) = packet_time(w) else {
+        return PACE;
+    };
+    let in_flight = ndn_data::Config::new().in_flight as f64;
+    let ms = per_packet * VERSION_PACKETS / (in_flight * WRITER_SHARE);
+    Duration::from_micros((ms * 1000.0) as u64).max(PACE)
+}
+
+/// The mean time one packet takes the reader under the network's fault profile, in ms
+/// ([`pace`]); `None` on a clean network.
+fn packet_time(w: &World) -> Option<f64> {
+    let f = w.net().faults()?;
+    let delay = f.delay_ms as f64;
+    let round_trip = delay + f.blocks_ms as f64 / 2.0 + 2.0 * f.reorder * delay.max(50.0);
+    let answered = (1.0 - f.drop).powi(2) * (1.0 - f.forge);
+    let miss = ndn_data::Config::new().lifetime.as_secs_f64() * 1000.0 + REPLY_SLACK_MS;
+    Some(round_trip + (1.0 / answered - 1.0) * miss)
+}
+
+/// The exchanges in a row by which a version just saved reaches the laptop: the root, the five
+/// summary levels under it (data, notes, page, sub-page, note) and the version.
+const CHAIN: f64 = 7.0;
+/// How many chains' time a later catch-up may take on a faulty network.
+const CHAINS: f64 = 3.0;
+
+/// How long each later catch-up may take: [`KEEP_UP`] on a clean network. On a faulty one it
+/// follows the path by the rule the pace does (spec §18.1): [`CHAINS`] times [`CHAIN`]
+/// exchanges of [`packet_time`] each, never less than [`KEEP_UP`].
+fn keep_up(w: &World) -> Duration {
+    packet_time(w).map_or(KEEP_UP, |ms| {
+        Duration::from_micros((CHAINS * CHAIN * ms * 1000.0) as u64).max(KEEP_UP)
+    })
+}
+
 /// How long the phone has been saving when the laptop starts watching.
 const BEFORE_LOOK: Duration = Duration::from_secs(1);
 /// Moments after the first catch-up at which the laptop must catch up again.
@@ -111,6 +175,28 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The tablet watches throughout: each of its refreshes has the phone sign a newer root,
         // superseding the nodes of the root the laptop is descending many times over.
         let _tablet_feed = w.at(TABLET).watch(&folder, &Frontier::new()).await?;
+        let pace = pace(w);
+        w.measure(
+            "the phone's pace on a clean network",
+            PACE.as_micros() as u64,
+            "µs",
+        );
+        w.measure(
+            "the phone's pace on this network",
+            pace.as_micros() as u64,
+            "µs",
+        );
+        let keep_up = keep_up(w);
+        w.measure(
+            "a catch-up's bound on a clean network",
+            KEEP_UP.as_millis() as u64,
+            "ms",
+        );
+        w.measure(
+            "a catch-up's bound on this network",
+            keep_up.as_millis() as u64,
+            "ms",
+        );
         let stop = Cell::new(false);
         let saving = async {
             // Each save goes to another note (7 is coprime to the note count), so every save
@@ -123,7 +209,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                     .await?;
                 written.borrow_mut().push(id);
                 k += 1;
-                w.sleep(PACE).await;
+                w.sleep(pace).await;
             }
             Ok::<_, Failure>(())
         };
@@ -154,7 +240,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                             "catch-up {round}: the laptop holds all {} versions written so far",
                             target.len()
                         ),
-                        KEEP_UP,
+                        keep_up,
                     )
                     .await?;
                 }

@@ -203,6 +203,8 @@ pub struct Net {
     specs: Vec<DeviceSpec>,
     /// Each device's forwarder label, as the fabric's name counters know it.
     labels: Vec<String>,
+    /// The fault profile every packet arriving at a device meets, if any ([`Plan::faults`]).
+    faults: Option<Faults>,
 }
 
 impl Net {
@@ -279,12 +281,18 @@ impl Net {
             hub: hub_node,
             specs,
             labels,
+            faults: plan.faults,
         })
     }
 
     /// The running fabric.
     pub fn fabric(&self) -> &Fabric {
         &self.fabric
+    }
+
+    /// The fault profile every packet arriving at a device meets, if any ([`Plan::faults`]).
+    pub fn faults(&self) -> Option<Faults> {
+        self.faults
     }
 
     /// The device's spec.

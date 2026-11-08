@@ -53,6 +53,20 @@ pub struct CaseResult {
     pub cost: Cost,
     /// What the case measured beyond its cost, for an open question it answers.
     pub measured: Vec<Measure>,
+    /// The fault profile the case ran under (`key=value,…`, seed included), its own or the
+    /// runner's; `None` on a clean network.
+    pub faults: Option<String>,
+}
+
+/// The network a run ran its cases on (spec data-layer.md §18).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NetworkReport {
+    /// `clean`, `faulty` (ndf's profile, `--faulty`) or `faults` (another, `--faults`).
+    pub mode: &'static str,
+    /// The runner's fault profile as run, seed included; `None` on a clean network.
+    pub faults: Option<String>,
+    /// The fault seed every case's profile ran with (`--fault-seed`, else the profile's).
+    pub seed: Option<u64>,
 }
 
 /// One quantity a case measured.
@@ -86,6 +100,8 @@ pub struct Report {
     pub provider: Option<String>,
     /// The kernel the scenarios run on.
     pub kernel: &'static str,
+    /// The network the cases ran on.
+    pub network: NetworkReport,
     /// Counts by status.
     pub totals: Totals,
     /// Every case, in study order.
@@ -93,8 +109,8 @@ pub struct Report {
 }
 
 impl Report {
-    /// A report over `cases`, run against `provider`.
-    pub fn new(provider: Option<String>, cases: Vec<CaseResult>) -> Self {
+    /// A report over `cases`, run against `provider` on `network`.
+    pub fn new(provider: Option<String>, network: NetworkReport, cases: Vec<CaseResult>) -> Self {
         let mut totals = Totals::default();
         for c in &cases {
             match c.status {
@@ -107,6 +123,7 @@ impl Report {
             suite: "ndn-data-conformance",
             provider,
             kernel: "virtual",
+            network,
             totals,
             cases,
         }
@@ -115,8 +132,9 @@ impl Report {
     /// A plain-text table, one line per case.
     pub fn table(&self) -> String {
         let mut out = format!(
-            "ndn-data conformance — provider: {}\n",
-            self.provider.as_deref().unwrap_or("none")
+            "ndn-data conformance — provider: {}, network: {}\n",
+            self.provider.as_deref().unwrap_or("none"),
+            self.network.faults.as_deref().unwrap_or(self.network.mode)
         );
         for c in &self.cases {
             let status = match c.status {

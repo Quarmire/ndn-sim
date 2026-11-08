@@ -1759,6 +1759,24 @@ impl RunningSimulation {
         Ok(())
     }
 
+    /// Run the **`from` → `to` direction** of a link under the fault profile `faults` (`None`:
+    /// none): every frame crossing that way is dropped, duplicated, forged or held as
+    /// [`Faults`](crate::Faults) says, drawing from that direction's own seeded stream
+    /// ([`Faults::stream`](crate::Faults::stream) over the two node ids). The draws depend only on
+    /// the profile's seed, the direction and the frames that crossed it before, never on the
+    /// world seed or on any other link, so a run replays identically. [`heal`](Self::heal)
+    /// leaves the profile in place; replacing it restarts the stream.
+    pub fn set_link_faults(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        faults: Option<crate::Faults>,
+    ) -> Result<()> {
+        let stream = faults.map(|f| f.stream(from.0 as u64, to.0 as u64));
+        self.directed_link_state(from, to)?.set_faults(stream);
+        Ok(())
+    }
+
     /// The live fault knobs governing the `from` → `to` direction of a link.
     fn directed_link_state(
         &self,

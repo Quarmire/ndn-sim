@@ -21,6 +21,12 @@
 //! virtual, the sync jitter is seeded before each case, and nothing on the way picks in hash or
 //! random order. `--check-determinism` checks it, running each case again alone in a fresh
 //! process and failing on any difference ([`differences`]).
+//!
+//! `--faulty` runs every case on ndf's faulty network ([`ndn_sim::FAULTY`]: drop 0.2, dup 0.1,
+//! forge 0.05, delay 400 ms, reorder 0.1, blocks 1500 ms), `--faults SPEC` on another profile and
+//! `--fault-seed N` with another seed ([`Network`]): every packet arriving at a device from its
+//! link meets the profile, seeded per link, so a faulty run is as deterministic as a clean one.
+//! Every case must pass on it (spec data-layer.md §18).
 
 pub mod case;
 pub mod cases;
@@ -36,6 +42,6 @@ pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;
 pub use provider::{Certs, DeviceSpec, Grants, NodeRole, Program, Provider, Tally, Tamper};
 pub use reference::Reference;
-pub use report::{CaseResult, Cost, Report, Status};
-pub use runner::{differences, run_all, run_case, run_only};
+pub use report::{CaseResult, Cost, NetworkReport, Report, Status};
+pub use runner::{Network, differences, run_all, run_case, run_only};
 pub use world::{Dev, Net, Plan, World};

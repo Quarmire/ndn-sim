@@ -3,13 +3,105 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-use ndn_sim::VirtualKernel;
+use ndn_sim::{FAULTY, Faults, VirtualKernel};
 
 use crate::case::{Case, Failure};
 use crate::cases::CASES;
 use crate::provider::Provider;
-use crate::report::{CaseResult, Cost, Report, Status};
-use crate::world::World;
+use crate::report::{CaseResult, Cost, NetworkReport, Report, Status};
+use crate::world::{Plan, World};
+
+/// The network the runner runs the cases on: clean, or faulty under a profile (spec
+/// data-layer.md §18). Faulty, every packet arriving at a device from its link meets the profile
+/// ([`Plan::faults`]), seeded per link so a case replays identically alone and in a suite.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Network {
+    /// The profile every case runs under that sets none of its own; `None`: a clean network.
+    faults: Option<Faults>,
+    /// Whether the profile is ndf's faulty one ([`FAULTY`], `--faulty`).
+    faulty: bool,
+    /// Replaces the seed of the profile each case runs under, its own or this one
+    /// (`--fault-seed`).
+    seed: Option<u64>,
+}
+
+impl Network {
+    /// A clean network: no faults beyond those a case sets itself.
+    pub fn clean() -> Network {
+        Network::default()
+    }
+
+    /// ndf's faulty network ([`FAULTY`]: drop 0.2, dup 0.1, forge 0.05, delay 400 ms, reorder
+    /// 0.1, blocks 1500 ms), seed 0 unless [`seeded`](Self::seeded).
+    pub fn faulty() -> Network {
+        Network {
+            faults: Some(Faults::parse(FAULTY).expect("ndf's faulty profile parses")),
+            faulty: true,
+            seed: None,
+        }
+    }
+
+    /// The network of the profile `spec` names ([`Faults::parse`]).
+    ///
+    /// # Errors
+    ///
+    /// The spec's error, saying which pair is wrong and what the spec accepts.
+    pub fn with_faults(spec: &str) -> Result<Network, String> {
+        Ok(Network {
+            faults: Some(Faults::parse(spec)?),
+            faulty: false,
+            seed: None,
+        })
+    }
+
+    /// This network with every case's fault seed replaced by `seed`.
+    pub fn seeded(mut self, seed: u64) -> Network {
+        self.seed = Some(seed);
+        self
+    }
+
+    /// The profile `plan` runs under on this network: the case's own, else this network's,
+    /// with the seed replaced when one is given.
+    pub fn apply(&self, plan: &mut Plan) {
+        if let Some(faults) = plan.fault_profile().or(self.faults) {
+            plan.faults(match self.seed {
+                Some(seed) => faults.with_seed(seed),
+                None => faults,
+            });
+        }
+    }
+
+    /// The runner's own arguments that make this network, for a child run of one case.
+    pub fn args(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match self.faults {
+            Some(_) if self.faulty => out.push("--faulty".to_owned()),
+            Some(f) => out.extend(["--faults".to_owned(), f.to_string()]),
+            None => {}
+        }
+        if let Some(seed) = self.seed {
+            out.extend(["--fault-seed".to_owned(), seed.to_string()]);
+        }
+        out
+    }
+
+    /// What the report records of this network.
+    pub fn report(&self) -> NetworkReport {
+        let profile = self.faults.map(|f| match self.seed {
+            Some(seed) => f.with_seed(seed),
+            None => f,
+        });
+        NetworkReport {
+            mode: match (&self.faults, self.faulty) {
+                (None, _) => "clean",
+                (Some(_), true) => "faulty",
+                (Some(_), false) => "faults",
+            },
+            faults: profile.map(|f| f.to_string()),
+            seed: profile.map(|f| f.seed).or(self.seed),
+        }
+    }
+}
 
 /// The implementations the runner knows, by constructor.
 pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[crate::reference::Reference::provider];
@@ -22,9 +114,17 @@ pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[crate::reference::Referenc
 /// kernel's runtime is single-threaded), so seeding this thread pins the draws.
 const JITTER_SEED: u64 = 0x6e64_6e2d_6461_7461;
 
-/// Run one case against `provider`. Without a provider, or with one that does not implement a
-/// feature the case needs, the scenario does not run and the case is [`Status::NotImplemented`].
-pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult {
+/// Run one case against `provider` on `network`. Without a provider, or with one that does not
+/// implement a feature the case needs, the scenario does not run and the case is
+/// [`Status::NotImplemented`].
+pub fn run_case(
+    case: &Case,
+    provider: Option<&Arc<dyn Provider>>,
+    network: &Network,
+) -> CaseResult {
+    let mut plan = (case.plan)();
+    network.apply(&mut plan);
+    let faults = plan.fault_profile().map(|f| f.to_string());
     let result = |status, detail: String, cost, measured| CaseResult {
         id: case.id,
         title: case.title,
@@ -35,6 +135,7 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
         detail,
         cost,
         measured,
+        faults: faults.clone(),
     };
     let Some(provider) = provider else {
         return result(
@@ -66,7 +167,6 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
         );
     }
 
-    let plan = (case.plan)();
     let provider = Arc::clone(provider);
     let kernel = VirtualKernel::new();
     fastrand::seed(JITTER_SEED);
@@ -115,19 +215,24 @@ pub fn run_case(case: &Case, provider: Option<&Arc<dyn Provider>>) -> CaseResult
     }
 }
 
-/// Run every case, in study order, against `provider`.
+/// Run every case, in study order, against `provider` on a clean network.
 pub fn run_all(provider: Option<Arc<dyn Provider>>) -> Report {
-    run_only(provider, &[])
+    run_only(provider, &[], &Network::clean())
 }
 
-/// Run the cases whose ids are in `only` (every case when it is empty), in study order.
-pub fn run_only(provider: Option<Arc<dyn Provider>>, only: &[String]) -> Report {
+/// Run the cases whose ids are in `only` (every case when it is empty), in study order, on
+/// `network`.
+pub fn run_only(provider: Option<Arc<dyn Provider>>, only: &[String], network: &Network) -> Report {
     let cases = CASES
         .iter()
         .filter(|c| only.is_empty() || only.iter().any(|id| id == c.id))
-        .map(|c| run_case(c, provider.as_ref()))
+        .map(|c| run_case(c, provider.as_ref(), network))
         .collect();
-    Report::new(provider.map(|p| p.name().to_owned()), cases)
+    Report::new(
+        provider.map(|p| p.name().to_owned()),
+        network.report(),
+        cases,
+    )
 }
 
 /// What differs between a case run alone and the same case run in a suite (`in_suite`): its
@@ -142,6 +247,12 @@ pub fn differences(alone: &serde_json::Value, in_suite: &CaseResult) -> Vec<Stri
         out.push(format!(
             "status: alone {}, in the suite {}",
             alone["status"], suite["status"]
+        ));
+    }
+    if alone["faults"] != suite["faults"] {
+        out.push(format!(
+            "faults: alone {}, in the suite {}",
+            alone["faults"], suite["faults"]
         ));
     }
     let fields = suite["cost"].as_object().into_iter().flat_map(|c| c.keys());
@@ -221,6 +332,50 @@ mod tests {
         assert!(json["provider"].is_null());
         assert_eq!(json["cases"][0]["status"], "not-implemented");
         assert!(json["cases"][0]["cost"]["round_trips"].is_null());
+        assert_eq!(json["network"]["mode"], "clean");
+        assert!(json["network"]["faults"].is_null() && json["cases"][0]["faults"].is_null());
+    }
+
+    /// The faulty network runs every case under ndf's profile, a case's own profile wins, the
+    /// fault seed replaces either's seed, and a child run gets the flags that make the same
+    /// network.
+    #[test]
+    fn a_faulty_network_reaches_every_case_and_its_child_runs() {
+        let faulty = Network::faulty().seeded(3);
+        let mut plan = Plan::new();
+        faulty.apply(&mut plan);
+        assert_eq!(
+            plan.fault_profile(),
+            Some(Faults::parse(FAULTY).unwrap().with_seed(3))
+        );
+        let mut own = Plan::new();
+        own.faults(Faults::parse("drop=0.1,seed=8").unwrap());
+        faulty.apply(&mut own);
+        assert_eq!(own.fault_profile(), Faults::parse("drop=0.1,seed=3").ok());
+        let mut clean = Plan::new();
+        Network::clean().apply(&mut clean);
+        assert_eq!(clean.fault_profile(), None);
+
+        assert_eq!(faulty.args(), ["--faulty", "--fault-seed", "3"]);
+        let custom = Network::with_faults("drop=0.3").unwrap();
+        assert_eq!(
+            custom.args(),
+            [
+                "--faults",
+                "drop=0.3,dup=0,forge=0,delay=0,reorder=0,blocks=0,seed=0"
+            ]
+        );
+        assert!(Network::with_faults("drop=x").is_err());
+        let r = faulty.report();
+        assert_eq!((r.mode, r.seed), ("faulty", Some(3)));
+        assert_eq!(
+            r.faults,
+            Some(format!("{}", Faults::parse(FAULTY).unwrap().with_seed(3)))
+        );
+
+        let json = serde_json::to_value(run_only(None, &[], &faulty)).unwrap();
+        assert_eq!(json["network"]["mode"], "faulty");
+        assert_eq!(json["cases"][0]["faults"], json["network"]["faults"]);
     }
 
     #[test]
@@ -263,6 +418,7 @@ mod tests {
                 value: interests,
                 unit: "round trips",
             }],
+            faults: None,
         }
     }
 
@@ -286,6 +442,12 @@ mod tests {
                 "status: alone \"pass\", in the suite \"fail\"",
                 "measure \"one new version, 8 writers: Interests\": alone 6, in the suite nothing",
             ]
+        );
+        let mut faulted = ran(10, 6);
+        faulted.faults = Some(FAULTY.to_owned());
+        assert_eq!(
+            differences(&alone, &faulted),
+            [format!("faults: alone null, in the suite \"{FAULTY}\"")]
         );
     }
 }

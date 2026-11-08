@@ -94,10 +94,10 @@ mod k7_bounded_cut;
 mod k8_lapsed_guest;
 mod k9_other_bytes;
 mod n1_named_by_key;
+mod n2_members_read_each_other;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
-mod n2_members_read_each_other;
 mod o4_sustained_writes;
 mod r1_concurrent_shares;
 mod r2_group_removal;
@@ -194,6 +194,7 @@ pub const CASES: &[Case] = &[
     i11_stranger_cannot_close::CASE,
     i12_removed_elsewhere::CASE,
     n1_named_by_key::CASE,
+    n2_members_read_each_other::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------
@@ -202,7 +203,6 @@ pub const CASES: &[Case] = &[
 const LIMIT: Duration = Duration::from_secs(120);
 /// How long a case lets the network run before asserting that something did *not* happen.
 const SETTLE: Duration = Duration::from_secs(60);
-    n2_members_read_each_other::CASE,
     f4_let_go_keeps_joined::CASE,
 /// How long a watch is drained for one look at a collection.
 const LOOK: Duration = Duration::from_secs(5);

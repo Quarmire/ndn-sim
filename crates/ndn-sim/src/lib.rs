@@ -137,6 +137,7 @@ pub mod control_plane;
 pub mod cosim;
 pub mod des;
 pub mod energy;
+pub mod faults;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fieldkit;
 pub mod geometry;
@@ -190,6 +191,7 @@ pub use cosim::{
 };
 pub use des::{DesKernel, DesSession};
 pub use energy::{EnergyAccount, EnergyAccounts, EnergyModel, RadioEnergyModel};
+pub use faults::{FAULTY, Fate, FaultStream, Faults};
 pub use geometry::{Obstacle, ObstructedPropagation};
 #[cfg(feature = "keel")]
 pub use keel::{KeelView, Rendered, SceneView, Surface};

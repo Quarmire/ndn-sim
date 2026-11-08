@@ -20,6 +20,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::sync::mpsc;
 use tracing::trace;
 
+use crate::faults::{Fate, FaultStream};
 use crate::shared_channel::SharedChannel;
 use crate::sim_link::{FaceProfile, IPV4_HEADER, LinkConfig, UDP_HEADER};
 
@@ -117,6 +118,8 @@ pub struct LinkState {
     extra_delay_ns: AtomicU64,
     /// Targeted delay-without-drop rule ([`HoldRule`]) — the reorder fault.
     hold: Mutex<Option<HoldActive>>,
+    /// A standing [`Faults`](crate::Faults) profile on this direction and its draws.
+    faults: Mutex<Option<FaultStream>>,
 }
 
 impl LinkState {
@@ -126,6 +129,7 @@ impl LinkState {
             loss_override_bits: AtomicU64::new(f64::NAN.to_bits()),
             extra_delay_ns: AtomicU64::new(0),
             hold: Mutex::new(None),
+            faults: Mutex::new(None),
         })
     }
     /// Cut / restore the link (drop everything when `true`).
@@ -151,7 +155,26 @@ impl LinkState {
             held: 0,
         });
     }
-    /// Restore the link to its profile defaults (up, no override, no extra delay, no hold).
+    /// Install (or clear) a standing fault profile on this direction, drawing from `stream`
+    /// ([`Faults::stream`](crate::Faults::stream)). It applies to every frame after the link's
+    /// own impairments, and [`reset`](Self::reset) leaves it in place: it is the network a run is
+    /// made on, not a runtime fault.
+    pub fn set_faults(&self, stream: Option<FaultStream>) {
+        *self.faults.lock() = stream;
+    }
+    /// What the standing fault profile does to `pkt`: without one, it is delivered once, as is.
+    fn fault_fate(&self, pkt: Bytes) -> Fate {
+        match self.faults.lock().as_mut() {
+            Some(stream) => stream.fate(pkt),
+            None => Fate {
+                copies: 1,
+                delay: Duration::ZERO,
+                frame: pkt,
+            },
+        }
+    }
+    /// Restore the link to its profile defaults (up, no override, no extra delay, no hold); a
+    /// standing fault profile stays.
     pub fn reset(&self) {
         self.set_down(false);
         self.set_loss(None);
@@ -442,6 +465,20 @@ impl Transport for SimFace {
             }
         }
 
+        // The standing fault profile, after the link's own impairments: ndf's per-arrival layer
+        // (dropped, duplicated, forged, held). Its hold rides on top of everything below, the
+        // reliable cursor included, so a faulty stream reorders as ndf's faulty connection does.
+        let fate = self.state.fault_fate(pkt);
+        if fate.copies == 0 {
+            trace!(face = %self.id, "SimFace: packet dropped (fault profile)");
+            return Ok(());
+        }
+        let Fate {
+            copies,
+            delay: fault_delay,
+            frame: pkt,
+        } = fate;
+
         // Transmit timing: the shared channel already serialised this frame (it is on the far end
         // once its airtime ends); otherwise a dedicated link serialises its own transmit starts
         // through a cursor (bandwidth 0 = no shaping).
@@ -484,8 +521,11 @@ impl Transport for SimFace {
             *last = deliver_at;
         }
 
-        let wait = deliver_at.saturating_duration_since(now);
+        let wait = (deliver_at + fault_delay).saturating_duration_since(now);
         if wait.is_zero() {
+            for _ in 1..copies {
+                self.out.deliver(pkt.clone()).await?;
+            }
             self.out.deliver(pkt).await
         } else {
             // Delayed delivery on the runtime seam (virtual under the virtual/DES kernels).
@@ -494,8 +534,11 @@ impl Transport for SimFace {
             let rt = Arc::clone(&self.runtime);
             self.runtime.spawn(Box::pin(async move {
                 rt.sleep(wait).await;
-                if out.deliver(pkt).await.is_err() {
-                    trace!(face = %face_id, "SimFace: remote end closed during delayed delivery");
+                for _ in 0..copies {
+                    if out.deliver(pkt.clone()).await.is_err() {
+                        trace!(face = %face_id, "SimFace: remote end closed during delayed delivery");
+                        return;
+                    }
                 }
             }));
             Ok(())

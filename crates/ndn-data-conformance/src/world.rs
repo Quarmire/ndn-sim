@@ -14,7 +14,8 @@ use ndn_app::EngineAppExt;
 use ndn_data::{Code, DataError, DataLayer, Joined, Name, Offer, Timestamp, VersionId};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{
-    ClockSkew, Fabric, FaceKind, LinkConfig, NodeId, NodeProfile, SimKernel, Simulation,
+    ClockSkew, Fabric, FaceKind, FaceProfile, Faults, LinkConfig, NodeId, NodeProfile, SimKernel,
+    Simulation,
 };
 
 use crate::case::Failure;
@@ -50,6 +51,8 @@ pub struct Plan {
     names: Option<usize>,
     /// Every person a stranger to the others ([`Plan::strangers`]).
     strangers: bool,
+    /// The fault profile every packet arriving at a device meets ([`Plan::faults`]).
+    faults: Option<Faults>,
 }
 
 impl Plan {
@@ -70,6 +73,26 @@ impl Plan {
     /// introduction ([`World::join`]) adopts that person's anchor.
     pub fn strangers(&mut self) {
         self.strangers = true;
+    }
+
+    /// Run the case on a faulty network: every packet arriving at a device from its link is
+    /// dropped, duplicated, forged, delayed or reordered as `faults` says (ndf's per-arrival
+    /// fault layer; see [`ndn_sim::Faults`]). What the hub receives is not faulted, so every
+    /// packet from one device to another meets the profile exactly once, on its way into the
+    /// receiving device, as on a direct connection under ndf's layer. The device links are then
+    /// the face ndf's layer sits on, an ndn-link QUIC stream face: whole packets meet the faults
+    /// (no NDNLPv2 fragments), and no LP reliability resends a dropped one. Each link draws from
+    /// its own stream,
+    /// seeded by `faults.seed` and the link, so the case replays identically alone and in a
+    /// suite. A case that sets this keeps it under the runner's faulty mode, whose
+    /// `--fault-seed` replaces only its seed ([`crate::runner::Network`]).
+    pub fn faults(&mut self, faults: Faults) {
+        self.faults = Some(faults);
+    }
+
+    /// The fault profile the case runs under, if any ([`faults`](Self::faults)).
+    pub fn fault_profile(&self) -> Option<Faults> {
+        self.faults
     }
 
     /// Add `person`'s `device` (e.g. `"alice"`, `"laptop"`). The person is a namespace of any
@@ -210,13 +233,34 @@ impl Net {
             labels.push(node_profile.label.clone());
             let node = sim.add_node_profile(node_profile);
             debug_assert_eq!(node, spec.node);
-            sim.link(node, hub_node, LinkConfig::lan());
+            match plan.faults {
+                None => sim.link(node, hub_node, LinkConfig::lan()),
+                // ndf's direct connection is an ndn-link QUIC stream face, and its fault layer
+                // sits on that face: whole packets meet the faults, none is cut into NDNLPv2
+                // fragments, and no LP reliability resends what the layer drops. A faulty link
+                // is that face, so a large Data is dropped, held or forged once, as there; on
+                // the UDP face each fragment would meet the profile, and LP reliability would
+                // resend nearly every drop (the device's Acks travel the clean way).
+                Some(_) => sim.link_profiled(
+                    node,
+                    hub_node,
+                    FaceProfile::quic().with_link(LinkConfig::lan()),
+                ),
+            }
             sim.add_route(node, "/", hub_node);
             sim.add_route(hub_node, "/", node);
             specs.push(spec);
         }
+        let fabric = sim.start().await?;
+        if let Some(faults) = plan.faults {
+            // What arrives at each device from its link; the hub's side stays clean, so a packet
+            // between two devices meets the profile once.
+            for spec in &specs {
+                fabric.set_link_faults(hub_node, spec.node, Some(faults))?;
+            }
+        }
         Ok(Net {
-            fabric: sim.start().await?,
+            fabric,
             hub: hub_node,
             specs,
             labels,
@@ -735,6 +779,26 @@ impl World {
         }
     }
 
+    /// What `at`'s forwarder — its node's validator, which judges every packet it forwards —
+    /// says of the packet `from` stores under `name` (see [`Provider::forwarder_verdict`]):
+    /// `Ok` when it accepts it, else why not. Looking costs no gesture.
+    pub async fn forwarder_verdict(
+        &self,
+        at: Dev,
+        from: Dev,
+        name: &Name,
+    ) -> Result<Result<(), String>, Failure> {
+        self.provider
+            .forwarder_verdict(
+                &self.net.fabric,
+                self.net.spec(at),
+                self.net.spec(from),
+                name,
+            )
+            .await
+            .map_err(|e| Failure::new(format!("cannot ask the forwarder: {e:#}")))
+    }
+
     /// `d`'s storage silently loses every `every`-th stored piece of `collection` (1 = all), in
     /// name order (see [`Provider::lose`]); returns how many it lost.
     pub fn lose(&self, d: Dev, collection: &Name, every: u32) -> u64 {
@@ -779,26 +843,6 @@ impl World {
         self.provider
             .tamper(self.net.spec(d), version, how)
             .map_err(|e| Failure::new(format!("cannot tamper: {e:#}")))
-    /// What `at`'s forwarder — its node's validator, which judges every packet it forwards —
-    /// says of the packet `from` stores under `name` (see [`Provider::forwarder_verdict`]):
-    /// `Ok` when it accepts it, else why not. Looking costs no gesture.
-    pub async fn forwarder_verdict(
-        &self,
-        at: Dev,
-        from: Dev,
-        name: &Name,
-    ) -> Result<Result<(), String>, Failure> {
-        self.provider
-            .forwarder_verdict(
-                &self.net.fabric,
-                self.net.spec(at),
-                self.net.spec(from),
-                name,
-            )
-            .await
-            .map_err(|e| Failure::new(format!("cannot ask the forwarder: {e:#}")))
-    }
-
     }
 
     /// `d`'s stopped data layer holds its newest members record of `subject` as a build from

@@ -654,4 +654,84 @@ mod tests {
             "~half delivered, not all/none"
         );
     }
+
+    /// Every frame `face_b` has received within `within` of virtual time, with its arrival
+    /// offset.
+    async fn drain(face_b: &SimFace, within: Duration) -> Vec<(Duration, bytes::Bytes)> {
+        let start = tokio::time::Instant::now();
+        let mut got = Vec::new();
+        while let Ok(Ok(b)) = tokio::time::timeout_at(start + within, face_b.recv_bytes()).await {
+            got.push((start.elapsed(), b));
+        }
+        got
+    }
+
+    fn faulty_pair(spec: &str) -> (SimFace, SimFace) {
+        let (a, b) = SimLink::pair(FaceId(1), FaceId(2), LinkConfig::direct(), 4096);
+        let faults = crate::Faults::parse(spec).unwrap();
+        a.link_state().set_faults(Some(faults.stream(1, 2)));
+        (a, b)
+    }
+
+    fn data(i: u8) -> bytes::Bytes {
+        ndn_packet::encode::DataBuilder::new(
+            format!("/f/{i}").parse::<ndn_packet::Name>().unwrap(),
+            b"x",
+        )
+        .build()
+    }
+
+    /// The fault profile rides on the link direction it is set on, and only that one.
+    #[tokio::test(start_paused = true)]
+    async fn a_fault_profile_drops_duplicates_and_forges_on_its_direction() {
+        let (a, b) = faulty_pair("drop=1");
+        a.send_bytes(data(0)).await.unwrap();
+        b.send_bytes(data(1)).await.unwrap();
+        assert!(
+            drain(&b, Duration::from_secs(1)).await.is_empty(),
+            "dropped"
+        );
+        assert_eq!(
+            drain(&a, Duration::from_secs(1)).await.len(),
+            1,
+            "other way clean"
+        );
+
+        let (a, b) = faulty_pair("dup=1");
+        a.send_bytes(data(0)).await.unwrap();
+        let got = drain(&b, Duration::from_secs(1)).await;
+        assert_eq!(got.len(), 2, "delivered twice");
+        assert!(got.iter().all(|(_, f)| *f == data(0)));
+
+        let (a, b) = faulty_pair("forge=1");
+        a.send_bytes(data(0)).await.unwrap();
+        let got = drain(&b, Duration::from_secs(1)).await;
+        assert_eq!(got.len(), 1);
+        let sent = data(0);
+        let diff = got[0].1.iter().zip(sent.iter()).filter(|(x, y)| x != y);
+        assert_eq!(diff.count(), 1, "one byte of the signature flipped");
+    }
+
+    /// Held packets overtake each other: `delay` and `blocks` hold each for its own draw, and a
+    /// whole run of a seed replays exactly.
+    #[tokio::test(start_paused = true)]
+    async fn a_fault_profile_holds_and_reorders_reproducibly() {
+        async fn run() -> Vec<(Duration, bytes::Bytes)> {
+            let (a, b) = faulty_pair("delay=400,reorder=0.3,blocks=1500,seed=11");
+            for i in 0..40 {
+                a.send_bytes(data(i)).await.unwrap();
+            }
+            drain(&b, Duration::from_secs(3)).await
+        }
+        let first = run().await;
+        assert_eq!(first.len(), 40, "held, never lost");
+        assert!(
+            first
+                .iter()
+                .all(|(t, _)| *t <= Duration::from_millis(400 + 400 + 1500))
+        );
+        let order: Vec<bytes::Bytes> = first.iter().map(|(_, f)| f.clone()).collect();
+        assert_ne!(order, (0..40).map(data).collect::<Vec<_>>(), "overtaken");
+        assert_eq!(first, run().await, "the seed replays the run");
+    }
 }

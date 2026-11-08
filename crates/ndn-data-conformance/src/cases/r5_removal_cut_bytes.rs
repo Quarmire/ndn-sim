@@ -74,7 +74,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().offline(CAROL);
 
         alice
-            .share_folder(&trip, members(merge(), &["/alice", "/bob"], &[]))
+            .share_folder(&trip, members(merge(), &["/alice", "/bob"], &[]).into())
             .await?;
         let seed = alice
             .put(&plan, content(&[("alice", "the trip")]), note(1))
@@ -105,7 +105,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Alice removes Bob from the folder: the cut keeps the plan she holds.
         w.gesture();
         alice
-            .share_folder(&trip, members(merge(), &["/alice"], &[]))
+            .share_folder(&trip, members(merge(), &["/alice"], &[]).into())
             .await?;
         w.sleep(LOOK).await;
 
@@ -144,6 +144,10 @@ fn run(w: &World) -> CaseFuture<'_> {
                     "Carol answers the copy's other bytes at {name}, a seq the removal cut kept"
                 )));
             }
+            // Alice, back with the record, holds Bob's plan and answers for his phone while it
+            // is away (spec §13.5): Carol reads the honest bytes the cut kept, never the copy's.
+            Ok(answer)
+                if matches!(&answer.got, Got::Version(v) if v.id == kept && field_of(v, FIELD) == Some(HONEST)) => {}
             other => {
                 return Err(Failure::new(format!(
                     "Carol, reaching only the copy, answers {other:?} for {name}; the copy's \

@@ -59,6 +59,7 @@ mod g4_seq_reused_across_collections;
 mod g5_large_group;
 mod g6_group_under_lock;
 mod g7_group_member_in_pieces;
+mod h10_holder_serves_others;
 mod h1_large_photo;
 mod h2_dropping_holder;
 mod h3_subset_holder;
@@ -134,6 +135,7 @@ pub const CASES: &[Case] = &[
     h6_sealed_non_reader::CASE,
     h7_lost_single_copy::CASE,
     h8_relaying_holder::CASE,
+    h10_holder_serves_others::CASE,
     h9_prune_before_auditor::CASE,
     c06_sensor_blocks::CASE,
     s1_range_reads::CASE,

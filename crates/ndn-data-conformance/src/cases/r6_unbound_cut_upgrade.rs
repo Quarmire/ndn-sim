@@ -80,7 +80,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
 
         alice
-            .share_folder(&trip, members(merge(), &["/alice", "/bob"], &[]))
+            .share_folder(&trip, members(merge(), &["/alice", "/bob"], &[]).into())
             .await?;
         let seed = alice
             .put(&plan, content(&[("alice", "the trip")]), note(1))
@@ -105,7 +105,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().offline(CAROL);
         w.gesture();
         alice
-            .share_folder(&trip, members(merge(), &["/alice"], &[]))
+            .share_folder(&trip, members(merge(), &["/alice"], &[]).into())
             .await?;
         w.sleep(LOOK).await;
         w.stop(ALICE).await?;
@@ -152,7 +152,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // old one kept, from the bytes she holds.
         w.gesture();
         alice
-            .share_folder(&trip, members(merge(), &["/alice", "/dave"], &[]))
+            .share_folder(&trip, members(merge(), &["/alice", "/dave"], &[]).into())
             .await?;
         for (who, layer) in [("Alice", &alice), ("Carol", &carol)] {
             let what = format!(

@@ -77,7 +77,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                     element_rule(),
                     &["/alice", "/bob"],
                     &[person("/alice"), person("/bob"), person("/carol")],
-                ),
+                )
+                .into(),
             )
             .await?;
         let mut made = Vec::new();

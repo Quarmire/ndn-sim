@@ -82,7 +82,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         phone
             .share_folder(
                 &folder,
-                members(Rule::Log, &["/alice"], &[person("/alice")]),
+                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
             )
             .await?;
         // The phone writes the cover in the epoch its record started: once the laptop reads it,

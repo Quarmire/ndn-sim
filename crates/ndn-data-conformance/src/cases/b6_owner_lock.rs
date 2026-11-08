@@ -115,7 +115,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                     element_rule(),
                     &["/alice", "/bob"],
                     &[person("/alice"), person("/bob")],
-                ),
+                )
+                .into(),
             )
             .await?;
         let made = put_element(w, PHONE, &paragraph, |op| {

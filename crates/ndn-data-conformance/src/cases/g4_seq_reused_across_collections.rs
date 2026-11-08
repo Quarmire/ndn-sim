@@ -80,7 +80,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         for f in [&trip, &club] {
             alice
-                .share_folder(f, members(merge(), &["/alice", "/bob"], &[]))
+                .share_folder(f, members(merge(), &["/alice", "/bob"], &[]).into())
                 .await?;
         }
         let seeds = [
@@ -135,7 +135,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Alice removes Bob from the trip: the cut keeps exactly what she holds of him there.
         w.gesture();
         alice
-            .share_folder(&trip, members(merge(), &["/alice"], &[]))
+            .share_folder(&trip, members(merge(), &["/alice"], &[]).into())
             .await?;
 
         // The copy, which has not heard of the removal, writes on from the log it holds: the seqs

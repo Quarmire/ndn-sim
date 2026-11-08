@@ -56,6 +56,7 @@ mod g1_group_all_or_none;
 mod g2_impossible_group;
 mod g3_group_concurrent_narrowing;
 mod g4_seq_reused_across_collections;
+mod f4_let_go_keeps_joined;
 mod g5_large_group;
 mod g6_group_under_lock;
 mod g7_group_member_in_pieces;
@@ -199,6 +200,7 @@ pub const CASES: &[Case] = &[
 const LIMIT: Duration = Duration::from_secs(120);
 /// How long a case lets the network run before asserting that something did *not* happen.
 const SETTLE: Duration = Duration::from_secs(60);
+    f4_let_go_keeps_joined::CASE,
 /// How long a watch is drained for one look at a collection.
 const LOOK: Duration = Duration::from_secs(5);
 const DAY: Duration = Duration::from_secs(24 * 3600);

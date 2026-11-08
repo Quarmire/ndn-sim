@@ -57,7 +57,7 @@ fn plan() -> Plan {
 async fn keeps(w: &World, by: Dev, ns: &str, folder: &str, cover: &str) -> Result<(), Failure> {
     let layer = w.at(by);
     layer
-        .share_folder(&n(folder), members(Rule::Log, &[ns], &[person(ns)]))
+        .share_folder(&n(folder), members(Rule::Log, &[ns], &[person(ns)]).into())
         .await?;
     layer
         .put(&n(&format!("{folder}/cover")), text(cover), note(1))

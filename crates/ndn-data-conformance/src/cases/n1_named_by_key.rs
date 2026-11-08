@@ -140,7 +140,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                     rule: Rule::Log,
                     writers: vec![alice_ns.clone()],
                     readers: vec![Audience::Person(alice_ns.clone())],
-                },
+                }
+                .into(),
             )
             .await?;
         alice.put(&cover, text("cover by alice"), note(1)).await?;
@@ -175,7 +176,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                         Audience::Person(alice_ns.clone()),
                         Audience::Person(bob_ns.clone()),
                     ],
-                },
+                }
+                .into(),
             )
             .await?;
         let start = tokio::time::Instant::now();

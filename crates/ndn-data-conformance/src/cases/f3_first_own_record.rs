@@ -81,7 +81,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         alice
             .share_folder(
                 &folder,
-                members(Rule::Log, &["/alice", "/bob", "/carol"], &[]),
+                members(Rule::Log, &["/alice", "/bob", "/carol"], &[]).into(),
             )
             .await?;
         let minute = carol.put(&minutes, text("carol: we met"), note(1)).await?;

@@ -116,7 +116,7 @@ async fn share_and_read(
     let signed = w.signed_by(OWNER);
     w.gesture();
     let records = if by_folder {
-        alice.share_folder(folder, share).await?;
+        alice.share_folder(folder, share.into()).await?;
         1
     } else {
         for c in &collections {

@@ -167,7 +167,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                     element_rule(),
                     &["/alice", "/bob"],
                     &[person("/alice"), person("/bob")],
-                ),
+                )
+                .into(),
             )
             .await?;
         for i in 0..PARAGRAPHS {

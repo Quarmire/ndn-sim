@@ -57,7 +57,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         alice
             .share_folder(
                 &folder,
-                members(Rule::Log, &["/alice"], &[person("/alice")]),
+                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
             )
             .await?;
         alice

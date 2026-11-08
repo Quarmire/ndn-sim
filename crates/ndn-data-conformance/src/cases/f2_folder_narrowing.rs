@@ -99,7 +99,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                     element_rule(),
                     &["/alice", "/bob", "/carol"],
                     &[person("/alice"), person("/bob"), person("/carol")],
-                ),
+                )
+                .into(),
             )
             .await?;
         // Dave, offline, knows only the old record.

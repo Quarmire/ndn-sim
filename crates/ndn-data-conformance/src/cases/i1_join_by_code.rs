@@ -60,7 +60,7 @@ pub(super) async fn alice_keeps_a_notebook(w: &World) -> Result<(), Failure> {
     alice
         .share_folder(
             &n(FOLDER),
-            members(Rule::Log, &["/alice"], &[person("/alice")]),
+            members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
         )
         .await?;
     alice

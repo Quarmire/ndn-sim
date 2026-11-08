@@ -61,7 +61,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                     element_rule(),
                     &["/alice"],
                     &[person("/alice"), person("/bob")],
-                ),
+                )
+                .into(),
             )
             .await?;
         let mut watch = w.at(BOB).watch(&folder, &Frontier::new()).await?;

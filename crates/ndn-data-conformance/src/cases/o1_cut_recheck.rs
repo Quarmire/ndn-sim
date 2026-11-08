@@ -105,14 +105,19 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await?;
         w.converged(took);
+        // A version the cut keeps is taken with the bytes its manifest lists (spec §8): while
+        // that manifest packet is on its way it waits, asked for again while it does (§17.1),
+        // so the state shows it again once the packet arrives, never later than the case limit.
+        w.until(
+            "the re-check keeps Bob's edit inside the cut",
+            LIMIT,
+            || has(&*carol, &doc, &inside),
+        )
+        .await?;
         let s = state(&*carol, &doc).await?;
         ensure!(
             !s.at.contains(&outside),
             "Carol's state still includes Bob's edit the cut refuses"
-        );
-        ensure!(
-            s.at.contains(&inside),
-            "the re-check also dropped Bob's edit inside the cut"
         );
         ensure!(
             field(&s.value, "bob") == Some("first"),

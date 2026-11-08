@@ -240,10 +240,15 @@ fn run(w: &World) -> CaseFuture<'_> {
             !reads(&*bob, &late, "a page carol wrote once dropped").await?,
             "bob reads a page carol wrote after alice's record dropped her"
         );
-        ensure!(
-            reads(&*bob, &page_c, "a page by carol").await?,
-            "bob no longer reads carol's page from before her removal, which the cut keeps"
-        );
+        // Her earlier page is taken with the bytes the removal cut's manifest lists (spec §8):
+        // while that manifest packet is on its way the page waits, asked for again while it does
+        // (§17.1), so bob reads it again once the packet arrives, within the case limit.
+        w.until(
+            "bob still reads carol's page from before her removal, which the cut keeps",
+            LIMIT,
+            || reads(&*bob, &page_c, "a page by carol"),
+        )
+        .await?;
         Ok(())
     })
 }

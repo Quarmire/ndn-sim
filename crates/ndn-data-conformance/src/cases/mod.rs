@@ -53,6 +53,7 @@ mod g1_group_all_or_none;
 mod g2_impossible_group;
 mod g3_group_concurrent_narrowing;
 mod g4_seq_reused_across_collections;
+mod g5_large_group;
 mod g6_group_under_lock;
 mod h1_large_photo;
 mod h2_dropping_holder;
@@ -154,6 +155,7 @@ pub const CASES: &[Case] = &[
     g2_impossible_group::CASE,
     g3_group_concurrent_narrowing::CASE,
     g4_seq_reused_across_collections::CASE,
+    g5_large_group::CASE,
     g6_group_under_lock::CASE,
     f1_folder_members::CASE,
     f2_folder_narrowing::CASE,

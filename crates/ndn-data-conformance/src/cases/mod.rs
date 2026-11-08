@@ -66,6 +66,9 @@ mod h6_sealed_non_reader;
 mod h7_lost_single_copy;
 mod h8_relaying_holder;
 mod h9_prune_before_auditor;
+mod i10_removal_lasts;
+mod i11_stranger_cannot_close;
+mod i12_removed_elsewhere;
 mod i1_join_by_code;
 mod i2_used_code;
 mod i3_expired_code;
@@ -73,6 +76,8 @@ mod i4_wrong_tries;
 mod i5_replayed_code;
 mod i6_forged_ask;
 mod i7_inviter_offline;
+mod i8_overlapping_namespace;
+mod i9_inviter_overlap;
 mod k10_revoked_issuer;
 mod k1_expired_key;
 mod k2_backdated;
@@ -174,6 +179,11 @@ pub const CASES: &[Case] = &[
     i5_replayed_code::CASE,
     i6_forged_ask::CASE,
     i7_inviter_offline::CASE,
+    i8_overlapping_namespace::CASE,
+    i9_inviter_overlap::CASE,
+    i10_removal_lasts::CASE,
+    i11_stranger_cannot_close::CASE,
+    i12_removed_elsewhere::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

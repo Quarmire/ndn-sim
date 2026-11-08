@@ -72,7 +72,7 @@ use ndn_namespace::{ContextStore, StoredContext};
 use ndn_packet::Data;
 use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_security::cert_name::{DEFAULT_ISSUER, new_cert_name};
-use ndn_security::self_certifying::{Genesis, self_certifying_digest};
+use ndn_security::self_certifying::Genesis;
 use ndn_security::{
     Certificate, SecurityManager, SignedTrustContext, Signer, Validator, anchor_fingerprint,
     encode_cert_data,
@@ -268,6 +268,7 @@ impl Reference {
         Ok(Arc::new(Introduce {
             anchor,
             validator: Arc::clone(validator),
+            engine: engine.clone(),
             route: Box::new(move |person: &Name| {
                 ndn_namespace::sync_group::carry(&engine, person);
                 EngineFaces(engine.clone())
@@ -577,15 +578,18 @@ fn host(device: &DeviceSpec) -> Host {
 
 /// What a device's host does for introductions (`Config::introducer`): it gives its
 /// namespace's signed trust context as its anchor, and adopts another person's anchor link into
-/// its node's validator — checked against the link's expected fingerprint by `ndn-cert`'s
-/// adoption (`adopt_anchor_envelope`), as `ndn-ctl adopt` adopts one — after which its node
-/// carries that person's sync group and routes it over its link to the hub, as a daemon's link
-/// library does on the trust event.
+/// its node's validator through its node's engine, as the daemon does
+/// (`ndn_identity::adopt_anchor_link_via_engine`): an inline context checked against the link's
+/// expected fingerprint, a self-certifying namespace not held adopted by name (its inline version
+/// 1 only compared with the fetched one) — after which its node carries that person's sync group
+/// and routes it over its link to the hub, as a daemon's link library does on the trust event.
 struct Introduce {
     /// The newest signed version of its namespace's trust context when the layer started.
     anchor: bytes::Bytes,
     /// Its node's validator.
     validator: Arc<Validator>,
+    /// Its node's engine, the network an adoption fetches over.
+    engine: ndn_app::ForwarderEngine,
     /// Carry and route a newly adopted person's sync group.
     route: Box<dyn Fn(&Name) + Send + Sync>,
 }
@@ -626,7 +630,10 @@ impl Introducer for Introduce {
                     "this node trusts {ns} under another anchor than the link's"
                 )),
                 None => {
-                    ndn_cert::adopt_anchor_envelope(keyring, link).map_err(|e| e.to_string())?;
+                    let link = AnchorLink::from_envelope(link).map_err(|e| e.to_string())?;
+                    ndn_identity::adopt_anchor_link_via_engine(&self.engine, keyring, &link)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     (self.route)(&ns);
                     Ok(())
                 }
@@ -860,6 +867,8 @@ impl Provider for Reference {
         let mut certs = Vec::new();
         // The certificate packet of each device of a self-certifying person, which it serves.
         let mut served: HashMap<Name, bytes::Bytes> = HashMap::new();
+        // A self-certifying namespace enters a keyring only from its genesis, checked.
+        let mut geneses: HashMap<Name, Genesis> = HashMap::new();
         let mut case = Case::default();
         let now = host_now_ns();
         for spec in devices {
@@ -880,8 +889,17 @@ impl Provider for Reference {
                     None => mgr.generate_ed25519(name)?,
                 };
                 let signer = mgr.get_signer_sync(&key)?;
-                let public = signer.public_key().context("an Ed25519 key")?;
-                let cert = mgr.issue_self_signed(&key, public, VALIDITY_MS)?;
+                let cert = if spec.genesis.is_some() {
+                    // As `ndn-fwd init --self-certifying`: its version 1, the genesis, lists the
+                    // root alone under a fixed validity — the same bytes whenever its key signs it.
+                    let genesis = ndn_cert::sign_genesis(signer.as_ref()).await?;
+                    let cert = genesis.root().clone();
+                    geneses.insert(spec.person.clone(), genesis);
+                    cert
+                } else {
+                    let public = signer.public_key().context("an Ed25519 key")?;
+                    mgr.issue_self_signed(&key, public, VALIDITY_MS)?
+                };
                 anchors.insert(spec.person.clone(), (signer, cert));
             }
             let (issuer, _) = &anchors[&spec.person];
@@ -919,30 +937,37 @@ impl Provider for Reference {
         // anchor) on every forwarder: the validator verifies a packet under the context whose
         // namespace is the longest prefix of its name, and a device's data layer takes its own
         // namespace from the context governing its name (spec §3). Its root signs it as version
-        // 1, the version later ones (revocations, a recovery) follow from. As a new context from
+        // 1 — version 2 for a self-certifying person, whose version 1 is its genesis — the
+        // version later ones (revocations, a recovery) follow from. As a new context from
         // `ndn-fwd init`, it lists the guest role among those whose data needs a cut once their
         // certificate lapsed.
         let mut contexts: Vec<Arc<SignedTrustContext>> = Vec::with_capacity(anchors.len());
-        // A self-certifying namespace enters a keyring only from its genesis, checked.
-        let mut geneses: HashMap<Name, Genesis> = HashMap::new();
         for (person, (root, anchor)) in &anchors {
+            let genesis = geneses.get(person);
             let ctx = SignedTrustContext::hierarchical(person.clone())
-                .with_version(1)
+                .with_version(if genesis.is_some() { 2 } else { 1 })
                 .with_data_requires_cut("guest");
             anyhow::ensure!(
                 ctx.add_anchor(anchor.clone()),
                 "{person}'s namespace key is not valid now"
             );
             let signed = ctx.sign_into_data(root.as_ref())?;
-            if matches!(self_certifying_digest(person), Ok(Some(_))) {
-                geneses.insert(person.clone(), Genesis::open_stored(&signed).await?);
+            let mut versions = Vec::with_capacity(2);
+            if let Some(genesis) = genesis {
+                ndn_cert::open_context_update(genesis.context(), &signed)
+                    .await
+                    .with_context(|| {
+                        format!("{person}'s version 2 does not follow from its genesis")
+                    })?;
+                versions.push(genesis.data().raw().clone());
             }
+            versions.push(signed.raw().clone());
             case.namespaces.insert(
                 person.clone(),
                 Namespace {
                     root: Arc::clone(root),
                     kit: None,
-                    versions: vec![signed.raw().clone()],
+                    versions,
                     manifests: Vec::new(),
                 },
             );
@@ -968,18 +993,17 @@ impl Provider for Reference {
                 .validator()
                 .with_context(|| format!("node {node} has no validator to hold the contexts"))?;
             for ctx in contexts.iter().filter(|c| holds(node, c.namespace())) {
+                // A self-certifying person's version 2 was checked against its genesis above.
                 let adopted = match geneses.get(ctx.namespace()) {
-                    Some(genesis) => validator
-                        .keyring()
-                        .adopt_genesis(genesis, Arc::clone(ctx))
-                        .is_ok(),
+                    Some(genesis) => validator.keyring().adopt_genesis(genesis, Arc::clone(ctx)),
                     None => validator.adopt_context(Arc::clone(ctx)),
                 };
-                anyhow::ensure!(
-                    adopted,
-                    "node {node} refused {}'s trust context",
-                    ctx.namespace()
-                );
+                adopted.map_err(|refusal| {
+                    anyhow::anyhow!(
+                        "node {node} refused {}'s trust context: {refusal}",
+                        ctx.namespace()
+                    )
+                })?;
             }
             for (_, cert) in certs.iter().filter(|(p, _)| holds(node, p)) {
                 validator.cert_cache().insert(cert.clone());
@@ -990,8 +1014,8 @@ impl Provider for Reference {
         }
         // A self-certifying person is adopted by its name alone: each of its devices serves what
         // an adopter fetches, as a daemon does — its namespace's trust-context versions by name
-        // (RDR; the versions its node adopts later are published as it adopts them, `spread`)
-        // and its own certificate.
+        // (RDR: its genesis, then the version 2 it holds, and the versions its node adopts later
+        // as it adopts them, `spread`) and its own certificate.
         for spec in devices.iter().filter(|d| d.genesis.is_some()) {
             let engine = fabric
                 .engine_of(spec.node)
@@ -999,14 +1023,21 @@ impl Provider for Reference {
             let validator = engine
                 .validator()
                 .with_context(|| format!("node {} has no validator", spec.node))?;
+            let versions = &case.namespaces[&spec.person].versions;
             let genesis = FirstVersion {
-                data: decode_data(&case.namespaces[&spec.person].versions[0])?,
+                data: decode_data(&versions[0])?,
             };
             let (face, publisher) =
                 ndn_namespace::publish::prepare(&genesis, engine.faces().alloc_id());
             engine.add_face(face, CancellationToken::new());
+            let published = publisher.spawn(&engine);
+            let held = contexts
+                .iter()
+                .find(|c| *c.namespace() == spec.person)
+                .expect("every person's namespace has a context");
+            published.publish(held, &decode_data(&versions[1])?);
             case.published
-                .insert((spec.node, spec.person.clone()), publisher.spawn(&engine));
+                .insert((spec.node, spec.person.clone()), published);
             let cert = served
                 .remove(&spec.name())
                 .expect("each device of a self-certifying person has its certificate");

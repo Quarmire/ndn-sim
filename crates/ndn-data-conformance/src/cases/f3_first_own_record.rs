@@ -84,9 +84,13 @@ fn run(w: &World) -> CaseFuture<'_> {
                 members(Rule::Log, &["/alice", "/bob", "/carol"], &[]).into(),
             )
             .await?;
-        let minute = carol.put(&minutes, text("carol: we met"), note(1)).await?;
+        let minute = w
+            .put(CAROL, &minutes, text("carol: we met"), note(1))
+            .await?;
         let minute_entry = log_entry(w, CAROL, &minutes, &minute);
-        let bobs_note = bob.put(&notes, text("bob: bring chairs"), note(1)).await?;
+        let bobs_note = w
+            .put(BOB, &notes, text("bob: bring chairs"), note(1))
+            .await?;
         let note_entry = log_entry(w, BOB, &notes, &bobs_note);
         w.until(
             "Alice and Bob read Carol's minute and Bob's note",

@@ -64,8 +64,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                 ),
             )
             .await?;
-        let seen = bob
-            .put(&doc, content(&[("bob", "edit 1")]), note(1))
+        let seen = w
+            .put(BOB, &doc, content(&[("bob", "edit 1")]), note(1))
             .await?;
         w.until("both of Alice's devices hold Bob's edit", LIMIT, || async {
             Ok(has(&*laptop, &doc, &seen).await? && has(&*phone, &doc, &seen).await?)
@@ -109,8 +109,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             },
         )
         .await?;
-        let carols = carol
-            .put(&doc, content(&[("carol", "her first edit")]), note(1))
+        let carols = w
+            .put(
+                CAROL,
+                &doc,
+                content(&[("carol", "her first edit")]),
+                note(1),
+            )
             .await?;
         w.until(
             "both of Alice's devices take Carol's edit",

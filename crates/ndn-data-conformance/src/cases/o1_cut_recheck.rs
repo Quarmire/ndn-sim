@@ -53,7 +53,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         alice
             .share(&doc, members(merge(), &["/alice", "/bob", "/carol"], &all))
             .await?;
-        let inside = bob.put(&doc, content(&[("bob", "first")]), note(1)).await?;
+        let inside = w
+            .put(BOB, &doc, content(&[("bob", "first")]), note(1))
+            .await?;
         w.until("everyone holds Bob's first edit", LIMIT, || async {
             agree(&[&*alice, &*bob, &*carol], &doc, &[&inside]).await
         })

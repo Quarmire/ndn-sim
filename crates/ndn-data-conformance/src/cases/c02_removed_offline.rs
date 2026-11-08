@@ -56,8 +56,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                 ),
             )
             .await?;
-        let seen = bob
-            .put(&doc, content(&[("bob", "edit 41")]), note(1))
+        let seen = w
+            .put(BOB, &doc, content(&[("bob", "edit 41")]), note(1))
             .await?;
         w.until("Alice holds Bob's edit", LIMIT, || {
             has(&*alice, &doc, &seen)

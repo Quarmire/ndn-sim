@@ -56,11 +56,11 @@ mod c12_still_pass;
 mod f1_folder_members;
 mod f2_folder_narrowing;
 mod f3_first_own_record;
+mod f4_let_go_keeps_joined;
 mod g1_group_all_or_none;
 mod g2_impossible_group;
 mod g3_group_concurrent_narrowing;
 mod g4_seq_reused_across_collections;
-mod f4_let_go_keeps_joined;
 mod g5_large_group;
 mod g6_group_under_lock;
 mod g7_group_member_in_pieces;
@@ -142,8 +142,8 @@ pub const CASES: &[Case] = &[
     h6_sealed_non_reader::CASE,
     h7_lost_single_copy::CASE,
     h8_relaying_holder::CASE,
-    h10_holder_serves_others::CASE,
     h9_prune_before_auditor::CASE,
+    h10_holder_serves_others::CASE,
     c06_sensor_blocks::CASE,
     s1_range_reads::CASE,
     s2_forged_entry::CASE,
@@ -866,15 +866,18 @@ async fn element_op(
 }
 
 /// `d` writes into the element collection `c` the operation `edits` makes (see
-/// [`element_op`]).
+/// [`element_op`]), putting it again, unchanged, while the device answers retry later
+/// ([`World::again`]: its members record not arrived yet).
 async fn put_element(
     w: &World,
     d: Dev,
     c: &Name,
     edits: impl FnOnce(Operation) -> Operation,
 ) -> Result<VersionId, Failure> {
-    let op = element_op(w, d, c, edits).await?;
-    Ok(w.at(d).put_op(c, op.encode(), element_type()).await?)
+    let op = element_op(w, d, c, edits).await?.encode();
+    let layer = w.at(d);
+    Ok(w.again(|| layer.put_op(c, op.clone(), element_type()))
+        .await?)
 }
 
 /// The setting `s` of an element's merged value.

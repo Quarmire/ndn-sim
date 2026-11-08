@@ -82,9 +82,10 @@ pub(super) fn offer(w: &World, role: Role, tries: u32) -> Offer {
     }
 }
 
-/// `d` joins by `code`, which must succeed.
+/// `d` joins by `code`, which must succeed: joining again while the refusal says retry later
+/// ([`World::join_again`]).
 pub(super) async fn joins(w: &World, d: Dev, code: &str) -> Result<Joined, Failure> {
-    w.join(d, code).await?.map_err(|e| {
+    w.join_again(d, code).await?.map_err(|e| {
         Failure::new(format!(
             "{} could not join by the code: {e} (next: {:?})",
             w.net().spec(d).name(),

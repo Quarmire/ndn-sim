@@ -55,8 +55,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         let a = alice
             .put(&doc, content(&[("goal", "ship by May")]), note(1))
             .await?;
-        let b = bob
-            .put(&doc, content(&[("risk", "vendor delay")]), note(1))
+        let b = w
+            .put(BOB, &doc, content(&[("risk", "vendor delay")]), note(1))
             .await?;
         w.until("Carol holds both edits", LIMIT, || async {
             has_all(&*carol, &doc, &[&a, &b]).await

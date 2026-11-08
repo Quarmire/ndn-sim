@@ -11,7 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ndn_app::EngineAppExt;
-use ndn_data::{Code, DataError, DataLayer, Joined, Name, Offer, Timestamp, VersionId};
+use ndn_data::{
+    Code, Content, DataError, DataLayer, Joined, Name, NextStep, Offer, PutOptions, Timestamp,
+    VersionId,
+};
 use ndn_packet::encode::InterestBuilder;
 use ndn_sim::{
     ClockSkew, Fabric, FaceKind, FaceProfile, Faults, LinkConfig, NodeId, NodeProfile, SimKernel,
@@ -25,6 +28,13 @@ use crate::report::{Cost, Measure};
 /// A device of a [`Plan`], by position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Dev(pub usize);
+
+/// How long [`World::again`] asks again while a verb answers [`NextStep::RetryLater`]: as long
+/// as a case waits for anything to arrive.
+pub const AGAIN_FOR: Duration = Duration::from_secs(120);
+
+/// The virtual time [`World::again`] lets pass between two asks.
+pub const AGAIN_PAUSE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug)]
 struct Planned {
@@ -760,6 +770,74 @@ impl World {
                 None => Err(Failure::new(format!("join failed: {e:#}"))),
             },
         }
+    }
+
+    /// `d` joins by `code`, as [`join`](Self::join) — one gesture — joining again while the
+    /// refusal's next step is [`NextStep::RetryLater`] (the inviter's device not reached yet),
+    /// as a host does what the refusal says, every [`AGAIN_PAUSE`] for at most [`AGAIN_FOR`] of
+    /// virtual time. Any other refusal is answered at once.
+    pub async fn join_again(
+        &self,
+        d: Dev,
+        code: &str,
+    ) -> Result<Result<Joined, DataError>, Failure> {
+        self.gesture();
+        let start = tokio::time::Instant::now();
+        loop {
+            match self
+                .provider
+                .join(&self.net.fabric, self.net.spec(d), code)
+                .await
+            {
+                Ok(joined) => return Ok(Ok(joined)),
+                Err(e) => match e.downcast_ref::<DataError>() {
+                    Some(refusal)
+                        if refusal.next() == NextStep::RetryLater
+                            && start.elapsed() < AGAIN_FOR =>
+                    {
+                        tokio::time::sleep(AGAIN_PAUSE).await;
+                    }
+                    Some(refusal) => return Ok(Err(refusal.clone())),
+                    None => return Err(Failure::new(format!("join failed: {e:#}"))),
+                },
+            }
+        }
+    }
+
+    /// `verb`, done again while it is refused with next step [`NextStep::RetryLater`] — a host
+    /// does what the refusal says ("not ready", "no holder answered") — every [`AGAIN_PAUSE`]
+    /// for at most [`AGAIN_FOR`] of virtual time; then, or at any other error, the error as it
+    /// came. Asking again is liveness only: what the verb answers when it succeeds is judged by
+    /// the device as on a first try.
+    pub async fn again<T, F, Fut>(&self, mut verb: F) -> Result<T, DataError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, DataError>>,
+    {
+        let start = tokio::time::Instant::now();
+        loop {
+            match verb().await {
+                Err(e) if e.next() == NextStep::RetryLater && start.elapsed() < AGAIN_FOR => {
+                    tokio::time::sleep(AGAIN_PAUSE).await;
+                }
+                answer => return answer,
+            }
+        }
+    }
+
+    /// `d` puts `content` into `collection`, putting again while the device answers
+    /// [`NextStep::RetryLater`] ([`again`](Self::again)): a writer whose device has not yet
+    /// received the members record admitting it is told `NotReady`, and puts once it has.
+    pub async fn put(
+        &self,
+        d: Dev,
+        collection: &Name,
+        content: Content,
+        options: PutOptions,
+    ) -> Result<VersionId, DataError> {
+        let layer = self.at(d);
+        self.again(|| layer.put(collection, content.clone(), options.clone()))
+            .await
     }
 
     /// `d`'s host adopts the anchor link `link` (see [`Provider::adopt`]): one gesture, the

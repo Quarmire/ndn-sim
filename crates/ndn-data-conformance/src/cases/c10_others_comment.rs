@@ -58,8 +58,9 @@ fn run(w: &World) -> CaseFuture<'_> {
                 members(merge(), &["/alice", "/bob", "/carol"], &all),
             )
             .await?;
-        let comment = bob
+        let comment = w
             .put(
+                BOB,
                 &plan_doc,
                 content(&[(COMMENT, "this date looks wrong")]),
                 note(1),

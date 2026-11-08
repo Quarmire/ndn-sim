@@ -76,7 +76,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             )
             .await?;
         w.gesture();
-        let hi = bob.put(&chat, text("hi"), message()).await?;
+        let hi = w.put(BOB, &chat, text("hi"), message()).await?;
         alice
             .share(
                 &chat,
@@ -88,7 +88,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             )
             .await?;
         w.gesture();
-        let hello = carol.put(&chat, text("hello"), message()).await?;
+        let hello = w.put(CAROL, &chat, text("hello"), message()).await?;
         // Mallory is no member: her layer may refuse locally, or sign a version readers refuse.
         let spam = mallory.put(&chat, text("spam"), message()).await.ok();
 

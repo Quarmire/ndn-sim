@@ -62,18 +62,10 @@ fn told<'c>(seen: &'c [Change], folder: &Name) -> Option<&'c Share> {
     })
 }
 
-/// `d` writes `text_of` into collection `c` of the folder, once its device may.
+/// `d` writes `text_of` into collection `c` of the folder, once its device may
+/// ([`World::put`]).
 async fn writes(w: &World, d: Dev, c: &Name, text_of: &str) -> Result<(), Failure> {
-    let layer = w.at(d);
-    let who = w.net().spec(d).name().to_string();
-    w.until(&format!("{who} writes {c}"), LIMIT, || async {
-        match layer.put(c, text(text_of), note(1)).await {
-            Ok(_) => Ok(true),
-            Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    })
-    .await?;
+    w.put(d, c, text(text_of), note(1)).await?;
     Ok(())
 }
 

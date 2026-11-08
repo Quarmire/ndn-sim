@@ -132,8 +132,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         for round in 0..EACH {
             for (i, who) in PEOPLE.iter().enumerate() {
                 let id = w
-                    .at(Dev(i))
-                    .put(&folder, text(&format!("{who} {round}")), note(1))
+                    .put(Dev(i), &folder, text(&format!("{who} {round}")), note(1))
                     .await?;
                 by_person[i].push(id);
             }
@@ -249,9 +248,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         let mut joined = Vec::new();
         for i in 0..MORE {
             joined.push(
-                w.at(Dev(PEOPLE.len() + i))
-                    .put(&folder, text(&format!("{} joins", more(i))), note(1))
-                    .await?,
+                w.put(
+                    Dev(PEOPLE.len() + i),
+                    &folder,
+                    text(&format!("{} joins", more(i))),
+                    note(1),
+                )
+                .await?,
             );
         }
         drain_until(

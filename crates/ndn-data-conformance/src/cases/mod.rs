@@ -193,6 +193,7 @@ pub const CASES: &[Case] = &[
     i10_removal_lasts::CASE,
     i11_stranger_cannot_close::CASE,
     i12_removed_elsewhere::CASE,
+    f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,
 ];
@@ -203,7 +204,6 @@ pub const CASES: &[Case] = &[
 const LIMIT: Duration = Duration::from_secs(120);
 /// How long a case lets the network run before asserting that something did *not* happen.
 const SETTLE: Duration = Duration::from_secs(60);
-    f4_let_go_keeps_joined::CASE,
 /// How long a watch is drained for one look at a collection.
 const LOOK: Duration = Duration::from_secs(5);
 const DAY: Duration = Duration::from_secs(24 * 3600);

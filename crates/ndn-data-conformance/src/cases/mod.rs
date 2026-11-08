@@ -11,7 +11,8 @@
 //! substrate for apps that bring their own
 //! merge (`b1`…`b5`: a rule named by the app, operations it builds, merge versions in pieces;
 //! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
-//! record, and a collection's first own record under it).
+//! record, and a collection's first own record under it; `i1`…`i12`: joining a folder by a code;
+//! `n1`: people named by their keys, adopting each other by name alone).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -88,6 +89,7 @@ mod k6_recovery_cut;
 mod k7_bounded_cut;
 mod k8_lapsed_guest;
 mod k9_other_bytes;
+mod n1_named_by_key;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
@@ -184,6 +186,7 @@ pub const CASES: &[Case] = &[
     i10_removal_lasts::CASE,
     i11_stranger_cannot_close::CASE,
     i12_removed_elsewhere::CASE,
+    n1_named_by_key::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

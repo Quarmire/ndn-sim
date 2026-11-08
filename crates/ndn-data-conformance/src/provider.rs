@@ -28,6 +28,10 @@ pub struct DeviceSpec {
     /// A stranger to every other person: its node holds its own person's trust context and
     /// certificates only, until an introduction adopts another's.
     pub stranger: bool,
+    /// For a self-certifying person (`/user/<hash>`), the Ed25519 secret of its genesis root:
+    /// the key `person` is named from (ndn-cert's `GenesisKey`), which signs version 1 of its
+    /// trust context. `None` for a person named otherwise.
+    pub genesis: Option<[u8; 32]>,
 }
 
 /// The merge rules a device's program knows beyond the standard ones every program knows
@@ -450,6 +454,22 @@ pub trait Provider: Send + Sync {
         anyhow::bail!(
             "this provider cannot make {} offer a folder by a code",
             by.name()
+        )
+    }
+
+    /// `device`'s host adopts the namespace the anchor link `link` (an `ndn-trust://anchor`
+    /// URI) names, as `ndn-ctl adopt` adopts one: a link carrying the namespace's signed trust
+    /// context is checked against it; a self-certifying namespace (`/user/<hash>`) may be named
+    /// alone, its versions then fetched by name and version 1 checked as its genesis (signed by
+    /// the key the name hashes). Once adopted, `device`'s node validates the namespace and
+    /// carries and routes its sync group. A refusal carries ndn-cert's
+    /// [`AdoptError`](ndn_cert::AdoptError) as its source (`downcast_ref`). A provider that
+    /// cannot adopt anchor links says so.
+    async fn adopt(&self, fabric: &Fabric, device: &DeviceSpec, link: &str) -> anyhow::Result<()> {
+        let _ = (fabric, link);
+        anyhow::bail!(
+            "this provider cannot make {}'s host adopt an anchor link",
+            device.name()
         )
     }
 

@@ -63,6 +63,9 @@ ndn-namespace    = { path = "../ndn-rs/crates/security/ndn-namespace" }
 ndn-link         = { path = "../ndn-ext/crates/faces/ndn-link", features = ["engine"] }
 # ndn-data-conformance: trust-context versions signed as the root flow signs them (slice 5).
 ndn-cert         = { path = "../ndn-rs/crates/security/ndn-cert" }
+# ndn-data-conformance: an anchor link adopted through a node's engine as the daemon adopts one
+# (a self-certifying namespace fetched by its name alone).
+ndn-identity     = { path = "../ndn-rs/crates/security/ndn-identity" }
 # ndn-data-conformance: introduction codes (`ndn-trust://intro` links) the cases alter, and the
 # anchor links the reference provider's hosts adopt.
 ndn-trust-envelope = { path = "../ndn-rs/crates/security/ndn-trust-envelope" }

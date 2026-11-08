@@ -28,6 +28,9 @@ ndn-link    = { workspace = true }
 # Trust-context versions signed as the root flow signs them: revocations with cuts,
 # re-admissions, recovery kits and recovery (`reference`).
 ndn-cert    = { workspace = true }
+# An anchor link adopted through a node's engine, as the daemon adopts one: a self-certifying
+# namespace fetched by its name alone (`reference`).
+ndn-identity = { workspace = true }
 tokio-util  = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }

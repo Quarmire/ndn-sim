@@ -103,6 +103,11 @@ pub enum Feature {
     /// sealed to the offering device and proving the code's secret, an answer bound to the
     /// asker's key; both sides adopt each other's anchor and the owner adds the joiner.
     Introduction,
+    /// People named by their root key (`/user/<0xA1: SHA-256 of an Ed25519 key>`, ndn-cert's
+    /// `GenesisKey`): a host adopts such a namespace by its name alone (`Provider::adopt`), its
+    /// version 1 checked as the genesis the name hashes, and a device of such a person serves
+    /// what an adopter fetches — its namespace's trust-context versions and its certificate.
+    SelfCertifying,
 }
 
 impl Feature {
@@ -133,7 +138,8 @@ impl Feature {
             | Feature::Groups
             | Feature::FolderMembers
             | Feature::FolderWatch
-            | Feature::Introduction => 6,
+            | Feature::Introduction
+            | Feature::SelfCertifying => 6,
             Feature::Functions => 8,
         }
     }
@@ -174,6 +180,7 @@ impl Feature {
             Feature::FolderMembers => "folder members",
             Feature::FolderWatch => "folder watch",
             Feature::Introduction => "introduction",
+            Feature::SelfCertifying => "names by key",
         }
     }
 }

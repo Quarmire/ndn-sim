@@ -37,6 +37,8 @@ struct Planned {
     holds: bool,
     /// The merge rules its program knows beyond the standard ones.
     program: Program,
+    /// The person's genesis root key, for a self-certifying person ([`Plan::self_certifying`]).
+    genesis: Option<[u8; 32]>,
 }
 
 /// The devices a case needs, declared before the fabric starts.
@@ -96,6 +98,17 @@ impl Plan {
         self.devices[d.0].program = program;
     }
 
+    /// Add `device` of the self-certifying person whose root key is the Ed25519 secret
+    /// `genesis`: the person is named by that key alone, `/user/<0xA1: SHA-256 of its public
+    /// key>` (ndn-cert's `GenesisKey`), and its trust context's version 1 is signed by it. The
+    /// person's namespace, as the case names it: [`self_certifying_person`].
+    pub fn self_certifying(&mut self, genesis: [u8; 32], device: &str) -> Dev {
+        let person = self_certifying_person(&genesis).to_string();
+        let d = self.add(person.trim_start_matches('/'), device, false);
+        self.devices[d.0].genesis = Some(genesis);
+        d
+    }
+
     fn add(&mut self, person: &str, device: &str, holds: bool) -> Dev {
         self.devices.push(Planned {
             person: person.to_owned(),
@@ -104,6 +117,7 @@ impl Plan {
             stolen_from: None,
             holds,
             program: Program::default(),
+            genesis: None,
         });
         Dev(self.devices.len() - 1)
     }
@@ -118,6 +132,7 @@ impl Plan {
             stolen_from: Some(victim),
             holds: false,
             program: Program::default(),
+            genesis: None,
         });
         Dev(self.devices.len() - 1)
     }
@@ -131,6 +146,12 @@ impl Plan {
     pub fn is_empty(&self) -> bool {
         self.devices.is_empty()
     }
+}
+
+/// The namespace of the self-certifying person whose root key is the Ed25519 secret `genesis`
+/// ([`Plan::self_certifying`]): `/user/<0xA1: SHA-256 of its public key>`.
+pub fn self_certifying_person(genesis: &[u8; 32]) -> Name {
+    ndn_cert::GenesisKey::from_seed(*genesis).namespace()
 }
 
 /// Link counters summed over the fabric, for [`Cost`].
@@ -169,8 +190,12 @@ impl Net {
         let mut specs = Vec::with_capacity(plan.devices.len());
         let mut labels = Vec::with_capacity(plan.devices.len());
         for (i, p) in plan.devices.iter().enumerate() {
+            let person = match &p.genesis {
+                Some(genesis) => self_certifying_person(genesis),
+                None => format!("/{}", p.person).parse()?,
+            };
             let spec = DeviceSpec {
-                person: format!("/{}", p.person).parse()?,
+                person,
                 role: p.role.clone(),
                 device: p.device.clone(),
                 // The hub is node 0; devices follow in plan order.
@@ -178,6 +203,7 @@ impl Net {
                 holds: p.holds,
                 program: p.program,
                 stranger: plan.strangers,
+                genesis: p.genesis,
             };
             let mut node_profile = profile(&spec);
             node_profile.clock_skew.get_or_insert(ClockSkew::NONE);
@@ -688,6 +714,23 @@ impl World {
             Err(e) => match e.downcast_ref::<DataError>() {
                 Some(refusal) => Ok(Err(refusal.clone())),
                 None => Err(Failure::new(format!("join failed: {e:#}"))),
+            },
+        }
+    }
+
+    /// `d`'s host adopts the anchor link `link` (see [`Provider::adopt`]): one gesture, the
+    /// adopter's. A refusal of the link is answered as why, for a case that expects one.
+    pub async fn adopt(&self, d: Dev, link: &str) -> Result<Result<(), String>, Failure> {
+        self.gesture();
+        match self
+            .provider
+            .adopt(&self.net.fabric, self.net.spec(d), link)
+            .await
+        {
+            Ok(()) => Ok(Ok(())),
+            Err(e) => match e.downcast_ref::<ndn_cert::AdoptError>() {
+                Some(refusal) => Ok(Err(refusal.to_string())),
+                None => Err(Failure::new(format!("adopt failed: {e:#}"))),
             },
         }
     }

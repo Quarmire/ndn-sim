@@ -66,6 +66,10 @@ pub enum Feature {
     /// A cut binds its ranges to bytes (a root-signed manifest of each entry's digest): other
     /// bytes at a name in the cut are refused, by data layers and forwarders.
     CutManifest,
+    /// A removal cut signed before cuts bound bytes (seqs only, no `CutBytes`) stays in force
+    /// across an upgrade: the versions it keeps are refused but kept, and the owner's next record
+    /// binds them from the bytes it holds.
+    UnboundCut,
     /// A guest key's authority over data ends with its certificate: once lapsed, its data is
     /// refused until the root's revoke-with-cut, which then decides alone.
     GuestExpiry,
@@ -120,6 +124,7 @@ impl Feature {
             | Feature::Recovery
             | Feature::BoundedCut
             | Feature::CutManifest
+            | Feature::UnboundCut
             | Feature::GuestExpiry
             | Feature::IssuerRecheck => 5,
             Feature::RuleByName
@@ -158,6 +163,7 @@ impl Feature {
             Feature::Recovery => "recovery carries cuts",
             Feature::BoundedCut => "cut bounded by the loss",
             Feature::CutManifest => "cut binds bytes",
+            Feature::UnboundCut => "old-form removal cut kept",
             Feature::GuestExpiry => "lapsed guest needs a cut",
             Feature::IssuerRecheck => "re-check on issuer revocation",
             Feature::Functions => "named functions",

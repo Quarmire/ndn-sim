@@ -5,8 +5,9 @@
 //! backdated version, exact re-admission, a late revocation, a renewal, a recovery, and from its
 //! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
 //! a revoked issuer) beside theirs (c3), the items left open after the model's fixes
-//! (`o1`…`o4`), the slice-2 security review (`r1`…`r5`): the attacks it found, the concurrent
-//! share its merge must keep, and other bytes at a seq a removal cut kept, and slice 6's
+//! (`o1`…`o4`), the slice-2 security review (`r1`…`r6`): the attacks it found, the concurrent
+//! share its merge must keep, other bytes at a seq a removal cut kept, and an old-form removal
+//! cut across an upgrade, and slice 6's
 //! substrate for apps that bring their own
 //! merge (`b1`…`b5`: a rule named by the app, operations it builds, merge versions in pieces;
 //! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
@@ -91,6 +92,7 @@ mod r2_group_removal;
 mod r3_own_device_removed;
 mod r4_concurrent_add_remove;
 mod r5_removal_cut_bytes;
+mod r6_unbound_cut_upgrade;
 mod s1_range_reads;
 mod s2_forged_entry;
 mod s3_spliced_entry;
@@ -147,6 +149,7 @@ pub const CASES: &[Case] = &[
     r3_own_device_removed::CASE,
     r4_concurrent_add_remove::CASE,
     r5_removal_cut_bytes::CASE,
+    r6_unbound_cut_upgrade::CASE,
     b1_rule_by_name::CASE,
     b2_basis_outside_past::CASE,
     b3_locked_setting::CASE,

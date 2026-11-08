@@ -404,6 +404,20 @@ pub trait Provider: Send + Sync {
         )
     }
 
+    /// An older build: `device`'s data layer, stopped ([`stop`](Self::stop)), finds in its store
+    /// its newest members record of `subject` (a collection or folder) as a build from before
+    /// removal cuts bound bytes signed it — the same record, its cuts keeping the same seqs
+    /// without `CutBytes`, no cut manifest stored — signed with the device's key in place of
+    /// what it signed. [`restart`](Self::restart) then starts the current build on that store:
+    /// the upgrade. Returns the record's name. A provider that cannot says so.
+    fn sign_unbound(&self, device: &DeviceSpec, subject: &Name) -> anyhow::Result<Name> {
+        anyhow::bail!(
+            "this provider cannot make {} hold its record of {subject} as an older build signed \
+             it",
+            device.name()
+        )
+    }
+
     /// Fault injection: `device`'s node fetches now, fresh (past every cache), the packet
     /// answering `prefix` (CanBePrefix), and from then on answers every Interest under `prefix`
     /// that reaches it with that packet, ignoring its FreshnessPeriod: a replaying cache. A

@@ -738,6 +738,14 @@ impl World {
             .map_err(|e| Failure::new(format!("cannot tamper: {e:#}")))
     }
 
+    /// `d`'s stopped data layer holds its newest members record of `subject` as a build from
+    /// before removal cuts bound bytes signed it (see [`Provider::sign_unbound`]); its name.
+    pub fn sign_unbound(&self, d: Dev, subject: &Name) -> Result<Name, Failure> {
+        self.provider
+            .sign_unbound(self.net.spec(d), subject)
+            .map_err(|e| Failure::new(format!("cannot sign as an older build: {e:#}")))
+    }
+
     /// From now on `d`'s node answers Interests under `prefix` with the packet that answers it
     /// now, fetched fresh: a replaying cache (see [`Provider::replay`]).
     pub async fn replay(&self, d: Dev, prefix: &Name) -> Result<(), Failure> {

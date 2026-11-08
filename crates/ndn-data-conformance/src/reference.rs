@@ -741,6 +741,7 @@ impl Provider for Reference {
                 | Feature::Recovery
                 | Feature::BoundedCut
                 | Feature::CutManifest
+                | Feature::UnboundCut
                 | Feature::GuestExpiry
                 | Feature::IssuerRecheck
                 | Feature::RuleByName
@@ -1476,6 +1477,93 @@ impl Provider for Reference {
         let forged = builder.sign_sync(sig.sig_type, key.as_deref(), |_| value);
         store.insert(version.clone(), forged);
         Ok(())
+    }
+
+    fn sign_unbound(&self, device: &DeviceSpec, subject: &Name) -> anyhow::Result<Name> {
+        let name = device.name();
+        let (keys, store) = {
+            let case = self.case.lock().expect("the provider's lock");
+            let attached = case
+                .devices
+                .get(&device.node)
+                .with_context(|| format!("{name} has no data layer attached"))?;
+            anyhow::ensure!(
+                attached.cancel.is_cancelled(),
+                "{name}'s data layer runs; stop it before an older build's store is made"
+            );
+            let keys = case
+                .keys
+                .get(&name)
+                .cloned()
+                .with_context(|| format!("{name} was not prepared"))?;
+            (keys, Arc::clone(&attached.store))
+        };
+        // Its newest members record of `subject`, in its own log.
+        let log = log_name(&name, Some(subject), 0);
+        let log = Name::from_components(log.components()[..log.len() - 1].iter().cloned());
+        let (record, data, mut body) = store
+            .scan_under(&log, 0)
+            .into_iter()
+            .filter(|(n, _)| n.len() == log.len() + 1)
+            .filter_map(|(n, wire)| {
+                let data = Data::decode(wire).ok()?;
+                match decode_record(data.content()?.clone()).ok()? {
+                    Record::Members(body) => Some((n, data, body)),
+                    _ => None,
+                }
+            })
+            .max_by_key(|(n, ..)| parse_log_name(n).map(|l| l.seq))
+            .with_context(|| format!("{name} stores no members record of {subject}"))?;
+        // The same cuts, keeping the same seqs, bound to no bytes.
+        for cut in &mut body.cuts {
+            let mut unbound = ndn_data::collection::Accepted::new();
+            for (c, w, runs) in cut.accept.iter() {
+                for &(lo, hi) in runs {
+                    for seq in lo..=hi {
+                        unbound.insert(
+                            c,
+                            &VersionId {
+                                writer: w.clone(),
+                                seq: ndn_data::Seq(seq),
+                            },
+                        );
+                    }
+                }
+            }
+            cut.accept = unbound;
+        }
+        let content = encode_record(&Record::Members(body));
+        let identity = keys.signing_identity_for(&name)?;
+        let signer = &identity.signer;
+        let mut builder = DataBuilder::new(record.clone(), &content);
+        if let Some(f) = data.meta_info().and_then(|m| m.freshness_period) {
+            builder = builder.freshness(f);
+        }
+        let wire = builder.sign_sync(signer.sig_type(), Some(&identity.key), |region| {
+            signer.sign_sync(region).unwrap_or_default()
+        });
+        // An older build stored no cut manifest, and recorded the digest of what it signed
+        // (ndn-data's store: `/localhost/ndn-data/written/<entry>`, the entry's implicit digest),
+        // so the restarted layer takes the entry as its own.
+        for (n, _) in store.scan_under(&record, 0) {
+            if n != record {
+                store.remove(&n);
+            }
+        }
+        let written: Name = "/localhost/ndn-data/written".parse().expect("a valid name");
+        let written = Name::from_components(
+            written
+                .components()
+                .iter()
+                .chain(record.components())
+                .cloned(),
+        );
+        store.insert(
+            written,
+            bytes::Bytes::copy_from_slice(&Sha256::digest(&wire)),
+        );
+        store.insert(record.clone(), wire);
+        Ok(record)
     }
 
     async fn relay_audits(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {

@@ -250,11 +250,16 @@ impl Net {
                 // fragments, and no LP reliability resends what the layer drops. A faulty link
                 // is that face, so a large Data is dropped, held or forged once, as there; on
                 // the UDP face each fragment would meet the profile, and LP reliability would
-                // resend nearly every drop (the device's Acks travel the clean way).
+                // resend nearly every drop (the device's Acks travel the clean way). It is
+                // wired permanent, as the clean link is: the faults are what arrives on it, not
+                // its life, so a case's long absence ([`World::skip`]) does not leave the hub
+                // removing it as an idle on-demand face that nothing dials again.
                 Some(_) => sim.link_profiled(
                     node,
                     hub_node,
-                    FaceProfile::quic().with_link(LinkConfig::lan()),
+                    FaceProfile::quic()
+                        .with_link(LinkConfig::lan())
+                        .with_persistency(ndn_transport::FacePersistency::Permanent),
                 ),
             }
             sim.add_route(node, "/", hub_node);

@@ -48,3 +48,5 @@ sha2        = "0.11"
 tracing-subscriber = { workspace = true }
 # The audit relay the reference provider injects signs and asks with packets of its own.
 ndn-packet = { workspace = true }
+# The faulty fabric's device links wired permanent, as the clean fabric's are (`world`).
+ndn-transport = { workspace = true }

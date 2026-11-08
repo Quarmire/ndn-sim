@@ -86,6 +86,16 @@ fn run(w: &World) -> CaseFuture<'_> {
             "bytes",
         );
 
+        // The laptop reads the sunset first, so what the prune must leave readable is a version
+        // it read: whether it stays so depends on the prune alone, not on how long a first
+        // read takes over the network.
+        w.until(
+            "the laptop reads the sunset before the prune",
+            LIMIT,
+            || async { Ok(laptop.get(&sunset_name).await.is_ok()) },
+        )
+        .await?;
+
         // Alice throws the beach photo away.
         w.gesture();
         let upto: Frontier = [beach.clone()].into_iter().collect();
@@ -99,9 +109,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             },
         )
         .await?;
+        let read = laptop.get(&sunset_name).await;
         ensure!(
-            laptop.get(&sunset_name).await.is_ok(),
-            "pruning the beach photo made the sunset unreadable"
+            read.is_ok(),
+            "pruning the beach photo made the sunset unreadable: {}",
+            read.err().map(|e| e.to_string()).unwrap_or_default()
         );
 
         // The lease still promises the sunset; its audit asks for nothing pruned.

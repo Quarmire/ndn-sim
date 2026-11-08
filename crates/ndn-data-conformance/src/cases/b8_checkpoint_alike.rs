@@ -214,10 +214,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         // it covers applied before it.
         w.stop(TABLET).await?;
         w.restart(TABLET).await?;
-        w.until("the tablet, restarted, holds the checkpoint", LIMIT, || async {
-            let (phone, tablet) = (w.at(PHONE), w.at(TABLET));
-            agree(&[&*phone, &*tablet], &paragraph, &[&cp]).await
-        })
+        w.until(
+            "the tablet, restarted, holds the checkpoint",
+            LIMIT,
+            || async {
+                let (phone, tablet) = (w.at(PHONE), w.at(TABLET));
+                agree(&[&*phone, &*tablet], &paragraph, &[&cp]).await
+            },
+        )
         .await?;
 
         // Bob comes back: his edit reaches R and S.

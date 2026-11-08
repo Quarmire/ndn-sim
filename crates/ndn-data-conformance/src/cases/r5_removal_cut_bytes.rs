@@ -146,8 +146,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             }
             // Alice, back with the record, holds Bob's plan and answers for his phone while it
             // is away (spec §13.5): Carol reads the honest bytes the cut kept, never the copy's.
-            Ok(answer)
-                if matches!(&answer.got, Got::Version(v) if v.id == kept && field_of(v, FIELD) == Some(HONEST)) => {}
+            Ok(answer) if matches!(&answer.got, Got::Version(v) if v.id == kept && field_of(v, FIELD) == Some(HONEST)) =>
+                {}
             other => {
                 return Err(Failure::new(format!(
                     "Carol, reaching only the copy, answers {other:?} for {name}; the copy's \

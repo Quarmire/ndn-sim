@@ -69,7 +69,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         for (i, p) in paragraphs.iter().enumerate() {
             let op = element_op(w, ALICE, p, |op| {
                 op.then(0, Edit::Create("paragraph".into()))
-                    .set("text", &format!("paragraph {i}"))
+                    .set("text", format!("paragraph {i}"))
             })
             .await?;
             items.push((p.clone(), ndn_data::Edit::Op(op.encode())));

@@ -32,12 +32,30 @@
 //! The value is computed from the set of applied versions and what each was made over, never from
 //! the order they arrived in: the same set gives the same value, and counts the same versions, on
 //! every device. The encoding is JSON of ordered maps and lists, so it is deterministic too.
+//!
+//! **Checkpoints stand alone for what they cover** (spec §5.2). Applying a checkpoint drops every
+//! version it covers from the set the value is computed from: a covered version writes nothing,
+//! takes and lifts no lock, is no head and no alternative — whether it was applied before the
+//! checkpoint or never — so a device that applied the covered versions first and one that applied
+//! the checkpoint first count the same versions, for the same reasons, and show the same value.
+//! A covered version serves only as what a version written apart from the checkpoint was made
+//! over: the layer hands it as that version's **basis** ([`MergeState::basis`]), and the rule
+//! reads each version against **what its writer saw** — the element as the versions of its past
+//! make it. So a `Change` splices the text its writer saw; a lock is "in view" when it is in force
+//! in that past; and an edit concurrent to a checkpoint replaces the checkpoint's statement of a
+//! slot when its writer saw exactly what the checkpoint states there (the checkpoint restated the
+//! edit's basis): the exact merge, with no conflict where two people simply worked at once. With
+//! no basis (gone everywhere after a release), the edit's writer saw nothing the checkpoint states,
+//! so its write stands beside the checkpoint's as an alternative: the conflict handling.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use bytes::Bytes;
 use ndn_data::{
-    Counting, MergeError, MergeRule, MergeState, Name, Op, OpKind, Value, VersionId, Writer, owns,
+    Counting, Frontier, MergeError, MergeRule, MergeState, Name, Op, OpKind, Seq, Value, VersionId,
+    Writer, owns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -314,15 +332,20 @@ impl MergeRule for Element {
     }
 }
 
-/// One applied version.
+/// One version the state holds: applied, or covered by a checkpoint and handed as a basis.
 struct Node {
     id: VersionId,
     digest: [u8; 32],
     op: Operation,
     /// Whether its writer is an owner device of the element ([`owns`]).
     owner: bool,
-    /// The applied versions (by index) inside its past.
+    /// What it was made over, `P(v)`: its parents joined with its writer's previous seq. A basis
+    /// handed after it joins its past when this frontier holds it.
+    within: Frontier,
+    /// The nodes inside its past.
     past: BTreeSet<usize>,
+    /// Handed as a basis ([`MergeState::basis`]), never applied.
+    basis: bool,
 }
 
 impl Node {
@@ -370,14 +393,15 @@ impl Node {
     }
 }
 
-/// A lock an owner's applied version holds: `setting`, by `by`, from node `at`.
+/// A lock an owner's version holds: `setting`, by `by`, from node `at`.
+#[derive(Clone)]
 struct Held {
     setting: String,
     by: String,
     at: usize,
 }
 
-/// The applied versions of one element.
+/// The versions of one element the state holds.
 struct Applied {
     lax: bool,
     /// The element's collection: whose it is ([`owns`]).
@@ -387,12 +411,59 @@ struct Applied {
     told: Vec<Option<String>>,
 }
 
-impl Applied {
-    /// Every lock an owner's applied version took (a `Lock` edit, or a checkpoint's state), in
-    /// one order every device computes alike: by the taking version, then setting and holder.
-    fn locks(&self) -> Vec<Held> {
+/// Slots and the alternatives standing in each: (node, what it wrote).
+type Slots = BTreeMap<Slot, Vec<(usize, Written)>>;
+
+/// The element as one set of versions makes it: what stands in each slot, and the locks in
+/// force.
+struct View {
+    slots: Slots,
+    locks: Vec<Held>,
+}
+
+/// One evaluation of the state: the view of each node's past, computed once (see the module).
+struct Eval<'a> {
+    a: &'a Applied,
+    pasts: RefCell<HashMap<usize, Rc<View>>>,
+}
+
+impl<'a> Eval<'a> {
+    fn new(a: &'a Applied) -> Self {
+        Self {
+            a,
+            pasts: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// The versions applied: what the value is computed from.
+    fn applied(&self) -> BTreeSet<usize> {
+        (0..self.a.nodes.len())
+            .filter(|&i| !self.a.nodes[i].basis)
+            .collect()
+    }
+
+    /// The members of `set` no checkpoint in `set` covers: a checkpoint stands for its past, so
+    /// what it covers counts for nothing on its own, held or not.
+    fn uncovered(&self, set: &BTreeSet<usize>) -> Vec<usize> {
+        let nodes = &self.a.nodes;
+        set.iter()
+            .copied()
+            .filter(|&j| {
+                !set.iter().any(|&k| {
+                    k != j && nodes[k].checkpoint().is_some() && nodes[k].past.contains(&j)
+                })
+            })
+            .collect()
+    }
+
+    /// The locks in force among `top` (members no checkpoint covers): each an owner's version
+    /// took (a `Lock` edit, or a checkpoint's state), none of `top` lifting it, in one order
+    /// every device computes alike: by the taking version, then setting and holder.
+    fn locks(&self, top: &[usize]) -> Vec<Held> {
+        let nodes = &self.a.nodes;
         let mut out = Vec::new();
-        for (i, n) in self.nodes.iter().enumerate().filter(|(_, n)| n.owner) {
+        for &i in top.iter().filter(|&&i| nodes[i].owner) {
+            let n = &nodes[i];
             if let Some(s) = n.checkpoint() {
                 out.extend(s.locks.iter().map(|l| Held {
                     setting: l.setting.clone(),
@@ -419,135 +490,209 @@ impl Applied {
                 at: i,
             }));
         }
+        out.retain(|l| !top.iter().any(|&k| nodes[k].lifts(l)));
         out.sort_by(|a, b| {
-            (&self.nodes[a.at].id, &a.setting, &a.by).cmp(&(
-                &self.nodes[b.at].id,
-                &b.setting,
-                &b.by,
-            ))
+            (&nodes[a.at].id, &a.setting, &a.by).cmp(&(&nodes[b.at].id, &b.setting, &b.by))
         });
         out
     }
 
-    /// Whether an applied version lifts `lock`.
-    fn lifted(&self, lock: &Held) -> bool {
-        self.nodes.iter().any(|n| n.lifts(lock))
+    /// What node `j`'s writer saw: the element as the versions of its past make it.
+    fn past(&self, j: usize) -> Rc<View> {
+        if let Some(v) = self.pasts.borrow().get(&j) {
+            return Rc::clone(v);
+        }
+        let v = Rc::new(self.view(&self.a.nodes[j].past, None));
+        self.pasts.borrow_mut().insert(j, Rc::clone(&v));
+        v
     }
 
-    /// Why node `i` does not count, if it does not (see the module): a non-owner's version
-    /// writing a setting an owner locked, with the lock in view (it never counts), or made apart
-    /// from a lock in force, no owner version made over it (it waits).
-    fn not_counted(&self, i: usize, locks: &[Held]) -> Option<String> {
-        let n = &self.nodes[i];
+    /// Why node `j` of `top` does not count, if it does not (see the module): a non-owner's
+    /// version writing a setting an owner locked, with the lock in view (in force in what it was
+    /// made over: it never counts), or made apart from a lock in force here, no owner version
+    /// made over it (it waits).
+    fn not_counted(&self, j: usize, top: &[usize], locks: &[Held]) -> Option<String> {
+        let nodes = &self.a.nodes;
+        let n = &nodes[j];
         if n.owner {
             return None;
         }
         let writes: BTreeSet<&str> = n.writes().collect();
-        let on = || locks.iter().filter(|l| writes.contains(l.setting.as_str()));
-        let in_view =
-            |l: &&Held| n.past.contains(&l.at) && !n.past.iter().any(|&p| self.nodes[p].lifts(l));
-        if let Some(l) = on().find(in_view) {
+        if writes.is_empty() {
+            return None;
+        }
+        let c = &self.a.collection;
+        let seen = self.past(j);
+        if let Some(l) = seen
+            .locks
+            .iter()
+            .find(|l| writes.contains(l.setting.as_str()))
+        {
             return Some(format!(
                 "never counts: the setting {} is locked by its owner ({}) in the versions this \
-                 one was made over, and a writer who is not an owner of {} does not write a \
+                 one was made over, and a writer who is not an owner of {c} does not write a \
                  locked setting; write it again over an owner's unlock",
-                l.setting, l.by, self.collection
+                l.setting, l.by
             ));
         }
-        let taken_in = self
-            .nodes
+        let taken_in = top
             .iter()
-            .enumerate()
-            .any(|(j, m)| j != i && m.owner && m.past.contains(&i));
+            .any(|&k| k != j && nodes[k].owner && nodes[k].past.contains(&j));
         if taken_in {
             return None;
         }
-        on().find(|l| !n.past.contains(&l.at) && !self.lifted(l))
+        locks
+            .iter()
+            .find(|l| writes.contains(l.setting.as_str()) && !n.past.contains(&l.at))
             .map(|l| {
                 format!(
                     "waits: the setting {} is locked by its owner ({}) in a version this one was \
-                     not made over; it counts once an owner of {} unlocks it or writes over this \
+                     not made over; it counts once an owner of {c} unlocks it or writes over this \
                      version",
-                    l.setting, l.by, self.collection
+                    l.setting, l.by
                 )
             })
     }
 
-    /// The applied versions in one order every device computes alike from the set: each after
-    /// every version in its past, ties by (writer, seq).
-    fn order(&self) -> Vec<usize> {
-        let mut done = vec![false; self.nodes.len()];
-        let mut out = Vec::with_capacity(self.nodes.len());
-        while out.len() < self.nodes.len() {
-            let next = (0..self.nodes.len())
-                .filter(|&i| !done[i] && self.nodes[i].past.iter().all(|&p| done[p]))
-                .min_by(|&a, &b| self.nodes[a].id.cmp(&self.nodes[b].id))
-                .expect("the past of applied versions is acyclic");
-            done[next] = true;
-            out.push(next);
+    /// What node `j` writes, slot by slot: a checkpoint its state; an edit its last write of
+    /// each slot, a `Change` splicing the text its writer saw (its own earlier write, else what
+    /// its past shows).
+    fn writes(&self, j: usize) -> BTreeMap<Slot, Written> {
+        let n = &self.a.nodes[j];
+        if let Some(s) = n.checkpoint() {
+            return state_slots(s).into_iter().collect();
         }
-        out
+        let mut mine: BTreeMap<Slot, Written> = BTreeMap::new();
+        for t in &n.op.edits {
+            match &t.edit {
+                Edit::Create(kind) => {
+                    mine.insert(Slot::Kind, Written::Text(kind.clone()));
+                }
+                Edit::Set(s, v) => {
+                    mine.insert(Slot::Setting(s.clone()), Written::Text(v.clone()));
+                }
+                Edit::Change(s, splice) => {
+                    let slot = Slot::Setting(s.clone());
+                    let base = match mine.get(&slot) {
+                        Some(Written::Text(t)) => t.clone(),
+                        Some(_) => String::new(),
+                        None => match self.a.shown(&self.past(j).slots, &slot) {
+                            Some(Written::Text(t)) => t.clone(),
+                            _ => String::new(),
+                        },
+                    };
+                    mine.insert(slot, Written::Text(spliced(&base, splice)));
+                }
+                Edit::Place(p) => {
+                    mine.insert(Slot::Place, Written::Place(p.clone()));
+                }
+                Edit::Remove => {
+                    mine.insert(Slot::Removed, Written::Removed);
+                }
+                Edit::Lock(_) | Edit::Unlock(_) | Edit::Checkpoint(_) => {}
+            }
+        }
+        mine
     }
 
-    /// The value of the versions counted, but `excluded` (held back by the layer).
-    fn merged(&self, excluded: &BTreeSet<VersionId>) -> ElementValue {
-        let locks = self.locks();
-        let mut slots: BTreeMap<Slot, Vec<(usize, Written)>> = BTreeMap::new();
-        for i in self.order() {
-            if excluded.contains(&self.nodes[i].id) || self.not_counted(i, &locks).is_some() {
-                continue;
-            }
-            let n = &self.nodes[i];
-            // What this version writes replaces what its past wrote; what versions concurrent
-            // with it wrote stays beside it.
-            let write = |slots: &mut BTreeMap<Slot, Vec<(usize, Written)>>, slot, value| {
-                let heads = slots.entry(slot).or_default();
-                heads.retain(|(at, _)| *at != i && !n.past.contains(at));
-                heads.push((i, value));
-            };
-            if let Some(s) = n.checkpoint() {
-                for heads in slots.values_mut() {
-                    heads.retain(|(at, _)| !n.past.contains(at));
-                }
-                for (slot, value) in state_slots(s) {
-                    write(&mut slots, slot, value);
-                }
-                continue;
-            }
-            for t in &n.op.edits {
-                match &t.edit {
-                    Edit::Create(kind) => {
-                        write(&mut slots, Slot::Kind, Written::Text(kind.clone()))
+    /// The element as `set` makes it, leaving out the writes of `excluded` (held back by the
+    /// layer). In each slot stand the writes no other counted write replaces: one made over it
+    /// that writes the slot (a checkpoint writes every slot), or — of a checkpoint's statement —
+    /// an edit concurrent to the checkpoint whose writer saw exactly what the checkpoint states
+    /// there (the checkpoint restated its basis; the edit is made over that).
+    fn view(&self, set: &BTreeSet<usize>, excluded: Option<&BTreeSet<VersionId>>) -> View {
+        let nodes = &self.a.nodes;
+        let top = self.uncovered(set);
+        let locks = self.locks(&top);
+        let counted: Vec<usize> = top
+            .iter()
+            .copied()
+            .filter(|&j| {
+                excluded.is_none_or(|x| !x.contains(&nodes[j].id))
+                    && self.not_counted(j, &top, &locks).is_none()
+            })
+            .collect();
+        let writes: Vec<(usize, BTreeMap<Slot, Written>)> =
+            counted.iter().map(|&j| (j, self.writes(j))).collect();
+        let mut slots = Slots::new();
+        for (i, mine) in &writes {
+            for (slot, value) in mine {
+                let replaced = writes.iter().any(|(b, theirs)| {
+                    if b == i {
+                        return false;
                     }
-                    Edit::Set(s, v) => {
-                        write(
-                            &mut slots,
-                            Slot::Setting(s.clone()),
-                            Written::Text(v.clone()),
-                        );
+                    let (nb, ni) = (&nodes[*b], &nodes[*i]);
+                    if nb.past.contains(i) {
+                        return nb.checkpoint().is_some() || theirs.contains_key(slot);
                     }
-                    Edit::Change(s, splice) => {
-                        let slot = Slot::Setting(s.clone());
-                        let base = slots
-                            .get(&slot)
-                            .and_then(|h| self.first(h))
-                            .and_then(|w| match w {
-                                Written::Text(t) => Some(t.clone()),
-                                _ => None,
-                            })
-                            .unwrap_or_default();
-                        write(&mut slots, slot, Written::Text(spliced(&base, splice)));
-                    }
-                    Edit::Place(p) => write(&mut slots, Slot::Place, Written::Place(p.clone())),
-                    Edit::Remove => write(&mut slots, Slot::Removed, Written::Removed),
-                    Edit::Lock(_) | Edit::Unlock(_) | Edit::Checkpoint(_) => {}
+                    ni.checkpoint().is_some()
+                        && nb.checkpoint().is_none()
+                        && !ni.past.contains(b)
+                        && theirs.contains_key(slot)
+                        && self.a.shown(&self.past(*b).slots, slot) == Some(value)
+                });
+                if !replaced {
+                    slots
+                        .entry(slot.clone())
+                        .or_default()
+                        .push((*i, value.clone()));
                 }
             }
         }
+        View { slots, locks }
+    }
+}
 
+impl Applied {
+    /// Add the version `op` carries — applied, or handed as a `basis` — once; its node.
+    fn add(&mut self, op: &Op<'_>, decoded: Operation, basis: bool) -> usize {
+        if let Some(i) = self.nodes.iter().position(|n| n.id == *op.id) {
+            if !basis {
+                self.nodes[i].basis = false;
+            }
+            return i;
+        }
+        let i = self.nodes.len();
+        let past = (0..i)
+            .filter(|&p| op.past.contains(&self.nodes[p].id))
+            .collect();
+        let mut within = op.parents.clone();
+        if let Some(before) = op.id.seq.0.checked_sub(1).filter(|s| *s > 0) {
+            within.include(&VersionId {
+                writer: op.id.writer.clone(),
+                seq: Seq(before),
+            });
+        }
+        // A basis handed after the versions made over it joins their past.
+        if basis {
+            for n in &mut self.nodes {
+                if n.within.contains(op.id) {
+                    n.past.insert(i);
+                }
+            }
+        }
+        self.nodes.push(Node {
+            id: op.id.clone(),
+            digest: *op.digest,
+            op: decoded,
+            owner: owns(&self.collection, &op.id.writer),
+            within,
+            past,
+            basis,
+        });
+        self.told.push(None);
+        i
+    }
+
+    /// The value of the versions applied, leaving out `excluded` (held back by the layer).
+    fn merged(&self, excluded: &BTreeSet<VersionId>) -> ElementValue {
+        let eval = Eval::new(self);
+        let applied = eval.applied();
+        let top = eval.uncovered(&applied);
+        let view = eval.view(&applied, Some(excluded));
         let mut value = ElementValue::default();
-        for (slot, heads) in &slots {
-            let Some(shown) = self.first(heads) else {
+        for (slot, heads) in &view.slots {
+            let Some(shown) = self.shown(&view.slots, slot) else {
                 continue;
             };
             match (slot, shown) {
@@ -574,9 +719,9 @@ impl Applied {
                 });
             }
         }
-        let mut held: Vec<Lock> = locks
+        let mut held: Vec<Lock> = view
+            .locks
             .iter()
-            .filter(|l| !self.lifted(l))
             .map(|l| Lock {
                 setting: l.setting.clone(),
                 by: l.by.clone(),
@@ -585,8 +730,10 @@ impl Applied {
         held.sort();
         held.dedup();
         value.state.locks = held;
-        let mut heads: Vec<Head> = (0..self.nodes.len())
-            .filter(|&i| !self.nodes.iter().any(|n| n.past.contains(&i)))
+        let mut heads: Vec<Head> = top
+            .iter()
+            .copied()
+            .filter(|&i| !top.iter().any(|&k| self.nodes[k].past.contains(&i)))
             .map(|i| Head {
                 writer: self.nodes[i].id.writer.key().to_string(),
                 seq: self.nodes[i].id.seq.0,
@@ -596,6 +743,16 @@ impl Applied {
         heads.sort();
         value.heads = heads;
         value
+    }
+
+    /// Each applied version no checkpoint covers, with why it does not count, if it does not.
+    fn counting(&self) -> Vec<(usize, Option<String>)> {
+        let eval = Eval::new(self);
+        let top = eval.uncovered(&eval.applied());
+        let locks = eval.locks(&top);
+        top.iter()
+            .map(|&j| (j, eval.not_counted(j, &top, &locks)))
+            .collect()
     }
 
     /// `heads` in the alternatives' fixed order: by writer, then version digest.
@@ -608,8 +765,9 @@ impl Applied {
         out
     }
 
-    /// The alternative the state shows.
-    fn first<'h>(&self, heads: &'h [(usize, Written)]) -> Option<&'h Written> {
+    /// The alternative of `slot` the state shows: the first, in the fixed order.
+    fn shown<'s>(&self, slots: &'s Slots, slot: &Slot) -> Option<&'s Written> {
+        let heads = slots.get(slot)?;
         self.sorted(heads).into_iter().next().map(|(_, w)| w)
     }
 }
@@ -731,25 +889,12 @@ impl MergeState for Applied {
 
     fn apply(&mut self, op: &Op<'_>) -> Result<Counting, MergeError> {
         let decoded = Operation::decode(op.bytes)?;
-        let i = match self.nodes.iter().position(|n| n.id == *op.id) {
-            // Applied already: the same answer again.
-            Some(i) => i,
-            None => {
-                let past = (0..self.nodes.len())
-                    .filter(|&p| op.past.contains(&self.nodes[p].id))
-                    .collect();
-                self.nodes.push(Node {
-                    id: op.id.clone(),
-                    digest: *op.digest,
-                    op: decoded,
-                    owner: owns(&self.collection, &op.id.writer),
-                    past,
-                });
-                self.told.push(None);
-                self.nodes.len() - 1
-            }
-        };
-        let why = self.not_counted(i, &self.locks());
+        let i = self.add(op, decoded, false);
+        let why = self
+            .counting()
+            .into_iter()
+            .find(|(j, _)| *j == i)
+            .and_then(|(_, why)| why);
         self.told[i] = why.clone();
         Ok(match why {
             Some(why) => Counting::NotCounted(why),
@@ -757,11 +902,15 @@ impl MergeState for Applied {
         })
     }
 
+    fn basis(&mut self, op: &Op<'_>) -> Result<(), MergeError> {
+        let decoded = Operation::decode(op.bytes)?;
+        self.add(op, decoded, true);
+        Ok(())
+    }
+
     fn counting_changed(&mut self) -> Vec<(VersionId, Counting)> {
-        let locks = self.locks();
         let mut changed = Vec::new();
-        for i in 0..self.nodes.len() {
-            let why = self.not_counted(i, &locks);
+        for (i, why) in self.counting() {
             if self.told[i] != why {
                 self.told[i] = why.clone();
                 let counting = match why {
@@ -876,6 +1025,7 @@ mod tests {
             parents: &parents,
             past: &past,
             bytes: &bytes,
+            dated: ndn_data::Timestamp(0),
         })
     }
 

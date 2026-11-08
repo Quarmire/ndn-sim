@@ -5,11 +5,12 @@
 //! backdated version, exact re-admission, a late revocation, a renewal, a recovery, and from its
 //! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
 //! a revoked issuer) beside theirs (c3), the items left open after the model's fixes
-//! (`o1`…`o4`), the slice-2 security review (`r1`…`r6`): the attacks it found, the concurrent
+//! (`o1`…`o5`), the slice-2 security review (`r1`…`r6`): the attacks it found, the concurrent
 //! share its merge must keep, other bytes at a seq a removal cut kept, and an old-form removal
 //! cut across an upgrade, and slice 6's
 //! substrate for apps that bring their own
-//! merge (`b1`…`b5`: a rule named by the app, operations it builds, merge versions in pieces;
+//! merge (`b1`…`b9`: a rule named by the app, operations it builds, merge versions in pieces,
+//! owner locks, counting both ways, and checkpoints beside versions written apart from them;
 //! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
 //! record, and a collection's first own record under it; `i1`…`i12`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
@@ -38,6 +39,8 @@ mod b4_merge_pieces;
 mod b5_release_merge_pieces;
 mod b6_owner_lock;
 mod b7_counting_both_ways;
+mod b8_checkpoint_alike;
+mod b9_offline_over_checkpoint;
 mod c01_offline_notes;
 mod c02_removed_offline;
 mod c03_stolen_key;
@@ -170,6 +173,8 @@ pub const CASES: &[Case] = &[
     b5_release_merge_pieces::CASE,
     b6_owner_lock::CASE,
     b7_counting_both_ways::CASE,
+    b8_checkpoint_alike::CASE,
+    b9_offline_over_checkpoint::CASE,
     g1_group_all_or_none::CASE,
     g2_impossible_group::CASE,
     g3_group_concurrent_narrowing::CASE,

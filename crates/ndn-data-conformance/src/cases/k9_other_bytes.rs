@@ -58,8 +58,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*phone, &journal)
         })
         .await?;
-        let monday = phone
-            .put(&journal, content(&[("monday", "market")]), note(1))
+        let monday = w
+            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
             .await?;
         w.until("the laptop holds the phone's entry", LIMIT, || {
             has(&*laptop, &journal, &monday)
@@ -68,17 +68,22 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The key leaks with a copy of the storage; the thief stays offline for now. The phone
         // writes on, and the thief signs other bytes at the name of that entry.
-        let thief = stolen(w, THIEF, &journal, &monday).await?;
+        stolen(w, THIEF, &journal, &monday).await?;
         w.net().offline(THIEF);
-        let tuesday = phone
-            .put(&journal, content(&[("tuesday", "dentist")]), note(1))
+        let tuesday = w
+            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
             .await?;
         w.until("the laptop holds the phone's later entry", LIMIT, || {
             has(&*laptop, &journal, &tuesday)
         })
         .await?;
-        let forged = thief
-            .put(&journal, content(&[("thief", "other bytes")]), note(1))
+        let forged = w
+            .put(
+                THIEF,
+                &journal,
+                content(&[("thief", "other bytes")]),
+                note(1),
+            )
             .await?;
         ensure!(
             forged == tuesday,

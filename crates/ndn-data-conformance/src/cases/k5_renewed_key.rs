@@ -51,8 +51,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*phone, &notes)
         })
         .await?;
-        let before = phone
-            .put(&notes, content(&[("sown", "beans")]), note(1))
+        let before = w
+            .put(PHONE, &notes, content(&[("sown", "beans")]), note(1))
             .await?;
         w.until("the laptop holds the first note", LIMIT, || {
             has(&*laptop, &notes, &before)
@@ -60,8 +60,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         w.renew(PHONE).await?;
-        let renewed = phone
-            .put(&notes, content(&[("watered", "tuesday")]), note(1))
+        let renewed = w
+            .put(PHONE, &notes, content(&[("watered", "tuesday")]), note(1))
             .await?;
         w.until("the laptop holds the note after the renewal", LIMIT, || {
             has(&*laptop, &notes, &renewed)
@@ -70,8 +70,8 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The certificate the renewal superseded runs out.
         w.expire(PHONE, Certs::Superseded).await?;
-        let after = phone
-            .put(&notes, content(&[("picked", "friday")]), note(1))
+        let after = w
+            .put(PHONE, &notes, content(&[("picked", "friday")]), note(1))
             .await?;
         ensure!(
             before.writer == renewed.writer && renewed.writer == after.writer,

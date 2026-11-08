@@ -154,7 +154,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             })
             .count();
         let before = w.net().device_wire(LAPTOP);
-        let got = entries_at(&*laptop, &range_name(&soil, &Range::Times(from, to))).await??;
+        let got = entries_again(w, &*laptop, &range_name(&soil, &Range::Times(from, to))).await??;
         let spent = w.net().device_wire(LAPTOP) - before;
         exactly("the range read by time", &got, &want, &writer)?;
         let by_time = reached();
@@ -194,7 +194,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         let want: Vec<Written> = range.iter().flat_map(written).collect();
         let before = w.net().device_wire(LAPTOP);
-        let got = entries_at(&*laptop, &range_name(&soil, &Range::Seqs(lo, hi))).await??;
+        let got = entries_again(w, &*laptop, &range_name(&soil, &Range::Seqs(lo, hi))).await??;
         let spent = w.net().device_wire(LAPTOP) - before;
         exactly("the range read by seq", &got, &want, &writer)?;
         let by_seq = reached();

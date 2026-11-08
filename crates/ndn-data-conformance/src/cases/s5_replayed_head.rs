@@ -50,9 +50,14 @@ fn plan() -> Plan {
     p
 }
 
-/// The newest the laptop answers for `c`: the version and how long it went unconfirmed.
-async fn newest(laptop: &dyn DataLayer, c: &Name) -> Result<(Version, Duration), Failure> {
-    match laptop.get(c).await? {
+/// The newest the laptop answers for `c`: the version and how long it went unconfirmed. Asked
+/// again while the laptop answers RetryLater (its first look at the stream racing the network).
+async fn newest(
+    w: &World,
+    laptop: &dyn DataLayer,
+    c: &Name,
+) -> Result<(Version, Duration), Failure> {
+    match w.again(|| laptop.get(c)).await? {
         Answer {
             got: Got::Version(v),
             age,
@@ -87,7 +92,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let newer = sensor.put(&soil, soil_reading(2), unbatched()).await?;
         ensure!(old.seq < newer.seq, "the sensor's seqs do not grow");
         w.until("the laptop reads the newest reading", LIMIT, || async {
-            Ok(newest(&*laptop, &soil).await?.0.id == newer)
+            Ok(newest(w, &*laptop, &soil).await?.0.id == newer)
         })
         .await?;
 
@@ -105,7 +110,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         while tokio::time::Instant::now() < deadline {
             reads += 1;
             let asked = offline.elapsed();
-            let (v, age) = newest(&*laptop, &soil).await?;
+            let (v, age) = newest(w, &*laptop, &soil).await?;
             ensure!(
                 v.id.seq >= newer.seq,
                 "after verifying the head naming seq {}, the laptop answered seq {} for the \

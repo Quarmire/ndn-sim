@@ -67,8 +67,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*phone, &journal)
         })
         .await?;
-        let early = phone
-            .put(&journal, content(&[("monday", "market")]), note(1))
+        let early = w
+            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
             .await?;
         w.until(
             "the laptop and the tablet hold the phone's entry",
@@ -80,8 +80,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The last time Alice had the phone in hand. It writes one more honest entry, which the
         // laptop first sees after that time; then the thief takes it.
         let lost = loss_time(w, LAPTOP).await;
-        let late = phone
-            .put(&journal, content(&[("tuesday", "dentist")]), note(1))
+        let late = w
+            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
             .await?;
         w.until(
             "the laptop and the tablet hold the phone's later entry",
@@ -89,10 +89,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             || async { agree(&[&*phone, &*laptop, &*tablet], &journal, &[&early, &late]).await },
         )
         .await?;
-        let thief = stolen(w, THIEF, &journal, &late).await?;
+        stolen(w, THIEF, &journal, &late).await?;
         w.net().offline(PHONE);
-        let taken = thief
+        let taken = w
             .put(
+                THIEF,
                 &journal,
                 content(&[("thief", "written before the report")]),
                 note(1),
@@ -117,8 +118,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         // key. The thief writes on.
         w.suspect(LAPTOP, PHONE, lost).await?;
         w.gesture();
-        let after_report = thief
+        let after_report = w
             .put(
+                THIEF,
                 &journal,
                 content(&[("thief2", "written after the report")]),
                 note(1),

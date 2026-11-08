@@ -94,7 +94,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
 
         // The laptop reads the stream's first reading while the sensor is online.
-        entries_at(&*laptop, &entry_name(&blocks[0].name, 0)).await??;
+        entries_again(w, &*laptop, &entry_name(&blocks[0].name, 0)).await??;
 
         // The attack: the sensor is away, the repo forges a reading, no cache has the block.
         w.net().offline(SENSOR);

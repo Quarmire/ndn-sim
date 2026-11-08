@@ -59,11 +59,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*phone, &journal)
         })
         .await?;
-        let monday = phone
-            .put(&journal, content(&[("monday", "market")]), note(1))
+        let monday = w
+            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
             .await?;
-        let tuesday = phone
-            .put(&journal, content(&[("tuesday", "dentist")]), note(1))
+        let tuesday = w
+            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
             .await?;
         w.until("the laptop holds the phone's entries", LIMIT, || async {
             agree(&[&*phone, &*laptop], &journal, &[&monday, &tuesday]).await
@@ -71,12 +71,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         let lost = loss_time(w, LAPTOP).await;
-        let thief = stolen(w, THIEF, &journal, &tuesday).await?;
+        stolen(w, THIEF, &journal, &tuesday).await?;
         w.net().offline(PHONE);
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
-        let before = thief
+        let before = w
             .put(
+                THIEF,
                 &journal,
                 content(&[("thief", "before the recovery")]),
                 note(1),
@@ -93,15 +94,21 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.gesture();
         w.renew(LAPTOP).await?;
         w.renew(TABLET).await?;
-        let after = thief
+        let after = w
             .put(
+                THIEF,
                 &journal,
                 content(&[("thief", "after the recovery")]),
                 note(1),
             )
             .await?;
-        let own = laptop
-            .put(&journal, content(&[("laptop", "recovered")]), note(1))
+        let own = w
+            .put(
+                LAPTOP,
+                &journal,
+                content(&[("laptop", "recovered")]),
+                note(1),
+            )
             .await?;
 
         w.net().online(TABLET);

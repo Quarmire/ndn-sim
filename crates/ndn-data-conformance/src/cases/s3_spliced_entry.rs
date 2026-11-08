@@ -102,7 +102,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The laptop reads the first block while the sensor is online: it verifies its head.
         let first = blocks[0].id.seq.0;
-        entries_at(&*laptop, &range_name(&soil, &Range::Seqs(first, first))).await??;
+        entries_again(w, &*laptop, &range_name(&soil, &Range::Seqs(first, first))).await??;
 
         // The attack: the sensor is away, the repo splices, no cache has the block.
         w.net().offline(SENSOR);
@@ -127,7 +127,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let mut reads = 0u64;
         while tokio::time::Instant::now() < deadline {
             reads += 1;
-            let got = entries_at(&*laptop, &range).await??;
+            let got = entries_again(w, &*laptop, &range).await??;
             let answered = read_entries(&got);
             let doctored = answered
                 .iter()
@@ -174,7 +174,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().online(SENSOR);
         let took = w
             .converge("the laptop reads the genuine block", LIMIT, || async {
-                let got = entries_at(&*laptop, &range).await??;
+                let got = entries_again(w, &*laptop, &range).await??;
                 let answered = read_entries(&got);
                 ensure!(
                     answered

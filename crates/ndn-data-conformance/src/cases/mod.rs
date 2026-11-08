@@ -23,8 +23,8 @@ use futures::StreamExt;
 use ndn_data::wire::{Range, entry_name, held_name, range_name};
 use ndn_data::{
     Answer, Audience, Change, Changes, Content, Custody, DataError, DataLayer, Entries, Frontier,
-    Got, Hold, Keep, Lease, Name, Payload, PutOptions, Rule, Share, State, Timestamp, TypeId,
-    Value, Version, VersionId,
+    Got, Hold, Keep, Lease, Name, NextStep, Payload, PutOptions, Rule, Share, State, Timestamp,
+    TypeId, Value, Version, VersionId,
 };
 
 use crate::case::{Case, Failure};
@@ -458,6 +458,26 @@ async fn entries_at(
     }
 }
 
+/// [`entries_at`], asked again while `layer` answers RetryLater ([`World::again`]): for a read
+/// whose first look races the network, as a host does what the refusal says.
+async fn entries_again(
+    w: &World,
+    layer: &dyn DataLayer,
+    name: &Name,
+) -> Result<Result<Entries, DataError>, Failure> {
+    match w.again(|| layer.get(name)).await {
+        Ok(Answer {
+            got: Got::Entries(e),
+            ..
+        }) => Ok(Ok(e)),
+        Ok(a) => Err(Failure::new(format!(
+            "get of {name} answered {:?}, not entries",
+            a.got
+        ))),
+        Err(e) => Ok(Err(e)),
+    }
+}
+
 /// How many of `blocks` device `d` stores any packet of.
 fn stored_blocks<'v>(w: &World, d: Dev, blocks: impl IntoIterator<Item = &'v Version>) -> usize {
     blocks
@@ -550,7 +570,9 @@ async fn read_whole(
                 "{what}: get of version {name} answered {:?}, not the version",
                 answer.got
             ))),
-            Err(DataError::Unavailable { .. } | DataError::NotFound { .. }) => Ok(false),
+            // Not yet (nothing held, a record admitting the reader not walked to): read again.
+            Err(DataError::NotFound { .. }) => Ok(false),
+            Err(e) if e.next() == NextStep::RetryLater => Ok(false),
             Err(e) => Err(e.into()),
         }
     })

@@ -51,8 +51,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*phone, &journal)
         })
         .await?;
-        let seen = phone
+        let seen = w
             .put(
+                PHONE,
                 &journal,
                 content(&[("phone", "last honest entry")]),
                 note(1),
@@ -73,8 +74,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.gesture();
         let revoked_at = w.net().true_date();
 
-        let forged = thief
-            .put(&journal, content(&[("thief", "dated last week")]), note(1))
+        let forged = w
+            .put(
+                THIEF,
+                &journal,
+                content(&[("thief", "dated last week")]),
+                note(1),
+            )
             .await?;
         ensure!(
             forged.writer == seen.writer && forged.seq > seen.seq,

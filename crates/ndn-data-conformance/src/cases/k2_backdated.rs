@@ -57,11 +57,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*phone, &journal)
         })
         .await?;
-        let monday = phone
-            .put(&journal, content(&[("monday", "market")]), note(1))
+        let monday = w
+            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
             .await?;
-        let tuesday = phone
-            .put(&journal, content(&[("tuesday", "dentist")]), note(1))
+        let tuesday = w
+            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
             .await?;
         w.until("the laptop holds the phone's entries", LIMIT, || async {
             agree(&[&*phone, &*laptop], &journal, &[&monday, &tuesday]).await
@@ -79,8 +79,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.gesture();
         let revoked_at = w.net().true_date();
 
-        let forged = thief
-            .put(&journal, content(&[("thief", "dated last month")]), note(1))
+        let forged = w
+            .put(
+                THIEF,
+                &journal,
+                content(&[("thief", "dated last month")]),
+                note(1),
+            )
             .await?;
         ensure!(
             forged.writer == monday.writer && forged.seq > tuesday.seq,

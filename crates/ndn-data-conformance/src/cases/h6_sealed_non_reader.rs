@@ -86,7 +86,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             "per mille",
         );
 
-        match repo.get(&v.name).await {
+        // Sealed is decided by records held: asked again while the repo has not walked Alice's
+        // devices toward the photos (NotReady), as a host does what the refusal says.
+        match w.again(|| repo.get(&v.name)).await {
             Err(DataError::Sealed { .. }) => {}
             Ok(_) => {
                 return Err(Failure::new(

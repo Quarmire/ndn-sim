@@ -67,15 +67,21 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*intruder, &journal)
         })
         .await?;
-        let honest = laptop
+        let honest = w
             .put(
+                LAPTOP,
                 &journal,
                 content(&[("laptop", "before the recovery")]),
                 note(1),
             )
             .await?;
-        let planted = intruder
-            .put(&journal, content(&[("intruder", "planted")]), note(1))
+        let planted = w
+            .put(
+                INTRUDER,
+                &journal,
+                content(&[("intruder", "planted")]),
+                note(1),
+            )
             .await?;
         w.until(
             "the laptop and the tablet hold the honest and the planted entry",

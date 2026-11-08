@@ -55,11 +55,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*phone, &notes)
         })
         .await?;
-        let first = phone
-            .put(&notes, content(&[("sown", "beans")]), note(1))
+        let first = w
+            .put(PHONE, &notes, content(&[("sown", "beans")]), note(1))
             .await?;
-        let second = phone
-            .put(&notes, content(&[("watered", "tuesday")]), note(1))
+        let second = w
+            .put(PHONE, &notes, content(&[("watered", "tuesday")]), note(1))
             .await?;
         w.until("the laptop holds the phone's notes", LIMIT, || async {
             agree(&[&*phone, &*laptop], &notes, &[&first, &second]).await

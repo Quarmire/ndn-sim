@@ -4,11 +4,13 @@
 //! often never reached Bob's folder watch within 90 s, and when it did, it took a minute. Bob's
 //! grant for the folder's epoch key was asked once of each device that could grant it; one lost
 //! packet and the version stayed locked until something else in the folder moved. A summary or a
-//! version that missed was asked again after a pause doubling to a minute. The fix (§17 of the
+//! version that missed was asked again after a pause doubling to a minute. The fix (§17.1 of the
 //! spec): every fetch that missed — a summary, a version, a members record, a piece, a grant —
 //! is asked again, from what the device still owes in its durable state and not from a new sync
 //! notice, after a pause that doubles from a fraction of a second to a cap of a few seconds,
-//! until it is held or no longer wanted.
+//! until it is held or no longer wanted; and within one ask, an Interest nothing answered is
+//! expressed again after a retransmission timeout from the round trips the device measured, so a
+//! lost packet costs about that timeout, not the 2 s Interest lifetime.
 //!
 //! Alice shares a folder sealed to Alice and Bob; Bob watches it; Alice writes her first version
 //! into it. One packet in five arriving at either device is dropped. Bob's watch reports the
@@ -38,7 +40,8 @@ pub(super) const CASE: Case = Case {
     guards: "With one packet in five dropped on its way to each device, the first version a \
              writer seals in a folder reaches a reader's folder watch, opened, within seconds of \
              virtual time, not minutes: a grant, an epoch key, a summary, a version that missed \
-             is asked again, with a capped backoff, until it is held.",
+             is asked again, with a capped backoff, until it is held, and an unanswered Interest \
+             is expressed again after a measured retransmission timeout within its lifetime.",
     budget: Duration::from_secs(3600),
     plan,
     run,
@@ -54,11 +57,14 @@ const DROP: f64 = 0.2;
 const SEED: u64 = 1;
 /// How long Bob's watch may take to report Alice's first version, from her put. Its path is about
 /// ten exchanges in a row (root, three summary nodes, the folder record, the version, the grant
-/// and the seal key the granter fetches); at this loss each exchange misses one time in three, and
-/// a miss costs one Interest lifetime (2 s, 2.5 s with the consumer's slack) and a pause from
-/// 250 ms. Five misses in a row of ten, an unlucky draw, is under 15 s; asked once per granter,
-/// with the pause doubling to a minute, the version never came within 120 s.
-const BOUND: Duration = Duration::from_secs(20);
+/// and the seal key the granter fetches); at this loss each exchange misses one time in three.
+/// Once a device measured a round trip, a lost packet costs it one retransmission timeout (a
+/// quarter second here) and an ask misses whole about one time in sixty; until then (Bob's first
+/// ask) a miss costs one Interest lifetime (2.5 s with the consumer's slack) and a pause from
+/// 250 ms. Seeds 1 to 7 converge within 0.3–3.8 s; with a miss costing a lifetime every time it
+/// took 2.8–13.8 s, and asked once per granter, with the pause doubling to a minute, the version
+/// never came within 120 s.
+const BOUND: Duration = Duration::from_secs(8);
 
 fn plan() -> Plan {
     let mut p = Plan::new();

@@ -9,12 +9,13 @@
 //! withdrawn member stays.
 //!
 //! Alice's laptop has her home repo hold the third column. Bob's device then loses its copy of
-//! the group's third member, and the repo is away: Dave, coming online, finds the first two
-//! members at Bob's but the third nowhere, and counts none of them until the repo is back and
-//! serves it. Then Alice's phone, which never saw the group, removes Bob from the third column
-//! with a cut at what it had seen of him there — nothing: the group's third member is outside
-//! the cut, so every member is withdrawn on every reader, and Carol's edit over the first member
-//! stays.
+//! the group's third member, and the repo, Alice's laptop and Carol — every other device holding
+//! it, each of which answers for Bob's versions (spec §13.5) — are away: Dave, coming online,
+//! finds the first two members at Bob's but the third nowhere, and counts none of them until the
+//! repo is back and serves it. Then Alice's phone, which never saw the group, removes Bob from the
+//! third column with a cut at what it had seen of him there — nothing: the group's third member
+//! is outside the cut, so every member is withdrawn on every reader, and Carol's edit over the
+//! first member stays.
 
 use std::time::Duration;
 
@@ -199,7 +200,11 @@ fn run(w: &World) -> CaseFuture<'_> {
                 .any(|l| l.audit.kept() && l.holds.contains(&group[2])),
             "the repo holds no kept lease on the group's third member"
         );
+        // The repo goes away, and so do Alice's laptop and Carol: each holds the third member too,
+        // and a device answers for the versions it holds (spec §13.5).
         w.net().offline(REPO);
+        w.net().offline(LAPTOP);
+        w.net().offline(CAROL);
         let third = log_entry(w, BOB, &columns[2], &group[2]);
         let lost = w.lose(BOB, &columns[2], 1);
         ensure!(lost > 0, "Bob stored nothing of the third column to lose");
@@ -250,6 +255,8 @@ fn run(w: &World) -> CaseFuture<'_> {
                 held(w, DAVE, &columns).await?
             )));
         }
+        w.net().online(LAPTOP);
+        w.net().online(CAROL);
         for (c, id) in columns.iter().zip(&group) {
             let (s, _) = element_state(&*dave, c).await?;
             ensure!(

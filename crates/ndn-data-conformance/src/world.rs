@@ -779,6 +779,26 @@ impl World {
         self.provider
             .tamper(self.net.spec(d), version, how)
             .map_err(|e| Failure::new(format!("cannot tamper: {e:#}")))
+    /// What `at`'s forwarder — its node's validator, which judges every packet it forwards —
+    /// says of the packet `from` stores under `name` (see [`Provider::forwarder_verdict`]):
+    /// `Ok` when it accepts it, else why not. Looking costs no gesture.
+    pub async fn forwarder_verdict(
+        &self,
+        at: Dev,
+        from: Dev,
+        name: &Name,
+    ) -> Result<Result<(), String>, Failure> {
+        self.provider
+            .forwarder_verdict(
+                &self.net.fabric,
+                self.net.spec(at),
+                self.net.spec(from),
+                name,
+            )
+            .await
+            .map_err(|e| Failure::new(format!("cannot ask the forwarder: {e:#}")))
+    }
+
     }
 
     /// `d`'s stopped data layer holds its newest members record of `subject` as a build from

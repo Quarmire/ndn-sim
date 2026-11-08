@@ -473,6 +473,24 @@ pub trait Provider: Send + Sync {
         )
     }
 
+    /// What `at`'s forwarder — its node's validator, the one that judges every packet the node
+    /// forwards — says of the packet `from`'s data layer stores under `name`: `Ok(())` when it
+    /// accepts it, else why not (the validator's refusal). A namespace a data layer adopted for
+    /// judging one folder's data alone stays refused here. A provider that cannot ask says so.
+    async fn forwarder_verdict(
+        &self,
+        fabric: &Fabric,
+        at: &DeviceSpec,
+        from: &DeviceSpec,
+        name: &Name,
+    ) -> anyhow::Result<Result<(), String>> {
+        let _ = (fabric, from, name);
+        anyhow::bail!(
+            "this provider cannot ask {}'s forwarder for its verdict on a packet",
+            at.name()
+        )
+    }
+
     /// `device` joins the folder a code offers, given only the code (its link or its words):
     /// its host adopts the inviter's anchor on its node when the answer comes. A refusal
     /// carries the layer's [`DataError`](ndn_data::DataError) as its source. A provider without

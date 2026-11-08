@@ -12,7 +12,8 @@
 //! merge (`b1`…`b5`: a rule named by the app, operations it builds, merge versions in pieces;
 //! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
 //! record, and a collection's first own record under it; `i1`…`i12`: joining a folder by a code;
-//! `n1`: people named by their keys, adopting each other by name alone).
+//! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
+//! one folder reading each other).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -96,6 +97,7 @@ mod n1_named_by_key;
 mod o1_cut_recheck;
 mod o2_readmit;
 mod o3_many_writers;
+mod n2_members_read_each_other;
 mod o4_sustained_writes;
 mod r1_concurrent_shares;
 mod r2_group_removal;
@@ -200,6 +202,7 @@ pub const CASES: &[Case] = &[
 const LIMIT: Duration = Duration::from_secs(120);
 /// How long a case lets the network run before asserting that something did *not* happen.
 const SETTLE: Duration = Duration::from_secs(60);
+    n2_members_read_each_other::CASE,
     f4_let_go_keeps_joined::CASE,
 /// How long a watch is drained for one look at a collection.
 const LOOK: Duration = Duration::from_secs(5);

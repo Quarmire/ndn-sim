@@ -56,7 +56,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use ndn_app::{Consumer, EngineAppExt, Node, ServeGuard};
 use ndn_cert::{AnchorLink, GenesisKey, OldRoot, RecoveryPlan, RecoverySeed};
-use ndn_data::intro::Adopting;
+use ndn_data::intro::{Adopting, Scoping};
 use ndn_data::wire::{
     AuditAnswer, AuditAsk, NONCE_LEN, Record, VersionBody, audit_ask_name, decode_record,
     encode_audit_answer, encode_record, log_name, parse_audit_ask_name, parse_log_name,
@@ -74,8 +74,8 @@ use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_security::cert_name::{DEFAULT_ISSUER, new_cert_name};
 use ndn_security::self_certifying::Genesis;
 use ndn_security::{
-    Certificate, SecurityManager, SignedTrustContext, Signer, Validator, anchor_fingerprint,
-    encode_cert_data,
+    Certificate, ScopedContext, SecurityManager, SignedTrustContext, Signer, Validator,
+    anchor_fingerprint, encode_cert_data,
 };
 use ndn_sim::{Fabric, NodeId};
 use ndn_sync::{DataStore, MemoryStore, SvsConfig};
@@ -639,6 +639,31 @@ impl Introducer for Introduce {
                 }
             }
         })
+    }
+
+    fn adopt_scoped<'a>(
+        &'a self,
+        namespace: &'a Name,
+        held: Option<&'a ScopedContext>,
+    ) -> Scoping<'a> {
+        Box::pin(async move {
+            // Fetched by name through the node's engine, its validator expecting the versions,
+            // and adopted into no keyring: the node's forwarder keeps refusing the namespace.
+            let scoped = ndn_identity::adopt_scoped_via_engine(&self.engine, namespace, held)
+                .await
+                .map_err(|e| e.to_string())?;
+            if held.is_none() {
+                // As a forwarder carries a namespace it does not hold for a device that validates
+                // it end to end: its Data forwarded unvalidated, never cached; its group routed.
+                self.engine.transit().add(namespace, || {});
+                (self.route)(namespace);
+            }
+            Ok(scoped)
+        })
+    }
+
+    fn release_scoped(&self, namespace: &Name) {
+        self.engine.transit().remove(namespace, || {});
     }
 }
 
@@ -1950,5 +1975,31 @@ impl Provider for Reference {
             &ndn_link::group_routes(std::iter::once(&link.namespace), 0),
         );
         Ok(())
+    }
+
+    async fn forwarder_verdict(
+        &self,
+        fabric: &Fabric,
+        at: &DeviceSpec,
+        from: &DeviceSpec,
+        name: &Name,
+    ) -> anyhow::Result<Result<(), String>> {
+        let wire = self
+            .store(from)
+            .get(name)
+            .with_context(|| format!("{} stores no packet {name}", from.name()))?;
+        let data = Data::decode(wire).map_err(|e| anyhow::anyhow!("{name}: {e:?}"))?;
+        let validator = fabric
+            .engine_of(at.node)
+            .and_then(|e| e.validator())
+            .with_context(|| format!("node {} has no validator", at.node))?;
+        Ok(match validator.validate_durable(&data).await {
+            ndn_security::ValidationResult::Valid(_) => Ok(()),
+            ndn_security::ValidationResult::Invalid(e) => Err(e.to_string()),
+            ndn_security::ValidationResult::Pending => Err(format!(
+                "{name} waits for a certificate {}'s forwarder lacks: no verdict",
+                at.name()
+            )),
+        })
     }
 }

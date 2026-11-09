@@ -216,7 +216,16 @@ fn run(w: &World) -> CaseFuture<'_> {
         let third = log_entry(w, BOB, &columns[2], &group[2]);
         let lost = w.lose(BOB, &columns[2], 1);
         ensure!(lost > 0, "Bob stored nothing of the third column to lose");
+        // Every cached copy goes: Bob's own packet, and each device's answer for it under its own
+        // name (`<device>/32=held/…`), which a cache keeps once a reader asked the devices
+        // answering for Bob — as one does when Bob's answer was lost on the way — and serves as
+        // rightly as the device would (spec §13.5).
         w.net().forget_cached(&third).await;
+        for d in [LAPTOP, PHONE, REPO, BOB, CAROL, DAVE] {
+            w.net()
+                .forget_cached(&held_name(&w.net().spec(d).name(), &third))
+                .await;
+        }
 
         // Dave comes back: Bob serves him two of the three members.
         w.net().online(DAVE);

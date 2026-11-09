@@ -82,8 +82,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
 
+        // Opening Carol's snapshot fetches it when not held: a fetch that missed every ask
+        // answers RetryLater, and the host opens it again as the refusal says (data-layer §18.1).
         for (who, layer) in [("Alice", &alice), ("Carol", &carol)] {
-            match layer.get(&pin).await?.got {
+            match w.again(|| layer.get(&pin)).await?.got {
                 Got::State(s) => ensure!(
                     s.at == friday.at && s.value == friday.value,
                     "{who} opened the cited plan at {:?}, not Friday's {:?}",
@@ -96,7 +98,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                     )));
                 }
             }
-            match layer.get(&snap.name).await?.got {
+            match w.again(|| layer.get(&snap.name)).await?.got {
                 Got::Snapshot(s) => ensure!(
                     s.pins == snap.pins,
                     "{who} opened the snapshot and found other pins"

@@ -99,7 +99,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().online(PHONE);
         w.sleep(SETTLE).await;
 
-        let later = phone.put(&doc, text("after both"), note(1)).await?;
+        // The phone's first put once both records are known needs the key of the epoch in force,
+        // which may still be on its way: refused Unavailable (RetryLater), put again as the
+        // refusal says (data-layer §17.1, §18.1).
+        let later = w.put(PHONE, &doc, text("after both"), note(1)).await?;
         w.until(
             "Carol, added by the laptop, opens the phone's later version",
             LIMIT,

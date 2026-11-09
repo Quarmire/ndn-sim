@@ -86,7 +86,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             )
             .await?;
         // The phone writes the cover in the epoch its record started: once the laptop reads it,
-        // the laptop holds that record.
+        // the laptop holds that record. It writes over the cover it reads: a version written
+        // before the laptop's reached it would be concurrent with the laptop's (data-layer §15:
+        // its parents are the state it holds), and the log rule's newest of two concurrent
+        // versions is the greater key's.
+        w.until("alice's phone reads alice's cover", LIMIT, || {
+            reads(&*phone, &cover, "cover by alice")
+        })
+        .await?;
         phone
             .put(&cover, text("cover by alice's phone"), note(1))
             .await?;

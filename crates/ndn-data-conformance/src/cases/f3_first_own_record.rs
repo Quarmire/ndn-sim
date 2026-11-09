@@ -50,7 +50,8 @@ fn plan() -> Plan {
 }
 
 /// Whether `layer` reads the version `entry` names: admitted and held. `false` while it does not
-/// hold it, or refuses it.
+/// hold it, refuses it, or answers it is not ready yet — a sealed version held before the record
+/// admitting this device, which is on its way (spec §15: get again; the polls here do).
 async fn reads(layer: &dyn DataLayer, entry: &Name) -> Result<bool, Failure> {
     match layer.get(entry).await {
         Ok(Answer {
@@ -64,6 +65,7 @@ async fn reads(layer: &dyn DataLayer, entry: &Name) -> Result<bool, Failure> {
         Err(
             DataError::Unavailable { .. }
             | DataError::NotFound { .. }
+            | DataError::NotReady { .. }
             | DataError::Sealed { .. }
             | DataError::Refused { .. },
         ) => Ok(false),

@@ -7,7 +7,8 @@
 //! a revoked issuer) beside theirs (c3), the items left open after the model's fixes
 //! (`o1`…`o5`), the slice-2 security review (`r1`…`r6`): the attacks it found, the concurrent
 //! share its merge must keep, other bytes at a seq a removal cut kept, and an old-form removal
-//! cut across an upgrade, and slice 6's
+//! cut across an upgrade — with round 3's removal that outlasts a later revision signed without
+//! it (`r7`) —, and slice 6's
 //! substrate for apps that bring their own
 //! merge (`b1`…`b9`: a rule named by the app, operations it builds, merge versions in pieces,
 //! owner locks, counting both ways, and checkpoints beside versions written apart from them;
@@ -109,6 +110,7 @@ mod r3_own_device_removed;
 mod r4_concurrent_add_remove;
 mod r5_removal_cut_bytes;
 mod r6_unbound_cut_upgrade;
+mod r7_removal_across_revisions;
 mod s1_range_reads;
 mod s2_forged_entry;
 mod s3_spliced_entry;
@@ -168,6 +170,7 @@ pub const CASES: &[Case] = &[
     r4_concurrent_add_remove::CASE,
     r5_removal_cut_bytes::CASE,
     r6_unbound_cut_upgrade::CASE,
+    r7_removal_across_revisions::CASE,
     b1_rule_by_name::CASE,
     b2_basis_outside_past::CASE,
     b3_locked_setting::CASE,

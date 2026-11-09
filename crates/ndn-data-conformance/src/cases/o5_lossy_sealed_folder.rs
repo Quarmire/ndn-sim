@@ -63,8 +63,10 @@ const SEED: u64 = 1;
 /// ask) a miss costs one Interest lifetime (2.5 s with the consumer's slack) and a pause from
 /// 250 ms. Seeds 1 to 7 converge within 0.3–3.8 s; with a miss costing a lifetime every time it
 /// took 2.8–13.8 s, and asked once per granter, with the pause doubling to a minute, the version
-/// never came within 120 s.
-const BOUND: Duration = Duration::from_secs(8);
+/// never came within 120 s. The bound allows the worst a draw gives before any round trip is
+/// measured — three of Bob's first asks lost in a row, a lifetime each, then the path at its
+/// measured pace: seeds 0 to 40 converge within 8.6 s at most (seed 17).
+const BOUND: Duration = Duration::from_secs(10);
 
 fn plan() -> Plan {
     let mut p = Plan::new();

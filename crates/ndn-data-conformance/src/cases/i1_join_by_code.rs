@@ -94,9 +94,14 @@ pub(super) async fn joins(w: &World, d: Dev, code: &str) -> Result<Joined, Failu
     })
 }
 
-/// `d` joins by `code`, which must be refused: the refusal.
+/// `d` joins by `code`, which must be refused: the refusal. A refusal whose
+/// next step is `RetryLater` (the inviter's device not reached: on a faulty
+/// network an ask, or every answer to it, lost) is asked again as a host
+/// does ([`World::join_again`]), so the refusal judged is the inviter's
+/// own, never a lost exchange's — a join refused while the inviter is
+/// offline still ends `NotReady` once the host stops asking.
 pub(super) async fn refused(w: &World, d: Dev, code: &str) -> Result<DataError, Failure> {
-    match w.join(d, code).await? {
+    match w.join_again(d, code).await? {
         Ok(j) => Err(Failure::new(format!(
             "{} joined {} by a code that must be refused",
             w.net().spec(d).name(),

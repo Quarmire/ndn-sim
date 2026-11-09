@@ -58,7 +58,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                 ),
             )
             .await?;
-        let first = phone.put(&doc, text("draft"), note(1)).await?;
+        let first = w.put(PHONE, &doc, text("draft"), note(1)).await?;
         w.until("every reader opens the draft", LIMIT, || async {
             for layer in [&laptop, &bob, &carol] {
                 let seen = look(&**layer, &doc, &Frontier::new(), LOOK).await?;
@@ -88,7 +88,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().online(LAPTOP);
         w.sleep(SETTLE).await;
 
-        let later = phone.put(&doc, text("final figures"), note(1)).await?;
+        // The epoch in force may be the laptop's: the phone asks it for the key, and on a faulty
+        // network may answer RetryLater first (spec §9, §17.1) — a host puts again.
+        let later = w.put(PHONE, &doc, text("final figures"), note(1)).await?;
         w.until(
             "the laptop opens the phone's later version",
             LIMIT,

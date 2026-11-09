@@ -107,7 +107,29 @@ fn run(w: &World) -> CaseFuture<'_> {
                 .any(|l| l.audit.kept() && l.holds.contains(&cp)),
             "the repo holds no kept lease on the checkpoint"
         );
-        let released = w.release(PHONE, &edit_name).await?;
+        // The release proves the checkpoint held by fresh whole asks to the repo; when no answer
+        // to any of them comes back (every ask or answer lost) it keeps the pieces and says to
+        // hold first (data-layer §13.3, step 4: no holder proved it). The host does what the
+        // refusal says — holds again, then releases again — as long as the case allows.
+        let start = tokio::time::Instant::now();
+        let released = loop {
+            match w.try_release(PHONE, &edit_name).await? {
+                Ok(pieces) => break pieces,
+                Err(e @ DataError::NotHeld { .. }) if start.elapsed() < LIMIT => {
+                    ensure!(
+                        e.next() == NextStep::HoldFirst,
+                        "the refused release says to hold first: {e}"
+                    );
+                    phone.hold(&notes, want.clone()).await?;
+                }
+                Err(e) => {
+                    return Err(Failure::new(format!(
+                        "the phone did not release the edit's pieces behind the held checkpoint: \
+                         {e}"
+                    )));
+                }
+            }
+        };
         ensure!(released > 0, "the phone released none of the edit's pieces");
         w.measure("pieces of the edit the phone released", released, "pieces");
         w.measure(

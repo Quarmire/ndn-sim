@@ -91,6 +91,11 @@ use crate::provider::{Certs, DeviceSpec, Grants, Program, Provider, Tally, Tampe
 const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
 /// A day in nanoseconds, the unit of certificate validity periods.
 const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
+/// How many times a replaying cache ([`Provider::replay`]) asks for the packet it will replay
+/// before giving up: each ask lives 2 s, so on the faulty profile (drop 0.2 each way, blocks)
+/// eight asks all go unanswered about once in three thousand runs, and on a clean path the
+/// first ask is answered.
+const REPLAY_TRIES: u32 = 8;
 
 /// One case's keys and devices.
 #[derive(Default)]
@@ -1891,17 +1896,26 @@ impl Provider for Reference {
             .engine_of(device.node)
             .with_context(|| format!("no engine on node {}", device.node))?;
         let node = engine.app_node(CancellationToken::new());
-        // Fresh, past every cache: what a device serving `prefix` answers now.
-        let ask = InterestBuilder::new(prefix.clone())
-            .can_be_prefix()
-            .must_be_fresh()
-            .lifetime(std::time::Duration::from_secs(2));
-        let packet = Consumer::new(node.connection())
-            .fetch_with(ask)
-            .await
-            .with_context(|| format!("nothing answered {prefix} to replay"))?
-            .raw()
-            .clone();
+        // Fresh, past every cache: what a device serving `prefix` answers now. An attacker on a
+        // lossy path asks again, a bounded number of times, until an answer arrives: the attack
+        // needs the packet, and a lost Interest or Data is no defence.
+        let mut tries = 0;
+        let packet = loop {
+            tries += 1;
+            let ask = InterestBuilder::new(prefix.clone())
+                .can_be_prefix()
+                .must_be_fresh()
+                .lifetime(std::time::Duration::from_secs(2));
+            match Consumer::new(node.connection()).fetch_with(ask).await {
+                Ok(packet) => break packet.raw().clone(),
+                Err(e) if tries >= REPLAY_TRIES => {
+                    return Err(anyhow::Error::new(e).context(format!(
+                        "nothing answered {prefix} to replay in {REPLAY_TRIES} asks"
+                    )));
+                }
+                Err(_) => {}
+            }
+        };
         // Served on the device's own node under `prefix`: the hub forwards every Interest to
         // every device, and this node's longest match for `prefix` is the replayer, not the
         // device's data layer. Every Interest under it gets the same packet, however stale.

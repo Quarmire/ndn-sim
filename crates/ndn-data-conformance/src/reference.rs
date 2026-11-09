@@ -2069,9 +2069,14 @@ impl Provider for Reference {
             .with_context(|| format!("no engine on node {}", device.node))?;
         let conn = engine.app_face(CancellationToken::new());
         let clock = fabric.node_clock(device.node)?;
+        // The sim's hub is a plain forwarder on the fabric, with no ndn-link serving quota
+        // (ndn-link §15.3) for the default push budget to keep a device under; e10's four
+        // members push 64 packets/s into four groups, 256 push Interests/s each.
         let options = SignalOptions {
             local_ring: false,
             clock: Some(Arc::new(move || clock.now_ns() / 1_000)),
+            push_rate: std::num::NonZeroU32::new(10_000).expect("not 0"),
+            push_burst: std::num::NonZeroU32::new(20_000).expect("not 0"),
             ..SignalOptions::default()
         };
         let signals = Signals::start(layer, Arc::clone(&conn), options)

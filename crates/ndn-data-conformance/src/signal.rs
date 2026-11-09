@@ -1,5 +1,5 @@
 //! The signal wire as the signals spec writes it (ndn-rs `docs/specs/signals.md` §4), written
-//! here from the spec alone so the signal cases (`e1`…`e10`) can make, capture and inspect
+//! here from the spec alone so the signal cases (`e1`…`e16`) can make, capture and inspect
 //! packets the way an attacker or a relay sees them: a run header signed by a device key, a
 //! SignalBody signed by a run key, a SignalSealed under a scope's signal key, and the unsigned
 //! push Interest that carries one into a namespace's sync group. It shares no code with
@@ -37,6 +37,8 @@ const RUN_HEADER_BODY: u64 = 0x059A;
 const RUN_KEY: u64 = 0x059C;
 const RUN_START: u64 = 0x059E;
 const RUN_NOT_AFTER: u64 = 0x05A0;
+const LOCAL_RING: u64 = 0x05A2;
+const SIGNAL_PADDING: u64 = 0x05A4;
 const NAME: u64 = 0x07;
 /// The typed component of `32=signal`.
 const KEYWORD: u64 = 32;
@@ -109,10 +111,27 @@ pub fn header_name(signer: &Name, scope: &Name, run: &[u8; 16]) -> Name {
 
 /// A run header's Content (RunHeaderBody): the run key, its first sequence and its end, no ring.
 pub fn header_content(public: &[u8; 32], start: u64, not_after: u64) -> Bytes {
+    header_body(public, start, not_after, None)
+}
+
+/// A run header's Content that also names a local ring by its secret (`LocalRing`).
+pub fn header_content_ring(
+    public: &[u8; 32],
+    start: u64,
+    not_after: u64,
+    ring: &[u8; 32],
+) -> Bytes {
+    header_body(public, start, not_after, Some(ring))
+}
+
+fn header_body(public: &[u8; 32], start: u64, not_after: u64, ring: Option<&[u8; 32]>) -> Bytes {
     let mut value = Vec::new();
     tlv(&mut value, RUN_KEY, public);
     tlv(&mut value, RUN_START, &nni(start));
     tlv(&mut value, RUN_NOT_AFTER, &nni(not_after));
+    if let Some(ring) = ring {
+        tlv(&mut value, LOCAL_RING, ring);
+    }
     let mut out = Vec::new();
     tlv(&mut out, RUN_HEADER_BODY, &value);
     out.into()
@@ -200,10 +219,11 @@ pub fn sealed(packet: &[u8]) -> Option<Sealed> {
     })
 }
 
-/// The SignalBody TLV inside `sealed`, opened with the signal key `key`; `None` when it does
-/// not open under it.
+/// The SignalBody TLV inside `sealed`, opened with the signal key `key`, without the one
+/// SignalPadding that may follow it in the plaintext; `None` when it does not open under it
+/// or its plaintext is anything else.
 pub fn open(sealed: &Sealed, key: &[u8; 32]) -> Option<Bytes> {
-    XChaCha20Poly1305::new(key.into())
+    let plain = XChaCha20Poly1305::new(key.into())
         .decrypt(
             XNonce::from_slice(&sealed.nonce),
             Payload {
@@ -211,8 +231,16 @@ pub fn open(sealed: &Sealed, key: &[u8; 32]) -> Option<Bytes> {
                 aad: &aad(&sealed.key_id),
             },
         )
-        .ok()
-        .map(Bytes::from)
+        .ok()?;
+    let (_, _, rest) = read(&plain)?;
+    let body = plain.len() - rest.len();
+    if !rest.is_empty() {
+        let (typ, _, after) = read(rest)?;
+        if typ != SIGNAL_PADDING || !after.is_empty() {
+            return None;
+        }
+    }
+    Some(Bytes::from(plain).slice(..body))
 }
 
 /// The SignalBody `packet` is, if it is one.
@@ -410,6 +438,11 @@ mod tests {
         assert_eq!((s.key_id, s.nonce), ([1; 8], [3; 24]));
         assert_eq!(open(&s, &[2; 32]).as_deref(), Some(&wire[..]));
         assert_eq!(open(&s, &[4; 32]), None);
+        // A padded plaintext (the hub pads sealed packets to a size bucket) opens to its body.
+        let mut padded = wire.to_vec();
+        tlv(&mut padded, SIGNAL_PADDING, &[0; 40]);
+        let s = sealed(&seal(&[1; 8], &[2; 32], &[3; 24], &padded)).unwrap();
+        assert_eq!(open(&s, &[2; 32]).as_deref(), Some(&wire[..]));
     }
 
     /// The push Interest names the group, `32=signal` and the parameters digest, and carries the

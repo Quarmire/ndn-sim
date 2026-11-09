@@ -50,3 +50,10 @@ tracing-subscriber = { workspace = true }
 ndn-packet = { workspace = true }
 # The faulty fabric's device links wired permanent, as the clean fabric's are (`world`).
 ndn-transport = { workspace = true }
+# Signals (spec signals.md): the hub a host starts on each device (`reference`), driven by the
+# signal cases (`e1`…`e10`).
+ndn-surface = { workspace = true }
+# The signal wire written from the spec (`signal`): run keys and their signatures, and the seal
+# of a sealed scope — what a hostile member or a relay makes and reads.
+ed25519-dalek    = "2"
+chacha20poly1305 = "0.10"

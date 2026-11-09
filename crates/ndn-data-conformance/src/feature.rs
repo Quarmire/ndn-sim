@@ -108,6 +108,11 @@ pub enum Feature {
     /// version 1 checked as the genesis the name hashes, and a device of such a person serves
     /// what an adopter fetches — its namespace's trust-context versions and its certificate.
     SelfCertifying,
+    /// Signals (`ndn_surface::signal`, spec signals.md): ephemeral live data pushed unsigned into
+    /// the members' sync groups, each packet signed by a run key a member's device key vouched
+    /// for, sealed under the scope's signal key in a sealed scope, gated by the members record in
+    /// force on every packet, never a version and never cached.
+    Signals,
 }
 
 impl Feature {
@@ -140,6 +145,7 @@ impl Feature {
             | Feature::FolderWatch
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
+            Feature::Signals => 7,
             Feature::Functions => 8,
         }
     }
@@ -181,6 +187,7 @@ impl Feature {
             Feature::FolderWatch => "folder watch",
             Feature::Introduction => "introduction",
             Feature::SelfCertifying => "names by key",
+            Feature::Signals => "signals",
         }
     }
 }

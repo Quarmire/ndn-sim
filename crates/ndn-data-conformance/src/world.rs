@@ -7,19 +7,23 @@
 //! device has its own wall clock, which a case can set wrong at any time.
 
 use std::cell::{Cell, RefCell};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ndn_app::EngineAppExt;
+use bytes::Bytes;
+use ndn_app::{Connection, EngineAppExt, ForwarderEngine};
 use ndn_data::{
     Code, Content, DataError, DataLayer, Joined, Name, NextStep, Offer, PutOptions, Timestamp,
     VersionId,
 };
 use ndn_packet::encode::InterestBuilder;
+use ndn_security::Signer;
 use ndn_sim::{
-    ClockSkew, Fabric, FaceKind, FaceProfile, Faults, LinkConfig, NodeId, NodeProfile, SimKernel,
-    Simulation,
+    ClockSkew, Fabric, FaceKind, FaceProfile, Faults, LinkConfig, NodeId, NodeProfile,
+    PrefixSample, SimKernel, Simulation,
 };
+use ndn_surface::signal::Signals;
+use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
 use crate::provider::{Certs, DeviceSpec, Grants, NodeRole, Program, Provider, Tally, Tamper};
@@ -415,6 +419,147 @@ impl Net {
             .await
             .is_ok()
     }
+
+    /// An app of `d`'s own on its node: a raw face to its forwarder, for packets a case makes
+    /// by hand (a push Interest it injects, as a hostile program on the device would).
+    pub fn app_face(&self, d: Dev) -> Arc<dyn Connection> {
+        self.fabric
+            .engine_of(self.specs[d.0].node)
+            .expect("every device is a node")
+            .app_face(CancellationToken::new())
+    }
+
+    /// A tap on the hub, the relay between every two devices: from now on it receives a copy of
+    /// every Interest the hub forwards under `prefix`, as the relay forwards it. The hub reaches
+    /// every device under `prefix` as before (its route there names every device's link beside
+    /// the tap, as its default route does), so the tap changes nothing the devices receive.
+    pub async fn tap(&self, prefix: &Name) -> Tap {
+        let engine = self.fabric.engine_of(self.hub).expect("the hub is a node");
+        for spec in &self.specs {
+            let link = self
+                .fabric
+                .face_between(self.hub, spec.node)
+                .expect("every device is linked to the hub");
+            engine.fib().add_nexthop(prefix, link, 0);
+        }
+        let conn = engine.app_face(CancellationToken::new());
+        conn.register_prefix(prefix)
+            .await
+            .expect("an in-process face routes any prefix");
+        let seen: Arc<Mutex<Vec<Bytes>>> = Arc::default();
+        let into = Arc::clone(&seen);
+        let task = tokio::spawn(async move {
+            while let Some(wire) = conn.recv().await {
+                into.lock().expect("the tap's lock").push(bare(wire));
+            }
+        });
+        Tap { seen, task }
+    }
+
+    /// The name of every packet any forwarder's content store (the hub's and each device's)
+    /// holds now.
+    pub async fn cached(&self) -> Vec<Name> {
+        let mut names = Vec::new();
+        let now = self.fabric.clock().now_ns();
+        let nodes = std::iter::once(self.hub).chain(self.specs.iter().map(|s| s.node));
+        for node in nodes {
+            let Some(engine) = self.fabric.engine_of(node) else {
+                continue;
+            };
+            let cs = engine.cs();
+            let mut after: Option<Name> = None;
+            loop {
+                let page = cs
+                    .list_erased(&Name::root(), after.as_ref(), 1024, now)
+                    .await;
+                names.extend(page.entries.iter().map(|e| (*e.name).clone()));
+                match page.entries.last() {
+                    Some(last) if page.more => after = Some((*last.name).clone()),
+                    _ => break,
+                }
+            }
+        }
+        names
+    }
+
+    /// Every node's traffic so far by name, as the plan counts it ([`Plan::count_names`]).
+    pub fn traffic(&self) -> Vec<PrefixSample> {
+        self.fabric
+            .prefix_stats()
+            .expect("a case reading traffic by name plans to count names (Plan::count_names)")
+            .snapshot()
+    }
+
+    /// From now on `d` reaches nothing under `prefix` (another device's name: its records, its
+    /// summaries): its node routes `prefix` to a face that answers nothing, while everything
+    /// else — every Interest it pushes or receives — flows. Until the [`CutOff`] is restored or
+    /// dropped. A hold on the link would not do: on the faulty fabric's ordered link face a held
+    /// packet holds every packet behind it.
+    pub async fn cut_off(&self, d: Dev, prefix: &Name) -> CutOff {
+        let engine = self
+            .fabric
+            .engine_of(self.specs[d.0].node)
+            .expect("every device is a node");
+        let sink = engine.app_face(CancellationToken::new());
+        sink.register_prefix(prefix)
+            .await
+            .expect("an in-process face routes any prefix");
+        let task = tokio::spawn(async move { while sink.recv().await.is_some() {} });
+        CutOff {
+            engine,
+            prefix: prefix.clone(),
+            task,
+        }
+    }
+}
+
+/// A device cut off from a prefix ([`Net::cut_off`]).
+pub struct CutOff {
+    engine: ForwarderEngine,
+    prefix: Name,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl CutOff {
+    /// The device reaches the prefix again, by its routes from before.
+    pub fn restore(self) {}
+}
+
+impl Drop for CutOff {
+    fn drop(&mut self) {
+        self.engine.fib().remove_prefix(&self.prefix);
+        self.task.abort();
+    }
+}
+
+/// A tap on the relay ([`Net::tap`]).
+pub struct Tap {
+    seen: Arc<Mutex<Vec<Bytes>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Tap {
+    /// Every Interest the relay forwarded under the tapped prefix so far, as it forwarded it.
+    pub fn interests(&self) -> Vec<Bytes> {
+        self.seen.lock().expect("the tap's lock").clone()
+    }
+}
+
+impl Drop for Tap {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// A frame as its packet: an NDNLPv2 packet's fragment, or the frame itself.
+fn bare(wire: Bytes) -> Bytes {
+    if wire.first() == Some(&0x64)
+        && let Ok(lp) = ndn_packet::LpPacket::decode(wire.clone())
+        && let Some(fragment) = lp.fragment
+    {
+        return fragment;
+    }
+    wire
 }
 
 /// One device's link counters, for [`Net::device_wire`].
@@ -468,6 +613,8 @@ pub struct World {
     converge: Cell<Option<Duration>>,
     reported_from: Cell<Option<Mark>>,
     measured: RefCell<Vec<Measure>>,
+    /// Each device's signals once started ([`World::signals`]), shut down with the world.
+    signals: RefCell<Vec<Option<Signals>>>,
 }
 
 impl World {
@@ -500,6 +647,7 @@ impl World {
             converge: Cell::new(None),
             reported_from: Cell::new(None),
             measured: RefCell::new(Vec::new()),
+            signals: RefCell::new(vec![None; plan.devices.len()]),
         })
     }
 
@@ -953,6 +1101,51 @@ impl World {
             .map_err(|e| Failure::new(format!("cannot replay: {e:#}")))
     }
 
+    /// `d`'s host's signals (see [`Provider::signals`]), started on first ask.
+    pub async fn signals(&self, d: Dev) -> Result<Signals, Failure> {
+        if let Some(signals) = &self.signals.borrow()[d.0] {
+            return Ok(signals.clone());
+        }
+        let signals = self
+            .provider
+            .signals(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot start signals: {e:#}")))?;
+        self.signals.borrow_mut()[d.0] = Some(signals.clone());
+        Ok(signals)
+    }
+
+    /// `d`'s host routes the sync group `group` to its signals too, as an eavesdropper on its
+    /// own node does (see [`Provider::listen`]).
+    pub async fn listen(&self, d: Dev, group: &Name) -> Result<(), Failure> {
+        self.provider
+            .listen(&self.net.fabric, self.net.spec(d), group)
+            .await
+            .map_err(|e| Failure::new(format!("cannot listen to {group}: {e:#}")))
+    }
+
+    /// The `ndn-data` Device behind `d`'s data layer, for its signal gate (see
+    /// [`Provider::gate`]).
+    pub fn gate(&self, d: Dev) -> Result<ndn_data::Device, Failure> {
+        self.provider
+            .gate(self.net.spec(d))
+            .map_err(|e| Failure::new(format!("no gate: {e:#}")))
+    }
+
+    /// `d`'s own signing key, as a hostile program on it holds it (see [`Provider::signer`]).
+    pub fn signer(&self, d: Dev) -> Result<Arc<dyn Signer>, Failure> {
+        self.provider
+            .signer(self.net.spec(d))
+            .map_err(|e| Failure::new(format!("no key: {e:#}")))
+    }
+
+    /// The name of every packet `d`'s data layer stores (see [`Provider::stored_names`]).
+    pub fn stored_names(&self, d: Dev) -> Result<Vec<Name>, Failure> {
+        self.provider
+            .stored_names(self.net.spec(d))
+            .map_err(|e| Failure::new(format!("cannot list the store: {e:#}")))
+    }
+
     /// Let `d` of virtual time pass.
     pub async fn sleep(&self, d: Duration) {
         tokio::time::sleep(d).await;
@@ -1061,8 +1254,11 @@ impl World {
         }
     }
 
-    /// Shut the fabric down.
+    /// Shut the device's signals and the fabric down.
     pub async fn shutdown(self) {
+        for signals in self.signals.borrow().iter().flatten() {
+            signals.shutdown();
+        }
         self.net.fabric.shutdown().await;
     }
 }

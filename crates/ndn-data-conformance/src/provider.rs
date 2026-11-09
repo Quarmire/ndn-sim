@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use ndn_data::{Code, DataLayer, Joined, Name, Offer, Timestamp, VersionId};
+use ndn_security::Signer;
 use ndn_sim::{Fabric, NodeId, NodeProfile};
+use ndn_surface::signal::Signals;
 
 use crate::feature::Feature;
 
@@ -506,5 +508,52 @@ pub trait Provider: Send + Sync {
             "this provider cannot make {} join a folder by a code",
             device.name()
         )
+    }
+
+    /// `device`'s host starts signals for its data layer (`ndn_surface::signal::Signals`, spec
+    /// signals §2) as a host does: on a connection of its own to its node's forwarder, gated by
+    /// the device's data layer, with the device's own namespace's sync group (`<ns>/32=sync`,
+    /// where members push for it) routed to that connection's face as its node routes the data
+    /// layer's sync face. Started once; asked again it answers the same one. A provider without
+    /// signals says so.
+    async fn signals(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Signals> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot start signals on {}", device.name())
+    }
+
+    /// Fault injection: `device`'s host routes the sync group `group` — another namespace's,
+    /// where it is not pushed to — to its signals' connection too, as an eavesdropper on its own
+    /// node does ([`signals`](Self::signals) starts them first). A provider that cannot says so.
+    async fn listen(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        group: &Name,
+    ) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot route {group} to {}'s signals",
+            device.name()
+        )
+    }
+
+    /// The `ndn-data` [`Device`](ndn_data::Device) behind `device`'s data layer, whose signal gate
+    /// (`ndn_data::signal`: the signal keys it holds, the run headers it signs) a program on the
+    /// device can ask beside the seven verbs — what a member that turns hostile holds. A
+    /// provider that is no `ndn-data` Device says so.
+    fn gate(&self, device: &DeviceSpec) -> anyhow::Result<ndn_data::Device> {
+        anyhow::bail!("this provider has no ndn-data Device on {}", device.name())
+    }
+
+    /// `device`'s own signing key, as a hostile program on the device holds it: it signs
+    /// whatever it is given, past every gate. A provider that cannot hand it out says so.
+    fn signer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Signer>> {
+        anyhow::bail!("this provider cannot hand out {}'s key", device.name())
+    }
+
+    /// The name of every packet `device`'s data layer stores, in name order. A provider that
+    /// cannot list its store says so.
+    fn stored_names(&self, device: &DeviceSpec) -> anyhow::Result<Vec<Name>> {
+        anyhow::bail!("this provider cannot list what {} stores", device.name())
     }
 }

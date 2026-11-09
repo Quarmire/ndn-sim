@@ -48,13 +48,20 @@
 //! ([`Provider::adopt`]) through its node's engine as the daemon does
 //! (`ndn_identity::adopt_anchor_link_via_engine`), then carries and routes that person's sync
 //! group as after an introduction.
+//!
+//! A device's host starts signals (`ndn_surface::signal::Signals`) when a case asks for them,
+//! on an app face of their own on the device's node, gated by the device's data layer and dating
+//! by the node's clock; the face takes the device's namespace group (`<ns>/32=sync`), which the
+//! node already carries with the multicast strategy and routes over its link. Every device is
+//! its own host, so signals open no local ring: in one process one device's ring would be
+//! another's, and every signal crosses the simulated links.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use ndn_app::{Consumer, EngineAppExt, Node, ServeGuard};
+use ndn_app::{Connection, Consumer, EngineAppExt, Node, ServeGuard};
 use ndn_cert::{AnchorLink, GenesisKey, OldRoot, RecoveryPlan, RecoverySeed};
 use ndn_data::intro::{Adopting, Scoping};
 use ndn_data::wire::{
@@ -78,6 +85,7 @@ use ndn_security::{
     anchor_fingerprint, encode_cert_data,
 };
 use ndn_sim::{Fabric, NodeId};
+use ndn_surface::signal::{SignalOptions, Signals};
 use ndn_sync::{DataStore, MemoryStore, SvsConfig};
 use ndn_trust_envelope::TrustEnvelope;
 use sha2::{Digest, Sha256};
@@ -127,6 +135,9 @@ struct Case {
     /// certificate to the validators that meet its packets after adopting its namespace by
     /// name.
     certificates: Vec<Arc<OwnCertificates>>,
+    /// Each device's signals and the connection of their own they run on, by node
+    /// ([`Provider::signals`]).
+    signals: HashMap<NodeId, (Signals, Arc<dyn Connection>)>,
 }
 
 /// A certificate of a device's key and the key that signed it.
@@ -900,6 +911,7 @@ impl Provider for Reference {
                 | Feature::FolderWatch
                 | Feature::Introduction
                 | Feature::SelfCertifying
+                | Feature::Signals
         )
     }
 
@@ -2033,5 +2045,93 @@ impl Provider for Reference {
                 at.name()
             )),
         })
+    }
+
+    /// A host's signals: their own app face on the device's node, gated by the device's data
+    /// layer, dating by the node's (possibly lying) clock. `Signals::start` registers the device's
+    /// namespace group on that face, which on an in-process engine installs the route to it (an
+    /// `EngineConnection`), as the data layer's sync face is routed. Every device of a case is its
+    /// own host, yet the sim runs them all in one process, where one device's ring would be
+    /// another's local ring: rings are off, so every signal crosses the simulated links.
+    async fn signals(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Signals> {
+        if let Some((signals, _)) = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .signals
+            .get(&device.node)
+        {
+            return Ok(signals.clone());
+        }
+        let layer = self.layer(device)?;
+        let engine = fabric
+            .engine_of(device.node)
+            .with_context(|| format!("no engine on node {}", device.node))?;
+        let conn = engine.app_face(CancellationToken::new());
+        let clock = fabric.node_clock(device.node)?;
+        let options = SignalOptions {
+            local_ring: false,
+            clock: Some(Arc::new(move || clock.now_ns() / 1_000)),
+            ..SignalOptions::default()
+        };
+        let signals = Signals::start(layer, Arc::clone(&conn), options)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "{}'s signals did not start: {e} (next step: {:?})",
+                    device.name(),
+                    e.next()
+                )
+            })?;
+        self.case
+            .lock()
+            .expect("the provider's lock")
+            .signals
+            .insert(device.node, (signals.clone(), conn));
+        Ok(signals)
+    }
+
+    async fn listen(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        group: &Name,
+    ) -> anyhow::Result<()> {
+        let conn = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .signals
+            .get(&device.node)
+            .map(|(_, conn)| Arc::clone(conn))
+            .with_context(|| format!("{} runs no signals", device.name()))?;
+        conn.register_prefix(group)
+            .await
+            .map_err(|e| anyhow::anyhow!("{group} not routed to {}: {e}", device.name()))
+    }
+
+    fn gate(&self, device: &DeviceSpec) -> anyhow::Result<Device> {
+        self.layer(device)
+    }
+
+    fn signer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Signer>> {
+        let keys = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .keys
+            .get(&device.name())
+            .cloned()
+            .with_context(|| format!("{} was not prepared", device.name()))?;
+        Ok(keys.get_signer_sync(&device_key(&device.name()))?)
+    }
+
+    fn stored_names(&self, device: &DeviceSpec) -> anyhow::Result<Vec<Name>> {
+        Ok(self
+            .store(device)
+            .scan_under(&Name::root(), 0)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect())
     }
 }

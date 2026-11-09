@@ -69,6 +69,8 @@ ndn-identity     = { path = "../ndn-rs/crates/security/ndn-identity" }
 # ndn-data-conformance: introduction codes (`ndn-trust://intro` links) the cases alter, and the
 # anchor links the reference provider's hosts adopt.
 ndn-trust-envelope = { path = "../ndn-rs/crates/security/ndn-trust-envelope" }
+# ndn-data-conformance: signals (`ndn_surface::signal`), the hub a host starts on each device.
+ndn-surface = { path = "../ndn-ext/crates/surface/ndn-surface", features = ["signals"] }
 
 # Core async runtime — individual crates enable only the features they need
 tokio      = { version = "1", default-features = false }

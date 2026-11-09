@@ -138,12 +138,20 @@ fn run(w: &World) -> CaseFuture<'_> {
                 .await?;
             seeds.push(put_element(w, LAPTOP, c, |op| op.set("column", "made")).await?);
         }
+        // Every device looks at every column at once: a device's first look at a column is a
+        // walk of the laptop's summary and a key grant, several exchanges in a row, and on a
+        // faulty network twelve of them one after another (each device only once the one
+        // before held every column) outlast the limit though each is in time.
         w.until("everyone holds the three columns", LIMIT, || async {
-            for layer in [&phone, &bob, &carol, &dave] {
-                for (c, id) in columns.iter().zip(&seeds) {
-                    if !has(&**layer, c, id).await? {
-                        return Ok(false);
-                    }
+            let looks = [&phone, &bob, &carol, &dave].into_iter().flat_map(|layer| {
+                columns
+                    .iter()
+                    .zip(&seeds)
+                    .map(move |(c, id)| has(&**layer, c, id))
+            });
+            for held in futures::future::join_all(looks).await {
+                if !held? {
+                    return Ok(false);
                 }
             }
             Ok(true)

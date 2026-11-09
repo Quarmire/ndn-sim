@@ -279,6 +279,7 @@ impl Reference {
                 EngineFaces(engine.clone())
                     .add_routes(link, &ndn_link::group_routes(std::iter::once(person), 0));
             }),
+            carried: std::sync::Mutex::new(std::collections::HashSet::new()),
         }))
     }
 
@@ -597,6 +598,9 @@ struct Introduce {
     engine: ndn_app::ForwarderEngine,
     /// Carry and route a newly adopted person's sync group.
     route: Box<dyn Fn(&Name) + Send + Sync>,
+    /// The namespaces adopted for the layer alone that its engine carries in transit, once
+    /// each, until the layer releases them.
+    carried: std::sync::Mutex<std::collections::HashSet<Name>>,
 }
 
 impl Introducer for Introduce {
@@ -657,9 +661,16 @@ impl Introducer for Introduce {
             let scoped = ndn_identity::adopt_scoped_via_engine(&self.engine, namespace, held)
                 .await
                 .map_err(|e| e.to_string())?;
-            if held.is_none() {
-                // As a forwarder carries a namespace it does not hold for a device that validates
-                // it end to end: its Data forwarded unvalidated, never cached; its group routed.
+            // Carried once adopted, whether refreshed from a version the layer held (one it
+            // kept across a restart included) or not: as a forwarder carries a namespace it does
+            // not hold for a device that validates it end to end — its Data forwarded
+            // unvalidated, never cached; its group routed.
+            if self
+                .carried
+                .lock()
+                .expect("the host's lock")
+                .insert(namespace.clone())
+            {
                 self.engine.transit().add(namespace, || {});
                 (self.route)(namespace);
             }
@@ -668,7 +679,14 @@ impl Introducer for Introduce {
     }
 
     fn release_scoped(&self, namespace: &Name) {
-        self.engine.transit().remove(namespace, || {});
+        if self
+            .carried
+            .lock()
+            .expect("the host's lock")
+            .remove(namespace)
+        {
+            self.engine.transit().remove(namespace, || {});
+        }
     }
 }
 

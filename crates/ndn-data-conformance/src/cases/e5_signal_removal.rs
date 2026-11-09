@@ -241,9 +241,12 @@ fn run(w: &World) -> CaseFuture<'_> {
         let lost = loss_time(w, LAPTOP).await;
         w.revoke_at(LAPTOP, PHONE, lost).await?;
         w.spread(CAROL).await?;
-        let before = stats(w, CAROL).await?.not_member;
+        // Adopting a revocation lets the revoked key's held run go; its next header is then
+        // refused at admission as bad_signature (a revoked key), not per packet as not_member.
+        let refusals = |s: &SignalStats| s.not_member + s.bad_signature;
+        let before = refusals(&stats(w, CAROL).await?);
         let revoked =
-            until_refused(w, &phone, "phone:revoked", CAROL, |s| s.not_member > before).await?;
+            until_refused(w, &phone, "phone:revoked", CAROL, |s| refusals(s) > before).await?;
 
         w.sleep(SETTLE).await;
         for p in [&laptop, &carol] {

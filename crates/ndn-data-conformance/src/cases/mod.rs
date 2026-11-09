@@ -15,9 +15,11 @@
 //! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
 //! record, and a collection's first own record under it; `i1`…`i12`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
-//! one folder reading each other), and slice 7's signals (`e1`…`e10`: live data pushed to a
+//! one folder reading each other), and slice 7's signals (`e1`…`e16`: live data pushed to a
 //! folder's members — reach, a stranger, a forger, a replay, a removal and a revocation, what a
-//! relay sees, no store, the newest per address under loss, a commit, four senders at 60 Hz).
+//! relay sees, no store, the newest per address under loss, a commit, four senders at 60 Hz, a
+//! member claiming another's run, a flood of unfetchable headers, forgeries starving a run, one
+//! member's devices hogging run slots, the last sequence, and a revoked issuer).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -60,6 +62,12 @@ mod c10_others_comment;
 mod c11_cite_state;
 mod c12_still_pass;
 mod e10_signal_sixty_hertz;
+mod e11_signal_claimed_run;
+mod e12_signal_admission_flood;
+mod e13_signal_forged_starve;
+mod e14_signal_slot_hog;
+mod e15_signal_last_sequence;
+mod e16_signal_revoked_issuer;
 mod e1_signal_reach;
 mod e2_signal_stranger;
 mod e3_signal_forgery;
@@ -231,6 +239,12 @@ pub const CASES: &[Case] = &[
     e8_signal_latest_under_loss::CASE,
     e9_signal_commit::CASE,
     e10_signal_sixty_hertz::CASE,
+    e11_signal_claimed_run::CASE,
+    e12_signal_admission_flood::CASE,
+    e13_signal_forged_starve::CASE,
+    e14_signal_slot_hog::CASE,
+    e15_signal_last_sequence::CASE,
+    e16_signal_revoked_issuer::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------
@@ -1320,6 +1334,20 @@ fn contains(bytes: &[u8], part: &[u8]) -> bool {
 /// `d`'s signal counters now.
 async fn stats(w: &World, d: Dev) -> Result<SignalStats, Failure> {
     Ok(w.signals(d).await?.stats())
+}
+
+/// How many packets (or signals) `s` counts as dropped, whatever the reason.
+fn dropped(s: &SignalStats) -> u64 {
+    s.stale
+        + s.replayed
+        + s.expired
+        + s.not_member
+        + s.bad_signature
+        + s.unknown_run
+        + s.unknown_key
+        + s.flood
+        + s.malformed
+        + s.unsubscribed
 }
 
 /// Wait until `rose` holds of `d`'s signal counters, for at most [`LIMIT`]; while it does not,

@@ -169,15 +169,50 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.sleep(SETTLE).await;
 
         // The trip: the copy's entries at the kept seqs are outside the cut everywhere, and what
-        // the cut kept stays.
+        // the cut kept stays. A reader that does not hold Alice's removal yet — it, or the cut's
+        // bytes, lost on the way (asked again, spec §17.1) — still admits Bob's key under the
+        // record it holds; each reader is asked until it holds the removal, and what it answered
+        // last is reported if it never does.
+        let last = std::cell::RefCell::new(String::new());
+        let removed = w
+            .until(
+                "Alice and Carol refuse the copy's entries at the kept seqs OutsideCut",
+                LIMIT,
+                || async {
+                    for (who, layer) in ["Alice", "Carol"].into_iter().zip(readers) {
+                        for id in &again[..2] {
+                            let name = log_entry(w, BOB, &later, id);
+                            let got = layer.get(&name).await;
+                            if !matches!(
+                                &got,
+                                Err(DataError::Refused {
+                                    why: Refusal::OutsideCut(_),
+                                    ..
+                                })
+                            ) {
+                                let held = layer.members(&later).await;
+                                *last.borrow_mut() = format!(
+                                    "{name}, the removed key's entry at a seq its cut kept in \
+                                     another collection, is not refused OutsideCut by {who}: \
+                                     answered {:?}; the record in force there {held:?}",
+                                    got.map(|a| a.age)
+                                );
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Ok(true)
+                },
+            )
+            .await
+            .map_err(|e| Failure::new(format!("{e}; at the last ask: {}", last.borrow())))?;
+        w.measure(
+            "until every reader refused the copy's entries, after the settle",
+            removed.as_millis() as u64,
+            "ms",
+        );
         for layer in readers {
             for id in &again[..2] {
-                let name = log_entry(w, BOB, &later, id);
-                ensure!(
-                    refused(&**layer, &name, |why| matches!(why, Refusal::OutsideCut(_))).await?,
-                    "{name}, the removed key's entry at a seq its cut kept in another \
-                     collection, is not refused OutsideCut"
-                );
                 ensure!(
                     !has(&**layer, &later, id).await?,
                     "a reader counts the removed key's entry {id:?} in {later}"

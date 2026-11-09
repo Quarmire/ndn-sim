@@ -65,18 +65,6 @@ fn plan() -> Plan {
     p
 }
 
-/// Whether every device of `devices` holds each of `ids` of `c`.
-async fn hold(w: &World, devices: &[Dev], c: &Name, ids: &[&VersionId]) -> Result<bool, Failure> {
-    for d in devices {
-        for id in ids {
-            if !has(&*w.at(*d), c, id).await? {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
-}
-
 /// Whether every device agrees on `c`, holding each of `ids`, and lists the same versions not
 /// counted with the same reasons.
 async fn all_agree(w: &World, c: &Name, ids: &[&VersionId]) -> Result<bool, Failure> {

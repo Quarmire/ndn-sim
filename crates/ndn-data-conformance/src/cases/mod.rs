@@ -699,27 +699,47 @@ async fn stolen(
     Ok(layer)
 }
 
-/// Whether every layer holds the same merged state, including every id in `ids`.
+/// Whether every layer holds the same merged state, including every id in `ids`. Every layer is
+/// read at each poll ([`hold`]).
 async fn agree(
     layers: &[&dyn DataLayer],
     collection: &Name,
     ids: &[&VersionId],
 ) -> Result<bool, Failure> {
-    let mut first: Option<State> = None;
+    let mut states = Vec::with_capacity(layers.len());
     for layer in layers {
-        let Some(s) = state_now(*layer, collection).await? else {
+        states.push(state_now(*layer, collection).await?);
+    }
+    let mut first: Option<&State> = None;
+    for s in &states {
+        let Some(s) = s else {
             return Ok(false);
         };
         if !ids.iter().all(|id| s.at.contains(id)) {
             return Ok(false);
         }
-        match &first {
+        match first {
             None => first = Some(s),
             Some(f) if f.at != s.at || f.value != s.value => return Ok(false),
             Some(_) => {}
         }
     }
     Ok(true)
+}
+
+/// Whether every device of `devices` holds each of `ids` of `c`. Every device is read at each
+/// poll: a device's first read of a collection is its first look, from which it follows the
+/// collection, so reading a device only once those before it hold would begin its look late and
+/// time the devices one after another rather than side by side.
+async fn hold(w: &World, devices: &[Dev], c: &Name, ids: &[&VersionId]) -> Result<bool, Failure> {
+    let mut all = true;
+    for d in devices {
+        let layer = w.at(*d);
+        for id in ids {
+            all &= has(&*layer, c, id).await?;
+        }
+    }
+    Ok(all)
 }
 
 /// Drain `stream` for `window` of virtual time.

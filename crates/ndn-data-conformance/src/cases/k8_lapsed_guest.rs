@@ -65,8 +65,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*guest, &notes)
         })
         .await?;
-        let before = guest
-            .put(&notes, content(&[("sown", "beans")]), note(1))
+        // The guest's first put races the epoch key's grant (spec §17.1): put again on RetryLater.
+        let before = w
+            .put(GUEST, &notes, content(&[("sown", "beans")]), note(1))
             .await?;
         w.until("the laptop holds the guest's note", LIMIT, || {
             has(&*laptop, &notes, &before)

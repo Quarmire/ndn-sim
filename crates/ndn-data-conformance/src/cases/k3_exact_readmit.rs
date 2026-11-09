@@ -54,8 +54,15 @@ fn run(w: &World) -> CaseFuture<'_> {
             Ok(known(&*phone, &garden).await? && known(&*phone, &kitchen).await?)
         })
         .await?;
-        let seen = phone
-            .put(&garden, content(&[("phone", "planted beans")]), note(1))
+        // The garden is sealed: the phone's first put races its epoch key's grant, and is put
+        // again while refused RetryLater (spec §18.1), as is the thief's first kitchen put.
+        let seen = w
+            .put(
+                PHONE,
+                &garden,
+                content(&[("phone", "planted beans")]),
+                note(1),
+            )
             .await?;
         w.until("the laptop holds the phone's note", LIMIT, || {
             has(&*laptop, &garden, &seen)
@@ -83,8 +90,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*thief, &kitchen)
         })
         .await?;
-        let forged = thief
+        let forged = w
             .put(
+                THIEF,
                 &kitchen,
                 content(&[("thief", "same seq, other collection")]),
                 note(1),

@@ -80,6 +80,96 @@ fn run(w: &World) -> CaseFuture<'_> {
             bob.send(&ba, &bp).await?;
             w.sleep(FRAME).await;
         }
+
+        // What must not appear: the scope, the senders, the runs, every address and payload sent
+        // so far. Every packet the relay forwarded so far is read as it can read it — once the
+        // looks are out, and again after the finals and their acknowledgements.
+        let runs = [
+            ("alice's run id", alice.run_id().await),
+            ("bob's run id", bob.run_id().await),
+        ];
+        let mut keys = Vec::new();
+        for d in [ALICE, BOB] {
+            keys.push((w.net().spec(d), w.signer(d)?.key_name().clone()));
+        }
+        let held: Vec<[u8; 8]> = w
+            .gate(ALICE)?
+            .signal_scope(&folder())?
+            .keys
+            .iter()
+            .map(|k| k.id)
+            .collect();
+        let inspect = || -> Result<(u64, u64), Failure> {
+            let mut secret: Vec<(String, Vec<u8>)> = vec![
+                ("the scope name".into(), folder().encode_to_tlv().to_vec()),
+                ("the scope's label".into(), b"trip-sketch".to_vec()),
+            ];
+            for (what, id) in &runs {
+                secret.push(((*what).into(), id.to_vec()));
+            }
+            for (spec, key) in &keys {
+                let device = spec.name();
+                secret.push((format!("{device}'s key name"), key.encode_to_tlv().to_vec()));
+                secret.push((format!("{device}'s label"), spec.device.as_bytes().to_vec()));
+            }
+            for p in [&alice, &bob] {
+                for (address, payload) in p.sent.lock().expect("the ledger's lock").iter() {
+                    secret.push((format!("{}'s address", p.who), address.clone()));
+                    secret.push((format!("{}'s payload", p.who), payload.clone()));
+                }
+            }
+            let mut seen = 0u64;
+            let mut bytes = 0u64;
+            for (tap, ns) in taps.iter().zip(["/alice", "/bob"]) {
+                let interests = tap.interests();
+                ensure!(
+                    !interests.is_empty(),
+                    "the relay forwarded no signal packet into {ns}'s group"
+                );
+                for wire in interests {
+                    seen += 1;
+                    bytes += wire.len() as u64;
+                    let interest = ndn_packet::Interest::decode(wire.clone()).map_err(|e| {
+                        Failure::new(format!("the relay forwarded a non-Interest: {e:?}"))
+                    })?;
+                    ensure!(
+                        interest.sig_info().is_none(),
+                        "a signal push the relay forwarded is signed: {}",
+                        interest.name
+                    );
+                    let (pushed_to, packet) = signal::pushed(&wire).ok_or_else(|| {
+                        Failure::new(format!("{} is no signal push", interest.name))
+                    })?;
+                    ensure!(
+                        pushed_to == group(&n(ns)) && interest.name.len() == pushed_to.len() + 2,
+                        "a signal push named {} is not <{ns}/32=sync>/32=signal/<digest>",
+                        interest.name
+                    );
+                    let sealed = signal::sealed(&packet).ok_or_else(|| {
+                        Failure::new(format!(
+                            "the relay forwarded a packet of the sealed folder that is no \
+                             SignalSealed alone: {} octets",
+                            packet.len()
+                        ))
+                    })?;
+                    ensure!(
+                        held.contains(&sealed.key_id),
+                        "a packet the relay forwarded is sealed under key id {:02x?}, no signal \
+                         key of the folder",
+                        sealed.key_id
+                    );
+                    for (what, bytes) in &secret {
+                        ensure!(
+                            !contains(&wire, bytes),
+                            "a signal push the relay forwarded shows {what}: {}",
+                            interest.name
+                        );
+                    }
+                }
+            }
+            Ok((seen, bytes))
+        };
+        inspect()?;
         alice
             .send_final(
                 "pointer/route-map-alice",
@@ -93,85 +183,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             &[&alice],
         )
         .await?;
-
-        // What must not appear: the scope, the senders, the runs, every address and payload.
-        let mut secret: Vec<(String, Vec<u8>)> = vec![
-            ("the scope name".into(), folder().encode_to_tlv().to_vec()),
-            ("the scope's label".into(), b"trip-sketch".to_vec()),
-            ("alice's run id".into(), alice.run_id().await.to_vec()),
-            ("bob's run id".into(), bob.run_id().await.to_vec()),
-        ];
-        for d in [ALICE, BOB] {
-            let device = w.net().spec(d).name();
-            let key = w.signer(d)?.key_name().clone();
-            secret.push((format!("{device}'s key name"), key.encode_to_tlv().to_vec()));
-            secret.push((
-                format!("{device}'s label"),
-                w.net().spec(d).device.as_bytes().to_vec(),
-            ));
-        }
-        for p in [&alice, &bob] {
-            for (address, payload) in p.sent.lock().expect("the ledger's lock").iter() {
-                secret.push((format!("{}'s address", p.who), address.clone()));
-                secret.push((format!("{}'s payload", p.who), payload.clone()));
-            }
-        }
-        let held: Vec<[u8; 8]> = w
-            .gate(ALICE)?
-            .signal_scope(&folder())?
-            .keys
-            .iter()
-            .map(|k| k.id)
-            .collect();
-
-        let mut seen = 0u64;
-        let mut bytes = 0u64;
-        for (tap, ns) in taps.iter().zip(["/alice", "/bob"]) {
-            let interests = tap.interests();
-            ensure!(
-                !interests.is_empty(),
-                "the relay forwarded no signal packet into {ns}'s group"
-            );
-            for wire in interests {
-                seen += 1;
-                bytes += wire.len() as u64;
-                let interest = ndn_packet::Interest::decode(wire.clone()).map_err(|e| {
-                    Failure::new(format!("the relay forwarded a non-Interest: {e:?}"))
-                })?;
-                ensure!(
-                    interest.sig_info().is_none(),
-                    "a signal push the relay forwarded is signed: {}",
-                    interest.name
-                );
-                let (pushed_to, packet) = signal::pushed(&wire)
-                    .ok_or_else(|| Failure::new(format!("{} is no signal push", interest.name)))?;
-                ensure!(
-                    pushed_to == group(&n(ns)) && interest.name.len() == pushed_to.len() + 2,
-                    "a signal push named {} is not <{ns}/32=sync>/32=signal/<digest>",
-                    interest.name
-                );
-                let sealed = signal::sealed(&packet).ok_or_else(|| {
-                    Failure::new(format!(
-                        "the relay forwarded a packet of the sealed folder that is no \
-                         SignalSealed alone: {} octets",
-                        packet.len()
-                    ))
-                })?;
-                ensure!(
-                    held.contains(&sealed.key_id),
-                    "a packet the relay forwarded is sealed under key id {:02x?}, no signal key \
-                     of the folder",
-                    sealed.key_id
-                );
-                for (what, bytes) in &secret {
-                    ensure!(
-                        !contains(&wire, bytes),
-                        "a signal push the relay forwarded shows {what}: {}",
-                        interest.name
-                    );
-                }
-            }
-        }
+        let (seen, bytes) = inspect()?;
         for p in [&alice, &bob] {
             p.check(&[&alice, &bob])?;
         }

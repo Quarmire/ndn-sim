@@ -16,6 +16,10 @@
 //! the one the collection is written under. `share_folder` creating a folder's first record
 //! keeps its one bounded look.
 //!
+//! A last phase repeats the puts and the first record of a folder with the phone reachable: its
+//! walk then takes a few round trips on a clean network and seconds under `--faulty` (drop, delay,
+//! reorder), which is what a put that waited for it paid; a put now costs the same on both.
+//!
 //! Every latency is virtual time. It is measured here for the report (`measured`) and judged
 //! against a bound a local operation never nears: the cut-off phone costs an operation that
 //! waits for it the whole first-look time.
@@ -33,7 +37,12 @@ pub(super) const CASE: Case = Case {
     id: "p1",
     title: "A put never waits on other devices",
     slice: 6,
-    needs: &[Feature::Merge, Feature::Log, Feature::Groups, Feature::FolderMembers],
+    needs: &[
+        Feature::Merge,
+        Feature::Log,
+        Feature::Groups,
+        Feature::FolderMembers,
+    ],
     model: &["M8"],
     guards: "A put under a folder whose members record the device holds — a first keystroke in a \
              new collection, a paste of a group of new collections — returns once it is applied \
@@ -67,11 +76,7 @@ fn plan() -> Plan {
 }
 
 /// Time `what` in virtual time, record it as a measure called `name`.
-async fn timed<T>(
-    w: &World,
-    name: &str,
-    what: impl Future<Output = T>,
-) -> (T, Duration) {
+async fn timed<T>(w: &World, name: &str, what: impl Future<Output = T>) -> (T, Duration) {
     let start = tokio::time::Instant::now();
     let out = what.await;
     let took = start.elapsed();
@@ -96,17 +101,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The laptop reaches nothing of the phone's names; the phone reaches the laptop.
         let away = w.net().cut_off(LAPTOP, &n("/alice/phone")).await;
         laptop
-            .share_folder(
-                &notes,
-                members(Rule::Log, &["/alice", "/bob"], &all).into(),
-            )
+            .share_folder(&notes, members(Rule::Log, &["/alice", "/bob"], &all).into())
             .await?;
         // The phone records a folder the laptop has not seen, over `loose`: Bob writes there.
         w.again(|| {
-            phone.share_folder(
-                &loose,
-                members(Rule::Log, &["/alice", "/bob"], &all).into(),
-            )
+            phone.share_folder(&loose, members(Rule::Log, &["/alice", "/bob"], &all).into())
         })
         .await?;
         // The laptop hears the phone in the sync group, and cannot walk it.
@@ -126,7 +125,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let items: Vec<(Name, Edit)> = (0..12)
             .map(|i| {
                 (
-                    notes.clone().append(&format!("paste{i}")),
+                    notes.clone().append(format!("paste{i}")),
                     Edit::Fields(text(&format!("paragraph {i}"))),
                 )
             })
@@ -137,7 +136,10 @@ fn run(w: &World) -> CaseFuture<'_> {
             laptop.put_group(items, note(1)),
         )
         .await;
-        ensure!(group?.len() == 12, "the paste signed fewer than twelve versions");
+        ensure!(
+            group?.len() == 12,
+            "the paste signed fewer than twelve versions"
+        );
         judge("a paste of twelve new collections", took, LOCAL);
 
         // A put into a collection followed already.
@@ -219,6 +221,59 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await;
         second?;
         judge("the put after the look resolved", took, LOCAL);
+
+        // The phone is reachable now, but over this network (lossy and slow under `--faulty`)
+        // its summary takes time to walk: a look at it takes a few round trips on a clean
+        // network and seconds on a faulty one. A put never waits for it, so these cost the same
+        // either way; `share_folder` creating a first record waits its one bounded look.
+        let reach = n("/alice/32=data/reach");
+        let (shared, took) = timed(
+            w,
+            "share_folder, a first record, the phone reachable: virtual ms",
+            layer.share_folder(&reach, members(Rule::Log, &["/alice", "/bob"], &all).into()),
+        )
+        .await;
+        shared?;
+        judge(
+            "share_folder of a first record, the phone reachable",
+            took,
+            FIRST_LOOK_PLUS,
+        );
+        let (new_note, took) = timed(
+            w,
+            "put, the first entry of a new collection, the phone reachable: virtual ms",
+            layer.put(&reach.clone().append("note1"), text("h"), note(1)),
+        )
+        .await;
+        new_note?;
+        judge(
+            "the first put into a new note, the phone reachable",
+            took,
+            LOCAL,
+        );
+        let items: Vec<(Name, Edit)> = (0..12)
+            .map(|i| {
+                (
+                    reach.clone().append(format!("paste{i}")),
+                    Edit::Fields(text(&format!("paragraph {i}"))),
+                )
+            })
+            .collect();
+        let (group, took) = timed(
+            w,
+            "put_group, twelve new collections, the phone reachable: virtual ms",
+            layer.put_group(items, note(1)),
+        )
+        .await;
+        ensure!(
+            group?.len() == 12,
+            "the second paste signed fewer than twelve versions"
+        );
+        judge(
+            "a paste of twelve new collections, the phone reachable",
+            took,
+            LOCAL,
+        );
         ensure!(late.is_empty(), "a put waited: {}", late.join("; "));
         Ok(())
     })

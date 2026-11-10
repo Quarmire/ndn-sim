@@ -104,6 +104,8 @@ mod h9_prune_before_auditor;
 mod i10_removal_lasts;
 mod i11_stranger_cannot_close;
 mod i12_removed_elsewhere;
+mod i13_close_keeps_answering;
+mod i14_join_ready;
 mod i1_join_by_code;
 mod i2_used_code;
 mod i3_expired_code;
@@ -130,6 +132,7 @@ mod o2_readmit;
 mod o3_many_writers;
 mod o4_sustained_writes;
 mod o5_lossy_sealed_folder;
+mod p1_put_never_waits;
 mod r1_concurrent_shares;
 mod r2_group_removal;
 mod r3_own_device_removed;
@@ -190,6 +193,7 @@ pub const CASES: &[Case] = &[
     o3_many_writers::CASE,
     o4_sustained_writes::CASE,
     o5_lossy_sealed_folder::CASE,
+    p1_put_never_waits::CASE,
     r1_concurrent_shares::CASE,
     r2_group_removal::CASE,
     r3_own_device_removed::CASE,
@@ -230,6 +234,8 @@ pub const CASES: &[Case] = &[
     i10_removal_lasts::CASE,
     i11_stranger_cannot_close::CASE,
     i12_removed_elsewhere::CASE,
+    i13_close_keeps_answering::CASE,
+    i14_join_ready::CASE,
     f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,

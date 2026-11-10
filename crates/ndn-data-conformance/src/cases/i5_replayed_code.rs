@@ -53,7 +53,12 @@ fn run(w: &World) -> CaseFuture<'_> {
         alice_keeps_a_notebook(w).await?;
         let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
 
-        let (bob, carol) = futures::join!(w.join(BOB, &code.link), w.join(CAROL, &code.link));
+        // A join that is `NotReady` (the winner's walk of the inviter's summary not done within
+        // the join's bound, as on a faulty path) is done again, as a host does what it says.
+        let (bob, carol) = futures::join!(
+            w.join_again(BOB, &code.link),
+            w.join_again(CAROL, &code.link)
+        );
         let (winner, loser): (Dev, Dev) = match (bob?, carol?) {
             (Ok(_), Err(e)) if used(&e) => (BOB, CAROL),
             (Err(e), Ok(_)) if used(&e) => (CAROL, BOB),

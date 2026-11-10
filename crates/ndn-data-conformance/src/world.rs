@@ -916,6 +916,16 @@ impl World {
             .map_err(|e| Failure::new(format!("offer failed: {e:#}")))
     }
 
+    /// `by`, the device that made `offer`, closes it (see [`Provider::close_offer`]). One
+    /// gesture: the owner closes.
+    pub async fn close_offer(&self, by: Dev, offer: &Name) -> Result<(), Failure> {
+        self.gesture();
+        self.provider
+            .close_offer(&self.net.fabric, self.net.spec(by), offer)
+            .await
+            .map_err(|e| Failure::new(format!("close_offer failed: {e:#}")))
+    }
+
     /// `d` joins by `code` (its link or its words; see [`Provider::join`]): one gesture, the
     /// joiner's. A refusal by `d`'s data layer is answered as its error, for a case that
     /// expects one.

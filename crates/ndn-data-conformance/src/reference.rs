@@ -1983,6 +1983,18 @@ impl Provider for Reference {
             .map_err(anyhow::Error::new)
     }
 
+    async fn close_offer(
+        &self,
+        _fabric: &Fabric,
+        by: &DeviceSpec,
+        offer: &Name,
+    ) -> anyhow::Result<()> {
+        self.layer(by)?
+            .close_offer(offer)
+            .await
+            .map_err(anyhow::Error::new)
+    }
+
     async fn join(
         &self,
         _fabric: &Fabric,

@@ -459,6 +459,21 @@ pub trait Provider: Send + Sync {
         )
     }
 
+    /// `by`, the device that made the offer `offer`, closes it
+    /// ([`Device::close_offer`](ndn_data::Device::close_offer)): the offer admits no one new
+    /// afterwards, and still answers a retry of the writer it admitted until it expires. A
+    /// refusal carries the layer's [`DataError`](ndn_data::DataError) as its source. A provider
+    /// without introductions says so.
+    async fn close_offer(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        offer: &Name,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, offer);
+        anyhow::bail!("this provider cannot make {} close an offer", by.name())
+    }
+
     /// `device`'s host adopts the namespace the anchor link `link` (an `ndn-trust://anchor`
     /// URI) names, as `ndn-ctl adopt` adopts one: a link carrying the namespace's signed trust
     /// context is checked against it; a self-certifying namespace (`/user/<hash>`) may be named

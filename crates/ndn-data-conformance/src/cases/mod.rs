@@ -13,7 +13,7 @@
 //! merge (`b1`…`b9`: a rule named by the app, operations it builds, merge versions in pieces,
 //! owner locks, counting both ways, and checkpoints beside versions written apart from them;
 //! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
-//! record, and a collection's first own record under it; `i1`…`i12`: joining a folder by a code;
+//! record, and a collection's first own record under it; `i1`…`i13`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
 //! one folder reading each other), and slice 7's signals (`e1`…`e18`: live data pushed to a
 //! folder's members — reach, a stranger, a forger, a replay, a removal and a revocation, what a
@@ -91,9 +91,9 @@ mod g4_seq_reused_across_collections;
 mod g5_large_group;
 mod g6_group_under_lock;
 mod g7_group_member_in_pieces;
+mod g8_reason_kinds;
 mod h10_holder_serves_others;
 mod h1_large_photo;
-mod g8_reason_kinds;
 mod h2_dropping_holder;
 mod h3_subset_holder;
 mod h4_lease_keep;
@@ -218,12 +218,12 @@ pub const CASES: &[Case] = &[
     g5_large_group::CASE,
     g6_group_under_lock::CASE,
     g7_group_member_in_pieces::CASE,
+    g8_reason_kinds::CASE,
     f1_folder_members::CASE,
     f2_folder_narrowing::CASE,
     f3_first_own_record::CASE,
     w1_folder_watch::CASE,
     i1_join_by_code::CASE,
-    g8_reason_kinds::CASE,
     i2_used_code::CASE,
     i3_expired_code::CASE,
     i4_wrong_tries::CASE,
@@ -264,7 +264,6 @@ pub const CASES: &[Case] = &[
 
 /// How long devices that can reach each other get to agree.
 const LIMIT: Duration = Duration::from_secs(120);
-    e17_signal_long_scope::CASE,
 /// How long a case lets the network run before asserting that something did *not* happen.
 const SETTLE: Duration = Duration::from_secs(60);
 /// How long a watch is drained for one look at a collection.

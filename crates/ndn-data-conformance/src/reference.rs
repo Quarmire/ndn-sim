@@ -1464,7 +1464,12 @@ impl Provider for Reference {
     }
 
     async fn stop(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
-        let case = self.case.lock().expect("the provider's lock");
+        let mut case = self.case.lock().expect("the provider's lock");
+        // The device's signals end with it: a restart starts them again over the restarted
+        // device, as a host's process restarting does.
+        if let Some((signals, _)) = case.signals.remove(&device.node) {
+            signals.shutdown();
+        }
         let attached = case
             .devices
             .get(&device.node)

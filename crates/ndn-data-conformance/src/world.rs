@@ -806,6 +806,7 @@ impl World {
             .await
             .map_err(|e| Failure::new(format!("cannot stop the data layer: {e:#}")))?;
         self.layers.borrow_mut()[d.0] = None;
+        self.signals.borrow_mut()[d.0] = None;
         Ok(())
     }
 

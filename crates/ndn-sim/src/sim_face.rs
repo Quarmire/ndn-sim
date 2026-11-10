@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ndn_runtime::{Instant, Runtime};
-use ndn_transport::{FaceError, FaceId, FaceKind, LinkType, Transport};
+use ndn_transport::face::ScopePolicy;
+use ndn_transport::{FaceError, FaceId, FaceKind, FaceTrust, LinkType, Transport};
 use parking_lot::Mutex;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::sync::mpsc;
@@ -374,6 +375,16 @@ impl Transport for SimFace {
         self.kind
     }
 
+    /// A simulated face is trusted as the bearer it simulates is: an in-process
+    /// or shared-memory link ([`FaceProfile::internal`](crate::FaceProfile::internal),
+    /// [`shm`](crate::FaceProfile::shm)) is a program face; a UDP, TCP, QUIC,
+    /// radio or other network link is validated.
+    fn trust(&self) -> FaceTrust {
+        match self.kind.scope_policy() {
+            ScopePolicy::AlwaysLocal => FaceTrust::Program,
+            ScopePolicy::AlwaysNonLocal | ScopePolicy::ByRemoteAddress => FaceTrust::Validated,
+        }
+    }
     fn link_type(&self) -> LinkType {
         self.link_type
     }

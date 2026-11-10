@@ -15,11 +15,12 @@
 //! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
 //! record, and a collection's first own record under it; `i1`…`i12`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
-//! one folder reading each other), and slice 7's signals (`e1`…`e16`: live data pushed to a
+//! one folder reading each other), and slice 7's signals (`e1`…`e17`: live data pushed to a
 //! folder's members — reach, a stranger, a forger, a replay, a removal and a revocation, what a
 //! relay sees, no store, the newest per address under loss, a commit, four senders at 60 Hz, a
 //! member claiming another's run, a flood of unfetchable headers, forgeries starving a run, one
-//! member's devices hogging run slots, the last sequence, and a revoked issuer).
+//! member's devices hogging run slots, the last sequence, a revoked issuer, and a scope named
+//! in very many words).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -68,6 +69,7 @@ mod e13_signal_forged_starve;
 mod e14_signal_slot_hog;
 mod e15_signal_last_sequence;
 mod e16_signal_revoked_issuer;
+mod e17_signal_long_scope;
 mod e1_signal_reach;
 mod e2_signal_stranger;
 mod e3_signal_forgery;
@@ -253,6 +255,7 @@ pub const CASES: &[Case] = &[
 
 /// How long devices that can reach each other get to agree.
 const LIMIT: Duration = Duration::from_secs(120);
+    e17_signal_long_scope::CASE,
 /// How long a case lets the network run before asserting that something did *not* happen.
 const SETTLE: Duration = Duration::from_secs(60);
 /// How long a watch is drained for one look at a collection.

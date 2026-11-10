@@ -1,5 +1,5 @@
 //! The signal wire as the signals spec writes it (ndn-rs `docs/specs/signals.md` §4), written
-//! here from the spec alone so the signal cases (`e1`…`e16`) can make, capture and inspect
+//! here from the spec alone so the signal cases (`e1`…`e17`) can make, capture and inspect
 //! packets the way an attacker or a relay sees them: a run header signed by a device key, a
 //! SignalBody signed by a run key, a SignalSealed under a scope's signal key, and the unsigned
 //! push Interest that carries one into a namespace's sync group. It shares no code with
@@ -16,9 +16,9 @@ use ndn_packet::encode::InterestBuilder;
 use sha2::{Digest, Sha256};
 
 /// The context every run signature and every seal binds (spec §4).
-pub const CONTEXT: &[u8] = b"ndn-signal/1";
+pub const CONTEXT: &[u8] = b"ndn-signal/2";
 
-/// SignalBody: Name (scope), RunId, [RunHeader], Signal*, RunSignature.
+/// SignalBody: ScopeDigest, RunId, [RunHeader], Signal*, RunSignature.
 pub const SIGNAL_BODY: u64 = 0x0580;
 /// SignalSealed: KeyId, SealNonce, Ciphertext.
 pub const SIGNAL_SEALED: u64 = 0x0582;
@@ -39,7 +39,17 @@ const RUN_START: u64 = 0x059E;
 const RUN_NOT_AFTER: u64 = 0x05A0;
 const LOCAL_RING: u64 = 0x05A2;
 const SIGNAL_PADDING: u64 = 0x05A4;
-const NAME: u64 = 0x07;
+const SCOPE_DIGEST: u64 = 0x05A6;
+/// The first 16 octets of SHA-256 over `"ndn-signal/2 scope"` and `scope`'s Name TLV: what a
+/// packet names its scope by after the run's header (spec §4.1).
+pub fn scope_digest(scope: &Name) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"ndn-signal/2 scope");
+    hash.update(scope.encode_to_tlv());
+    let mut digest = [0u8; 16];
+    digest.copy_from_slice(&hash.finalize()[..16]);
+    digest
+}
 /// The typed component of `32=signal`.
 const KEYWORD: u64 = 32;
 
@@ -84,7 +94,8 @@ pub struct Signal {
 /// A SignalBody as decoded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Body {
-    pub scope: Name,
+    /// The packet's ScopeDigest.
+    pub digest: [u8; 16],
     pub run: [u8; 16],
     /// The run header's whole Data wire, when it rides in this packet.
     pub header: Option<Bytes>,
@@ -147,8 +158,9 @@ pub fn header_run_key(content: &[u8]) -> Option<[u8; 32]> {
     (typ == RUN_KEY).then(|| key.try_into().ok()).flatten()
 }
 
-/// A SignalBody TLV over `scope`, claiming run `run`, carrying `header` and `signals`, its run
-/// signature made by `key` (which need not be the run's: a forger's).
+/// A SignalBody TLV over `scope` (named by its digest, never its Name), claiming run `run`,
+/// carrying `header` and `signals`, its run signature made by `key` (which need not be the
+/// run's: a forger's).
 pub fn body(
     scope: &Name,
     run: &[u8; 16],
@@ -156,7 +168,8 @@ pub fn body(
     signals: &[Signal],
     key: &RunKey,
 ) -> Bytes {
-    let mut value = scope.encode_to_tlv().to_vec();
+    let mut value = Vec::new();
+    tlv(&mut value, SCOPE_DIGEST, &scope_digest(scope));
     tlv(&mut value, RUN_ID, run);
     if let Some(header) = header {
         tlv(&mut value, RUN_HEADER, header);
@@ -249,11 +262,11 @@ pub fn parse_body(packet: &[u8]) -> Option<Body> {
     if typ != SIGNAL_BODY || !rest.is_empty() {
         return None;
     }
-    let (typ, scope, after) = read(value)?;
-    if typ != NAME {
+    let (typ, digest, after) = read(value)?;
+    if typ != SCOPE_DIGEST {
         return None;
     }
-    let scope = Name::decode(Bytes::copy_from_slice(scope)).ok()?;
+    let digest: [u8; 16] = digest.try_into().ok()?;
     value = after;
     let (typ, run, after) = read(value)?;
     if typ != RUN_ID {
@@ -271,7 +284,7 @@ pub fn parse_body(packet: &[u8]) -> Option<Body> {
             SIGNAL => signals.push(parse_signal(v)?),
             RUN_SIGNATURE if value.is_empty() => {
                 return Some(Body {
-                    scope,
+                    digest,
                     run,
                     header,
                     signals,
@@ -428,8 +441,13 @@ mod tests {
         let wire = body(&scope, &key.id(), Some(&header), &signals, &key);
         let read = parse_body(&wire).unwrap();
         assert_eq!(
-            (read.scope, read.run, read.header, read.signals),
-            (scope, key.id(), Some(header), signals.to_vec())
+            (read.digest, read.run, read.header, read.signals),
+            (
+                scope_digest(&scope),
+                key.id(),
+                Some(header),
+                signals.to_vec()
+            )
         );
         assert_eq!(read.signature.len(), 64);
 

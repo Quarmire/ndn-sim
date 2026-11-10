@@ -90,6 +90,7 @@ mod g6_group_under_lock;
 mod g7_group_member_in_pieces;
 mod h10_holder_serves_others;
 mod h1_large_photo;
+mod g8_reason_kinds;
 mod h2_dropping_holder;
 mod h3_subset_holder;
 mod h4_lease_keep;
@@ -215,6 +216,7 @@ pub const CASES: &[Case] = &[
     f3_first_own_record::CASE,
     w1_folder_watch::CASE,
     i1_join_by_code::CASE,
+    g8_reason_kinds::CASE,
     i2_used_code::CASE,
     i3_expired_code::CASE,
     i4_wrong_tries::CASE,
@@ -975,7 +977,7 @@ fn not_counted_in<'s>(state: &'s State, id: &VersionId) -> Option<&'s str> {
         .not_counted
         .iter()
         .find(|(v, _)| v == id)
-        .map(|(_, why)| why.as_str())
+        .map(|(_, why)| why.reason())
 }
 
 /// Whether `changes` report `id` held but not counted.

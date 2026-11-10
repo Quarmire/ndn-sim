@@ -74,7 +74,7 @@ async fn all_agree(w: &World, c: &Name, ids: &[&VersionId]) -> Result<bool, Fail
     if !agree(&refs, c, ids).await? {
         return Ok(false);
     }
-    let mut first: Option<Vec<(VersionId, String)>> = None;
+    let mut first: Option<Vec<(VersionId, ndn_data::NotCounted)>> = None;
     for layer in &refs {
         let Some(s) = state_now(*layer, c).await? else {
             return Ok(false);

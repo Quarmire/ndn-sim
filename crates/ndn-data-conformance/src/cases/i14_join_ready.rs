@@ -18,7 +18,9 @@ use std::time::Duration;
 
 use ndn_data::{NextStep, Role};
 
-use super::i1_join_by_code::{ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, plan};
+use super::i1_join_by_code::{
+    ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, plan,
+};
 use super::*;
 use crate::case::CaseFuture;
 use crate::ensure;

@@ -71,6 +71,7 @@ mod e15_signal_last_sequence;
 mod e16_signal_revoked_issuer;
 mod e17_signal_long_scope;
 mod e18_signal_clock_stepped_back;
+mod e19_signal_clock_not_ratcheted;
 mod e1_signal_reach;
 mod e2_signal_stranger;
 mod e3_signal_forgery;
@@ -260,6 +261,7 @@ pub const CASES: &[Case] = &[
     e16_signal_revoked_issuer::CASE,
     e17_signal_long_scope::CASE,
     e18_signal_clock_stepped_back::CASE,
+    e19_signal_clock_not_ratcheted::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

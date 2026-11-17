@@ -37,6 +37,7 @@ pub mod reference;
 pub mod report;
 pub mod runner;
 pub mod signal;
+pub mod sum;
 pub mod world;
 
 pub use case::{Case, CaseFuture, Failure};

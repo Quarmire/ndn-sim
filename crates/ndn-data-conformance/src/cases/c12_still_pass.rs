@@ -7,12 +7,13 @@
 
 use std::time::Duration;
 
-use ndn_data::{Age, DataError, Seal};
+use ndn_data::{Age, AnswerAsk, AnswerRefusal, DataError, Provenance, ReadSet};
 use ndn_sim::ClockSkew;
 
 use super::*;
 use crate::case::CaseFuture;
 use crate::ensure;
+use crate::provider::Program;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -44,7 +45,8 @@ fn plan() -> Plan {
     let mut p = Plan::new();
     p.device("alice", "phone");
     p.device("alice", "tablet");
-    p.device("alice", "laptop");
+    let laptop = p.device("alice", "laptop");
+    p.program(laptop, Program::Evaluating);
     p.device("summarizer", "service");
     p.device("bob", "phone");
     p
@@ -96,16 +98,16 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().online(PHONE);
         w.net().set_clock(PHONE, ClockSkew::NONE);
 
-        // 2. A summary service reads a note it was shared and answers under its own name.
+        // 2. A summary service reads a note it was shared and answers as a provider: its answer
+        // binds its function and the exact state it read (answers.md §4.2, §14 a12, a6), signed
+        // by the service, sealed to its input's audience.
         let note_name = n("/alice/32=data/notes/meeting");
-        let audience = Seal {
-            any_of: vec![
-                alice.clone(),
-                Audience::Device(w.net().spec(SERVICE).name()),
-            ],
-        };
+        let audience = vec![
+            alice.clone(),
+            Audience::Device(w.net().spec(SERVICE).name()),
+        ];
         laptop
-            .share(&note_name, members(merge(), &["/alice"], &audience.any_of))
+            .share(&note_name, members(merge(), &["/alice"], &audience))
             .await?;
         let input = laptop
             .put(&note_name, text("decided: ship in May"), note(1))
@@ -114,31 +116,50 @@ fn run(w: &World) -> CaseFuture<'_> {
             has(&*service, &note_name, &input)
         })
         .await?;
-        let answer = n("/summarizer/32=data/answers/meeting");
-        service
-            .share(
-                &answer,
-                members(merge(), &["/summarizer"], &audience.any_of),
-            )
-            .await?;
-        let summary_id = service.put(&answer, text("ship in May"), note(1)).await?;
-        let theirs = look(&*service, &answer, &Frontier::new(), LOOK).await?;
-        let sealed = &version(&theirs, &summary_id)
-            .ok_or_else(|| Failure::new("the service's watch does not list its answer"))?
-            .seal;
-        ensure!(
-            sealed.any_of.iter().all(|a| audience.any_of.contains(a)),
-            "the answer is sealed to {:?}, beyond its input's audience {:?}",
-            sealed.any_of,
-            audience.any_of
-        );
-        w.until("Alice's laptop reads the answer", LIMIT, || {
-            has(&*laptop, &answer, &summary_id)
+        w.until("Alice's laptop holds the note", LIMIT, || {
+            has(&*laptop, &note_name, &input)
         })
         .await?;
+        let (read, _) = w.gate(SERVICE)?.current_read(&note_name).await?;
+        let inputs = ReadSet::new([read]).map_err(|e| Failure::new(e.to_string()))?;
+        let function = crate::sum::function(1);
+        let answer = w
+            .gate(SERVICE)?
+            .provide(
+                &function,
+                inputs.clone(),
+                bytes::Bytes::from_static(b"ship in May"),
+            )
+            .await?;
         ensure!(
-            bob.get(&answer).await.is_err(),
-            "Bob, outside the input's audience, read the service's answer"
+            answer.len() == 4,
+            "the answer's name has a content word: {answer}"
+        );
+        let q = AnswerAsk::provider(function, inputs)
+            .name(Some(&w.net().spec(SERVICE).name()))
+            .map_err(Failure::from)?;
+        let got = match laptop.get(&q).await?.got {
+            ndn_data::Got::Answer(a) => a,
+            other => return Err(Failure::new(format!("not an answer: {other:?}"))),
+        };
+        ensure!(
+            got.result.as_ref() == b"ship in May" && matches!(got.how, Provenance::Provider { .. }),
+            "Alice's laptop did not read the provider's answer: {:?} {:?}",
+            got.result,
+            got.how
+        );
+        let outside = bob.get(&q).await;
+        ensure!(
+            matches!(
+                outside,
+                Err(DataError::Sealed { .. })
+                    | Err(DataError::Answer {
+                        why: AnswerRefusal::NotProvider { .. },
+                        ..
+                    })
+                    | Err(DataError::Unavailable { .. })
+            ),
+            "Bob, outside the input's audience, read the service's answer: {outside:?}"
         );
 
         // 3. A revoked tablet keeps what it read and opens nothing new.

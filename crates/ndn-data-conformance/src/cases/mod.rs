@@ -44,6 +44,7 @@ use crate::feature::Feature;
 use crate::signal;
 use crate::world::{Dev, Plan, World};
 
+mod answers;
 mod b1_rule_by_name;
 mod b2_basis_outside_past;
 mod b3_locked_setting;
@@ -277,6 +278,24 @@ pub const CASES: &[Case] = &[
     v4_events_survive_restart::CASE,
     v5_event_flood::CASE,
     d8_batched_burst::CASE,
+    answers::A1,
+    answers::A2,
+    answers::A3,
+    answers::A4,
+    answers::A5,
+    answers::A6,
+    answers::A7,
+    answers::A8,
+    answers::A9,
+    answers::A10,
+    answers::A11,
+    answers::A12,
+    answers::A13,
+    answers::A14,
+    answers::A15,
+    answers::A16,
+    answers::A17,
+    answers::A18,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

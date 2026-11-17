@@ -119,6 +119,11 @@ pub enum Feature {
     /// acknowledges it, and bounded under a flood without losing the first of each kind per
     /// subject.
     DeviceEvents,
+    /// Answers (`ndn_data::answer`, spec answers.md): named, checkable readings over signed data,
+    /// pure (recomputed by any holder of the definition and the inputs) and provider (trusted by
+    /// the provider's authority), sealed to the audience of everything they read, with evidence
+    /// of a mismatch on one device-wide stream.
+    Answers,
 }
 
 impl Feature {
@@ -152,7 +157,7 @@ impl Feature {
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
             Feature::Signals | Feature::DeviceEvents => 7,
-            Feature::Functions => 8,
+            Feature::Functions | Feature::Answers => 8,
         }
     }
 
@@ -195,6 +200,7 @@ impl Feature {
             Feature::SelfCertifying => "names by key",
             Feature::Signals => "signals",
             Feature::DeviceEvents => "device events",
+            Feature::Answers => "answers",
         }
     }
 }

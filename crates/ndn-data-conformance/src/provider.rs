@@ -50,6 +50,16 @@ pub enum Program {
     /// ([`Element::lax`](crate::element::Element::lax)): a faulty or hostile writer's program,
     /// whose versions only honest readers judge.
     LaxElement,
+    /// The element rule and the evaluators `/conformance/eval/sum/v=1` and `v=2`
+    /// ([`crate::sum`]), the default answer policy, Alice's laptop named as the provider of
+    /// `/conformance/fn/summarize/v=1`.
+    Evaluating,
+    /// Only `/conformance/eval/sum/v=2`, trusting no signer for pure answers it cannot check.
+    EvaluatingV2,
+    /// The name of `v=1`, a result one too high: a hostile member's program.
+    Hostile,
+    /// No evaluator, trusting no signer for pure answers.
+    Wary,
 }
 
 impl DeviceSpec {

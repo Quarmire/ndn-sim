@@ -65,6 +65,7 @@ mod c09_family_chat;
 mod c10_others_comment;
 mod c11_cite_state;
 mod c12_still_pass;
+mod d8_batched_burst;
 mod e10_signal_sixty_hertz;
 mod e11_signal_claimed_run;
 mod e12_signal_admission_flood;
@@ -275,6 +276,7 @@ pub const CASES: &[Case] = &[
     v3_revocation_told::CASE,
     v4_events_survive_restart::CASE,
     v5_event_flood::CASE,
+    d8_batched_burst::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

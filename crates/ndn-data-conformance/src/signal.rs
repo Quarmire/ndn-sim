@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 /// The context every run signature and every seal binds (spec §4).
 pub const CONTEXT: &[u8] = b"ndn-signal/2";
 
-/// SignalBody: ScopeDigest, RunId, [RunHeader], Signal*, RunSignature.
+/// SignalBody: ScopeDigest, RunId, `[RunHeader]` (optional), Signal*, RunSignature.
 pub const SIGNAL_BODY: u64 = 0x0580;
 /// SignalSealed: KeyId, SealNonce, Ciphertext.
 pub const SIGNAL_SEALED: u64 = 0x0582;

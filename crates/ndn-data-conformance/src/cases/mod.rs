@@ -23,7 +23,13 @@
 //! in very many words, and a member whose clock stepped back across a restart), and round 5's
 //! device events (`v1`…`v5`: what no folder owns — a members record against a version at one
 //! seq, a cut and the version it withdraws told on every device that takes the cut, a revocation
-//! adopted, events outliving a restart until acknowledged, and a flood of one subject coalesced).
+//! adopted, events outliving a restart until acknowledged, and a flood of one subject coalesced),
+//! round 5's batching (`d8`: a burst of puts and a group, each stored as one batch, arriving in
+//! order and surviving a restart), and round 5's answers (`a1`…`a18`: named, checkable, sealed
+//! readings over signed data — one name and one answer from two devices, a changed read set, a
+//! wrong answer detected on recompute, a reader without access, an unknown evaluator, fetching
+//! against computing, unsigned work, a provider's answer, a revoked signer, read-set faults,
+//! limits, and answers in pieces).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;

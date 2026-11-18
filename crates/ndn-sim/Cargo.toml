@@ -20,6 +20,8 @@ ndn-packet    = { workspace = true, features = ["std"] }
 ndn-store     = { workspace = true }
 ndn-frame-io  = { workspace = true }
 ndn-signals-core = { workspace = true }
+# The fault profile (`ndn_sim::faults` re-exports it).
+ndn-faults    = { workspace = true }
 ndn-strategy  = { workspace = true }
 ndn-mgmt      = { workspace = true }
 # Boot sim nodes from ndn-fwd TOML through the same code ndn-fwd runs (`ndn_config::boot`).

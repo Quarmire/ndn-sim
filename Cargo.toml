@@ -30,6 +30,8 @@ ndn-face      = { path = "../ndn-rs/crates/faces/ndn-face" }
 # Relocated in P2/D5: the radio foundation crates live in ndn-radio-drivers now.
 ndn-frame-io  = { path = "../ndn-radio-drivers/crates/ndn-frame-io" }
 ndn-signals-core = { path = "../ndn-rs/crates/core/ndn-signals-core" }
+# The one definition of the fault profile (ndn-link's fault layer draws from it too); re-exported as `ndn_sim::faults`.
+ndn-faults    = { path = "../ndn-rs/crates/core/ndn-faults" }
 ndn-store     = { path = "../ndn-rs/crates/forwarding/ndn-store" }
 ndn-strategy  = { path = "../ndn-rs/crates/forwarding/ndn-strategy" }
 ndn-mgmt      = { path = "../ndn-rs/crates/forwarding/ndn-mgmt" }

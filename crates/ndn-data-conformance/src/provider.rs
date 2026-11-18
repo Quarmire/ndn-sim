@@ -2,12 +2,30 @@
 
 use std::sync::Arc;
 
-use ndn_data::{Code, DataLayer, Joined, Name, Offer, Timestamp, VersionId};
+use ndn_data::{Code, DataLayer, Grant, Joined, Name, Offer, Timestamp, VersionId};
 use ndn_security::Signer;
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 use ndn_surface::signal::Signals;
 
 use crate::feature::Feature;
+
+/// What a host was told of a grant, in the order it was told.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GrantEvent {
+    /// `Introducer::grant`.
+    Granted(Grant),
+    /// `Introducer::revoke_grant`, with the key.
+    Revoked([u8; 32]),
+}
+
+/// A device's grants: what its host was told, and what its layer lists now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GrantLog {
+    /// Every call of the host's `grant` and `revoke_grant`, oldest first.
+    pub told: Vec<GrantEvent>,
+    /// `Device::grants` now.
+    pub now: Vec<Grant>,
+}
 
 /// One device in a case: a person's device, or a thief's node.
 #[derive(Clone, Debug)]
@@ -34,6 +52,9 @@ pub struct DeviceSpec {
     /// the key `person` is named from (ndn-cert's `GenesisKey`), which signs version 1 of its
     /// trust context. `None` for a person named otherwise.
     pub genesis: Option<[u8; 32]>,
+    /// Its host's introductions make link grants (`IntroPolicy::grant_for` is the default);
+    /// `false`: `grant_for` is zero, and the device grants no link.
+    pub link_grants: bool,
 }
 
 /// The merge rules a device's program knows beyond the standard ones every program knows
@@ -482,6 +503,21 @@ pub trait Provider: Send + Sync {
     ) -> anyhow::Result<()> {
         let _ = (fabric, offer);
         anyhow::bail!("this provider cannot make {} close an offer", by.name())
+    }
+
+    /// What `device`'s host was told of its link grants (`Introducer::grant`,
+    /// `Introducer::revoke_grant`, in order, across restarts of its layer) and what its layer
+    /// lists as in force now (`Device::grants`). A provider without introductions says so.
+    async fn link_grants(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<GrantLog> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot tell {}'s link grants", device.name())
+    }
+
+    /// The public-key digest of `device`'s own key: what a link's handshake proves, and the key a
+    /// grant to that device names. A provider without introductions says so.
+    async fn link_key(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<[u8; 32]> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot tell {}'s link key", device.name())
     }
 
     /// `device`'s host adopts the namespace the anchor link `link` (an `ndn-trust://anchor`

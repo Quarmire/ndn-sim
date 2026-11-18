@@ -26,7 +26,9 @@ use ndn_surface::signal::Signals;
 use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
-use crate::provider::{Certs, DeviceSpec, Grants, NodeRole, Program, Provider, Tally, Tamper};
+use crate::provider::{
+    Certs, DeviceSpec, GrantLog, Grants, NodeRole, Program, Provider, Tally, Tamper,
+};
 use crate::report::{Cost, Measure};
 
 /// A device of a [`Plan`], by position.
@@ -54,6 +56,8 @@ struct Planned {
     program: Program,
     /// The person's genesis root key, for a self-certifying person ([`Plan::self_certifying`]).
     genesis: Option<[u8; 32]>,
+    /// Its host's introductions make link grants ([`Plan::no_link_grants`]).
+    link_grants: bool,
 }
 
 /// The devices a case needs, declared before the fabric starts.
@@ -135,6 +139,11 @@ impl Plan {
         self.devices[d.0].program = program;
     }
 
+    /// `d`'s host makes no link grants: its `IntroPolicy::grant_for` is zero.
+    pub fn no_link_grants(&mut self, d: Dev) {
+        self.devices[d.0].link_grants = false;
+    }
+
     /// Add `device` of the self-certifying person whose root key is the Ed25519 secret
     /// `genesis`: the person is named by that key alone, `/user/<0xA1: SHA-256 of its public
     /// key>` (ndn-cert's `GenesisKey`), and its trust context's version 1 is signed by it. The
@@ -155,6 +164,7 @@ impl Plan {
             holds,
             program: Program::default(),
             genesis: None,
+            link_grants: true,
         });
         Dev(self.devices.len() - 1)
     }
@@ -170,6 +180,7 @@ impl Plan {
             holds: false,
             program: Program::default(),
             genesis: None,
+            link_grants: true,
         });
         Dev(self.devices.len() - 1)
     }
@@ -243,6 +254,7 @@ impl Net {
                 program: p.program,
                 stranger: plan.strangers,
                 genesis: p.genesis,
+                link_grants: p.link_grants,
             };
             let mut node_profile = profile(&spec);
             node_profile.clock_skew.get_or_insert(ClockSkew::NONE);
@@ -1085,6 +1097,23 @@ impl World {
     /// [`Provider::grants`]).
     pub fn grants(&self, d: Dev) -> Grants {
         self.provider.grants(self.net.spec(d))
+    }
+
+    /// What `d`'s host was told of its link grants, and what its layer lists now (see
+    /// [`Provider::link_grants`]). A read, not a gesture.
+    pub async fn link_grants(&self, d: Dev) -> Result<GrantLog, Failure> {
+        self.provider
+            .link_grants(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("link_grants failed: {e:#}")))
+    }
+
+    /// The digest of `d`'s own key, which a grant to `d` names (see [`Provider::link_key`]).
+    pub async fn link_key(&self, d: Dev) -> Result<[u8; 32], Failure> {
+        self.provider
+            .link_key(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("link_key failed: {e:#}")))
     }
 
     /// `d`, a malicious holder, replaces the packet of block `version` in its store as `how`

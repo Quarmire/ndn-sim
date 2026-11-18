@@ -42,7 +42,9 @@ pub mod world;
 
 pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;
-pub use provider::{Certs, DeviceSpec, Grants, NodeRole, Program, Provider, Tally, Tamper};
+pub use provider::{
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, NodeRole, Program, Provider, Tally, Tamper,
+};
 pub use reference::Reference;
 pub use report::{CaseResult, Cost, NetworkReport, Report, Status};
 pub use runner::{Network, differences, run_all, run_case, run_only};

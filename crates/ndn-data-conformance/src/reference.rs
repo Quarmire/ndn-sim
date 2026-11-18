@@ -70,8 +70,8 @@ use ndn_data::wire::{
     parse_piece_name, piece_names, version_proof,
 };
 use ndn_data::{
-    Code, Config, CutBound, CutProposal, DataLayer, Device, Entropy, Introducer, Joined,
-    MergeRules, Name, Offer, Timestamp, Transport, VersionId,
+    Code, Config, CutBound, CutProposal, DataLayer, Device, Entropy, Grant, IntroPolicy,
+    Introducer, Joined, MergeRules, Name, Offer, Timestamp, Transport, VersionId,
 };
 use ndn_link::{EngineFaces, FaceSink};
 use ndn_namespace::publish::{OwnCertificates, PublishedContexts};
@@ -82,7 +82,7 @@ use ndn_security::cert_name::{DEFAULT_ISSUER, new_cert_name};
 use ndn_security::self_certifying::Genesis;
 use ndn_security::{
     Certificate, ScopedContext, SecurityManager, SignedTrustContext, Signer, Validator,
-    anchor_fingerprint, encode_cert_data,
+    anchor_fingerprint, encode_cert_data, public_key_digest,
 };
 use ndn_sim::{Fabric, NodeId};
 use ndn_surface::signal::{SignalOptions, Signals};
@@ -93,7 +93,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::element::Element;
 use crate::feature::Feature;
-use crate::provider::{Certs, DeviceSpec, Grants, Program, Provider, Tally, Tamper};
+use crate::provider::{
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, Program, Provider, Tally, Tamper,
+};
 use crate::sum;
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
@@ -139,7 +141,13 @@ struct Case {
     /// Each device's signals and the connection of their own they run on, by node
     /// ([`Provider::signals`]).
     signals: HashMap<NodeId, (Signals, Arc<dyn Connection>)>,
+    /// What each device's host was told of grants, in order, across restarts of its layer, by
+    /// node ([`Provider::link_grants`]).
+    told: HashMap<NodeId, Told>,
 }
+
+/// What a host was told of grants, shared by the runs of one device's layer.
+type Told = Arc<Mutex<Vec<GrantEvent>>>;
 
 /// A certificate of a device's key and the key that signed it.
 #[derive(Clone)]
@@ -225,6 +233,10 @@ impl Reference {
             answers: sum::host(host.program).1,
             entropy: seeded(&device, runs),
             introducer: Some(introducer),
+            intro: IntroPolicy {
+                grant_for: host.grant_for,
+                ..IntroPolicy::new()
+            },
             ..Config::new()
         };
         let layer = Device::start(
@@ -264,8 +276,8 @@ impl Reference {
         validator: &Arc<Validator>,
     ) -> anyhow::Result<Arc<dyn Introducer>> {
         let ns = validator.keyring().context_for(device).namespace().clone();
-        let (anchor, hub) = {
-            let case = self.case.lock().expect("the provider's lock");
+        let (anchor, hub, told) = {
+            let mut case = self.case.lock().expect("the provider's lock");
             let anchor = case
                 .namespaces
                 .get(&ns)
@@ -276,6 +288,7 @@ impl Reference {
             (
                 anchor,
                 *case.nodes.first().context("prepare lists the hub first")?,
+                Arc::clone(case.told.entry(node).or_default()),
             )
         };
         let engine = fabric
@@ -294,6 +307,7 @@ impl Reference {
                     .add_routes(link, &ndn_link::group_routes(std::iter::once(person), 0));
             }),
             carried: std::sync::Mutex::new(std::collections::HashSet::new()),
+            told,
         }))
     }
 
@@ -581,6 +595,8 @@ struct Host {
     hold_for: Vec<Name>,
     /// The merge rules its program knows beyond the standard ones.
     program: Program,
+    /// How long a grant lasts: zero for a host that makes none.
+    grant_for: std::time::Duration,
 }
 
 /// How `device`'s host configures its layer: a holder keeps the collections of its own person's
@@ -593,6 +609,11 @@ fn host(device: &DeviceSpec) -> Host {
             Vec::new()
         },
         program: device.program,
+        grant_for: if device.link_grants {
+            IntroPolicy::new().grant_for
+        } else {
+            std::time::Duration::ZERO
+        },
     }
 }
 
@@ -615,11 +636,27 @@ struct Introduce {
     /// The namespaces adopted for the layer alone that its engine carries in transit, once
     /// each, until the layer releases them.
     carried: std::sync::Mutex<std::collections::HashSet<Name>>,
+    /// What the host was told of grants, across restarts of its layer ([`Case::told`]).
+    told: Told,
 }
 
 impl Introducer for Introduce {
     fn anchor(&self) -> Option<bytes::Bytes> {
         Some(self.anchor.clone())
+    }
+
+    fn grant(&self, grant: &Grant) {
+        self.told
+            .lock()
+            .expect("the host's lock")
+            .push(GrantEvent::Granted(grant.clone()));
+    }
+
+    fn revoke_grant(&self, key: &[u8; 32]) {
+        self.told
+            .lock()
+            .expect("the host's lock")
+            .push(GrantEvent::Revoked(*key));
     }
 
     fn adopt<'a>(&'a self, link: &'a TrustEnvelope) -> Adopting<'a> {
@@ -1354,6 +1391,7 @@ impl Provider for Reference {
         let thief_host = Host {
             hold_for: Vec::new(),
             program: victim.program,
+            grant_for: IntroPolicy::new().grant_for,
         };
         self.start(fabric, thief.node, victim.name(), keys, thief_host, copy)
             .await
@@ -2000,6 +2038,37 @@ impl Provider for Reference {
             .close_offer(offer)
             .await
             .map_err(anyhow::Error::new)
+    }
+
+    async fn link_grants(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<GrantLog> {
+        let told = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .told
+            .get(&device.node)
+            .map(|t| t.lock().expect("the host's lock").clone())
+            .unwrap_or_default();
+        Ok(GrantLog {
+            told,
+            now: self.layer(device)?.grants(),
+        })
+    }
+
+    async fn link_key(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<[u8; 32]> {
+        let keys = self
+            .case
+            .lock()
+            .expect("the provider's lock")
+            .keys
+            .get(&device.name())
+            .cloned()
+            .with_context(|| format!("{} was not prepared", device.name()))?;
+        let public = keys
+            .get_signer_sync(&device_key(&device.name()))?
+            .public_key()
+            .context("an Ed25519 key")?;
+        Ok(public_key_digest(&public))
     }
 
     async fn join(

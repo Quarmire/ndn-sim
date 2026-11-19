@@ -70,8 +70,9 @@ pub enum Feature {
     /// across an upgrade: the versions it keeps are refused but kept, and the owner's next record
     /// binds them from the bytes it holds.
     UnboundCut,
-    /// A guest key's authority over data ends with its certificate: once lapsed, its data is
-    /// refused until the root's revoke-with-cut, which then decides alone.
+    /// A key's authority over data ends with its certificate, for every role (a guest's, a
+    /// member's, a node's, an admin's): once lapsed without a renewal, its data is refused until
+    /// the root's revoke-with-cut, which then decides alone.
     GuestExpiry,
     /// A later trust-context version that revokes an issuer re-checks what a device holds
     /// through it, on adoption and on restart.
@@ -187,7 +188,7 @@ impl Feature {
             Feature::BoundedCut => "cut bounded by the loss",
             Feature::CutManifest => "cut binds bytes",
             Feature::UnboundCut => "old-form removal cut kept",
-            Feature::GuestExpiry => "lapsed guest needs a cut",
+            Feature::GuestExpiry => "lapsed key needs a cut",
             Feature::IssuerRecheck => "re-check on issuer revocation",
             Feature::Functions => "named functions",
             Feature::RuleByName => "merge rules by name",

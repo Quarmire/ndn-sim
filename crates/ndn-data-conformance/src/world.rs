@@ -133,6 +133,17 @@ impl Plan {
         d
     }
 
+    /// Add a role-named device of `person`'s namespace as `ndn-fwd init` names them: a member's
+    /// device `<person>/member/<who>`, certified by `person` as a member (a role whose data,
+    /// once its certificate lapsed without a renewal, needs a cut as a guest's does). The
+    /// plain [`device`](Self::device) `<person>/<device>` has no role: no rule of the context's
+    /// DataRequiresCut applies to its key.
+    pub fn member(&mut self, person: &str, who: &str) -> Dev {
+        let d = self.add(person, who, false);
+        self.devices[d.0].role = Some("member".to_owned());
+        d
+    }
+
     /// The merge rules `d`'s program knows beyond the standard ones (every device's program
     /// knows the element rule unless the case says otherwise).
     pub fn program(&mut self, d: Dev, program: Program) {

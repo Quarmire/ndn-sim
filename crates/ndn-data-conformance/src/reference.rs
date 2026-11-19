@@ -22,11 +22,12 @@
 //! store beside its signing key (`SecurityManager::put_secret`, in memory), and dates entries by
 //! the node's own (possibly lying) clock.
 //!
-//! The person's key signs their trust context as version 1 (listing the guest role, a friend's
-//! device `<person>/guest/<who>`, among those whose data needs a cut once their certificate
-//! lapsed), and acts as the namespace's root device from then on: a revocation (with the cut the
+//! The person's key signs their trust context as version 1 (listing every device role — admin,
+//! member, node and guest, devices `<person>/<role>/<who>` — among those whose data needs a cut
+//! once their certificate lapsed, as `ndn-fwd init` does), and acts as the namespace's root device
+//! from then on: a revocation (with the cut the
 //! revoking device's data layer first verified before the loss the owner states, and the
-//! manifest binding it to bytes), the end of a lapsed guest key (a revocation whose cut is
+//! manifest binding it to bytes), the end of a lapsed key (a revocation whose cut is
 //! bounded at the lapse, signed unattended), a re-admission, a recovery kit and a recovery after
 //! the root's compromise are the next versions, signed with `ndn-cert`'s functions as the root
 //! flow signs them. A node takes them one at a time as context sync brings them, each checked
@@ -1053,14 +1054,16 @@ impl Provider for Reference {
         // namespace from the context governing its name (spec §3). Its root signs it as version
         // 1 — version 2 for a self-certifying person, whose version 1 is its genesis — the
         // version later ones (revocations, a recovery) follow from. As a new context from
-        // `ndn-fwd init`, it lists the guest role among those whose data needs a cut once their
-        // certificate lapsed.
+        // `ndn-fwd init`, it lists every device role (admin, member, node, guest) among those
+        // whose data needs a cut once their certificate lapsed.
         let mut contexts: Vec<Arc<SignedTrustContext>> = Vec::with_capacity(anchors.len());
         for (person, (root, anchor)) in &anchors {
             let genesis = geneses.get(person);
-            let ctx = SignedTrustContext::hierarchical(person.clone())
-                .with_version(if genesis.is_some() { 2 } else { 1 })
-                .with_data_requires_cut("guest");
+            let ctx = ndn_cert::Role::DATA_REQUIRES_CUT.into_iter().fold(
+                SignedTrustContext::hierarchical(person.clone())
+                    .with_version(if genesis.is_some() { 2 } else { 1 }),
+                |ctx, role| ctx.with_data_requires_cut(role.as_str()),
+            );
             anyhow::ensure!(
                 ctx.add_anchor(anchor.clone()),
                 "{person}'s namespace key is not valid now"

@@ -95,7 +95,7 @@ use tokio_util::sync::CancellationToken;
 use crate::element::Element;
 use crate::feature::Feature;
 use crate::provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, Program, Provider, Tally, Tamper,
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, Program, Provider, Tally, Tamper,
 };
 use crate::sum;
 
@@ -2067,6 +2067,21 @@ impl Provider for Reference {
             told,
             now: layer.grants(),
             departures: layer.departures(),
+        })
+    }
+
+    async fn joined_folders(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<JoinedList> {
+        let layer = self.layer(device)?;
+        // The folders are read after the generation: a change between the two reads only makes
+        // the list newer than its generation, never older.
+        let generation = *layer.joined_changes().borrow();
+        Ok(JoinedList {
+            folders: layer.joined_folders(),
+            generation,
         })
     }
 

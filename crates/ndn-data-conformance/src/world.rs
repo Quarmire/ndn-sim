@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
 use crate::provider::{
-    Certs, DeviceSpec, GrantLog, Grants, NodeRole, Program, Provider, Tally, Tamper,
+    Certs, DeviceSpec, GrantLog, Grants, JoinedList, NodeRole, Program, Provider, Tally, Tamper,
 };
 use crate::report::{Cost, Measure};
 
@@ -1117,6 +1117,15 @@ impl World {
             .link_grants(&self.net.fabric, self.net.spec(d))
             .await
             .map_err(|e| Failure::new(format!("link_grants failed: {e:#}")))
+    }
+
+    /// The folders `d`'s layer lists as joined, and the generation of that list (see
+    /// [`Provider::joined_folders`]). A read, not a gesture.
+    pub async fn joined_folders(&self, d: Dev) -> Result<JoinedList, Failure> {
+        self.provider
+            .joined_folders(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("joined_folders failed: {e:#}")))
     }
 
     /// The digest of `d`'s own key, which a grant to `d` names (see [`Provider::link_key`]).

@@ -63,7 +63,7 @@ fn plan() -> Plan {
 }
 
 /// `ns` followed by the components of `rest`.
-fn under(ns: &Name, rest: &str) -> Name {
+pub(super) fn under(ns: &Name, rest: &str) -> Name {
     Name::from_components(
         ns.components()
             .iter()
@@ -74,7 +74,7 @@ fn under(ns: &Name, rest: &str) -> Name {
 
 /// `d` writes `words` as a note into `page`, once its device can (it may first wait for the
 /// folder's record and epoch key).
-async fn writes(w: &World, d: Dev, page: &Name, words: &str) -> Result<(), Failure> {
+pub(super) async fn writes(w: &World, d: Dev, page: &Name, words: &str) -> Result<(), Failure> {
     let layer = w.at(d);
     w.until(
         &format!("{} writes {page}", w.net().spec(d).name()),

@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use ndn_data::{Code, DataLayer, Departure, Grant, Joined, Name, Offer, Timestamp, VersionId};
+use ndn_data::{
+    Code, DataLayer, Departure, Grant, Joined, JoinedFolder, Name, Offer, Timestamp, VersionId,
+};
 use ndn_security::Signer;
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 use ndn_surface::signal::Signals;
@@ -34,6 +36,17 @@ pub struct GrantLog {
     pub now: Vec<Grant>,
     /// `Device::departures` now.
     pub departures: Vec<Departure>,
+}
+
+/// The folders a device joined, as its layer lists them, and the generation of that list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JoinedList {
+    /// `Device::joined_folders` now: what the device's link layer routes for each folder it was
+    /// let into, derived from the record in force.
+    pub folders: Vec<JoinedFolder>,
+    /// The value of `Device::joined_changes` now: it moves (and never repeats) whenever the
+    /// list above changed.
+    pub generation: u64,
 }
 
 /// One device in a case: a person's device, or a thief's node.
@@ -520,6 +533,22 @@ pub trait Provider: Send + Sync {
     async fn link_grants(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<GrantLog> {
         let _ = fabric;
         anyhow::bail!("this provider cannot tell {}'s link grants", device.name())
+    }
+
+    /// The folders `device`'s layer lists as joined (`Device::joined_folders`: for each live
+    /// mirror entry the record in force still lists it in, the inviter, the owner, its own role
+    /// and the other writers' namespaces) and the generation of that list
+    /// (`Device::joined_changes`). A provider without introductions says so.
+    async fn joined_folders(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<JoinedList> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot list {}'s joined folders",
+            device.name()
+        )
     }
 
     /// The public-key digest of `device`'s own key: what a link's handshake proves, and the key a

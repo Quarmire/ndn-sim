@@ -32,7 +32,10 @@
 //! limits, and answers in pieces), and round 8's asks for an answer (`a19`…`a22`: a device that
 //! cannot compute asks another of its person and trusts what it is given, a device outside the
 //! audience of one read is refused, eight asks from one device have one in progress and the rest
-//! Busy, an ask that does not prove its asker gets no reply).
+//! Busy, an ask that does not prove its asker gets no reply), and round 9's two ends of a grant
+//! (`i22`…`i24`: the joiner's list of joined folders follows the members record, the joiner holds
+//! a grant for the inviter that the record re-derives, and mutual invitations make an inviter's
+//! entry and a mirror entry that end one by one).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -130,6 +133,9 @@ mod i19_person_let_go_takes_the_record;
 mod i1_join_by_code;
 mod i20_writers_who_never_met;
 mod i21_let_go_member_invited_again;
+mod i22_joiners_list_follows_the_record;
+mod i23_joiner_holds_a_grant_for_the_inviter;
+mod i24_mutual_invitations_two_folders;
 mod i2_used_code;
 mod i3_expired_code;
 mod i4_wrong_tries;
@@ -273,6 +279,9 @@ pub const CASES: &[Case] = &[
     i19_person_let_go_takes_the_record::CASE,
     i20_writers_who_never_met::CASE,
     i21_let_go_member_invited_again::CASE,
+    i22_joiners_list_follows_the_record::CASE,
+    i23_joiner_holds_a_grant_for_the_inviter::CASE,
+    i24_mutual_invitations_two_folders::CASE,
     f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,

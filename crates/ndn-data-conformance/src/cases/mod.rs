@@ -121,6 +121,7 @@ mod i13_close_keeps_answering;
 mod i14_join_ready;
 mod i15_grant_given_once;
 mod i16_grant_follows_the_record;
+mod i17_grant_follows_the_role;
 mod i1_join_by_code;
 mod i2_used_code;
 mod i3_expired_code;
@@ -260,6 +261,7 @@ pub const CASES: &[Case] = &[
     i14_join_ready::CASE,
     i15_grant_given_once::CASE,
     i16_grant_follows_the_record::CASE,
+    i17_grant_follows_the_role::CASE,
     f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,

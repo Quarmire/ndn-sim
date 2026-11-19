@@ -595,8 +595,8 @@ struct Host {
     hold_for: Vec<Name>,
     /// The merge rules its program knows beyond the standard ones.
     program: Program,
-    /// How long a grant lasts: zero for a host that makes none.
-    grant_for: std::time::Duration,
+    /// How long a grant lasts: `Some(ZERO)` for a host that makes none.
+    grant_for: Option<std::time::Duration>,
 }
 
 /// How `device`'s host configures its layer: a holder keeps the collections of its own person's
@@ -612,7 +612,7 @@ fn host(device: &DeviceSpec) -> Host {
         grant_for: if device.link_grants {
             IntroPolicy::new().grant_for
         } else {
-            std::time::Duration::ZERO
+            Some(std::time::Duration::ZERO)
         },
     }
 }

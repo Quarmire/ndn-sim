@@ -2,12 +2,12 @@
 //!
 //! Alice offers her notebook to two strangers. Bob joins as a writer: Alice's host is told of
 //! one grant (`Introducer::grant`) naming Bob's key, his namespace `/bob`, the notebook and the
-//! offer's role, ending ninety days on by Alice's clock; her layer lists the same grant
+//! offer's role, with no date (it follows the members record); her layer lists the same grant
 //! (`Device::grants`). Bob's host asks again with the same code, as one whose answer was lost
-//! does: he is answered what he was given, the host is told nothing more, and the grant's end has
+//! does: he is answered what he was given, the host is told nothing more, and the grant has
 //! not moved. Carol presenting the used code is refused and granted nothing; so is a code forged
 //! without its secret. Carol joins a second offer as a reader: a second grant, naming her key,
-//! `/carol` and the reader's role. A host whose policy makes no grants (`grant_for` zero) admits
+//! `/carol` and the reader's role. A host whose policy makes no grants (`grant_for` `Some(ZERO)`) admits
 //! Eve all the same and is told nothing.
 
 use std::time::Duration;
@@ -35,10 +35,10 @@ pub(super) const CASE: Case = Case {
     ],
     model: &[],
     guards: "Once an offer admits a person, the host is told of one grant naming the asker's \
-             key and namespace, the folder and the offer's role, ending grant_for on; \
-             Device::grants lists it; a retry of the same key, an ask refused, and a code forged \
-             without its secret grant nothing and do not move its end; a host with grant_for \
-             zero is told nothing; clean or faulty.",
+             key and namespace, the folder and the offer's role, with no date (it follows the \
+             members record); Device::grants lists it; a retry of the same key, an ask refused, \
+             and a code forged without its secret grant nothing and do not move it; a host with \
+             grant_for Some(ZERO) is told nothing; clean or faulty.",
     budget: Duration::from_secs(4 * 3600),
     plan,
     run,
@@ -61,9 +61,6 @@ fn plan() -> Plan {
     p
 }
 
-/// How long a grant lasts by default (`IntroPolicy::grant_for`).
-const GRANT_FOR: Duration = Duration::from_secs(90 * 24 * 3600);
-
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let folder = n(FOLDER);
@@ -71,10 +68,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (bob_key, carol_key) = (w.link_key(BOB).await?, w.link_key(CAROL).await?);
 
         // Bob joins as a writer: one grant, for his key.
-        let before = w.net().date(ALICE).0;
         let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
         joins(w, BOB, &code.link).await?;
-        let after = w.net().date(ALICE).0;
         let log = w.link_grants(ALICE).await?;
         let [GrantEvent::Granted(bobs)] = log.told.as_slice() else {
             return Err(Failure::new(format!(
@@ -98,14 +93,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             bobs.folder,
             bobs.role
         );
-        let lasts = GRANT_FOR.as_millis() as u64;
         ensure!(
-            (before + lasts..=after + lasts).contains(&bobs.until.0),
-            "the grant ends at {:?}, not ninety days after the admission ({} to {} ms by alice's \
-             clock)",
-            bobs.until,
-            before + lasts,
-            after + lasts
+            bobs.until.is_none(),
+            "the grant ends at {:?}: by default a grant has no date (it follows the members \
+             record), whatever the clock says",
+            bobs.until
         );
         ensure!(
             log.now == [bobs.clone()],
@@ -190,8 +182,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         let none = w.link_grants(DINA).await?;
         ensure!(
             none.told.is_empty() && none.now.is_empty(),
-            "a host with grant_for zero was told {:?} and its layer lists {:?} after it admitted \
-             eve",
+            "a host with grant_for Some(ZERO) was told {:?} and its layer lists {:?} after it \
+             admitted eve",
             none.told,
             none.now
         );

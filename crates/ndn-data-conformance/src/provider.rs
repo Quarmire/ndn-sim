@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ndn_data::{Code, DataLayer, Grant, Joined, Name, Offer, Timestamp, VersionId};
+use ndn_data::{Code, DataLayer, Departure, Grant, Joined, Name, Offer, Timestamp, VersionId};
 use ndn_security::Signer;
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 use ndn_surface::signal::Signals;
@@ -14,17 +14,26 @@ use crate::feature::Feature;
 pub enum GrantEvent {
     /// `Introducer::grant`.
     Granted(Grant),
-    /// `Introducer::revoke_grant`, with the key.
-    Revoked([u8; 32]),
+    /// `Introducer::departure`: a held record let the person go.
+    Departed(Departure),
+    /// `Introducer::revoke_grant`, with the key and the folder whose grant ended.
+    Revoked {
+        /// The person's device key.
+        key: [u8; 32],
+        /// The folder whose grant ended.
+        folder: Name,
+    },
 }
 
 /// A device's grants: what its host was told, and what its layer lists now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GrantLog {
-    /// Every call of the host's `grant` and `revoke_grant`, oldest first.
+    /// Every call of the host's `grant`, `departure` and `revoke_grant`, oldest first.
     pub told: Vec<GrantEvent>,
     /// `Device::grants` now.
     pub now: Vec<Grant>,
+    /// `Device::departures` now.
+    pub departures: Vec<Departure>,
 }
 
 /// One device in a case: a person's device, or a thief's node.
@@ -518,6 +527,25 @@ pub trait Provider: Send + Sync {
     async fn link_key(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<[u8; 32]> {
         let _ = fabric;
         anyhow::bail!("this provider cannot tell {}'s link key", device.name())
+    }
+
+    /// `device`, a person let go of `folder`, takes the members record `record` its inviter's
+    /// link layer named to it ([`Device::take_departure`](ndn_data::Device::take_departure)):
+    /// fetched and taken as any held record, so `device`'s own folder members no longer list it.
+    /// A refusal carries the layer's [`DataError`](ndn_data::DataError) as its source. A
+    /// provider without introductions says so.
+    async fn take_departure(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        folder: &Name,
+        record: &Name,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, folder, record);
+        anyhow::bail!(
+            "this provider cannot make {} take a departure",
+            device.name()
+        )
     }
 
     /// `device`'s host adopts the namespace the anchor link `link` (an `ndn-trust://anchor`

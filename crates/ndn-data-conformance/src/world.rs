@@ -1116,6 +1116,29 @@ impl World {
             .map_err(|e| Failure::new(format!("link_key failed: {e:#}")))
     }
 
+    /// `d`, a person let go of `folder`, takes the members record `record` its inviter told it
+    /// of (see [`Provider::take_departure`]): one gesture, the person's host. A refusal by `d`'s
+    /// data layer is answered as its error, for a case that expects one.
+    pub async fn take_departure(
+        &self,
+        d: Dev,
+        folder: &Name,
+        record: &Name,
+    ) -> Result<Result<(), DataError>, Failure> {
+        self.gesture();
+        match self
+            .provider
+            .take_departure(&self.net.fabric, self.net.spec(d), folder, record)
+            .await
+        {
+            Ok(()) => Ok(Ok(())),
+            Err(e) => match e.downcast_ref::<DataError>() {
+                Some(refusal) => Ok(Err(refusal.clone())),
+                None => Err(Failure::new(format!("take_departure failed: {e:#}"))),
+            },
+        }
+    }
+
     /// `d`, a malicious holder, replaces the packet of block `version` in its store as `how`
     /// says, keeping its signature bytes (see [`Provider::tamper`]).
     pub fn tamper(&self, d: Dev, version: &Name, how: Tamper) -> Result<(), Failure> {

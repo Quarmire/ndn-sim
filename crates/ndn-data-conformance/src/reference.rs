@@ -70,7 +70,7 @@ use ndn_data::wire::{
     parse_piece_name, piece_names, version_proof,
 };
 use ndn_data::{
-    Code, Config, CutBound, CutProposal, DataLayer, Device, Entropy, Grant, IntroPolicy,
+    Code, Config, CutBound, CutProposal, DataLayer, Departure, Device, Entropy, Grant, IntroPolicy,
     Introducer, Joined, MergeRules, Name, Offer, Timestamp, Transport, VersionId,
 };
 use ndn_link::{EngineFaces, FaceSink};
@@ -652,11 +652,21 @@ impl Introducer for Introduce {
             .push(GrantEvent::Granted(grant.clone()));
     }
 
-    fn revoke_grant(&self, key: &[u8; 32]) {
+    fn departure(&self, departure: &Departure) {
         self.told
             .lock()
             .expect("the host's lock")
-            .push(GrantEvent::Revoked(*key));
+            .push(GrantEvent::Departed(departure.clone()));
+    }
+
+    fn revoke_grant(&self, key: &[u8; 32], folder: &Name) {
+        self.told
+            .lock()
+            .expect("the host's lock")
+            .push(GrantEvent::Revoked {
+                key: *key,
+                folder: folder.clone(),
+            });
     }
 
     fn adopt<'a>(&'a self, link: &'a TrustEnvelope) -> Adopting<'a> {
@@ -2049,10 +2059,25 @@ impl Provider for Reference {
             .get(&device.node)
             .map(|t| t.lock().expect("the host's lock").clone())
             .unwrap_or_default();
+        let layer = self.layer(device)?;
         Ok(GrantLog {
             told,
-            now: self.layer(device)?.grants(),
+            now: layer.grants(),
+            departures: layer.departures(),
         })
+    }
+
+    async fn take_departure(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        folder: &Name,
+        record: &Name,
+    ) -> anyhow::Result<()> {
+        self.layer(device)?
+            .take_departure(folder, record)
+            .await
+            .map_err(anyhow::Error::new)
     }
 
     async fn link_key(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<[u8; 32]> {

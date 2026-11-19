@@ -4,8 +4,9 @@
 //! Alice's laptop offers her notebook to Bob and to Carol, both as writers; both join, write a
 //! page, and Alice's host holds a grant for each. Alice's phone — another device of hers, which
 //! made no offer — reads both pages and signs a members record that leaves Bob out. Once the
-//! laptop holds it, its host is told Bob's grant has ended (`Introducer::revoke_grant`, with his
-//! key), once, and `Device::grants` lists Carol's alone. The laptop stops and starts again on
+//! laptop holds it, its host is told Bob was let go (`Introducer::departure`) and that his grant of
+//! the folder has ended (`Introducer::revoke_grant`, with his key and the folder), once, and
+//! `Device::grants` lists Carol's alone. The laptop stops and starts again on
 //! what it stored: its host is told nothing more, and the grants its layer lists are the same
 //! set, less the ended: Carol's, with the end it had.
 
@@ -124,21 +125,41 @@ fn run(w: &World) -> CaseFuture<'_> {
             Ok(w.link_grants(LAPTOP)
                 .await?
                 .told
-                .contains(&GrantEvent::Revoked(bobs_key)))
+                .iter()
+                .any(|e| matches!(e, GrantEvent::Revoked { key, .. } if *key == bobs_key)))
         })
         .await?;
-        // Whatever settles after it ends nothing twice, and leaves Carol's grant be.
+        // Whatever settles after it ends nothing twice, and leaves Carol's grant be. The host
+        // is told, as the grant ends, that a record let Bob go (the departure), then of the end
+        // of his grant of the folder.
         w.sleep(SETTLE).await;
         let ended = w.link_grants(LAPTOP).await?;
+        let [
+            first,
+            second,
+            GrantEvent::Departed(left),
+            GrantEvent::Revoked {
+                key: revoked,
+                folder: revoked_in,
+            },
+        ] = ended.told.as_slice()
+        else {
+            return Err(Failure::new(format!(
+                "alice's host was told {:?}; it must be told of bob's grant, carol's, and once \
+                 that a record let bob go and that bob's grant of the folder has ended",
+                ended.told
+            )));
+        };
         ensure!(
-            ended.told
-                == [
-                    GrantEvent::Granted(bobs.clone()),
-                    GrantEvent::Granted(carols.clone()),
-                    GrantEvent::Revoked(bobs_key),
-                ],
-            "alice's host was told {:?}; it must be told of bob's grant, carol's, and once that \
-             bob's has ended",
+            *first == GrantEvent::Granted(bobs.clone())
+                && *second == GrantEvent::Granted(carols.clone())
+                && left.key == bobs_key
+                && left.folder == folder
+                && left.namespaces == [n("/bob")]
+                && *revoked == bobs_key
+                && *revoked_in == folder,
+            "alice's host was told {:?}; the departure and the end must name bob's key, /bob and \
+             the notebook",
             ended.told
         );
         ensure!(
@@ -146,6 +167,12 @@ fn run(w: &World) -> CaseFuture<'_> {
             "after the record that leaves bob out Device::grants lists {:?}, not carol's grant \
              alone",
             ended.now
+        );
+        ensure!(
+            ended.departures == [left.clone()],
+            "after the record that leaves bob out Device::departures lists {:?}, not the \
+             departure the host was told of",
+            ended.departures
         );
 
         // A restart: the same grants less the ended, and the host told nothing more.

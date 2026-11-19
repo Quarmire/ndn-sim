@@ -122,7 +122,10 @@ mod i14_join_ready;
 mod i15_grant_given_once;
 mod i16_grant_follows_the_record;
 mod i17_grant_follows_the_role;
+mod i18_two_folders_one_person;
+mod i19_person_let_go_takes_the_record;
 mod i1_join_by_code;
+mod i20_writers_who_never_met;
 mod i2_used_code;
 mod i3_expired_code;
 mod i4_wrong_tries;
@@ -262,6 +265,9 @@ pub const CASES: &[Case] = &[
     i15_grant_given_once::CASE,
     i16_grant_follows_the_record::CASE,
     i17_grant_follows_the_role::CASE,
+    i18_two_folders_one_person::CASE,
+    i19_person_let_go_takes_the_record::CASE,
+    i20_writers_who_never_met::CASE,
     f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,

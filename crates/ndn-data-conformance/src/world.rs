@@ -1117,18 +1117,26 @@ impl World {
     }
 
     /// `d`, a person let go of `folder`, takes the members record `record` its inviter told it
-    /// of (see [`Provider::take_departure`]): one gesture, the person's host. A refusal by `d`'s
-    /// data layer is answered as its error, for a case that expects one.
+    /// of (see [`Provider::take_departure`]): one gesture, the person's host; `from` is the
+    /// device that told it (the inviter's host). A refusal by `d`'s data layer is answered as
+    /// its error, for a case that expects one.
     pub async fn take_departure(
         &self,
         d: Dev,
+        from: Dev,
         folder: &Name,
         record: &Name,
     ) -> Result<Result<(), DataError>, Failure> {
         self.gesture();
         match self
             .provider
-            .take_departure(&self.net.fabric, self.net.spec(d), folder, record)
+            .take_departure(
+                &self.net.fabric,
+                self.net.spec(d),
+                self.net.spec(from),
+                folder,
+                record,
+            )
             .await
         {
             Ok(()) => Ok(Ok(())),

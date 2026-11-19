@@ -2071,11 +2071,12 @@ impl Provider for Reference {
         &self,
         _fabric: &Fabric,
         device: &DeviceSpec,
+        from: &DeviceSpec,
         folder: &Name,
         record: &Name,
     ) -> anyhow::Result<()> {
         self.layer(device)?
-            .take_departure(folder, record)
+            .take_departure(&from.name(), folder, record)
             .await
             .map_err(anyhow::Error::new)
     }

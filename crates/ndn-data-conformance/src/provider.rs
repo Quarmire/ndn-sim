@@ -532,16 +532,19 @@ pub trait Provider: Send + Sync {
     /// `device`, a person let go of `folder`, takes the members record `record` its inviter's
     /// link layer named to it ([`Device::take_departure`](ndn_data::Device::take_departure)):
     /// fetched and taken as any held record, so `device`'s own folder members no longer list it.
-    /// A refusal carries the layer's [`DataError`](ndn_data::DataError) as its source. A
-    /// provider without introductions says so.
+    /// `from` is the device that told it: the peer of the link the notice came over, whose
+    /// certificate the link layer validated; only a device under the folder's namespace lets a
+    /// member go of it, so a notice from another is refused. A refusal carries the layer's
+    /// [`DataError`](ndn_data::DataError) as its source. A provider without introductions says so.
     async fn take_departure(
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
+        from: &DeviceSpec,
         folder: &Name,
         record: &Name,
     ) -> anyhow::Result<()> {
-        let _ = (fabric, folder, record);
+        let _ = (fabric, from, folder, record);
         anyhow::bail!(
             "this provider cannot make {} take a departure",
             device.name()

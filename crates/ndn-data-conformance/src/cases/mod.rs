@@ -126,6 +126,7 @@ mod i18_two_folders_one_person;
 mod i19_person_let_go_takes_the_record;
 mod i1_join_by_code;
 mod i20_writers_who_never_met;
+mod i21_let_go_member_invited_again;
 mod i2_used_code;
 mod i3_expired_code;
 mod i4_wrong_tries;
@@ -268,6 +269,7 @@ pub const CASES: &[Case] = &[
     i18_two_folders_one_person::CASE,
     i19_person_let_go_takes_the_record::CASE,
     i20_writers_who_never_met::CASE,
+    i21_let_go_member_invited_again::CASE,
     f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,

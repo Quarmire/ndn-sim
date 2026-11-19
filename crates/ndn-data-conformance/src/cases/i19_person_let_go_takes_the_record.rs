@@ -137,7 +137,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             "bob's device takes the record that lets him go",
             LIMIT,
             || async {
-                match w.take_departure(BOB, &folder, &left.record).await? {
+                match w.take_departure(BOB, LAPTOP, &folder, &left.record).await? {
                     Ok(()) => Ok(true),
                     Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
                     Err(e) => Err(e.into()),
@@ -170,10 +170,18 @@ fn run(w: &World) -> CaseFuture<'_> {
         // A name that is no members record of the folder is no departure.
         let other =
             ndn_data::wire::log_name(&n("/alice/laptop"), Some(&n("/alice/32=data/diary")), 1);
-        let not_a_record = w.take_departure(BOB, &folder, &other).await?;
+        let not_a_record = w.take_departure(BOB, LAPTOP, &folder, &other).await?;
         ensure!(
             matches!(not_a_record, Err(DataError::BadRequest { .. })),
             "a hint naming another folder's entry was answered {not_a_record:?}, not refused"
+        );
+        // A notice from a device that is not under the folder's namespace (Bob's own phone
+        // naming Alice's folder) is refused, whatever it names.
+        let stranger = w.take_departure(BOB, BOB, &folder, &left.record).await?;
+        ensure!(
+            matches!(&stranger, Err(DataError::BadRequest { why, .. }) if why.contains("lies under no namespace")),
+            "a departure told by a device outside the folder's namespace was answered \
+             {stranger:?}, not refused saying so"
         );
         Ok(())
     })

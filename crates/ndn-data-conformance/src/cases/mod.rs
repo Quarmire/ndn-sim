@@ -29,7 +29,10 @@
 //! readings over signed data — one name and one answer from two devices, a changed read set, a
 //! wrong answer detected on recompute, a reader without access, an unknown evaluator, fetching
 //! against computing, unsigned work, a provider's answer, a revoked signer, read-set faults,
-//! limits, and answers in pieces).
+//! limits, and answers in pieces), and round 8's asks for an answer (`a19`…`a22`: a device that
+//! cannot compute asks another of its person and trusts what it is given, a device outside the
+//! audience of one read is refused, eight asks from one device have one in progress and the rest
+//! Busy, an ask that does not prove its asker gets no reply).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -316,6 +319,10 @@ pub const CASES: &[Case] = &[
     answers::A16,
     answers::A17,
     answers::A18,
+    answers::A19,
+    answers::A20,
+    answers::A21,
+    answers::A22,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

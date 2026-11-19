@@ -1,5 +1,6 @@
-//! Answers (spec answers.md), cases `a1`…`a18` over a real network of devices: named, checkable
-//! readings over signed data, pure and provider, sealed to the audience of what they read.
+//! Answers (spec answers.md), cases `a1`…`a22` over a real network of devices: named, checkable
+//! readings over signed data, pure and provider, sealed to the audience of what they read, and
+//! asked of another device (`a19`…`a22`).
 //!
 //! The scenario's data: Alice's laptop owns two log collections — `plan` and `budget` — and writes
 //! into `budget` an integer `n` and into `plan` a definition whose field `inputs` lists `budget`.
@@ -8,10 +9,16 @@
 
 use std::time::Duration;
 
-use ndn_data::wire::{PieceKind, parse_answer_name, piece_name};
+use ndn_app::EngineAppExt;
+use ndn_data::wire::{PieceKind, parse_answer_name, parse_seal_key_name, piece_name};
 use ndn_data::{
-    AnswerAsk, AnswerFault, AnswerRefusal, Answered, Hash, Provenance, ReadRef, ReadSet, Writer,
+    AnswerAsk, AnswerAskBody, AnswerAskEnvelope, AnswerFault, AnswerRefusal, Answered, AskRefusal,
+    Device, Hash, Provenance, ReadRef, ReadSet, Writer, answer_ask_prefix,
 };
+use ndn_packet::encode::{DataBuilder, InterestBuilder};
+use ndn_security::Signer;
+use ndn_security::confidentiality::{ContentKey, wrap_ck_to};
+use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::provider::Program;
@@ -773,11 +780,18 @@ pub(super) const A14: Case = answer_case!(
         );
         let q = AnswerAsk::provider(function, inputs).name(Some(&w.net().spec(LAPTOP).name()))?;
         let got = ask(w, BOB, &q).await;
+        // Bob is another person's device: where his fetch reaches nothing published (a network
+        // that drops packets), the laptop is asked and, serving asks from its own person's
+        // devices only, says so. Anything but a refusal or the answer is a second result.
         ensure!(
             matches!(
                 &got,
                 Err(DataError::Answer {
-                    why: AnswerRefusal::NotProvider { .. },
+                    why: AnswerRefusal::NotProvider { .. }
+                        | AnswerRefusal::AskRefused {
+                            why: AskRefusal::NotServed,
+                            ..
+                        },
                     ..
                 })
             ) || got.is_ok(),
@@ -918,6 +932,480 @@ pub(super) const A18: Case = answer_case!(
         ensure!(
             piece_name(&name, PieceKind::Chunk(0)).len() == 5,
             "pieces are named under the answer"
+        );
+        Ok(())
+    })
+);
+
+// ---- a19 … a22: asking another device for the answer ----
+
+/// The question of the newest definition of `plan` the laptop holds, under evaluator `evaluator`.
+async fn question_of(w: &World, evaluator: Name) -> Result<Name, Failure> {
+    let (def, _) = w.gate(LAPTOP)?.current_read(&plan_c()).await?;
+    Ok(AnswerAsk::pure(def, evaluator).name(None)?)
+}
+
+/// What `signer` answers `gate`'s `ask_answer` of `question`, asked again as [`settled`] does for
+/// as long as the error says asking again may mend it (the verb's own loop has already asked a
+/// busy signer up to three times): the answer, and how many times the case had to ask again.
+async fn asked(
+    w: &World,
+    gate: &Device,
+    signer: &Name,
+    question: &Name,
+) -> Result<(Answered, usize), DataError> {
+    let mut last = None;
+    for again in 0..8 {
+        match gate.ask_answer(signer, question).await {
+            Ok(ndn_data::Got::Answer(a)) => return Ok((a, again)),
+            Ok(other) => panic!("not an answer: {other:?}"),
+            Err(e) if e.retry() => {
+                last = Some(e);
+                w.sleep(Duration::from_secs(3)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("at least one try"))
+}
+
+/// `get` of `name` on `d`, asked again for as long as asking again may mend it, as [`settled`]
+/// does, and while no signer is known or reached to ask (`CannotCheck`: a device that has not
+/// yet heard of its person's other devices, or a network that lost its asks): the answer.
+async fn get_asking(w: &World, d: Dev, name: &Name) -> Result<Answered, DataError> {
+    let mut last = None;
+    for _ in 0..8 {
+        match w.at(d).get(name).await {
+            Ok(answer) => match answer.got {
+                ndn_data::Got::Answer(a) => return Ok(a),
+                other => panic!("not an answer: {other:?}"),
+            },
+            Err(e) if e.retry() || matches!(e, DataError::CannotCheck { .. }) => {
+                last = Some(e);
+                w.sleep(Duration::from_secs(3)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("at least one try"))
+}
+
+/// `a` was taken on trust from the laptop's key.
+fn trusted_from_laptop(w: &World, what: &str, a: &Answered) -> Result<(), Failure> {
+    ensure!(
+        matches!(&a.how, Provenance::Trusted { signer, .. } if *signer == key_of(w, LAPTOP)),
+        "{what}: not taken on trust from the laptop: {:?}",
+        a.how
+    );
+    Ok(())
+}
+
+// ---- a19 ----
+
+pub(super) const A19: Case = answer_case!(
+    "a19",
+    "A device that cannot compute asks another of its person",
+    "Alice's phone, which has no evaluator, asks her laptop for an answer nobody published: the \
+     laptop computes it for the ask, and the phone returns Got::Answer, Provenance::Trusted by \
+     its policy; her tablet, which knows the evaluator and holds the inputs, asks too, \
+     recomputes, and agrees.",
+    || quartet([
+        Program::Evaluating,
+        Program::Standard,
+        Program::Standard,
+        Program::Evaluating
+    ]),
+    |w| Box::pin(async move {
+        let (input, def) = seed(w, &[]).await?;
+        reach(w, TABLET, &budget_c(), &input).await?;
+        reach(w, TABLET, &plan_c(), &def).await?;
+        // The phone knows the laptop as a device of its person once it holds a version the
+        // laptop signed: it can then ask it, having no evaluator to plan the reads with.
+        reach(w, PHONE, &plan_c(), &def).await?;
+        let q = question(w, LAPTOP, 1).await?;
+        let laptop = w.net().spec(LAPTOP).name();
+
+        // The tablet is out of reach while the phone asks, so that the signer the phone's policy
+        // finds is the laptop: the tablet would answer as willingly, and be trusted as much.
+        w.net().offline(TABLET);
+        let before = sum::evaluations();
+        let trusted = get_asking(w, PHONE, &q).await?;
+        w.net().online(TABLET);
+        ensure!(
+            trusted.result.as_ref() == b"3",
+            "the sum is {:?}",
+            trusted.result
+        );
+        trusted_from_laptop(w, "the phone", &trusted)?;
+        ensure!(
+            sum::evaluations() == before + 1,
+            "the laptop evaluated {} times for the phone's ask; once, only for the ask",
+            sum::evaluations() - before
+        );
+
+        let (recomputed, _) = asked(w, &w.gate(TABLET)?, &laptop, &q).await?;
+        match &recomputed.how {
+            Provenance::Recomputed { disagreed_with, .. } => ensure!(
+                disagreed_with.is_empty(),
+                "the tablet's own value differs from the laptop's: {disagreed_with:?}"
+            ),
+            other => {
+                return Err(Failure::new(format!(
+                    "the tablet knows the evaluator and must recompute: {other:?}"
+                )));
+            }
+        }
+        same("the tablet, asking", &trusted, &recomputed)?;
+        ensure!(
+            events_of(w, TABLET, EventKind::AnswerEvidence)?.is_empty(),
+            "the tablet raised evidence against an honest laptop"
+        );
+        Ok(())
+    })
+);
+
+// ---- a20 ----
+
+pub(super) const A20: Case = answer_case!(
+    "a20",
+    "A device outside the audience of one read is refused",
+    "The question reads two sealed collections, one open to Alice's devices and one to her \
+     laptop alone: her phone's ask is refused NotAudience, naming the read it may not read, \
+     and the laptop evaluated nothing and signed no answer; a question over the first alone, \
+     asked the same way, is answered.",
+    || trio([Program::Evaluating, Program::Standard, Program::Standard]),
+    |w| Box::pin(async move {
+        let laptop = w.net().spec(LAPTOP).name();
+        let devices = [person("/alice")];
+        let laptop_only = [Audience::Device(laptop.clone())];
+        w.at(LAPTOP).share(&plan_c(), log(&devices)).await?;
+        w.at(LAPTOP).share(&second_c(), log(&devices)).await?;
+        w.at(LAPTOP).share(&budget_c(), log(&laptop_only)).await?;
+        let second = put_n(w, &second_c(), 4).await?;
+        put_n(w, &budget_c(), 3).await?;
+        let def = put_def(w, &plan_c(), &[&second_c(), &budget_c()]).await?;
+        // The phone knows the laptop as a device of its person once it holds a version the
+        // laptop signed: it can then ask it, whatever else the phone holds. It holds the
+        // definition and the open input, so that it can open an answer over them; never `budget`.
+        reach(w, PHONE, &plan_c(), &def).await?;
+        reach(w, PHONE, &second_c(), &second).await?;
+        let q = question(w, LAPTOP, 1).await?;
+
+        // What the ask reads, in the order the signer checks it: the first it may not read.
+        let gate = w.gate(LAPTOP)?;
+        let mut reads = Vec::new();
+        for c in [plan_c(), second_c(), budget_c()] {
+            reads.push(gate.current_read(&c).await?.0);
+        }
+        let reads = readset(reads.clone())?;
+        let budget = gate.current_read(&budget_c()).await?.0;
+        let expected = reads.reads().iter().position(|r| *r == budget);
+
+        let phone = w.gate(PHONE)?;
+        let before = sum::evaluations();
+        let refused = asked(w, &phone, &laptop, &q).await;
+        match &refused {
+            Err(
+                e @ DataError::Answer {
+                    why:
+                        AnswerRefusal::AskRefused {
+                            why: AskRefusal::NotAudience { index },
+                            ..
+                        },
+                    ..
+                },
+            ) => {
+                ensure!(
+                    Some(*index as usize) == expected,
+                    "the refusal names read {index}; the one outside the audience is {expected:?}"
+                );
+                ensure!(
+                    e.next() == NextStep::AskOwner && !e.retry(),
+                    "the refusal says {:?} (retry {})",
+                    e.next(),
+                    e.retry()
+                );
+            }
+            other => {
+                return Err(Failure::new(format!(
+                    "the phone, outside one read's audience, was not refused NotAudience: {other:?}"
+                )));
+            }
+        }
+        ensure!(
+            sum::evaluations() == before,
+            "the laptop evaluated {} times for an ask it refused",
+            sum::evaluations() - before
+        );
+        let answers = w
+            .stored_names(LAPTOP)?
+            .into_iter()
+            .filter(|name| {
+                name.components()
+                    .iter()
+                    .any(|c| c.value.as_ref() == b"answer")
+            })
+            .count();
+        ensure!(
+            answers == 0,
+            "the laptop signed {answers} answers for an ask it refused"
+        );
+
+        // The refusal is of the read, not of the asker: over the open collection alone the same
+        // phone is answered.
+        put_def(w, &plan_c(), &[&second_c()]).await?;
+        let open = question(w, LAPTOP, 1).await?;
+        let (got, _) = asked(w, &phone, &laptop, &open).await?;
+        ensure!(
+            got.result.as_ref() == b"4",
+            "the phone's answer over the open read is {:?}",
+            got.result
+        );
+        Ok(())
+    })
+);
+
+// ---- a21 ----
+
+/// Eight phones' worth of asks, from one: how many the laptop is asked at once.
+const ASKS: usize = 8;
+
+pub(super) const A21: Case = answer_case!(
+    "a21",
+    "One ask in progress per asker",
+    "Eight asks for one answer sent at once from Alice's phone to her laptop, which is slow to \
+     plan it: the laptop works on one at a time (no two plans overlap) and evaluates once; the \
+     rest are refused Busy, and the phone's own loop, asking again after the pause the refusal \
+     names, at most three times each, has every one answered.",
+    || {
+        let mut p = trio([Program::Evaluating, Program::Standard, Program::Standard]);
+        p.count_names(3);
+        p
+    },
+    |w| Box::pin(async move {
+        seed(w, &[]).await?;
+        let q = question_of(w, sum::slow()).await?;
+        let laptop = w.net().spec(LAPTOP).name();
+        let phone = w.gate(PHONE)?;
+
+        let (evaluated, overlapped) = (sum::evaluations(), sum::overlaps());
+        let sent =
+            futures::future::join_all((0..ASKS).map(|_| asked(w, &phone, &laptop, &q))).await;
+        let mut answers = Vec::new();
+        let mut again = 0;
+        for (i, sent) in sent.into_iter().enumerate() {
+            let (answer, case_asked_again) = sent
+                .map_err(|e| Failure::new(format!("ask {i} of {ASKS} was never answered: {e}")))?;
+            again += case_asked_again;
+            answers.push(answer);
+        }
+        for a in &answers {
+            ensure!(a.result.as_ref() == b"3", "the sum is {:?}", a.result);
+            trusted_from_laptop(w, "an asker", a)?;
+            same("two askers", &answers[0], a)?;
+        }
+        ensure!(
+            sum::overlaps() == overlapped,
+            "the laptop planned for {} asks of one device while another was in progress",
+            sum::overlaps() - overlapped
+        );
+        ensure!(
+            sum::evaluations() == evaluated + 1,
+            "the laptop evaluated {} times for one answer",
+            sum::evaluations() - evaluated
+        );
+        if w.net().faults().is_none() {
+            // Every ask meets a reply, and nothing is lost to resend: the first wave of eight
+            // has one in progress and seven Busy, so at least seven more asks were answered.
+            let replies = w.net().received(PHONE, &answer_ask_prefix(&laptop));
+            ensure!(
+                replies >= (2 * ASKS - 1) as u64,
+                "the phone had {replies} replies to {ASKS} asks: at most one of a wave is not Busy"
+            );
+            ensure!(
+                again == 0,
+                "{again} asks needed the case to ask again; the verb's own three asks suffice"
+            );
+        }
+        Ok(())
+    })
+);
+
+// ---- a22 ----
+
+/// The seal key `from`'s node learns from `device`'s `<device>/32=seal` packet, asked until one
+/// comes.
+async fn seal_key_of(w: &World, from: Dev, device: &Name) -> Result<[u8; 32], Failure> {
+    for _ in 0..8 {
+        let engine = w
+            .net()
+            .fabric()
+            .engine_of(w.net().spec(from).node)
+            .expect("every device is a node");
+        let mut consumer = engine.app_consumer(CancellationToken::new());
+        let got = consumer
+            .fetch_with(
+                InterestBuilder::new(ndn_data::wire::seal_key_prefix(device))
+                    .can_be_prefix()
+                    .lifetime(Duration::from_secs(2)),
+            )
+            .await;
+        if let Ok(data) = got
+            && let Some((of, public)) = parse_seal_key_name(&data.name)
+            && of == *device
+        {
+            return Ok(public);
+        }
+        w.sleep(Duration::from_secs(1)).await;
+    }
+    Err(Failure::new(format!("{device} gave no seal key packet")))
+}
+
+/// The parameters of an ask of `to` for `ask`, made by hand as a device `asker` makes one and
+/// sealed to `to`'s seal key `public`; `proof` makes the proof packet of `asker` from the ask's
+/// binding.
+fn hand_made(
+    to: &Name,
+    public: &[u8; 32],
+    ask: &AnswerAsk,
+    asker: &Name,
+    proof: impl FnOnce(&[u8; 32]) -> bytes::Bytes,
+) -> Result<bytes::Bytes, Failure> {
+    let aad = answer_ask_prefix(to).encode_to_tlv();
+    let ck = ContentKey::generate();
+    let (ephemeral, wrapped) = wrap_ck_to(public, &ck, &aad)
+        .map_err(|e| Failure::new(format!("the ask could not be sealed: {e}")))?;
+    let binding = AnswerAskBody::binding(to, ask, &ephemeral);
+    let body = AnswerAskBody {
+        ask: ask.clone(),
+        asker: asker.clone(),
+        proof: proof(&binding),
+    };
+    let sealed = ck.seal(&body.encode(), &aad);
+    Ok(AnswerAskEnvelope {
+        ephemeral,
+        key: wrapped.to_bytes(),
+        sealed: sealed.to_bytes(),
+    }
+    .encode())
+}
+
+/// `<asker>/32=ask/<binding>` signed by `signer`.
+fn proof_by(signer: &dyn Signer, asker: &Name, binding: &[u8; 32]) -> bytes::Bytes {
+    DataBuilder::new(ndn_data::wire::ask_name(asker, binding), &[])
+        .freshness(Duration::ZERO)
+        .sign_sync(signer.sig_type(), Some(signer.key_name()), |region| {
+            signer.sign_sync(region).unwrap_or_default()
+        })
+}
+
+/// What came back to an ask sent from `from`'s node.
+enum Heard {
+    /// Something answered it: a Data packet, or one its node's forwarder refused (a network
+    /// that alters packets may have altered it); what it was.
+    Replied(String),
+    /// No Data did within the Interest's lifetime (a Nack is no Data either).
+    Nothing,
+}
+
+/// Send the ask with `params` to `to` from `from`'s node, as an Interest of lifetime 2 s, and wait
+/// the lifetime out.
+async fn send_ask(
+    w: &World,
+    from: Dev,
+    to: &Name,
+    params: &bytes::Bytes,
+) -> Result<Heard, Failure> {
+    let engine = w
+        .net()
+        .fabric()
+        .engine_of(w.net().spec(from).node)
+        .expect("every device is a node");
+    let mut consumer = engine.app_consumer(CancellationToken::new());
+    let builder = InterestBuilder::new(answer_ask_prefix(to))
+        .lifetime(Duration::from_secs(2))
+        .app_parameters(params.to_vec());
+    match consumer.fetch_with(builder).await {
+        Ok(data) => Ok(Heard::Replied(format!("Data {}", data.name))),
+        Err(ndn_app::AppError::Timeout | ndn_app::AppError::Nacked { .. }) => Ok(Heard::Nothing),
+        Err(e @ ndn_app::AppError::Refused { .. }) => {
+            Ok(Heard::Replied(format!("a Data the forwarder refused: {e}")))
+        }
+        Err(e) => Err(Failure::new(format!("the ask could not be sent: {e}"))),
+    }
+}
+
+pub(super) const A22: Case = answer_case!(
+    "a22",
+    "An ask that does not prove its asker gets no reply",
+    "Asks of Alice's laptop whose proof is unsigned, signed by Bob's key, or Alice's phone's own \
+     signature on another ask's binding get no Data within the Interest's lifetime, not even a \
+     refusal, and the laptop evaluates nothing; the same ask with the phone's real proof is \
+     answered.",
+    || trio([Program::Evaluating, Program::Standard, Program::Standard]),
+    |w| Box::pin(async move {
+        seed(w, &[]).await?;
+        let (def, _) = w.gate(LAPTOP)?.current_read(&plan_c()).await?;
+        let ask = AnswerAsk::pure(def, sum::name(1));
+        let (laptop, phone) = (w.net().spec(LAPTOP).name(), w.net().spec(PHONE).name());
+        let public = seal_key_of(w, PHONE, &laptop).await?;
+        let (mine, bobs) = (w.signer(PHONE)?, w.signer(BOB)?);
+
+        let mut forgeries: Vec<(&str, bytes::Bytes)> = Vec::new();
+        forgeries.push((
+            "a proof signed by a digest alone",
+            hand_made(&laptop, &public, &ask, &phone, |binding| {
+                DataBuilder::new(ndn_data::wire::ask_name(&phone, binding), &[])
+                    .freshness(Duration::ZERO)
+                    .sign_digest_sha256()
+            })?,
+        ));
+        forgeries.push((
+            "a proof of the phone signed by Bob's device key",
+            hand_made(&laptop, &public, &ask, &phone, |binding| {
+                proof_by(bobs.as_ref(), &phone, binding)
+            })?,
+        ));
+        forgeries.push((
+            "the phone's own proof of another ask's binding",
+            hand_made(&laptop, &public, &ask, &phone, |_| {
+                let other = AnswerAskBody::binding(&laptop, &ask, &[0x42; 32]);
+                proof_by(mine.as_ref(), &phone, &other)
+            })?,
+        ));
+
+        let before = sum::evaluations();
+        for (what, params) in &forgeries {
+            // Sent twice, the same ask, as an asker whose first send was lost sends it again.
+            for _ in 0..2 {
+                if let Heard::Replied(what_came) = send_ask(w, PHONE, &laptop, params).await? {
+                    return Err(Failure::new(format!(
+                        "{what}: the laptop replied to an ask that proves nothing: {what_came}"
+                    )));
+                }
+            }
+        }
+        ensure!(
+            sum::evaluations() == before,
+            "the laptop evaluated {} times for asks that prove nothing",
+            sum::evaluations() - before
+        );
+
+        // The same ask with the phone's real proof is answered: the silence above is the proof's,
+        // not the path's.
+        let real = hand_made(&laptop, &public, &ask, &phone, |binding| {
+            proof_by(mine.as_ref(), &phone, binding)
+        })?;
+        let mut replied = false;
+        for _ in 0..6 {
+            if let Heard::Replied(_) = send_ask(w, PHONE, &laptop, &real).await? {
+                replied = true;
+                break;
+            }
+        }
+        ensure!(
+            replied,
+            "the laptop did not reply to an ask with the phone's real proof"
         );
         Ok(())
     })

@@ -184,6 +184,7 @@ pub fn run_case(
             };
             let start = world.mark();
             let outcome = (case.run)(&world).await;
+            world.settle().await;
             let cost = world.reported_cost(start);
             let measured = world.measured();
             world.shutdown().await;

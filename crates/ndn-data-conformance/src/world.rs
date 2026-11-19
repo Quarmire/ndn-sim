@@ -1281,6 +1281,17 @@ impl World {
         self.cost_since(self.reported_from.get().unwrap_or(start))
     }
 
+    /// Let what is still in flight at this instant finish before the cost is read: every task that
+    /// can run does, and every blocking job (a store flush, a signature, an evaluation, each on a
+    /// real thread) ends. A paused clock never advances while a blocking job runs, so one
+    /// millisecond of virtual time passes only when the executor is idle and none is left. Without
+    /// it, whether a notice a device was about to send went out before the cost was read depended
+    /// on how fast a real thread finished against a task that needed it, and a loaded machine
+    /// measured one Interest more than an idle one (case `a3`, 2 against 3 round trips).
+    pub async fn settle(&self) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
     /// What the case cost since `start`.
     pub fn cost_since(&self, start: Mark) -> Cost {
         let now = self.mark();

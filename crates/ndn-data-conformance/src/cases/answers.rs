@@ -79,6 +79,29 @@ fn quartet(programs: [Program; 4]) -> Plan {
     p
 }
 
+/// [`trio`] with Alice's devices named as `ndn-fwd init` names them: the context lists every role
+/// in DataRequiresCut, so a device with no role in its name is no device of it and is not served
+/// as the person's own (answers.md §15.7). The phone, which asks, is a member
+/// (`/alice/member/phone`); the laptop signs, whatever its name.
+fn askers(programs: [Program; 3]) -> Plan {
+    let mut p = Plan::new();
+    let laptop = p.device("alice", "laptop");
+    let phone = p.member("alice", "phone");
+    let bob = p.device("bob", "laptop");
+    for (d, program) in [laptop, phone, bob].into_iter().zip(programs) {
+        p.program(d, program);
+    }
+    p
+}
+
+/// [`askers`] and Alice's tablet, a member too.
+fn askers_and_tablet(programs: [Program; 4]) -> Plan {
+    let mut p = askers([programs[0], programs[1], programs[2]]);
+    let tablet = p.member("alice", "tablet");
+    p.program(tablet, programs[3]);
+    p
+}
+
 fn all(program: Program) -> Plan {
     trio([program; 3])
 }
@@ -1010,7 +1033,7 @@ pub(super) const A19: Case = answer_case!(
      laptop computes it for the ask, and the phone returns Got::Answer, Provenance::Trusted by \
      its policy; her tablet, which knows the evaluator and holds the inputs, asks too, \
      recomputes, and agrees.",
-    || quartet([
+    || askers_and_tablet([
         Program::Evaluating,
         Program::Standard,
         Program::Standard,
@@ -1074,7 +1097,7 @@ pub(super) const A20: Case = answer_case!(
      laptop alone: her phone's ask is refused NotAudience, naming the read it may not read, \
      and the laptop evaluated nothing and signed no answer; a question over the first alone, \
      asked the same way, is answered.",
-    || trio([Program::Evaluating, Program::Standard, Program::Standard]),
+    || askers([Program::Evaluating, Program::Standard, Program::Standard]),
     |w| Box::pin(async move {
         let laptop = w.net().spec(LAPTOP).name();
         let devices = [person("/alice")];
@@ -1179,7 +1202,7 @@ pub(super) const A21: Case = answer_case!(
      rest are refused Busy, and the phone's own loop, asking again after the pause the refusal \
      names, at most three times each, has every one answered.",
     || {
-        let mut p = trio([Program::Evaluating, Program::Standard, Program::Standard]);
+        let mut p = askers([Program::Evaluating, Program::Standard, Program::Standard]);
         p.count_names(3);
         p
     },
@@ -1343,7 +1366,7 @@ pub(super) const A22: Case = answer_case!(
      signature on another ask's binding get no Data within the Interest's lifetime, not even a \
      refusal, and the laptop evaluates nothing; the same ask with the phone's real proof is \
      answered.",
-    || trio([Program::Evaluating, Program::Standard, Program::Standard]),
+    || askers([Program::Evaluating, Program::Standard, Program::Standard]),
     |w| Box::pin(async move {
         seed(w, &[]).await?;
         let (def, _) = w.gate(LAPTOP)?.current_read(&plan_c()).await?;

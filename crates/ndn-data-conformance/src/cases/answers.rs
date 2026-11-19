@@ -782,7 +782,8 @@ pub(super) const A14: Case = answer_case!(
         let got = ask(w, BOB, &q).await;
         // Bob is another person's device: where his fetch reaches nothing published (a network
         // that drops packets), the laptop is asked and, serving asks from its own person's
-        // devices only, says so. Anything but a refusal or the answer is a second result.
+        // devices only, does not reply to his. Anything but a refusal, that silence (told as
+        // not ready) or the answer is a second result.
         ensure!(
             matches!(
                 &got,
@@ -793,7 +794,7 @@ pub(super) const A14: Case = answer_case!(
                             ..
                         },
                     ..
-                })
+                }) | Err(DataError::NotReady { .. })
             ) || got.is_ok(),
             "served after the restart: {got:?}"
         );

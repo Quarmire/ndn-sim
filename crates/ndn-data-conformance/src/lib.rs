@@ -43,8 +43,8 @@ pub mod world;
 pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;
 pub use provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, NodeRole, Program, Provider, Tally,
-    Tamper,
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, NodeRole, Program, Provider,
+    Tally, Tamper,
 };
 pub use reference::Reference;
 pub use report::{CaseResult, Cost, NetworkReport, Report, Status};

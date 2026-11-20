@@ -265,10 +265,10 @@ fn run(w: &World) -> CaseFuture<'_> {
                 } if why.starts_with("signer:")
             ) && e.next() == NextStep::RetryLater
                 && e.to_string()
-                    .contains("retry; if it is refused again, do not use"),
+                    .contains("retry at most 3 times; if it is refused every time, do not use"),
             "bob's join by a code whose hint record was altered answered {e:?} (next: {:?}), not \
-             'what answered does not prove the inviter's (signer): retry, and if refused again do \
-             not use this code'",
+             'what answered does not prove the inviter's (signer): retry at most 3 times, and if \
+             refused every time do not use this code'",
             e.next()
         );
         no_link_kept(w, "an altered hint record").await?;

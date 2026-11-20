@@ -59,32 +59,12 @@ macro_rules! answer_case {
     };
 }
 
-/// Alice's laptop and phone and Bob's laptop, each running `programs`.
-fn trio(programs: [Program; 3]) -> Plan {
-    let mut p = Plan::new();
-    let laptop = p.device("alice", "laptop");
-    let phone = p.device("alice", "phone");
-    let bob = p.device("bob", "laptop");
-    for (d, program) in [laptop, phone, bob].into_iter().zip(programs) {
-        p.program(d, program);
-    }
-    p
-}
-
-/// [`trio`] and Alice's tablet.
-fn quartet(programs: [Program; 4]) -> Plan {
-    let mut p = trio([programs[0], programs[1], programs[2]]);
-    let tablet = p.device("alice", "tablet");
-    p.program(tablet, programs[3]);
-    p
-}
-
-/// [`trio`] for the cases whose phone asks the laptop for an answer, with Alice's devices named
-/// as `ndn-fwd init` names them: the reference context lists every role in DataRequiresCut, so a
+/// Alice's laptop and phone and Bob's laptop, each running `programs`, with Alice's phone named
+/// as `ndn-fwd init` names it: the reference context lists every role in DataRequiresCut, so a
 /// device with no role in its name is no device of it and is not served as the person's own
 /// (answers.md §15.7). The phone is a member (`/alice/member/phone`); the laptop signs, whatever
 /// its name.
-fn askers(programs: [Program; 3]) -> Plan {
+fn trio(programs: [Program; 3]) -> Plan {
     let mut p = Plan::new();
     let laptop = p.device("alice", "laptop");
     let phone = p.member("alice", "phone");
@@ -95,9 +75,9 @@ fn askers(programs: [Program; 3]) -> Plan {
     p
 }
 
-/// [`askers`] and Alice's tablet, a member too.
-fn askers_and_tablet(programs: [Program; 4]) -> Plan {
-    let mut p = askers([programs[0], programs[1], programs[2]]);
+/// [`trio`] and Alice's tablet, a member too.
+fn quartet(programs: [Program; 4]) -> Plan {
+    let mut p = trio([programs[0], programs[1], programs[2]]);
     let tablet = p.member("alice", "tablet");
     p.program(tablet, programs[3]);
     p
@@ -158,20 +138,22 @@ async fn question(w: &World, d: Dev, v: u64) -> Result<Name, Failure> {
     Ok(AnswerAsk::pure(def, sum::name(v)).name(None)?)
 }
 
-/// `get` of `name` on `d`, asked again for as long as the error says asking again may mend it
-/// (a packet lost on a faulty network): the first answer that is final.
+/// `get` of `name` on `d`, asked again every 3 s for as long as the error says asking again may
+/// mend it (a packet lost on a faulty network) and for at most [`LIMIT`], the time every other
+/// wait of the suite gives devices to agree: the first answer that is final. A device that meets
+/// a namespace cold walks a tree of signed packets one level at a time, and a `get` answers what
+/// it holds after its first look; at 20 % loss the first answer came after 8 to 35 s of virtual
+/// time over fault seeds 40 to 159 (median 15 s), longer than eight asks 3 s apart.
 async fn settled(w: &World, d: Dev, name: &Name) -> Result<ndn_data::Answer, DataError> {
-    let mut last = None;
-    for _ in 0..8 {
+    let start = tokio::time::Instant::now();
+    loop {
         match w.at(d).get(name).await {
-            Err(e) if e.retry() => {
-                last = Some(e);
+            Err(e) if e.retry() && start.elapsed() < LIMIT => {
                 w.sleep(Duration::from_secs(3)).await;
             }
             other => return other,
         }
     }
-    Err(last.expect("at least one try"))
 }
 
 async fn ask(w: &World, d: Dev, name: &Name) -> Result<Answered, DataError> {
@@ -682,7 +664,7 @@ pub(super) const A12: Case = answer_case!(
     "Provider answers",
     "A provider function binds its function version and inputs, no evaluator, no definition; a \
      reader whose policy names the provider takes it; one whose policy does not is refused.",
-    || askers([Program::Evaluating, Program::Evaluating, Program::Element]),
+    || trio([Program::Evaluating, Program::Evaluating, Program::Element]),
     |w| Box::pin(async move {
         let (input, _) = seed(w, &[]).await?;
         for d in [PHONE, BOB] {
@@ -1034,7 +1016,7 @@ pub(super) const A19: Case = answer_case!(
      laptop computes it for the ask, and the phone returns Got::Answer, Provenance::Trusted by \
      its policy; her tablet, which knows the evaluator and holds the inputs, asks too, \
      recomputes, and agrees.",
-    || askers_and_tablet([
+    || quartet([
         Program::Evaluating,
         Program::Standard,
         Program::Standard,
@@ -1098,7 +1080,7 @@ pub(super) const A20: Case = answer_case!(
      laptop alone: her phone's ask is refused NotAudience, naming the read it may not read, \
      and the laptop evaluated nothing and signed no answer; a question over the first alone, \
      asked the same way, is answered.",
-    || askers([Program::Evaluating, Program::Standard, Program::Standard]),
+    || trio([Program::Evaluating, Program::Standard, Program::Standard]),
     |w| Box::pin(async move {
         let laptop = w.net().spec(LAPTOP).name();
         let devices = [person("/alice")];
@@ -1203,7 +1185,7 @@ pub(super) const A21: Case = answer_case!(
      rest are refused Busy, and the phone's own loop, asking again after the pause the refusal \
      names, at most three times each, has every one answered.",
     || {
-        let mut p = askers([Program::Evaluating, Program::Standard, Program::Standard]);
+        let mut p = trio([Program::Evaluating, Program::Standard, Program::Standard]);
         p.count_names(3);
         p
     },
@@ -1367,7 +1349,7 @@ pub(super) const A22: Case = answer_case!(
      signature on another ask's binding get no Data within the Interest's lifetime, not even a \
      refusal, and the laptop evaluates nothing; the same ask with the phone's real proof is \
      answered.",
-    || askers([Program::Evaluating, Program::Standard, Program::Standard]),
+    || trio([Program::Evaluating, Program::Standard, Program::Standard]),
     |w| Box::pin(async move {
         seed(w, &[]).await?;
         let (def, _) = w.gate(LAPTOP)?.current_read(&plan_c()).await?;

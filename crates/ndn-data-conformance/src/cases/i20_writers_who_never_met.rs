@@ -144,7 +144,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             (&bob, "bob", &by_carol, "a page by carol"),
             (&carol, "carol", &by_bob, "a page by bob"),
         ] {
-            w.until(&format!("{name} reads {at}"), LIMIT, || {
+            w.until(&format!("{name} reads {at}"), RELAYED, || {
                 reads(&**reader, at, expected)
             })
             .await?;

@@ -246,8 +246,11 @@ pub fn host(program: Program) -> (Evaluators, AnswerConfig) {
             .into_iter()
             .fold(Evaluators::none(), |e, x| e.with(x))
     };
+    // Work inline: the network runs on a paused clock, and a pool thread finishing is an event of
+    // real time that lands among the tasks ready meanwhile, so a run could not replay exactly.
     let config = |policy: AnswerPolicy| AnswerConfig {
         policy,
+        inline_work: true,
         ..AnswerConfig::default()
     };
     let default = AnswerPolicy {

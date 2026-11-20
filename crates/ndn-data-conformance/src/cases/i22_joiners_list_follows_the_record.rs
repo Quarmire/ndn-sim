@@ -216,7 +216,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         writes(w, BOB, &by_bob, "a page by bob").await?;
         writes(w, CAROL, &by_carol, "a page by carol").await?;
         let bob = w.at(BOB);
-        w.until("bob reads carol's page through alice", LIMIT, || {
+        w.until("bob reads carol's page through alice", RELAYED, || {
             reads(&*bob, &by_carol, "a page by carol")
         })
         .await?;

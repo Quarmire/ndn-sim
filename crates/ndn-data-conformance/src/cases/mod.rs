@@ -32,7 +32,10 @@
 //! limits, and answers in pieces), and round 8's asks for an answer (`a19`…`a22`: a device that
 //! cannot compute asks another of its person and trusts what it is given, a device outside the
 //! audience of one read is refused, eight asks from one device have one in progress and the rest
-//! Busy, an ask that does not prove its asker gets no reply), and round 9's two ends of a grant
+//! Busy, an ask that does not prove its asker gets no reply), and round 11's refusal by the
+//! signer's evaluator (`a23`: a definition the evaluator refuses is refused `EvaluatorRefused`
+//! with the evaluator's reason, an unknown evaluator is still `CannotCheck`), and round 9's two
+//! ends of a grant
 //! (`i22`…`i24`: the joiner's list of joined folders follows the members record, the joiner holds
 //! a grant for the inviter that the record re-derives, and mutual invitations make an inviter's
 //! entry and a mirror entry that end one by one), and round 10's short introduction code (`i25`,
@@ -339,6 +342,7 @@ pub const CASES: &[Case] = &[
     answers::A20,
     answers::A21,
     answers::A22,
+    answers::A23,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

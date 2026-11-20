@@ -1,6 +1,6 @@
-//! Answers (spec answers.md), cases `a1`…`a22` over a real network of devices: named, checkable
+//! Answers (spec answers.md), cases `a1`…`a23` over a real network of devices: named, checkable
 //! readings over signed data, pure and provider, sealed to the audience of what they read, and
-//! asked of another device (`a19`…`a22`).
+//! asked of another device (`a19`…`a23`).
 //!
 //! The scenario's data: Alice's laptop owns two log collections — `plan` and `budget` — and writes
 //! into `budget` an integer `n` and into `plan` a definition whose field `inputs` lists `budget`.
@@ -1413,6 +1413,124 @@ pub(super) const A22: Case = answer_case!(
         ensure!(
             replied,
             "the laptop did not reply to an ask with the phone's real proof"
+        );
+        Ok(())
+    })
+);
+
+// ---- a23 ----
+
+pub(super) const A23: Case = answer_case!(
+    "a23",
+    "A definition the evaluator refuses is refused with its reason",
+    "Alice's phone asks her laptop for the answer to a definition that has no field inputs: the \
+     laptop's evaluator refuses it, and the phone is refused EvaluatorRefused, next step \
+     FixRequest, with the evaluator's words quoted in its own text (no control character, no \
+     retry), and the laptop evaluated nothing and signed no answer; the same ask under an \
+     evaluator the laptop does not know is still CannotCheck; once the definition is mended the \
+     same phone is answered.",
+    || trio([Program::Evaluating, Program::Standard, Program::Standard]),
+    |w| Box::pin(async move {
+        let (input, _) = seed(w, &[]).await?;
+        let laptop = w.net().spec(LAPTOP).name();
+        let bad = w
+            .at(LAPTOP)
+            .put(&plan_c(), content(&[("note", "no inputs here")]), note(1))
+            .await?;
+        reach(w, PHONE, &budget_c(), &input).await?;
+        reach(w, PHONE, &plan_c(), &bad).await?;
+        let q = question(w, LAPTOP, 1).await?;
+        let phone = w.gate(PHONE)?;
+
+        let before = sum::evaluations();
+        match &asked(w, &phone, &laptop, &q).await {
+            Err(
+                e @ DataError::Answer {
+                    why:
+                        AnswerRefusal::AskRefused {
+                            why: AskRefusal::EvaluatorRefused,
+                            said,
+                            ..
+                        },
+                    ..
+                },
+            ) => {
+                ensure!(
+                    said == "the signer's evaluator refused the definition, in its words: \
+                             \"the definition has no field inputs\"; fix the definition and ask \
+                             again",
+                    "the evaluator's words are not shown as quoted: {said:?}"
+                );
+                ensure!(
+                    !said.chars().any(char::is_control),
+                    "a control character reached the user: {said:?}"
+                );
+                ensure!(
+                    e.next() == NextStep::FixRequest && !e.retry(),
+                    "the refusal says {:?} (retry {})",
+                    e.next(),
+                    e.retry()
+                );
+            }
+            other => {
+                return Err(Failure::new(format!(
+                    "a definition the evaluator refuses was not refused EvaluatorRefused: {other:?}"
+                )));
+            }
+        }
+        ensure!(
+            sum::evaluations() == before,
+            "the laptop evaluated {} times for a definition its evaluator refuses",
+            sum::evaluations() - before
+        );
+        let answers = w
+            .stored_names(LAPTOP)?
+            .into_iter()
+            .filter(|name| {
+                name.components()
+                    .iter()
+                    .any(|c| c.value.as_ref() == b"answer")
+            })
+            .count();
+        ensure!(
+            answers == 0,
+            "the laptop signed {answers} answers for a definition it refused"
+        );
+
+        // An evaluator the laptop does not know is no refusal by it: still CannotCheck.
+        let (def, _) = w.gate(LAPTOP)?.current_read(&plan_c()).await?;
+        let unknown = AnswerAsk::pure(def, sum::name(9)).name(None)?;
+        match asked(w, &phone, &laptop, &unknown).await {
+            Err(
+                e @ DataError::Answer {
+                    why:
+                        AnswerRefusal::AskRefused {
+                            why: AskRefusal::CannotCheck,
+                            ..
+                        },
+                    ..
+                },
+            ) => ensure!(
+                e.next() == NextStep::SetPolicy,
+                "an unknown evaluator says {:?}",
+                e.next()
+            ),
+            other => {
+                return Err(Failure::new(format!(
+                    "an evaluator the signer does not know was not CannotCheck: {other:?}"
+                )));
+            }
+        }
+
+        // The refusal is of the definition, not of the asker: mended, the same phone is answered.
+        let mended = put_def(w, &plan_c(), &[&budget_c()]).await?;
+        reach(w, PHONE, &plan_c(), &mended).await?;
+        let q = question(w, LAPTOP, 1).await?;
+        let (got, _) = asked(w, &phone, &laptop, &q).await?;
+        ensure!(
+            got.result.as_ref() == b"3",
+            "the phone's answer over the mended definition is {:?}",
+            got.result
         );
         Ok(())
     })

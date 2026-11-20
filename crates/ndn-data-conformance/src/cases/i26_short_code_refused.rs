@@ -255,6 +255,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let record =
             ndn_data::intro::hint_name(&laptop, &ndn_data::intro::hint_token(&altered_read.secret));
         w.replay_altered(BOB, &record).await?;
+        // Let the altered copy and any duplicated or held-back copies of the genuine record
+        // reach Bob's node before he joins, as the other cases settle after an act of the wire.
+        w.sleep(SETTLE).await;
         let e = refused(w, BOB, &altered_line).await?;
         ensure!(
             matches!(

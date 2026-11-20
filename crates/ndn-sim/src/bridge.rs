@@ -155,6 +155,7 @@ impl RunningSimulation {
                 let mut buf = vec![0u8; 65_535];
                 loop {
                     tokio::select! {
+                        biased;
                         () = cancel.cancelled() => break,
                         r = socket.recv_from(&mut buf) => {
                             let Ok((n, src)) = r else { break };
@@ -188,6 +189,7 @@ fn spawn_flow_egress(
     tokio::spawn(async move {
         loop {
             tokio::select! {
+                biased;
                 () = cancel.cancelled() => break,
                 r = face.recv_bytes() => match r {
                     Ok(b) => { let _ = socket.send_to(&b, dest).await; }

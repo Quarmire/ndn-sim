@@ -312,6 +312,8 @@ impl VirtualKernel {
             let fut = f(me.clone() as Arc<dyn SimKernel>);
             tokio::pin!(fut);
             tokio::select! {
+                // The case finishing at the very instant the cap falls is a finish.
+                biased;
                 r = &mut fut => Ok(r),
                 _ = tokio::time::sleep(max_virtual) => Err(VirtualTimeExceeded { cap: max_virtual }),
             }

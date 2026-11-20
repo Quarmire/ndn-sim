@@ -191,6 +191,7 @@ impl TwoPhaseReplica {
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
+                        biased;
                         _ = cancel.cancelled() => break,
                         pkt = core_out_rx.recv() => match pkt {
                             Some(p) => {
@@ -212,6 +213,7 @@ impl TwoPhaseReplica {
                 let group_len = group.components().len();
                 loop {
                     let wire = tokio::select! {
+                        biased;
                         _ = cancel.cancelled() => break,
                         w = conn.recv() => match w {
                             Some(w) => w,

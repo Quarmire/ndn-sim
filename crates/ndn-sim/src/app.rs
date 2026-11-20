@@ -678,6 +678,7 @@ fn spawn_latest_publisher(
                 *latest.lock() = Some((name, wire));
                 minted.on_sent();
                 tokio::select! {
+                    biased;
                     _ = cancel.cancelled() => break,
                     _ = ndn_app::rt::sleep(interval) => {}
                 }
@@ -779,6 +780,7 @@ fn spawn_fetch_loop(
             let wait = delay(i.saturating_sub(1), &mut rng);
             if !wait.is_zero() {
                 tokio::select! {
+                    biased;
                     _ = cancel.cancelled() => break,
                     _ = ndn_app::rt::sleep(wait) => {}
                 }

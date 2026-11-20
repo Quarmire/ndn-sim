@@ -1449,6 +1449,7 @@ impl RunningSimulation {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    biased;
                     _ = cancel.cancelled() => break,
                     _ = tokio::time::sleep(interval) => {
                         for (id, engine) in &engines {

@@ -79,10 +79,11 @@ fn quartet(programs: [Program; 4]) -> Plan {
     p
 }
 
-/// [`trio`] with Alice's devices named as `ndn-fwd init` names them: the context lists every role
-/// in DataRequiresCut, so a device with no role in its name is no device of it and is not served
-/// as the person's own (answers.md §15.7). The phone, which asks, is a member
-/// (`/alice/member/phone`); the laptop signs, whatever its name.
+/// [`trio`] for the cases whose phone asks the laptop for an answer, with Alice's devices named
+/// as `ndn-fwd init` names them: the reference context lists every role in DataRequiresCut, so a
+/// device with no role in its name is no device of it and is not served as the person's own
+/// (answers.md §15.7). The phone is a member (`/alice/member/phone`); the laptop signs, whatever
+/// its name.
 fn askers(programs: [Program; 3]) -> Plan {
     let mut p = Plan::new();
     let laptop = p.device("alice", "laptop");
@@ -681,7 +682,7 @@ pub(super) const A12: Case = answer_case!(
     "Provider answers",
     "A provider function binds its function version and inputs, no evaluator, no definition; a \
      reader whose policy names the provider takes it; one whose policy does not is refused.",
-    || trio([Program::Evaluating, Program::Evaluating, Program::Element]),
+    || askers([Program::Evaluating, Program::Evaluating, Program::Element]),
     |w| Box::pin(async move {
         let (input, _) = seed(w, &[]).await?;
         for d in [PHONE, BOB] {

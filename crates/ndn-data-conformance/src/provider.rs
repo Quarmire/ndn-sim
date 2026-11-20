@@ -1,5 +1,6 @@
 //! How an implementation of the `ndn-data` contract plugs into the cases.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ndn_data::{
@@ -36,6 +37,43 @@ pub struct GrantLog {
     pub now: Vec<Grant>,
     /// `Device::departures` now.
     pub departures: Vec<Departure>,
+}
+
+/// One call a device's host was made of its link layer during an introduction, in the order it
+/// was made ([`Provider::link_calls`]): the dials the joiner's layer asks for and the links it
+/// takes down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkCall {
+    /// `Introducer::dial_first`: the one address a short code names, no key to expect.
+    DialFirst {
+        /// The inviter's device the code names.
+        inviter: Name,
+        /// The address dialled.
+        addr: SocketAddr,
+        /// Whether a device answered there: a link was made.
+        answered: bool,
+    },
+    /// `Introducer::dial`: by a link hint (a compact link's, or the hint record's) that names
+    /// the key to prove.
+    Dial {
+        /// The inviter's device.
+        inviter: Name,
+        /// The key the link must prove.
+        key: [u8; 32],
+        /// The addresses tried, in order.
+        candidates: Vec<SocketAddr>,
+        /// Whether a candidate answered with the key: a link was made.
+        answered: bool,
+    },
+    /// `Introducer::undial`: a failed join takes down what its dial made.
+    Undial {
+        /// The inviter's device.
+        inviter: Name,
+        /// The key of the link taken down.
+        key: [u8; 32],
+        /// The addresses the dial was made at.
+        candidates: Vec<SocketAddr>,
+    },
 }
 
 /// The folders a device joined, as its layer lists them, and the generation of that list.
@@ -556,6 +594,39 @@ pub trait Provider: Send + Sync {
     async fn link_key(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<[u8; 32]> {
         let _ = fabric;
         anyhow::bail!("this provider cannot tell {}'s link key", device.name())
+    }
+
+    /// What `device`'s host was asked of its link layer in introductions (`Introducer::dial_first`,
+    /// `dial`, `undial`), in order, across restarts of its layer: the host has no real link, so
+    /// each dial answers at once for a device at the address (or key) it dials. A provider
+    /// without introductions says so.
+    async fn link_calls(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<Vec<LinkCall>> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot tell {}'s link calls", device.name())
+    }
+
+    /// Fault injection: `device`'s node fetches now, fresh, the packet answering `prefix`
+    /// (CanBePrefix), and from then on answers every Interest under `prefix` that the device's
+    /// own layer (or any other face of the node) sends, with that packet **altered**: its last
+    /// octet, the last octet of its signature, flipped. It stands for whoever answers at a first
+    /// contact's address: it serves the device what it likes. The genuine copy it fetched sits
+    /// in the caches of the forwarders it crossed; the caller empties them. A provider that
+    /// cannot inject it says so.
+    async fn replay_altered(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        prefix: &Name,
+    ) -> anyhow::Result<()> {
+        let _ = fabric;
+        anyhow::bail!(
+            "this provider cannot make {} answer {prefix} with an altered packet",
+            device.name()
+        )
     }
 
     /// `device`, a person let go of `folder`, takes the members record `record` its inviter's

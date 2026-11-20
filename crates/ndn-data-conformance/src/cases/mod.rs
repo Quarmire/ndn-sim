@@ -35,7 +35,10 @@
 //! Busy, an ask that does not prove its asker gets no reply), and round 9's two ends of a grant
 //! (`i22`…`i24`: the joiner's list of joined folders follows the members record, the joiner holds
 //! a grant for the inviter that the record re-derives, and mutual invitations make an inviter's
-//! entry and a mirror entry that end one by one).
+//! entry and a mirror entry that end one by one), and round 10's short introduction code (`i25`,
+//! `i26`: a short line of a device name, an address and twenty words joins with one first-contact
+//! dial and a fetched hint record while the compact full link and the old words fetch none, and
+//! a mistyped, miscounted, unanswered, altered, closed or expired line is refused saying why).
 //! Each file states the story, the devices, and the invariant it asserts.
 
 use std::time::Duration;
@@ -136,6 +139,8 @@ mod i21_let_go_member_invited_again;
 mod i22_joiners_list_follows_the_record;
 mod i23_joiner_holds_a_grant_for_the_inviter;
 mod i24_mutual_invitations_two_folders;
+mod i25_short_code_joins;
+mod i26_short_code_refused;
 mod i2_used_code;
 mod i3_expired_code;
 mod i4_wrong_tries;
@@ -282,6 +287,8 @@ pub const CASES: &[Case] = &[
     i22_joiners_list_follows_the_record::CASE,
     i23_joiner_holds_a_grant_for_the_inviter::CASE,
     i24_mutual_invitations_two_folders::CASE,
+    i25_short_code_joins::CASE,
+    i26_short_code_refused::CASE,
     f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,

@@ -27,7 +27,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
 use crate::provider::{
-    Certs, DeviceSpec, GrantLog, Grants, JoinedList, NodeRole, Program, Provider, Tally, Tamper,
+    Certs, DeviceSpec, GrantLog, Grants, JoinedList, LinkCall, NodeRole, Program, Provider, Tally,
+    Tamper,
 };
 use crate::report::{Cost, Measure};
 
@@ -1136,6 +1137,15 @@ impl World {
             .map_err(|e| Failure::new(format!("link_key failed: {e:#}")))
     }
 
+    /// What `d`'s host was asked of its link layer in introductions, in order (see
+    /// [`Provider::link_calls`]). A read, not a gesture.
+    pub async fn link_calls(&self, d: Dev) -> Result<Vec<LinkCall>, Failure> {
+        self.provider
+            .link_calls(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("link_calls failed: {e:#}")))
+    }
+
     /// `d`, a person let go of `folder`, takes the members record `record` its inviter told it
     /// of (see [`Provider::take_departure`]): one gesture, the person's host; `from` is the
     /// device that told it (the inviter's host). A refusal by `d`'s data layer is answered as
@@ -1190,6 +1200,19 @@ impl World {
             .replay(&self.net.fabric, self.net.spec(d), prefix)
             .await
             .map_err(|e| Failure::new(format!("cannot replay: {e:#}")))
+    }
+
+    /// From now on `d`'s node answers Interests under `prefix` with the packet that answers it
+    /// now, fetched fresh, its last octet (its signature's) flipped (see
+    /// [`Provider::replay_altered`]). Every forwarder's cache is then emptied under `prefix`, so
+    /// the genuine copy `d` fetched answers nobody.
+    pub async fn replay_altered(&self, d: Dev, prefix: &Name) -> Result<(), Failure> {
+        self.provider
+            .replay_altered(&self.net.fabric, self.net.spec(d), prefix)
+            .await
+            .map_err(|e| Failure::new(format!("cannot replay an altered packet: {e:#}")))?;
+        self.net.forget_cached(prefix).await;
+        Ok(())
     }
 
     /// `d`'s host's signals (see [`Provider::signals`]), started on first ask.

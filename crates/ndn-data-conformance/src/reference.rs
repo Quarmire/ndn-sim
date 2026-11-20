@@ -58,13 +58,16 @@
 //! another's, and every signal crosses the simulated links.
 
 use std::collections::{BTreeMap, HashMap};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use ndn_app::{Connection, Consumer, EngineAppExt, Node, ServeGuard};
 use ndn_cert::{AnchorLink, GenesisKey, OldRoot, RecoveryPlan, RecoverySeed};
-use ndn_data::intro::{Adopting, Scoping};
+use ndn_data::intro::{
+    Adopting, Dialing, FirstDialing, HintCandidate, HintKind, LinkHint, Scoping, hint_prefix,
+};
 use ndn_data::wire::{
     AuditAnswer, AuditAsk, NONCE_LEN, Record, VersionBody, audit_ask_name, decode_record,
     encode_audit_answer, encode_record, log_name, parse_audit_ask_name, parse_log_name,
@@ -95,7 +98,8 @@ use tokio_util::sync::CancellationToken;
 use crate::element::Element;
 use crate::feature::Feature;
 use crate::provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, Program, Provider, Tally, Tamper,
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Program, Provider,
+    Tally, Tamper,
 };
 use crate::sum;
 
@@ -145,6 +149,29 @@ struct Case {
     /// What each device's host was told of grants, in order, across restarts of its layer, by
     /// node ([`Provider::link_grants`]).
     told: HashMap<NodeId, Told>,
+    /// What each device's host was asked of its link layer, in order, across restarts of its
+    /// layer, by node ([`Provider::link_calls`]).
+    dialled: HashMap<NodeId, Dialled>,
+    /// Where each device's host listens: the address it gives in its link hint and the key its
+    /// link proves, by address. A dial answers for a device that listens at the address it
+    /// dials (the handshake proving that device's key), and for no other.
+    listening: Listening,
+}
+
+/// What a host was asked of its link layer, shared by the runs of one device's layer.
+type Dialled = Arc<Mutex<Vec<LinkCall>>>;
+
+/// The addresses the devices of a case listen at and the keys they prove there.
+type Listening = Arc<Mutex<HashMap<SocketAddr, [u8; 32]>>>;
+
+/// The port every device's link socket listens on.
+const LINK_PORT: u16 = 4433;
+
+/// Where `node`'s host listens: an address of the documentation range 192.0.2.0/24 (RFC 5737),
+/// the node's number as its last octet, so every device has its own and it is the same in every run.
+fn link_address(node: NodeId) -> anyhow::Result<SocketAddr> {
+    let octet = u8::try_from(node.0).with_context(|| format!("{node} has no 192.0.2.x address"))?;
+    Ok(SocketAddr::from(([192, 0, 2, octet], LINK_PORT)))
 }
 
 /// What a host was told of grants, shared by the runs of one device's layer.
@@ -224,7 +251,7 @@ impl Reference {
             .get(&node)
             .map_or(1, |a| a.runs + 1);
         let clock = fabric.node_clock(node)?;
-        let introducer = self.introducer(fabric, node, &device, &validator)?;
+        let introducer = self.introducer(fabric, node, &device, &validator, &keys)?;
         let config = Config {
             clock: Arc::new(move || Timestamp(clock.now_ns() / 1_000_000)),
             svs: SvsConfig::default(),
@@ -266,18 +293,101 @@ impl Reference {
         Ok(Arc::new(layer))
     }
 
+    /// `device`'s node answers Interests under `prefix` with the packet that answers it now,
+    /// fetched fresh (a replaying cache, [`Provider::replay`]); `altered`: with its last octet
+    /// flipped, which is the last octet of a Data's signature
+    /// ([`Provider::replay_altered`]).
+    async fn replay_packet(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        prefix: &Name,
+        altered: bool,
+    ) -> anyhow::Result<()> {
+        let engine = fabric
+            .engine_of(device.node)
+            .with_context(|| format!("no engine on node {}", device.node))?;
+        let node = engine.app_node(CancellationToken::new());
+        if altered {
+            // The altered packet reaches the device's own node from a party that validates
+            // nothing (the party at a first contact's address, a link): the node carries the
+            // name in transit, unvalidated and never cached, as it carries a first contact's
+            // hint record ([`Introduce::dial_first`]), for the genuine record it fetches first
+            // as for the altered one it serves. (A forwarder that holds the namespace, the hub,
+            // validates and drops it.)
+            engine.transit().add(prefix, || {});
+        }
+        // Fresh, past every cache: what a device serving `prefix` answers now. An attacker on a
+        // lossy path asks again, a bounded number of times, until an answer arrives: the attack
+        // needs the packet, and a lost Interest or Data is no defence.
+        let mut tries = 0;
+        let packet = loop {
+            tries += 1;
+            let ask = InterestBuilder::new(prefix.clone())
+                .can_be_prefix()
+                .must_be_fresh()
+                .lifetime(std::time::Duration::from_secs(2));
+            match Consumer::new(node.connection()).fetch_with(ask).await {
+                Ok(packet) => break packet.raw().clone(),
+                Err(e) if tries >= REPLAY_TRIES => {
+                    return Err(anyhow::Error::new(e).context(format!(
+                        "nothing answered {prefix} to replay in {REPLAY_TRIES} asks"
+                    )));
+                }
+                Err(_) => {}
+            }
+        };
+        let packet = if altered {
+            let mut octets = packet.to_vec();
+            *octets.last_mut().context("an empty packet")? ^= 1;
+            bytes::Bytes::from(octets)
+        } else {
+            packet
+        };
+        // Served on the device's own node under `prefix`: the hub forwards every Interest to
+        // every device, and this node's longest match for `prefix` is the replayer, not the
+        // device's data layer. Every Interest under it gets the same packet, however stale.
+        let guard = node
+            .serve(prefix.clone(), move |_interest, responder| {
+                let packet = packet.clone();
+                async move {
+                    let _ = responder.respond_bytes(packet).await;
+                }
+            })
+            .await?;
+        self.case
+            .lock()
+            .expect("the provider's lock")
+            .relays
+            .push((node, guard));
+        Ok(())
+    }
+
     /// The introducer of the host of `device` on `node`: its namespace's newest signed trust
-    /// context as the anchor it gives, its node's validator to adopt into, and its link to the
-    /// hub to route an adopted person's sync group over.
+    /// context as the anchor it gives, its node's validator to adopt into, its link to the
+    /// hub to route an adopted person's sync group over, and, as its link layer, an address it
+    /// listens at (`keys`' key proved there) that a dial of another device's host answers for.
     fn introducer(
         &self,
         fabric: &Fabric,
         node: NodeId,
         device: &Name,
         validator: &Arc<Validator>,
+        keys: &SecurityManager,
     ) -> anyhow::Result<Arc<dyn Introducer>> {
         let ns = validator.keyring().context_for(device).namespace().clone();
-        let (anchor, hub, told) = {
+        let public = keys
+            .get_signer_sync(&device_key(device))?
+            .public_key()
+            .context("an Ed25519 key")?;
+        let hint = LinkHint {
+            key: public_key_digest(&public),
+            candidates: vec![HintCandidate {
+                kind: HintKind::Host,
+                addr: link_address(node)?,
+            }],
+        };
+        let (anchor, hub, told, dialled, listening) = {
             let mut case = self.case.lock().expect("the provider's lock");
             let anchor = case
                 .namespaces
@@ -290,8 +400,14 @@ impl Reference {
                 anchor,
                 *case.nodes.first().context("prepare lists the hub first")?,
                 Arc::clone(case.told.entry(node).or_default()),
+                Arc::clone(case.dialled.entry(node).or_default()),
+                Arc::clone(&case.listening),
             )
         };
+        listening
+            .lock()
+            .expect("the host's lock")
+            .insert(hint.candidates[0].addr, hint.key);
         let engine = fabric
             .engine_of(node)
             .with_context(|| format!("no engine on node {node}"))?;
@@ -309,6 +425,10 @@ impl Reference {
             }),
             carried: std::sync::Mutex::new(std::collections::HashSet::new()),
             told,
+            hint,
+            dialled,
+            firsts: std::sync::Mutex::new(Vec::new()),
+            listening,
         }))
     }
 
@@ -639,11 +759,125 @@ struct Introduce {
     carried: std::sync::Mutex<std::collections::HashSet<Name>>,
     /// What the host was told of grants, across restarts of its layer ([`Case::told`]).
     told: Told,
+    /// The hint the host gives for an offer's code: its device's key and the address it
+    /// listens at.
+    hint: LinkHint,
+    /// What the host was asked of its link layer, across restarts of its layer
+    /// ([`Case::dialled`]).
+    dialled: Dialled,
+    /// Who listens where, in this case ([`Case::listening`]).
+    listening: Listening,
+    /// The first-contact links up, by the inviter's device and the address dialled.
+    firsts: std::sync::Mutex<Vec<(Name, SocketAddr)>>,
+}
+
+impl Introduce {
+    /// Record a call of the host's link layer.
+    fn called(&self, call: LinkCall) {
+        self.dialled.lock().expect("the host's lock").push(call);
+    }
+
+    /// The key the device that listens at `addr` proves, if one does.
+    fn proves(&self, addr: &SocketAddr) -> Option<[u8; 32]> {
+        self.listening
+            .lock()
+            .expect("the host's lock")
+            .get(addr)
+            .copied()
+    }
+}
+
+/// The addresses of a hint's candidates, in order.
+fn addresses(hint: &LinkHint) -> Vec<SocketAddr> {
+    hint.candidates.iter().map(|c| c.addr).collect()
 }
 
 impl Introducer for Introduce {
     fn anchor(&self) -> Option<bytes::Bytes> {
         Some(self.anchor.clone())
+    }
+
+    /// The host's link layer is this stand-in: the world already routes every name through the
+    /// hub, so a dial that answers is a link by name. It gives the hint of the device's own
+    /// key at the address it listens at.
+    fn link_hint(&self) -> Option<LinkHint> {
+        Some(self.hint.clone())
+    }
+
+    /// Answers when a device listens at one of the candidates and proves the hint's key, as a
+    /// handshake would; no other address or key makes a link.
+    fn dial<'a>(
+        &'a self,
+        hint: &'a LinkHint,
+        inviter: &'a Name,
+        _within: std::time::Duration,
+    ) -> Dialing<'a> {
+        let answered = hint
+            .candidates
+            .iter()
+            .any(|c| self.proves(&c.addr) == Some(hint.key));
+        self.called(LinkCall::Dial {
+            inviter: inviter.clone(),
+            key: hint.key,
+            candidates: addresses(hint),
+            answered,
+        });
+        Box::pin(async move {
+            if answered {
+                Ok(())
+            } else {
+                Err(format!(
+                    "no address of the hint answered with the key it names (tried {} of them)",
+                    hint.candidates.len()
+                ))
+            }
+        })
+    }
+
+    /// Answers with the key of the device that listens at `addr`, which a handshake proves;
+    /// an address nobody listens at does not answer. The link carries the inviter's hint
+    /// record, signed by a namespace this node does not hold yet, as ndn-link's first-contact
+    /// link does (it routes the introduction prefixes of the device whatever answers): the
+    /// node's forwarder takes that name in transit, unvalidated, until the link is taken down.
+    fn dial_first<'a>(
+        &'a self,
+        inviter: &'a Name,
+        addr: SocketAddr,
+        _within: std::time::Duration,
+    ) -> FirstDialing<'a> {
+        let proved = self.proves(&addr);
+        self.called(LinkCall::DialFirst {
+            inviter: inviter.clone(),
+            addr,
+            answered: proved.is_some(),
+        });
+        if proved.is_some() {
+            self.engine.transit().add(&hint_prefix(inviter), || {});
+            self.firsts
+                .lock()
+                .expect("the host's lock")
+                .push((inviter.clone(), addr));
+        }
+        Box::pin(async move { proved.ok_or_else(|| format!("nothing answers at {addr}")) })
+    }
+
+    fn undial(&self, hint: &LinkHint, inviter: &Name) {
+        self.called(LinkCall::Undial {
+            inviter: inviter.clone(),
+            key: hint.key,
+            candidates: addresses(hint),
+        });
+        // A first contact's link (the hint's candidate is the address dialled first) stops
+        // carrying the hint record.
+        let mut firsts = self.firsts.lock().expect("the host's lock");
+        if let Some(at) = firsts.iter().position(|(device, addr)| {
+            device == inviter
+                && hint.candidates.iter().any(|c| c.addr == *addr)
+                && self.proves(addr) == Some(hint.key)
+        }) {
+            firsts.remove(at);
+            self.engine.transit().remove(&hint_prefix(inviter), || {});
+        }
     }
 
     fn grant(&self, grant: &Grant) {
@@ -1985,47 +2219,31 @@ impl Provider for Reference {
         device: &DeviceSpec,
         prefix: &Name,
     ) -> anyhow::Result<()> {
-        let engine = fabric
-            .engine_of(device.node)
-            .with_context(|| format!("no engine on node {}", device.node))?;
-        let node = engine.app_node(CancellationToken::new());
-        // Fresh, past every cache: what a device serving `prefix` answers now. An attacker on a
-        // lossy path asks again, a bounded number of times, until an answer arrives: the attack
-        // needs the packet, and a lost Interest or Data is no defence.
-        let mut tries = 0;
-        let packet = loop {
-            tries += 1;
-            let ask = InterestBuilder::new(prefix.clone())
-                .can_be_prefix()
-                .must_be_fresh()
-                .lifetime(std::time::Duration::from_secs(2));
-            match Consumer::new(node.connection()).fetch_with(ask).await {
-                Ok(packet) => break packet.raw().clone(),
-                Err(e) if tries >= REPLAY_TRIES => {
-                    return Err(anyhow::Error::new(e).context(format!(
-                        "nothing answered {prefix} to replay in {REPLAY_TRIES} asks"
-                    )));
-                }
-                Err(_) => {}
-            }
-        };
-        // Served on the device's own node under `prefix`: the hub forwards every Interest to
-        // every device, and this node's longest match for `prefix` is the replayer, not the
-        // device's data layer. Every Interest under it gets the same packet, however stale.
-        let guard = node
-            .serve(prefix.clone(), move |_interest, responder| {
-                let packet = packet.clone();
-                async move {
-                    let _ = responder.respond_bytes(packet).await;
-                }
-            })
-            .await?;
-        self.case
+        self.replay_packet(fabric, device, prefix, false).await
+    }
+
+    async fn replay_altered(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        prefix: &Name,
+    ) -> anyhow::Result<()> {
+        self.replay_packet(fabric, device, prefix, true).await
+    }
+
+    async fn link_calls(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<Vec<LinkCall>> {
+        Ok(self
+            .case
             .lock()
             .expect("the provider's lock")
-            .relays
-            .push((node, guard));
-        Ok(())
+            .dialled
+            .get(&device.node)
+            .map(|d| d.lock().expect("the host's lock").clone())
+            .unwrap_or_default())
     }
 
     async fn offer(

@@ -69,7 +69,9 @@ fn run(w: &World) -> CaseFuture<'_> {
                 )));
             }
         };
-        let e = w.join(loser, &code.link).await?;
+        // Asking again is a host's: a lost exchange (`NotReady`, retry later) is asked again, so
+        // the answer judged is the inviter's own.
+        let e = w.join_again(loser, &code.link).await?;
         ensure!(
             matches!(&e, Err(e) if used(e)),
             "the loser asking again answered {e:?}, not 'used'"

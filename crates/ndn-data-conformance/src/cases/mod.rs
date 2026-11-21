@@ -171,6 +171,8 @@ mod o4_sustained_writes;
 mod o5_lossy_sealed_folder;
 mod p1_put_never_waits;
 mod p2_narrowed_audience;
+mod p3_direct_fetch;
+mod p4_notice_gap_walks;
 mod r1_concurrent_shares;
 mod r2_group_removal;
 mod r3_own_device_removed;
@@ -238,6 +240,8 @@ pub const CASES: &[Case] = &[
     o5_lossy_sealed_folder::CASE,
     p1_put_never_waits::CASE,
     p2_narrowed_audience::CASE,
+    p3_direct_fetch::CASE,
+    p4_notice_gap_walks::CASE,
     r1_concurrent_shares::CASE,
     r2_group_removal::CASE,
     r3_own_device_removed::CASE,

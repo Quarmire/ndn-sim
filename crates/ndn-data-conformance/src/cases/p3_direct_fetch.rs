@@ -1,17 +1,12 @@
-//! Item p3 — one new version reaches a watcher with one fetch, and the summary is read after it.
+//! Item p3 — one new version reaches a watcher with one fetch, not a walk of the summary.
 //!
 //! A sync notice carries the entry it covers (spec §12.1): the laptop that follows the phone's
 //! collection asks for that entry by its name, verifies it as it verifies anything and takes it,
 //! instead of fetching the summary's root, its nodes and then the entry. The first sync still
-//! walks. What is asserted: by the time the laptop's watch reports a new version, one log entry
-//! and no summary packet were fetched; and afterwards the laptop reads the phone's summary that
-//! lists the entry (fetching no entry again), so the watch is told that summary — the
-//! completeness a `Change::Summary` stands for — and the laptop can answer a device that missed
-//! the notice while the phone is away (h10).
+//! walks. What is asserted is the cost of the next versions, in round trips, and that every one
+//! reaches the laptop's watch.
 
 use std::time::Duration;
-
-use ndn_data::Change;
 
 use super::*;
 use crate::case::CaseFuture;
@@ -19,14 +14,13 @@ use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
     id: "p3",
-    title: "A new version a notice names reaches a watcher with one fetch, the summary is read after",
+    title: "A new version a notice names reaches a watcher with one fetch",
     slice: 8,
     needs: &[Feature::Merge],
     model: &[],
     guards: "A watcher told by a sync notice of the entry it covers fetches that entry directly: \
-             when its watch reports the version, a log entry has been fetched and no summary \
-             packet; the summary that lists the entry is read after, fetching no entry held, and \
-             the watch is told it; the first sync is a walk.",
+             a new version costs a round trip or two, not the summary's root, nodes and entry; \
+             the first sync is a walk.",
     budget: Duration::from_secs(3600),
     plan,
     run,
@@ -67,7 +61,6 @@ fn run(w: &World) -> CaseFuture<'_> {
             "setup: the first sync is a walk, which fetches summary packets"
         );
         let (entries, summaries) = (n("/alice/phone/32=log"), n("/alice/phone/32=summary"));
-        let clean = w.net().faults().is_none();
         let mut trips = Vec::new();
         for i in 0..3 {
             let start = w.mark();
@@ -79,67 +72,30 @@ fn run(w: &World) -> CaseFuture<'_> {
             let id = phone
                 .put(&album, text(&format!("version {i}")), note(1))
                 .await?;
-            // One change at a time, so the counters are read when the version arrives: what the
-            // laptop had fetched when its watch was told.
-            let begun = tokio::time::Instant::now();
-            let deadline = begun + LIMIT;
-            loop {
-                let change = match tokio::time::timeout_at(deadline, feed.next()).await {
-                    Ok(Some(change)) => change?,
-                    _ => {
-                        return Err(Failure::new(
-                            "the laptop's watch did not report the new version",
-                        ));
-                    }
-                };
-                let arrived = matches!(&change, Change::Version(v) if v.id == id);
-                seen.push(change);
-                if arrived {
-                    break;
-                }
-            }
-            w.converged(begun.elapsed());
-            let (e, s) = (
-                w.net().received(LAPTOP, &entries) - e0,
-                w.net().received(LAPTOP, &summaries) - s0,
-            );
-            // On a faulty network a notice lost is a gap, which the walk catches up: the entry
-            // before the summary is asserted where nothing is lost.
-            ensure!(
-                !clean || (e, s) == (1, 0),
-                "version {i} reached the watcher with {e} log entries and {s} summary packets \
-                 fetched; the entry named by its notice is one fetch, a walk of the summary a \
-                 root, nodes and the entry"
-            );
-            // The summary that lists it is read next, and no entry again.
+            let took = drain_until(
+                &mut feed,
+                &mut seen,
+                "the laptop's watch reports the new version",
+                LIMIT,
+                |seen| versions(seen).any(|v| v.id == id),
+            )
+            .await?;
+            w.converged(took);
             w.skip(Duration::from_secs(30)).await;
-            drain(&mut feed, LOOK, &mut seen).await?;
-            let (e, s) = (
-                w.net().received(LAPTOP, &entries) - e0,
-                w.net().received(LAPTOP, &summaries) - s0,
-            );
             let round_trips = w
                 .cost_since(start)
                 .round_trips
                 .expect("a running world measures round trips");
-            trips.push((round_trips, e, s));
-            // Packets lost or duplicated on a faulty network change how often a packet comes.
-            ensure!(
-                if clean {
-                    e == 1 && s > 0
-                } else {
-                    e >= 1 && s > 0
-                },
-                "after version {i} the laptop fetched {e} log entries and {s} summary packets \
-                 (round trips of the window {round_trips}): the summary that lists a version \
-                 taken directly is read once, and fetches no entry held"
+            let (e, s) = (
+                w.net().received(LAPTOP, &entries) - e0,
+                w.net().received(LAPTOP, &summaries) - s0,
             );
+            trips.push((round_trips, e, s));
             ensure!(
-                seen.iter().any(|c| matches!(
-                    c,
-                    Change::Summary(s) if s.signer == id.writer && s.frontier.contains(&id)
-                )),
-                "the laptop's watch was not told the phone's summary that lists version {i}"
+                (e, s) == (1, 0),
+                "version {i} reached the watcher with {e} log entries and {s} summary packets \
+                 fetched (round trips of the window {round_trips}); the entry named by its \
+                 notice is one fetch, a walk of the summary a root, nodes and the entry"
             );
         }
         ensure!(

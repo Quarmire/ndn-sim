@@ -1,22 +1,10 @@
-//! Item p4 — versions written while a reader is away all reach it, and it is told the summary
-//! that lists them.
+//! Item p4 — versions written while a reader is away all reach it.
 //!
-//! The laptop is cut off while the phone writes two versions, announced one after the other, and
-//! comes back. Taking the entry a notice names (spec §12.1) must leave no hole whatever the laptop
-//! heard of those notices, and the summary that lists the entries is read next: the laptop holds
-//! both versions and its watch is told the phone's summary covering the last.
-//!
-//! This is not a gap case. On this network a link that is down loses nothing for good: the laptop
-//! hears each announcement of the group again when it is back (the writer announces again while no
-//! member is heard to take its newest, §17.1), each alone, and takes each entry directly, so what
-//! is asserted is convergence, not which way it came; no case here can withhold one notice and
-//! deliver the next, so the fall-back to a walk is the device-level case
-//! `a_missed_notice_is_caught_up_by_a_walk` (and under `--faulty`, where a notice lost on the
-//! laptop's link is a gap, the same assertions hold).
+//! The laptop is cut off while the phone writes two versions, announced one after the other. Taking
+//! the entry a notice names (spec §12.1) must leave no hole whatever the laptop heard of those
+//! notices: it holds both, by a direct take or by the walk a gap causes.
 
 use std::time::Duration;
-
-use ndn_data::Change;
 
 use super::*;
 use crate::case::CaseFuture;
@@ -29,8 +17,8 @@ pub(super) const CASE: Case = Case {
     needs: &[Feature::Merge],
     model: &[],
     guards: "Versions written while a reader was away all reach its watch, whether each notice \
-             is taken directly or caught up by a walk, and the watch is told the writer's \
-             summary that lists them: taking an entry by its name never leaves a hole.",
+             is taken directly or caught up by a walk: taking an entry by its name never leaves \
+             a hole.",
     budget: Duration::from_secs(3600),
     plan,
     run,
@@ -79,22 +67,15 @@ fn run(w: &World) -> CaseFuture<'_> {
         let took = drain_until(
             &mut feed,
             &mut seen,
-            "the laptop holds both versions written while it was away and is told the summary \
-             that lists them",
+            "the laptop holds both versions written while it was away",
             LIMIT,
-            |seen| {
-                versions(seen).any(|v| v.id == last)
-                    && versions(seen).any(|v| v.id == missed)
-                    && seen.iter().any(|c| {
-                        matches!(
-                            c,
-                            Change::Summary(s) if s.signer == last.writer && s.frontier.contains(&last)
-                        )
-                    })
-            },
+            |seen| versions(seen).any(|v| v.id == last) && versions(seen).any(|v| v.id == missed),
         )
         .await?;
         w.converged(took);
+        // What the fabric delivers of the notices sent while a device is away is its own; whether
+        // each came directly or by a walk, the laptop holds every version (the gap that forces
+        // the walk is a device-level case: `a_missed_notice_is_caught_up_by_a_walk`).
         Ok(())
     })
 }

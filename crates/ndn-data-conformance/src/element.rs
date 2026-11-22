@@ -15,7 +15,7 @@
 //! no other is made over, whose digests a writer names as the basis of its next operation).
 //!
 //! **Locks are the owner's.** Only an owner device of the element — a device of the namespace the
-//! collection lies in ([`ndn_data::owns`]) — locks a setting, unlocks it, or writes a checkpoint
+//! collection lies in ([`ndn_data::wire::owns`]) — locks a setting, unlocks it, or writes a checkpoint
 //! (which states the locks); the check refuses such an operation by anyone else, from the
 //! operation alone. Any owner device's lock is the owner's: an owner device's write under it
 //! counts, and any owner device lifts it (`Unlock`, or a checkpoint over it that does not keep
@@ -53,9 +53,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use bytes::Bytes;
+use ndn_data::wire::owns;
 use ndn_data::{
     Counting, Frontier, MergeError, MergeRule, MergeState, Name, Op, OpKind, Seq, Value, VersionId,
-    Writer, owns,
+    Writer,
 };
 use serde::{Deserialize, Serialize};
 

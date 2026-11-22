@@ -3,7 +3,7 @@
 //!
 //! Alice shares her notes folder with Bob as a writer. She has two devices of her namespace, a
 //! phone and a laptop, and locks a paragraph's text from the phone. A lock is the owner's: any
-//! device of the collection's namespace (`owns(collection, writer)`) holds it, so Alice's laptop
+//! device of the collection's namespace (`ndn_data::wire::owns(collection, writer)`) holds it, so Alice's laptop
 //! writes on under it and its edit counts. Before, the rule compared the lock's one key with the
 //! writer's, so the phone's lock looked like a stranger's on Alice's own laptop and its edit did
 //! not count. Bob is no owner. His edit made with the lock in view — the lock inside what he wrote

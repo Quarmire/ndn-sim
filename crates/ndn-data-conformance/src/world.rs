@@ -28,7 +28,6 @@ use tokio_util::sync::CancellationToken;
 use crate::case::Failure;
 use crate::provider::{
     Certs, DeviceSpec, GrantLog, Grants, JoinedList, LinkCall, NodeRole, Program, Provider, Tally,
-    Tamper,
 };
 use crate::report::{Cost, Measure};
 
@@ -1121,29 +1120,12 @@ impl World {
         }
     }
 
-    /// `d`, a malicious holder, replaces the packet of block `version` in its store as `how`
-    /// says, keeping its signature bytes (see [`Provider::tamper`]).
-    pub fn tamper(&self, d: Dev, version: &Name, how: Tamper) -> Result<(), Failure> {
-        self.provider
-            .tamper(self.net.spec(d), version, how)
-            .map_err(|e| Failure::new(format!("cannot tamper: {e:#}")))
-    }
-
     /// `d`'s stopped data layer holds its newest members record of `subject` as a build from
     /// before removal cuts bound bytes signed it (see [`Provider::sign_unbound`]); its name.
     pub fn sign_unbound(&self, d: Dev, subject: &Name) -> Result<Name, Failure> {
         self.provider
             .sign_unbound(self.net.spec(d), subject)
             .map_err(|e| Failure::new(format!("cannot sign as an older build: {e:#}")))
-    }
-
-    /// From now on `d`'s node answers Interests under `prefix` with the packet that answers it
-    /// now, fetched fresh: a replaying cache (see [`Provider::replay`]).
-    pub async fn replay(&self, d: Dev, prefix: &Name) -> Result<(), Failure> {
-        self.provider
-            .replay(&self.net.fabric, self.net.spec(d), prefix)
-            .await
-            .map_err(|e| Failure::new(format!("cannot replay: {e:#}")))
     }
 
     /// From now on `d`'s node answers Interests under `prefix` with the packet that answers it

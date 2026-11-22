@@ -171,28 +171,6 @@ pub struct Grants {
     pub answered: u64,
 }
 
-/// How a malicious holder alters the packet of a block it stores ([`Provider::tamper`]). Either
-/// way the packet keeps the block's name and its signature bytes, so it claims the writer's
-/// signature over content the writer never signed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Tamper {
-    /// The entry at index `entry` has a field value altered.
-    Forge {
-        /// The entry's 0-based index in the block.
-        entry: u32,
-    },
-    /// The entry at index `entry` is replaced by the entry at index `their` of block `from`
-    /// (another block of the same writer, genuinely signed there).
-    Splice {
-        /// The entry's 0-based index in the block.
-        entry: u32,
-        /// The block the substitute entry comes from, by its name.
-        from: Name,
-        /// The substitute's index in `from`.
-        their: u32,
-    },
-}
-
 /// Which certificates of a device's key [`Provider::expire`] lets expire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Certs {
@@ -446,17 +424,6 @@ pub trait Provider: Send + Sync {
     /// log entry) `device` stores: whether it fetched the payload, not just the signed record.
     fn pieces_stored(&self, device: &DeviceSpec, version: &Name) -> u64;
 
-    /// Fault injection: the packet of block `version` in `device`'s store is replaced as `how`
-    /// says, keeping its name and signature bytes: a malicious holder serving a forged or spliced
-    /// entry under the writer's signature. A provider that cannot inject it says so.
-    fn tamper(&self, device: &DeviceSpec, version: &Name, how: Tamper) -> anyhow::Result<()> {
-        let _ = how;
-        anyhow::bail!(
-            "this provider cannot make {} alter the stored block {version}",
-            device.name()
-        )
-    }
-
     /// An older build: `device`'s data layer, stopped ([`stop`](Self::stop)), finds in its store
     /// its newest members record of `subject` (a collection or folder) as a build from before
     /// removal cuts bound bytes signed it — the same record, its cuts keeping the same seqs
@@ -467,23 +434,6 @@ pub trait Provider: Send + Sync {
         anyhow::bail!(
             "this provider cannot make {} hold its record of {subject} as an older build signed \
              it",
-            device.name()
-        )
-    }
-
-    /// Fault injection: `device`'s node fetches now, fresh (past every cache), the packet
-    /// answering `prefix` (CanBePrefix), and from then on answers every Interest under `prefix`
-    /// that reaches it with that packet, ignoring its FreshnessPeriod: a replaying cache. A
-    /// provider that cannot inject it says so.
-    async fn replay(
-        &self,
-        fabric: &Fabric,
-        device: &DeviceSpec,
-        prefix: &Name,
-    ) -> anyhow::Result<()> {
-        let _ = fabric;
-        anyhow::bail!(
-            "this provider cannot make {} replay what answers {prefix}",
             device.name()
         )
     }

@@ -84,12 +84,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         let v = version(&seen, &id).expect("drained until it arrived");
         let size = large(v).ok_or_else(|| {
             Failure::new(format!(
-                "the laptop's watch delivered the {IMAGE}-octet photo {}, not as a payload in \
-                 pieces (Payload::Large)",
-                match &v.payload {
-                    Payload::Block(_) => "as a block",
-                    _ => "inline",
-                }
+                "the laptop's watch delivered the {IMAGE}-octet photo inline, not as a payload in \
+                 pieces (Payload::Large)"
             ))
         })?;
         ensure!(

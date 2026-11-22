@@ -69,7 +69,7 @@ use ndn_data::intro::{
     Adopting, Dialing, FirstDialing, HintCandidate, HintKind, LinkHint, Scoping, hint_prefix,
 };
 use ndn_data::wire::{
-    Record, VersionBody, decode_record, encode_record, log_name, parse_log_name, parse_piece_name,
+    Record, decode_record, encode_record, log_name, parse_log_name, parse_piece_name,
 };
 use ndn_data::{
     Code, Config, CutBound, CutProposal, DataLayer, Departure, Device, Entropy, Grant, IntroPolicy,
@@ -96,18 +96,17 @@ use tokio_util::sync::CancellationToken;
 use crate::element::Element;
 use crate::feature::Feature;
 use crate::provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Program, Provider,
-    Tally, Tamper,
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Program, Provider, Tally,
 };
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
 const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
 /// A day in nanoseconds, the unit of certificate validity periods.
 const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
-/// How many times a replaying cache ([`Provider::replay`]) asks for the packet it will replay
-/// before giving up: each ask lives 2 s, so on the faulty profile (drop 0.2 each way, blocks)
-/// eight asks all go unanswered about once in three thousand runs, and on a clean path the
-/// first ask is answered.
+/// How many times a replaying cache ([`Provider::replay_altered`]) asks for the packet it will
+/// replay before giving up: each ask lives 2 s, so on the faulty profile (drop 0.2 each way,
+/// blocks) eight asks all go unanswered about once in three thousand runs, and on a clean path
+/// the first ask is answered.
 const REPLAY_TRIES: u32 = 8;
 
 /// One case's keys and devices.
@@ -130,7 +129,7 @@ struct Case {
     /// The cut-manifest packets each node keeps and serves, per namespace, by full name.
     kept: HashMap<(NodeId, Name), Kept>,
     /// The replaying caches and manifest servers injected
-    /// ([`Provider::replay`], [`Reference::keep_manifests`]),
+    /// ([`Provider::replay_altered`], [`Reference::keep_manifests`]),
     /// served while the case runs.
     relays: Vec<(Node, ServeGuard)>,
     /// The publisher of each node of a self-certifying person: its namespace's trust-context
@@ -288,29 +287,25 @@ impl Reference {
     }
 
     /// `device`'s node answers Interests under `prefix` with the packet that answers it now,
-    /// fetched fresh (a replaying cache, [`Provider::replay`]); `altered`: with its last octet
-    /// flipped, which is the last octet of a Data's signature
-    /// ([`Provider::replay_altered`]).
-    async fn replay_packet(
+    /// fetched fresh, with its last octet flipped, which is the last octet of a Data's
+    /// signature ([`Provider::replay_altered`]).
+    async fn replay_altered_packet(
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
         prefix: &Name,
-        altered: bool,
     ) -> anyhow::Result<()> {
         let engine = fabric
             .engine_of(device.node)
             .with_context(|| format!("no engine on node {}", device.node))?;
         let node = engine.app_node(CancellationToken::new());
-        if altered {
-            // The altered packet reaches the device's own node from a party that validates
-            // nothing (the party at a first contact's address, a link): the node carries the
-            // name in transit, unvalidated and never cached, as it carries a first contact's
-            // hint record ([`Introduce::dial_first`]), for the genuine record it fetches first
-            // as for the altered one it serves. (A forwarder that holds the namespace, the hub,
-            // validates and drops it.)
-            engine.transit().add(prefix, || {});
-        }
+        // The altered packet reaches the device's own node from a party that validates
+        // nothing (the party at a first contact's address, a link): the node carries the
+        // name in transit, unvalidated and never cached, as it carries a first contact's
+        // hint record ([`Introduce::dial_first`]), for the genuine record it fetches first
+        // as for the altered one it serves. (A forwarder that holds the namespace, the hub,
+        // validates and drops it.)
+        engine.transit().add(prefix, || {});
         // Fresh, past every cache: what a device serving `prefix` answers now. An attacker on a
         // lossy path asks again, a bounded number of times, until an answer arrives: the attack
         // needs the packet, and a lost Interest or Data is no defence.
@@ -331,13 +326,9 @@ impl Reference {
                 Err(_) => {}
             }
         };
-        let packet = if altered {
-            let mut octets = packet.to_vec();
-            *octets.last_mut().context("an empty packet")? ^= 1;
-            bytes::Bytes::from(octets)
-        } else {
-            packet
-        };
+        let mut octets = packet.to_vec();
+        *octets.last_mut().context("an empty packet")? ^= 1;
+        let packet = bytes::Bytes::from(octets);
         // Served on the device's own node under `prefix`: the hub forwards every Interest to
         // every device, and this node's longest match for `prefix` is the replayer, not the
         // device's data layer. Every Interest under it gets the same packet, however stale.
@@ -1158,10 +1149,6 @@ impl Provider for Reference {
                 | Feature::Seal
                 | Feature::Log
                 | Feature::LargePayloads
-                | Feature::Blocks
-                | Feature::OneKey
-                | Feature::Expiry
-                | Feature::RangeReads
                 | Feature::Revocation
                 | Feature::Readmit
                 | Feature::RevocationRecheck
@@ -1902,75 +1889,6 @@ impl Provider for Reference {
             .sum()
     }
 
-    fn tamper(&self, device: &DeviceSpec, version: &Name, how: Tamper) -> anyhow::Result<()> {
-        let store = self.store(device);
-        let block = |name: &Name| -> anyhow::Result<(Data, VersionBody)> {
-            let wire = store
-                .get(name)
-                .with_context(|| format!("{} stores no packet {name}", device.name()))?;
-            let data = Data::decode(wire).map_err(|e| anyhow::anyhow!("{name}: {e:?}"))?;
-            let content = data.content().cloned().unwrap_or_default();
-            let Record::Version(body) = decode_record(content)? else {
-                anyhow::bail!("{name} is no version");
-            };
-            anyhow::ensure!(
-                body.sealed.is_none(),
-                "{name} is sealed: its entries are inside the ciphertext, which a holder cannot \
-                 alter entry by entry"
-            );
-            anyhow::ensure!(body.block.is_some(), "{name} is no block");
-            Ok((data, body))
-        };
-        let (data, mut body) = block(version)?;
-        let entries = body.block.as_mut().expect("checked a block");
-        let (Tamper::Forge { entry } | Tamper::Splice { entry, .. }) = how;
-        let len = entries.len();
-        anyhow::ensure!(
-            (entry as usize) < len,
-            "{version} has {len} entries, none at {entry}"
-        );
-        let e = &mut entries[entry as usize];
-        match how {
-            Tamper::Forge { .. } => {
-                let (field, value) = e
-                    .fields
-                    .fields()
-                    .next()
-                    .map(|(f, v)| (f.to_owned(), v.clone()))
-                    .with_context(|| format!("entry {entry} of {version} has no field"))?;
-                let mut forged = value.to_vec();
-                forged.extend_from_slice(b"-forged");
-                e.fields = std::mem::take(&mut e.fields).with(field, forged);
-            }
-            Tamper::Splice { from, their, .. } => {
-                let (_, other) = block(&from)?;
-                let other = other.block.expect("checked a block");
-                e.fields = other
-                    .get(their as usize)
-                    .with_context(|| {
-                        format!("{from} has {} entries, none at {their}", other.len())
-                    })?
-                    .fields
-                    .clone();
-            }
-        }
-        let content = encode_record(&Record::Version(body));
-        // The same name, freshness and signature info, and the original signature bytes over
-        // content its writer never signed.
-        let sig = data
-            .sig_info()
-            .with_context(|| format!("{version} carries no signature info"))?;
-        let key = sig.key_locator_name();
-        let mut builder = DataBuilder::new((*data.name).clone(), &content);
-        if let Some(f) = data.meta_info().and_then(|m| m.freshness_period) {
-            builder = builder.freshness(f);
-        }
-        let value = bytes::Bytes::copy_from_slice(data.sig_value());
-        let forged = builder.sign_sync(sig.sig_type, key.as_deref(), |_| value);
-        store.insert(version.clone(), forged);
-        Ok(())
-    }
-
     fn sign_unbound(&self, device: &DeviceSpec, subject: &Name) -> anyhow::Result<Name> {
         let name = device.name();
         let (keys, store) = {
@@ -2058,22 +1976,13 @@ impl Provider for Reference {
         Ok(record)
     }
 
-    async fn replay(
-        &self,
-        fabric: &Fabric,
-        device: &DeviceSpec,
-        prefix: &Name,
-    ) -> anyhow::Result<()> {
-        self.replay_packet(fabric, device, prefix, false).await
-    }
-
     async fn replay_altered(
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
         prefix: &Name,
     ) -> anyhow::Result<()> {
-        self.replay_packet(fabric, device, prefix, true).await
+        self.replay_altered_packet(fabric, device, prefix).await
     }
 
     async fn link_calls(

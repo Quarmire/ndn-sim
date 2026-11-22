@@ -25,18 +25,6 @@ pub enum Feature {
     /// Payloads larger than one packet (log rule): a version carrying `Payload::Large`, its
     /// chunks and manifest verified piece by piece, read whole by `get`.
     LargePayloads,
-    /// Signed blocks of small entries under a producer's accepted delay (model change M6): one
-    /// signature per block, each entry verifiable through it.
-    Blocks,
-    /// The one-key rule: one key writes, and its signed head bounds how fresh `get` is and
-    /// refuses a rollback.
-    OneKey,
-    /// Retention by expiry: a version whose keep passed by a device's own clock is dropped there,
-    /// served by none, and answered `DataError::Expired`.
-    Expiry,
-    /// Range reads of a one-key stream by seq and by time (`<C>/32=range/<R>`), fetching the
-    /// blocks in range and a logarithmic search, not the stream.
-    RangeReads,
     /// Revocation as a cut in the trust context: the key's versions the cut lists stay valid,
     /// every other packet it signed is refused, whatever date it claims.
     Revocation,
@@ -111,7 +99,6 @@ impl Feature {
             Feature::Merge | Feature::WritersAcrossPrefixes | Feature::Snapshot => 1,
             Feature::RemovalCut | Feature::CutRecheck | Feature::Seal | Feature::Log => 2,
             Feature::LargePayloads => 3,
-            Feature::Blocks | Feature::OneKey | Feature::Expiry | Feature::RangeReads => 4,
             Feature::Revocation
             | Feature::Readmit
             | Feature::RevocationRecheck
@@ -144,10 +131,6 @@ impl Feature {
             Feature::Seal => "seal",
             Feature::Log => "log rule",
             Feature::LargePayloads => "large payloads",
-            Feature::Blocks => "signed blocks",
-            Feature::OneKey => "one-key rule",
-            Feature::Expiry => "retention by expiry",
-            Feature::RangeReads => "range reads",
             Feature::Revocation => "revocation",
             Feature::Readmit => "re-admission",
             Feature::RevocationRecheck => "re-check on revocation arrival",

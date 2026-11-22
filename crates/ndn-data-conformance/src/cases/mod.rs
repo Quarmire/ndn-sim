@@ -1,6 +1,5 @@
-//! The cases, in study order: the use cases (`c1`…`c4`, `c6`…`c9`, `c11`), with slice 3's large
-//! data (`h1`) beside them, slice 4's small constant streams (`s1`: range reads; `s5`: a
-//! replayed head) beside theirs (c6) and slice 5's keys over time (`k1`…`k10`: an expired
+//! The cases, in study order: the use cases (`c1`…`c4`, `c7`…`c9`, `c11`), with slice 3's large
+//! data (`h1`) beside them and slice 5's keys over time (`k1`…`k10`: an expired
 //! certificate, a backdated version, exact re-admission, a late revocation, a renewal, a
 //! recovery, and from its
 //! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
@@ -34,10 +33,10 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use ndn_data::wire::{Range, device_of, entry_name, range_name};
+use ndn_data::wire::device_of;
 use ndn_data::{
-    Answer, Audience, Change, Changes, Content, DataError, DataLayer, Entries, Frontier, Got, Keep,
-    Name, NextStep, Payload, PutOptions, Rule, Share, State, Timestamp, TypeId, Value, Version,
+    Answer, Audience, Change, Changes, Content, DataError, DataLayer, Frontier, Got, Keep, Name,
+    NextStep, Payload, PutOptions, Rule, Share, State, Timestamp, TypeId, Value, Version,
     VersionId,
 };
 use ndn_surface::signal::{Signal, SignalError, SignalRun, SignalStats};
@@ -61,7 +60,6 @@ mod c01_offline_notes;
 mod c02_removed_offline;
 mod c03_stolen_key;
 mod c04_lens_seal;
-mod c06_sensor_blocks;
 mod c07_unknown_fields;
 mod c08_nested_summaries;
 mod c09_family_chat;
@@ -144,8 +142,6 @@ mod r4_concurrent_add_remove;
 mod r5_removal_cut_bytes;
 mod r6_unbound_cut_upgrade;
 mod r7_removal_across_revisions;
-mod s1_range_reads;
-mod s5_replayed_head;
 mod w1_folder_watch;
 
 /// Every case, in study order.
@@ -166,9 +162,6 @@ pub const CASES: &[Case] = &[
     c04_lens_seal::CASE,
     h1_large_photo::CASE,
     h10_holder_serves_others::CASE,
-    c06_sensor_blocks::CASE,
-    s1_range_reads::CASE,
-    s5_replayed_head::CASE,
     c07_unknown_fields::CASE,
     c08_nested_summaries::CASE,
     c09_family_chat::CASE,
@@ -289,7 +282,6 @@ fn note(revision: u64) -> PutOptions {
             revision,
         },
         keep: Keep::Forever,
-        batch: None,
     }
 }
 
@@ -301,7 +293,6 @@ fn photo(keep: Keep) -> PutOptions {
             revision: 1,
         },
         keep,
-        batch: None,
     }
 }
 
@@ -325,178 +316,6 @@ fn picture(file: &str, len: usize) -> Content {
     Content::new()
         .with("file", bytes::Bytes::copy_from_slice(file.as_bytes()))
         .with("image", bytes::Bytes::from(image))
-}
-
-// ---- the stream cases' kit (c6, s1, s5) --------------------------------------------------------
-
-/// Alice's garden soil readings: the soil sensor's stream.
-fn soil() -> Name {
-    n("/alice/32=data/garden/soil")
-}
-
-/// The stream cases' devices: Alice's soil sensor (`Dev(0)`, the one key that writes the
-/// stream), her home repo (`Dev(1)`) and her laptop (`Dev(2)`, a reader).
-fn stream_plan() -> Plan {
-    let mut p = Plan::new();
-    p.device("alice", "soil-sensor");
-    p.device("alice", "repo");
-    p.device("alice", "laptop");
-    p
-}
-
-/// The stream plan, counting packets by name deep enough to tell a stream's blocks apart
-/// (`<sensor>/32=log/<collection>/seq=<n>`: eight components), for the cases that check which
-/// blocks reached a reader and from where.
-fn counted_stream_plan() -> Plan {
-    let mut p = stream_plan();
-    p.count_names(8);
-    p
-}
-
-/// The members record of a stream `writer` alone writes: the one-key rule, its one writer
-/// that device, whose key is then the one key (spec §5.3).
-fn one_key(w: &World, writer: Dev, readers: &[Audience]) -> Share {
-    Share {
-        rule: Rule::OneKey,
-        writers: vec![w.net().spec(writer).name()],
-        readers: readers.to_vec(),
-    }
-}
-
-/// The soil-reading type, kept `keep`; `batch` is the delay the producer accepts before a
-/// reading is signed (`None`: each reading signed alone).
-fn reading(keep: Keep, batch: Option<Duration>) -> PutOptions {
-    PutOptions {
-        type_id: TypeId {
-            name: n("/types/soil-reading"),
-            revision: 1,
-        },
-        keep,
-        batch,
-    }
-}
-
-/// Reading number `i`: a moisture value and the reading's number, so no two readings are alike.
-fn soil_reading(i: usize) -> Content {
-    content(&[
-        ("moisture", &format!("{}", 300 + i % 50)),
-        ("n", &i.to_string()),
-    ])
-}
-
-/// `d` takes `count` readings into `c`, numbered from `first`, one every `every`. Each `put`
-/// runs in its own task, as a sampling loop hands readings over, so the readings of one block
-/// return together once it is signed. Returns each reading's version (its block) and how long
-/// its `put` waited, in reading order.
-async fn take_readings(
-    w: &World,
-    d: Dev,
-    c: &Name,
-    (first, count): (usize, usize),
-    every: Duration,
-    options: PutOptions,
-) -> Result<Vec<(VersionId, Duration)>, Failure> {
-    let layer = w.at(d);
-    let mut pending = Vec::with_capacity(count);
-    for i in first..first + count {
-        let (layer, c, options) = (layer.clone(), c.clone(), options.clone());
-        pending.push(tokio::spawn(async move {
-            let asked = tokio::time::Instant::now();
-            let id = layer.put(&c, soil_reading(i), options).await;
-            (id, asked.elapsed())
-        }));
-        w.sleep(every).await;
-    }
-    let mut out = Vec::with_capacity(count);
-    for p in pending {
-        let (id, waited) = p
-            .await
-            .map_err(|e| Failure::new(format!("a put task failed: {e}")))?;
-        out.push((id?, waited));
-    }
-    Ok(out)
-}
-
-/// The versions the writer `layer` wrote into `c`, by seq, as its own watch lists them (a
-/// device lists its own writes at once).
-async fn own_blocks(layer: &dyn DataLayer, c: &Name) -> Result<Vec<Version>, Failure> {
-    let seen = look(layer, c, &Frontier::new(), LOOK).await?;
-    let mut out: Vec<Version> = versions(&seen).cloned().collect();
-    out.sort_by_key(|v| v.id.seq);
-    out.dedup_by(|a, b| a.id == b.id);
-    Ok(out)
-}
-
-/// One entry of a stream: its name (`<V>/32=entry/seg=<i>`), its block, its date and content.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Written {
-    name: Name,
-    block: VersionId,
-    dated: Timestamp,
-    content: Content,
-}
-
-/// The entries of `v` as its writer wrote them, in order (a version that is no block is one
-/// entry; a large one carries none inline).
-fn written(v: &Version) -> Vec<Written> {
-    let one = |i: usize, dated: Timestamp, content: &Content| Written {
-        name: entry_name(&v.name, i as u32),
-        block: v.id.clone(),
-        dated,
-        content: content.clone(),
-    };
-    match &v.payload {
-        Payload::Block(es) => es
-            .iter()
-            .enumerate()
-            .map(|(i, e)| one(i, e.dated, &e.content))
-            .collect(),
-        Payload::Entry(c) => vec![one(0, v.dated, c)],
-        Payload::Large { .. } => Vec::new(),
-    }
-}
-
-/// The entries a read answered, in the form of [`written`], to compare with the writer's.
-fn read_entries(e: &Entries) -> Vec<Written> {
-    e.entries
-        .iter()
-        .map(|e| Written {
-            name: e.name.clone(),
-            block: e.id.clone(),
-            dated: e.dated,
-            content: e.content.clone(),
-        })
-        .collect()
-}
-
-/// `get` of a range name or an entry name, asked again while `layer` answers RetryLater
-/// ([`World::again`]): the entries it answered, or the error it refused with; a failure when it
-/// answered anything else. For a read whose first look races the network, as a host does what
-/// the refusal says.
-async fn entries_again(
-    w: &World,
-    layer: &dyn DataLayer,
-    name: &Name,
-) -> Result<Result<Entries, DataError>, Failure> {
-    match w.again(|| layer.get(name)).await {
-        Ok(Answer {
-            got: Got::Entries(e),
-            ..
-        }) => Ok(Ok(e)),
-        Ok(a) => Err(Failure::new(format!(
-            "get of {name} answered {:?}, not entries",
-            a.got
-        ))),
-        Err(e) => Ok(Err(e)),
-    }
-}
-
-/// How many of `blocks` device `d` stores any packet of.
-fn stored_blocks<'v>(w: &World, d: Dev, blocks: impl IntoIterator<Item = &'v Version>) -> usize {
-    blocks
-        .into_iter()
-        .filter(|v| w.stored(d, &v.name) > 0)
-        .count()
 }
 
 /// The version `id` of `collection` as `layer` lists it: a device lists its own writes at once.
@@ -550,10 +369,6 @@ async fn read_whole(
                 Payload::Large { size } => Err(Failure::new(format!(
                     "{what}: get of {name} answered its size ({size} octets), not the entry \
                      read whole"
-                ))),
-                Payload::Block(entries) => Err(Failure::new(format!(
-                    "{what}: get of {name} answered a block of {} entries, not the photo",
-                    entries.len()
                 ))),
             },
             Ok(answer) => Err(Failure::new(format!(
@@ -632,21 +447,12 @@ async fn state_now(layer: &dyn DataLayer, collection: &Name) -> Result<Option<St
     }
 }
 
-/// The field `f` of any entry a version carries inline (a large payload carries none: `get` of
+/// The field `f` of the entry a version carries inline (a large payload carries none: `get` of
 /// the version's name reads it).
 fn field_of<'v>(v: &'v Version, f: &str) -> Option<&'v str> {
     match &v.payload {
         Payload::Entry(c) => field(c, f),
-        Payload::Block(entries) => entries.iter().find_map(|e| field(&e.content, f)),
         Payload::Large { .. } => None,
-    }
-}
-
-/// How many entries a version carries (a large payload is one entry, carried in pieces).
-fn entries(v: &Version) -> usize {
-    match &v.payload {
-        Payload::Entry(_) | Payload::Large { .. } => 1,
-        Payload::Block(e) => e.len(),
     }
 }
 
@@ -853,7 +659,6 @@ fn element_type() -> PutOptions {
             revision: 1,
         },
         keep: Keep::Forever,
-        batch: None,
     }
 }
 

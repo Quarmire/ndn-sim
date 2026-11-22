@@ -21,10 +21,7 @@
 //! member claiming another's run, a flood of unfetchable headers, forgeries starving a run, one
 //! member's devices hogging run slots, the last sequence, a revoked issuer, and a scope named
 //! in very many words, and a member whose clock stepped back across a restart), and round 5's
-//! device events (`v1`…`v5`: what no folder owns — a members record against a version at one
-//! seq, a cut and the version it withdraws told on every device that takes the cut, a revocation
-//! adopted, events outliving a restart until acknowledged, and a flood of one subject coalesced),
-//! round 5's batching (`d8`: a burst of puts and a group, each stored as one batch, arriving in
+//! batching (`d8`: a burst of puts and a group, each stored as one batch, arriving in
 //! order and surviving a restart), and round 9's two ends of a grant
 //! (`i22`…`i24`: the joiner's list of joined folders follows the members record, the joiner holds
 //! a grant for the inviter that the record re-derives, and mutual invitations make an inviter's
@@ -39,9 +36,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use ndn_data::wire::{Range, device_of, entry_name, held_name, range_name};
 use ndn_data::{
-    Answer, Audience, Change, Changes, Content, Custody, DataError, DataLayer, DeviceEvent,
-    Entries, EventKind, Frontier, Got, Hold, Keep, Lease, Name, NextStep, Payload, PutOptions,
-    Rule, Share, State, Timestamp, TypeId, Value, Version, VersionId,
+    Answer, Audience, Change, Changes, Content, Custody, DataError, DataLayer, Entries, Frontier,
+    Got, Hold, Keep, Lease, Name, NextStep, Payload, PutOptions, Rule, Share, State, Timestamp,
+    TypeId, Value, Version, VersionId,
 };
 use ndn_surface::signal::{Signal, SignalError, SignalRun, SignalStats};
 
@@ -172,11 +169,6 @@ mod s3_spliced_entry;
 mod s4_expiry;
 mod s5_replayed_head;
 mod s6_stopped_stream;
-mod v1_record_against_version;
-mod v2_cut_told_on_every_device;
-mod v3_revocation_told;
-mod v4_events_survive_restart;
-mod v5_event_flood;
 mod w1_folder_watch;
 
 /// Every case, in study order.
@@ -301,11 +293,6 @@ pub const CASES: &[Case] = &[
     e17_signal_long_scope::CASE,
     e18_signal_clock_stepped_back::CASE,
     e19_signal_clock_not_ratcheted::CASE,
-    v1_record_against_version::CASE,
-    v2_cut_told_on_every_device::CASE,
-    v3_revocation_told::CASE,
-    v4_events_survive_restart::CASE,
-    v5_event_flood::CASE,
     d8_batched_burst::CASE,
 ];
 
@@ -953,18 +940,6 @@ fn withdrawn(changes: &[Change], id: &VersionId) -> bool {
     changes
         .iter()
         .any(|c| matches!(c, Change::Withdrawn { id: w, .. } if w == id))
-}
-
-// ---- the device-events kit (v1–v5) -------------------------------------------------------------
-
-/// The events `d`'s device holds unacknowledged, of `kind`, in cursor order. A host reads them as
-/// it would: from the device itself ([`World::gate`]), never from what a watch told.
-fn events_of(w: &World, d: Dev, kind: EventKind) -> Result<Vec<DeviceEvent>, Failure> {
-    Ok(w.gate(d)?
-        .pending_events()
-        .into_iter()
-        .filter(|e| e.kind() == kind)
-        .collect())
 }
 
 // ---- slice 6's kit: the element rule, app-built operations, groups, folders ------------------

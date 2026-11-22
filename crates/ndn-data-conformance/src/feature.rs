@@ -112,12 +112,6 @@ pub enum Feature {
     /// for, sealed under the scope's signal key in a sealed scope, gated by the members record in
     /// force on every packet, never a version and never cached.
     Signals,
-    /// Device-wide events (`Device::events`, spec data-layer.md §21): what no folder owns —
-    /// equivocation of a key at any two entries of one seq, withdrawals, cuts and revocations —
-    /// told on one stream with its evidence, redelivered after a restart until the host
-    /// acknowledges it, and bounded under a flood without losing the first of each kind per
-    /// subject.
-    DeviceEvents,
 }
 
 impl Feature {
@@ -150,7 +144,7 @@ impl Feature {
             | Feature::FolderWatch
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
-            Feature::Signals | Feature::DeviceEvents => 7,
+            Feature::Signals => 7,
         }
     }
 
@@ -191,7 +185,6 @@ impl Feature {
             Feature::Introduction => "introduction",
             Feature::SelfCertifying => "names by key",
             Feature::Signals => "signals",
-            Feature::DeviceEvents => "device events",
         }
     }
 }

@@ -51,8 +51,6 @@ struct Planned {
     device: String,
     /// A thief: takes this device, key and storage ([`World::steal`]).
     stolen_from: Option<Dev>,
-    /// A holder of its person's collections.
-    holds: bool,
     /// The merge rules its program knows beyond the standard ones.
     program: Program,
     /// The person's genesis root key, for a self-certifying person ([`Plan::self_certifying`]).
@@ -117,19 +115,13 @@ impl Plan {
     /// Add `person`'s `device` (e.g. `"alice"`, `"laptop"`). The person is a namespace of any
     /// number of components, written without its leading slash (`"home/bob"` is `/home/bob`).
     pub fn device(&mut self, person: &str, device: &str) -> Dev {
-        self.add(person, device, false)
-    }
-
-    /// Add `person`'s `device` as a holder: it keeps the collections of its person's namespace
-    /// for their owners under custody leases (a home repo, a vault).
-    pub fn holder(&mut self, person: &str, device: &str) -> Dev {
-        self.add(person, device, true)
+        self.add(person, device)
     }
 
     /// Add a guest of `person`'s namespace: a friend's device `<person>/guest/<who>`, certified
     /// by `person` as a guest (a role whose data, once its certificate lapsed, needs a cut).
     pub fn guest(&mut self, person: &str, who: &str) -> Dev {
-        let d = self.add(person, who, false);
+        let d = self.add(person, who);
         self.devices[d.0].role = Some("guest".to_owned());
         d
     }
@@ -140,7 +132,7 @@ impl Plan {
     /// plain [`device`](Self::device) `<person>/<device>` has no role: no rule of the context's
     /// DataRequiresCut applies to its key.
     pub fn member(&mut self, person: &str, who: &str) -> Dev {
-        let d = self.add(person, who, false);
+        let d = self.add(person, who);
         self.devices[d.0].role = Some("member".to_owned());
         d
     }
@@ -162,18 +154,17 @@ impl Plan {
     /// person's namespace, as the case names it: [`self_certifying_person`].
     pub fn self_certifying(&mut self, genesis: [u8; 32], device: &str) -> Dev {
         let person = self_certifying_person(&genesis).to_string();
-        let d = self.add(person.trim_start_matches('/'), device, false);
+        let d = self.add(person.trim_start_matches('/'), device);
         self.devices[d.0].genesis = Some(genesis);
         d
     }
 
-    fn add(&mut self, person: &str, device: &str, holds: bool) -> Dev {
+    fn add(&mut self, person: &str, device: &str) -> Dev {
         self.devices.push(Planned {
             person: person.to_owned(),
             role: None,
             device: device.to_owned(),
             stolen_from: None,
-            holds,
             program: Program::default(),
             genesis: None,
             link_grants: true,
@@ -189,7 +180,6 @@ impl Plan {
             role: None,
             device: format!("with-{}", self.devices[victim.0].device),
             stolen_from: Some(victim),
-            holds: false,
             program: Program::default(),
             genesis: None,
             link_grants: true,
@@ -262,7 +252,6 @@ impl Net {
                 device: p.device.clone(),
                 // The hub is node 0; devices follow in plan order.
                 node: NodeId(i + 1),
-                holds: p.holds,
                 program: p.program,
                 stranger: plan.strangers,
                 genesis: p.genesis,
@@ -900,36 +889,6 @@ impl World {
         self.spread_all().await
     }
 
-    /// `d`'s host drops its own copies of the large payload pieces under `name` (a version's name
-    /// or a collection), leaving them to the holders (see [`Provider::release`]); returns how
-    /// many pieces it dropped.
-    pub async fn release(&self, d: Dev, name: &Name) -> Result<u64, Failure> {
-        self.provider
-            .release(&self.net.fabric, self.net.spec(d), name)
-            .await
-            .map_err(|e| Failure::new(format!("release failed: {e:#}")))
-    }
-
-    /// As [`release`](Self::release), but a refusal by `d`'s data layer is answered as its
-    /// error, for a case that expects one.
-    pub async fn try_release(
-        &self,
-        d: Dev,
-        name: &Name,
-    ) -> Result<Result<u64, DataError>, Failure> {
-        match self
-            .provider
-            .release(&self.net.fabric, self.net.spec(d), name)
-            .await
-        {
-            Ok(pieces) => Ok(Ok(pieces)),
-            Err(e) => match e.downcast_ref::<DataError>() {
-                Some(refusal) => Ok(Err(refusal.clone())),
-                None => Err(Failure::new(format!("release failed: {e:#}"))),
-            },
-        }
-    }
-
     /// `by` makes a one-use offer of `folder` and returns its code (see [`Provider::offer`]).
     /// One gesture: the owner offers.
     pub async fn offer(&self, by: Dev, folder: &Name, offer: Offer) -> Result<Code, Failure> {
@@ -1073,12 +1032,6 @@ impl World {
             .map_err(|e| Failure::new(format!("cannot ask the forwarder: {e:#}")))
     }
 
-    /// `d`'s storage silently loses every `every`-th stored piece of `collection` (1 = all), in
-    /// name order (see [`Provider::lose`]); returns how many it lost.
-    pub fn lose(&self, d: Dev, collection: &Name, every: u32) -> u64 {
-        self.provider.lose(self.net.spec(d), collection, every)
-    }
-
     /// The octets of the pieces `d` stores under `prefix`, a collection or a version's name (see
     /// [`Provider::stored`]).
     pub fn stored(&self, d: Dev, prefix: &Name) -> u64 {
@@ -1089,15 +1042,6 @@ impl World {
     /// (see [`Provider::pieces_stored`]).
     pub fn pieces_stored(&self, d: Dev, version: &Name) -> u64 {
         self.provider.pieces_stored(self.net.spec(d), version)
-    }
-
-    /// From now on `d` answers audits by relaying each asked piece from the network instead of
-    /// from its store (see [`Provider::relay_audits`]).
-    pub async fn relay_audits(&self, d: Dev) -> Result<(), Failure> {
-        self.provider
-            .relay_audits(&self.net.fabric, self.net.spec(d))
-            .await
-            .map_err(|e| Failure::new(format!("cannot relay audits: {e:#}")))
     }
 
     /// The signatures `d`'s data layer has made, cumulative (see [`Provider::signed_by`]).

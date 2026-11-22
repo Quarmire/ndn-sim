@@ -100,9 +100,6 @@ pub struct DeviceSpec {
     pub device: String,
     /// Its forwarder in the fabric.
     pub node: NodeId,
-    /// A holder: it keeps its person's collections for their owners under custody leases
-    /// (answers their hold asks and audits).
-    pub holds: bool,
     /// The merge rules its program knows beyond the standard ones.
     pub program: Program,
     /// A stranger to every other person: its node holds its own person's trust context and
@@ -440,45 +437,14 @@ pub trait Provider: Send + Sync {
     /// The seal-key grants `device`'s data layer has asked for and answered, cumulative.
     fn grants(&self, device: &DeviceSpec) -> Grants;
 
-    /// `device`'s host drops its own copies of the pieces of the large versions under `name` (a
-    /// version's name or a collection), leaving them to the holders that keep them: the host's
-    /// storage policy, not a verb. Returns how many pieces it dropped; a refusal (nothing it
-    /// audited as kept holds them; for a merge version, no checkpoint covering it proved held) is
-    /// an error naming why, carrying the layer's [`DataError`](ndn_data::DataError) as its
-    /// source (`downcast_ref`).
-    async fn release(
-        &self,
-        fabric: &Fabric,
-        device: &DeviceSpec,
-        name: &Name,
-    ) -> anyhow::Result<u64>;
-
-    /// Fault injection: `device`'s storage silently loses every `every`-th stored piece of
-    /// `collection` (1 = all), in name order. A piece is a log entry of any writer about the
-    /// collection, or a chunk or manifest node of such an entry. Returns how many it lost.
-    fn lose(&self, device: &DeviceSpec, collection: &Name, every: u32) -> u64;
-
-    /// The octets of the pieces `device` stores under `prefix`: of a collection, every piece as
-    /// [`lose`](Self::lose) counts them; of a version's name, its log entry and its chunks and
-    /// manifest nodes.
+    /// The octets of the pieces `device` stores under `prefix`: of a collection, every piece (a
+    /// log entry of any writer about the collection, or a chunk or manifest node of such an
+    /// entry); of a version's name, its log entry and its chunks and manifest nodes.
     fn stored(&self, device: &DeviceSpec, prefix: &Name) -> u64;
 
     /// How many pieces of the version named `version` (its chunks and manifest nodes, not its
     /// log entry) `device` stores: whether it fetched the payload, not just the signed record.
     fn pieces_stored(&self, device: &DeviceSpec, version: &Name) -> u64;
-
-    /// Fault injection: from now on `device` answers the audit asks addressed to it through a
-    /// relay that keeps nothing: it fetches each asked piece from the network, fresh (past every
-    /// cache, so from a device that serves it), and signs it as `device`'s answer. The holder
-    /// that stores nothing yet passes audits by fetching from the auditor (spec §13.4). A
-    /// provider that cannot inject it says so.
-    async fn relay_audits(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
-        let _ = fabric;
-        anyhow::bail!(
-            "this provider cannot make {} answer audits by relaying",
-            device.name()
-        )
-    }
 
     /// Fault injection: the packet of block `version` in `device`'s store is replaced as `how`
     /// says, keeping its name and signature bytes: a malicious holder serving a forged or spliced

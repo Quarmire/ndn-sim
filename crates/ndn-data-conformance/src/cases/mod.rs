@@ -1,8 +1,8 @@
-//! The cases, in study order: the eleven use cases (`c1`…`c11`), with slice 3's custody of
-//! large data (`h1`…`h9`) beside the use case it grew from (c5), slice 4's small constant
-//! streams (`s1`…`s6`: range reads, a malicious holder, expiry, a replayed head, a stopped
-//! stream) beside theirs (c6) and slice 5's keys over time (`k1`…`k10`: an expired certificate, a
-//! backdated version, exact re-admission, a late revocation, a renewal, a recovery, and from its
+//! The cases, in study order: the use cases (`c1`…`c4`, `c6`…`c9`, `c11`), with slice 3's large
+//! data (`h1`) beside them, slice 4's small constant streams (`s1`: range reads; `s5`: a
+//! replayed head) beside theirs (c6) and slice 5's keys over time (`k1`…`k10`: an expired
+//! certificate, a backdated version, exact re-admission, a late revocation, a renewal, a
+//! recovery, and from its
 //! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
 //! a revoked issuer) beside theirs (c3), the items left open after the model's fixes
 //! (`o1`…`o5`), the slice-2 security review (`r1`…`r6`): the attacks it found, the concurrent
@@ -34,11 +34,11 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use ndn_data::wire::{Range, device_of, entry_name, held_name, range_name};
+use ndn_data::wire::{Range, device_of, entry_name, range_name};
 use ndn_data::{
-    Answer, Audience, Change, Changes, Content, Custody, DataError, DataLayer, Entries, Frontier,
-    Got, Hold, Keep, Lease, Name, NextStep, Payload, PutOptions, Rule, Share, State, Timestamp,
-    TypeId, Value, Version, VersionId,
+    Answer, Audience, Change, Changes, Content, DataError, DataLayer, Entries, Frontier, Got, Keep,
+    Name, NextStep, Payload, PutOptions, Rule, Share, State, Timestamp, TypeId, Value, Version,
+    VersionId,
 };
 use ndn_surface::signal::{Signal, SignalError, SignalRun, SignalStats};
 
@@ -53,7 +53,6 @@ mod b1_rule_by_name;
 mod b2_basis_outside_past;
 mod b3_locked_setting;
 mod b4_merge_pieces;
-mod b5_release_merge_pieces;
 mod b6_owner_lock;
 mod b7_counting_both_ways;
 mod b8_checkpoint_alike;
@@ -62,12 +61,10 @@ mod c01_offline_notes;
 mod c02_removed_offline;
 mod c03_stolen_key;
 mod c04_lens_seal;
-mod c05_prune_vs_custody;
 mod c06_sensor_blocks;
 mod c07_unknown_fields;
 mod c08_nested_summaries;
 mod c09_family_chat;
-mod c10_others_comment;
 mod c11_cite_state;
 mod d8_batched_burst;
 mod e10_signal_sixty_hertz;
@@ -95,14 +92,6 @@ mod f3_first_own_record;
 mod f4_let_go_keeps_joined;
 mod h10_holder_serves_others;
 mod h1_large_photo;
-mod h2_dropping_holder;
-mod h3_subset_holder;
-mod h4_lease_keep;
-mod h5_prune_ends_leases;
-mod h6_sealed_non_reader;
-mod h7_lost_single_copy;
-mod h8_relaying_holder;
-mod h9_prune_before_auditor;
 mod i10_removal_lasts;
 mod i11_stranger_cannot_close;
 mod i12_removed_elsewhere;
@@ -156,11 +145,7 @@ mod r5_removal_cut_bytes;
 mod r6_unbound_cut_upgrade;
 mod r7_removal_across_revisions;
 mod s1_range_reads;
-mod s2_forged_entry;
-mod s3_spliced_entry;
-mod s4_expiry;
 mod s5_replayed_head;
-mod s6_stopped_stream;
 mod w1_folder_watch;
 
 /// Every case, in study order.
@@ -179,28 +164,14 @@ pub const CASES: &[Case] = &[
     k9_other_bytes::CASE,
     k10_revoked_issuer::CASE,
     c04_lens_seal::CASE,
-    c05_prune_vs_custody::CASE,
     h1_large_photo::CASE,
-    h2_dropping_holder::CASE,
-    h3_subset_holder::CASE,
-    h4_lease_keep::CASE,
-    h5_prune_ends_leases::CASE,
-    h6_sealed_non_reader::CASE,
-    h7_lost_single_copy::CASE,
-    h8_relaying_holder::CASE,
-    h9_prune_before_auditor::CASE,
     h10_holder_serves_others::CASE,
     c06_sensor_blocks::CASE,
     s1_range_reads::CASE,
-    s2_forged_entry::CASE,
-    s3_spliced_entry::CASE,
-    s4_expiry::CASE,
     s5_replayed_head::CASE,
-    s6_stopped_stream::CASE,
     c07_unknown_fields::CASE,
     c08_nested_summaries::CASE,
     c09_family_chat::CASE,
-    c10_others_comment::CASE,
     c11_cite_state::CASE,
     o1_cut_recheck::CASE,
     o2_readmit::CASE,
@@ -220,7 +191,6 @@ pub const CASES: &[Case] = &[
     b2_basis_outside_past::CASE,
     b3_locked_setting::CASE,
     b4_merge_pieces::CASE,
-    b5_release_merge_pieces::CASE,
     b6_owner_lock::CASE,
     b7_counting_both_ways::CASE,
     b8_checkpoint_alike::CASE,
@@ -335,7 +305,7 @@ fn photo(keep: Keep) -> PutOptions {
     }
 }
 
-/// A photo's octets for the custody cases: about 1.6 MB, some 390 chunks of 4096 octets.
+/// A photo's octets: about 1.6 MB, some 390 chunks of 4096 octets.
 const IMAGE: usize = 1_600_000;
 
 /// A photo named `file` of `len` octets, the same every run: the octets come from a generator
@@ -357,27 +327,7 @@ fn picture(file: &str, len: usize) -> Content {
         .with("image", bytes::Bytes::from(image))
 }
 
-/// The custody cases' devices: Alice's phone (`Dev(0)`, which writes the photos and asks for
-/// custody), her home repo (`Dev(1)`, a holder) and her laptop (`Dev(2)`, a reader).
-fn custody_plan() -> Plan {
-    let mut p = Plan::new();
-    p.device("alice", "phone");
-    p.holder("alice", "repo");
-    p.device("alice", "laptop");
-    p
-}
-/// The holders the phone names in its hold records: the custody plan's repo (`Dev(1)`), the
-/// owner's choice (spec §13.2).
-fn custody_holders(w: &World) -> Vec<Name> {
-    vec![w.net().spec(Dev(1)).name()]
-}
-
-/// Whether `lease` is signed by a key of the device named `device`.
-fn leased_by(lease: &Lease, device: &Name) -> bool {
-    lease.holder.key().has_prefix(device)
-}
-
-// ---- the stream cases' kit (c6, s1–s6) --------------------------------------------------------
+// ---- the stream cases' kit (c6, s1, s5) --------------------------------------------------------
 
 /// Alice's garden soil readings: the soil sensor's stream.
 fn soil() -> Name {
@@ -385,19 +335,18 @@ fn soil() -> Name {
 }
 
 /// The stream cases' devices: Alice's soil sensor (`Dev(0)`, the one key that writes the
-/// stream), her home repo (`Dev(1)`, a holder) and her laptop (`Dev(2)`, a reader).
+/// stream), her home repo (`Dev(1)`) and her laptop (`Dev(2)`, a reader).
 fn stream_plan() -> Plan {
     let mut p = Plan::new();
     p.device("alice", "soil-sensor");
-    p.holder("alice", "repo");
+    p.device("alice", "repo");
     p.device("alice", "laptop");
     p
 }
 
 /// The stream plan, counting packets by name deep enough to tell a stream's blocks apart
-/// (`<sensor>/32=log/<collection>/seq=<n>`: eight components) and what a holder answers under
-/// its own name (`<holder>/32=held/<name>`), for the cases that check which blocks reached a
-/// reader and from where.
+/// (`<sensor>/32=log/<collection>/seq=<n>`: eight components), for the cases that check which
+/// blocks reached a reader and from where.
 fn counted_stream_plan() -> Plan {
     let mut p = stream_plan();
     p.count_names(8);
@@ -520,27 +469,10 @@ fn read_entries(e: &Entries) -> Vec<Written> {
         .collect()
 }
 
-/// `get` of a range name or an entry name: the entries it answered, or the error it refused
-/// with; a failure when it answered anything else.
-async fn entries_at(
-    layer: &dyn DataLayer,
-    name: &Name,
-) -> Result<Result<Entries, DataError>, Failure> {
-    match layer.get(name).await {
-        Ok(Answer {
-            got: Got::Entries(e),
-            ..
-        }) => Ok(Ok(e)),
-        Ok(a) => Err(Failure::new(format!(
-            "get of {name} answered {:?}, not entries",
-            a.got
-        ))),
-        Err(e) => Ok(Err(e)),
-    }
-}
-
-/// [`entries_at`], asked again while `layer` answers RetryLater ([`World::again`]): for a read
-/// whose first look races the network, as a host does what the refusal says.
+/// `get` of a range name or an entry name, asked again while `layer` answers RetryLater
+/// ([`World::again`]): the entries it answered, or the error it refused with; a failure when it
+/// answered anything else. For a read whose first look races the network, as a host does what
+/// the refusal says.
 async fn entries_again(
     w: &World,
     layer: &dyn DataLayer,
@@ -567,24 +499,6 @@ fn stored_blocks<'v>(w: &World, d: Dev, blocks: impl IntoIterator<Item = &'v Ver
         .count()
 }
 
-/// `d` asks for custody of `prefix`, recording what the call cost `d` on its links (the hold
-/// asks it sent, every audit it ran, any repair) as `<what>: Interests` and `<what>: bytes
-/// received`.
-async fn hold_on(
-    w: &World,
-    d: Dev,
-    prefix: &Name,
-    want: &Hold,
-    what: &str,
-) -> Result<Custody, Failure> {
-    let before = w.net().device_wire(d);
-    let custody = w.at(d).hold(prefix, want.clone()).await?;
-    let spent = w.net().device_wire(d) - before;
-    w.measure(format!("{what}: Interests"), spent.interests, "round trips");
-    w.measure(format!("{what}: bytes received"), spent.in_bytes, "bytes");
-    Ok(custody)
-}
-
 /// The version `id` of `collection` as `layer` lists it: a device lists its own writes at once.
 async fn listed(
     layer: &dyn DataLayer,
@@ -606,11 +520,6 @@ fn large(v: &Version) -> Option<u64> {
         Payload::Large { size } => Some(size),
         _ => None,
     }
-}
-
-/// What `holders` store of `prefix`, per mille of the `payload` octets it carries.
-fn overhead(w: &World, holders: &[Dev], prefix: &Name, payload: u64) -> u64 {
-    holders.iter().map(|d| w.stored(*d, prefix)).sum::<u64>() * 1000 / payload.max(1)
 }
 
 /// `d` reads the version `name` whole: `get` until it answers the entry `expected` (while no

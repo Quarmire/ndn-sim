@@ -13,9 +13,9 @@ pub type CaseFuture<'w> = Pin<Box<dyn Future<Output = Result<(), Failure>> + 'w>
 
 /// A use case (or an open item) of the data-layer study as an executable scenario.
 pub struct Case {
-    /// Stable id: `c1`…`c11` for the use cases, `h1`…`h9` for slice 3's custody of large data,
-    /// `s1`…`s6` for slice 4's small constant streams, `k1`…`k10` for slice 5's keys over time,
-    /// `b1`…`b5` and `f1`, `f2` for slice 6's merge rules by name, app-built
+    /// Stable id: `c1`…`c11` for the use cases, `h1` for slice 3's large data,
+    /// `s1`, `s5` for slice 4's small constant streams, `k1`…`k10` for slice 5's keys over time,
+    /// `b1`…`b4` and `f1`, `f2` for slice 6's merge rules by name, app-built
     /// operations and merge pieces, and folder members, `i1`…`i13` for joining a folder
     /// by a code, `n1` for people named by their keys, `e1`…`e10` for slice 7's signals,
     /// `o1`…`o4` for the open items, `r1`…`r4` for the slice-2 security review (the attacks it

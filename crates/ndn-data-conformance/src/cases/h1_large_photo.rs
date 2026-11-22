@@ -26,12 +26,20 @@ pub(super) const CASE: Case = Case {
              fetching it, reading it returns exactly the bytes written, and it stays sealed to \
              its audience all the way.",
     budget: Duration::from_secs(1800),
-    plan: custody_plan,
+    plan,
     run,
 };
 
 const PHONE: Dev = Dev(0);
-const LAPTOP: Dev = Dev(2);
+const LAPTOP: Dev = Dev(1);
+
+/// Alice's phone (`Dev(0)`, which writes the photos) and her laptop (`Dev(1)`, a reader).
+fn plan() -> Plan {
+    let mut p = Plan::new();
+    p.device("alice", "phone");
+    p.device("alice", "laptop");
+    p
+}
 
 /// The pieces of a payload of `size` octets: its chunks and its manifest nodes (fan-out
 /// [`FANOUT`], depth the smallest that lists every chunk).

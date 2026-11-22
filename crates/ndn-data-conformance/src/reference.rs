@@ -69,9 +69,7 @@ use ndn_data::intro::{
     Adopting, Dialing, FirstDialing, HintCandidate, HintKind, LinkHint, Scoping, hint_prefix,
 };
 use ndn_data::wire::{
-    AuditAnswer, AuditAsk, NONCE_LEN, Record, VersionBody, audit_ask_name, decode_record,
-    encode_audit_answer, encode_record, log_name, parse_audit_ask_name, parse_log_name,
-    parse_piece_name, piece_names, version_proof,
+    Record, VersionBody, decode_record, encode_record, log_name, parse_log_name, parse_piece_name,
 };
 use ndn_data::{
     Code, Config, CutBound, CutProposal, DataLayer, Departure, Device, Entropy, Grant, IntroPolicy,
@@ -131,8 +129,8 @@ struct Case {
     devices: BTreeMap<NodeId, Attached>,
     /// The cut-manifest packets each node keeps and serves, per namespace, by full name.
     kept: HashMap<(NodeId, Name), Kept>,
-    /// The audit relays, replaying caches and manifest servers injected
-    /// ([`Provider::relay_audits`], [`Provider::replay`], [`Reference::keep_manifests`]),
+    /// The replaying caches and manifest servers injected
+    /// ([`Provider::replay`], [`Reference::keep_manifests`]),
     /// served while the case runs.
     relays: Vec<(Node, ServeGuard)>,
     /// The publisher of each node of a self-certifying person: its namespace's trust-context
@@ -254,7 +252,6 @@ impl Reference {
         let config = Config {
             clock: Arc::new(move || Timestamp(clock.now_ns() / 1_000_000)),
             svs: SvsConfig::default(),
-            hold_for: host.hold_for,
             rules: rules(host.program),
             entropy: seeded(&device, runs),
             introducer: Some(introducer),
@@ -709,23 +706,16 @@ impl Reference {
 
 /// What a device's host configures its data layer with.
 struct Host {
-    /// The namespaces it holds collections of for their owners.
-    hold_for: Vec<Name>,
     /// The merge rules its program knows beyond the standard ones.
     program: Program,
     /// How long a grant lasts: `Some(ZERO)` for a host that makes none.
     grant_for: Option<std::time::Duration>,
 }
 
-/// How `device`'s host configures its layer: a holder keeps the collections of its own person's
-/// namespace; the program registers the merge rules the case gave it.
+/// How `device`'s host configures its layer: the program registers the merge rules the case gave
+/// it.
 fn host(device: &DeviceSpec) -> Host {
     Host {
-        hold_for: if device.holds {
-            vec![device.person.clone()]
-        } else {
-            Vec::new()
-        },
         program: device.program,
         grant_for: if device.link_grants {
             IntroPolicy::new().grant_for
@@ -1167,9 +1157,6 @@ impl Provider for Reference {
                 | Feature::CutRecheck
                 | Feature::Seal
                 | Feature::Log
-                | Feature::PruneScope
-                | Feature::Custody
-                | Feature::Prune
                 | Feature::LargePayloads
                 | Feature::Blocks
                 | Feature::OneKey
@@ -1626,9 +1613,8 @@ impl Provider for Reference {
             }
             (keys, Arc::new(copy))
         };
-        // The thief runs the stolen device's program; it holds nothing for others.
+        // The thief runs the stolen device's program.
         let thief_host = Host {
-            hold_for: Vec::new(),
             program: victim.program,
             grant_for: IntroPolicy::new().grant_for,
         };
@@ -1901,46 +1887,6 @@ impl Provider for Reference {
             })
     }
 
-    async fn release(
-        &self,
-        _fabric: &Fabric,
-        device: &DeviceSpec,
-        name: &Name,
-    ) -> anyhow::Result<u64> {
-        let layer = self
-            .case
-            .lock()
-            .expect("the provider's lock")
-            .devices
-            .get(&device.node)
-            .map(|a| a.layer.clone())
-            .with_context(|| format!("{} has no data layer attached", device.name()))?;
-        match layer.release(name).await {
-            Ok(released) => Ok(u64::from(released.pieces)),
-            Err(e) => {
-                let next = e.next();
-                Err(anyhow::Error::new(e).context(format!(
-                    "{} refused to release {name} (next step: {next:?})",
-                    device.name()
-                )))
-            }
-        }
-    }
-
-    fn lose(&self, device: &DeviceSpec, collection: &Name, every: u32) -> u64 {
-        let store = self.store(device);
-        let stored = store.scan_under(&Name::root(), 0);
-        let every = every.max(1) as usize;
-        let mut lost = 0;
-        for (i, (name, _)) in pieces_of(&stored, collection).enumerate() {
-            if (i + 1) % every == 0 {
-                store.remove(name);
-                lost += 1;
-            }
-        }
-        lost
-    }
-
     fn pieces_stored(&self, device: &DeviceSpec, version: &Name) -> u64 {
         let stored = self.store(device).scan_under(&Name::root(), 0);
         stored
@@ -2110,99 +2056,6 @@ impl Provider for Reference {
         );
         store.insert(record.clone(), wire);
         Ok(record)
-    }
-
-    async fn relay_audits(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<()> {
-        let name = device.name();
-        let keys = self
-            .case
-            .lock()
-            .expect("the provider's lock")
-            .keys
-            .get(&name)
-            .cloned()
-            .with_context(|| format!("{name} was not prepared"))?;
-        let identity = keys.signing_identity_for(&name)?;
-        let engine = fabric
-            .engine_of(device.node)
-            .with_context(|| format!("no engine on node {}", device.node))?;
-        let node = engine.app_node(CancellationToken::new());
-        // `<device>/32=audit`: longer than the device's own prefix, so every audit ask reaches
-        // the relay, not the data layer.
-        let any = audit_ask_name(
-            &name,
-            &AuditAsk {
-                nonce: [0; NONCE_LEN],
-                piece: name.clone(),
-                whole: false,
-                asker: bytes::Bytes::new(),
-            },
-        );
-        let prefix = Name::from_components(any.components()[..any.len() - 1].iter().cloned());
-        let fetcher = node.connection();
-        let guard = node
-            .serve(prefix, move |interest, responder| {
-                let (fetcher, identity) = (fetcher.clone(), identity.clone());
-                async move {
-                    let Some((_, ask)) = parse_audit_ask_name(&interest.name) else {
-                        return;
-                    };
-                    // Every packet asked is fetched fresh: from a device that serves it, past
-                    // every cache.
-                    let fresh = |name: Name| {
-                        let fetcher = fetcher.clone();
-                        async move {
-                            let b = InterestBuilder::new(name)
-                                .must_be_fresh()
-                                .lifetime(std::time::Duration::from_secs(2));
-                            Consumer::new(fetcher).fetch_with(b).await.ok()
-                        }
-                    };
-                    let answer = if ask.whole {
-                        // A proof over every piece: the log entry, then each piece it lists.
-                        let Some(entry) = fresh(ask.piece.clone()).await else {
-                            return;
-                        };
-                        let chunks = entry
-                            .content()
-                            .and_then(|c| decode_record(c.clone()).ok())
-                            .and_then(|r| match r {
-                                Record::Version(v) => v.chunks,
-                                _ => None,
-                            });
-                        let Some(chunks) = chunks else { return };
-                        let mut wires = vec![entry.raw().clone()];
-                        for p in piece_names(&ask.piece, &chunks) {
-                            let Some(d) = fresh(p).await else { return };
-                            wires.push(d.raw().clone());
-                        }
-                        AuditAnswer::Proof(version_proof(
-                            &ask.nonce,
-                            wires.iter().map(|w| w.as_ref()),
-                        ))
-                    } else {
-                        let Some(piece) = fresh(ask.piece.clone()).await else {
-                            return;
-                        };
-                        AuditAnswer::Piece(piece.raw().clone())
-                    };
-                    let answer = encode_audit_answer(&answer);
-                    let signer = &identity.signer;
-                    let wire = DataBuilder::new((*interest.name).clone(), &answer)
-                        .freshness(std::time::Duration::ZERO)
-                        .sign_sync(signer.sig_type(), Some(&identity.key), |region| {
-                            signer.sign_sync(region).unwrap_or_default()
-                        });
-                    let _ = responder.respond_bytes(wire).await;
-                }
-            })
-            .await?;
-        self.case
-            .lock()
-            .expect("the provider's lock")
-            .relays
-            .push((node, guard));
-        Ok(())
     }
 
     async fn replay(

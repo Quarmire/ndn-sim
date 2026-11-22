@@ -101,7 +101,6 @@ use crate::provider::{
     Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Program, Provider,
     Tally, Tamper,
 };
-use crate::sum;
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
 const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
@@ -257,8 +256,6 @@ impl Reference {
             svs: SvsConfig::default(),
             hold_for: host.hold_for,
             rules: rules(host.program),
-            evaluators: sum::host(host.program).0,
-            answers: sum::host(host.program).1,
             entropy: seeded(&device, runs),
             introducer: Some(introducer),
             intro: IntroPolicy {
@@ -1064,10 +1061,8 @@ impl ContextStore for FirstVersion {
 fn rules(program: Program) -> MergeRules {
     let standard = MergeRules::standard();
     match program {
-        Program::Standard | Program::Wary | Program::EvaluatingV2 => standard,
-        Program::Element | Program::Evaluating | Program::Hostile => {
-            standard.with(Arc::new(Element::new()))
-        }
+        Program::Standard => standard,
+        Program::Element => standard.with(Arc::new(Element::new())),
         Program::LaxElement => standard.with(Arc::new(Element::lax())),
     }
 }
@@ -1200,7 +1195,6 @@ impl Provider for Reference {
                 | Feature::SelfCertifying
                 | Feature::Signals
                 | Feature::DeviceEvents
-                | Feature::Answers
         )
     }
 

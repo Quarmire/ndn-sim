@@ -77,8 +77,6 @@ pub enum Feature {
     /// A later trust-context version that revokes an issuer re-checks what a device holds
     /// through it, on adoption and on restart.
     IssuerRecheck,
-    /// Named functions whose answers are sealed to their inputs' audience.
-    Functions,
     /// Merge rules by name: a members record names its rule by a full, versioned name matched
     /// exactly; a device whose program does not know it holds the collection's versions
     /// unreadable and answers `DataError::RuleUnknown`, never a state under another rule.
@@ -120,11 +118,6 @@ pub enum Feature {
     /// acknowledges it, and bounded under a flood without losing the first of each kind per
     /// subject.
     DeviceEvents,
-    /// Answers (`ndn_data::answer`, spec answers.md): named, checkable readings over signed data,
-    /// pure (recomputed by any holder of the definition and the inputs) and provider (trusted by
-    /// the provider's authority), sealed to the audience of everything they read, with evidence
-    /// of a mismatch on one device-wide stream.
-    Answers,
 }
 
 impl Feature {
@@ -158,7 +151,6 @@ impl Feature {
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
             Feature::Signals | Feature::DeviceEvents => 7,
-            Feature::Functions | Feature::Answers => 8,
         }
     }
 
@@ -190,7 +182,6 @@ impl Feature {
             Feature::UnboundCut => "old-form removal cut kept",
             Feature::GuestExpiry => "lapsed key needs a cut",
             Feature::IssuerRecheck => "re-check on issuer revocation",
-            Feature::Functions => "named functions",
             Feature::RuleByName => "merge rules by name",
             Feature::AppOps => "app-built operations",
             Feature::MergePieces => "merge versions in pieces",
@@ -201,7 +192,6 @@ impl Feature {
             Feature::SelfCertifying => "names by key",
             Feature::Signals => "signals",
             Feature::DeviceEvents => "device events",
-            Feature::Answers => "answers",
         }
     }
 }

@@ -1,4 +1,4 @@
-//! The cases, in study order: the twelve use cases (`c1`…`c12`), with slice 3's custody of
+//! The cases, in study order: the eleven use cases (`c1`…`c11`), with slice 3's custody of
 //! large data (`h1`…`h9`) beside the use case it grew from (c5), slice 4's small constant
 //! streams (`s1`…`s6`: range reads, a malicious holder, expiry, a replayed head, a stopped
 //! stream) beside theirs (c6) and slice 5's keys over time (`k1`…`k10`: an expired certificate, a
@@ -25,17 +25,7 @@
 //! seq, a cut and the version it withdraws told on every device that takes the cut, a revocation
 //! adopted, events outliving a restart until acknowledged, and a flood of one subject coalesced),
 //! round 5's batching (`d8`: a burst of puts and a group, each stored as one batch, arriving in
-//! order and surviving a restart), and round 5's answers (`a1`…`a18`: named, checkable, sealed
-//! readings over signed data — one name and one answer from two devices, a changed read set, a
-//! wrong answer detected on recompute, a reader without access, an unknown evaluator, fetching
-//! against computing, unsigned work, a provider's answer, a revoked signer, read-set faults,
-//! limits, and answers in pieces), and round 8's asks for an answer (`a19`…`a22`: a device that
-//! cannot compute asks another of its person and trusts what it is given, a device outside the
-//! audience of one read is refused, eight asks from one device have one in progress and the rest
-//! Busy, an ask that does not prove its asker gets no reply), and round 11's refusal by the
-//! signer's evaluator (`a23`: a definition the evaluator refuses is refused `EvaluatorRefused`
-//! with the evaluator's reason, an unknown evaluator is still `CannotCheck`), and round 9's two
-//! ends of a grant
+//! order and surviving a restart), and round 9's two ends of a grant
 //! (`i22`…`i24`: the joiner's list of joined folders follows the members record, the joiner holds
 //! a grant for the inviter that the record re-derives, and mutual invitations make an inviter's
 //! entry and a mirror entry that end one by one), and round 10's short introduction code (`i25`,
@@ -62,7 +52,6 @@ use crate::feature::Feature;
 use crate::signal;
 use crate::world::{Dev, Plan, World};
 
-mod answers;
 mod b1_rule_by_name;
 mod b2_basis_outside_past;
 mod b3_locked_setting;
@@ -83,7 +72,6 @@ mod c08_nested_summaries;
 mod c09_family_chat;
 mod c10_others_comment;
 mod c11_cite_state;
-mod c12_still_pass;
 mod d8_batched_burst;
 mod e10_signal_sixty_hertz;
 mod e11_signal_claimed_run;
@@ -230,7 +218,6 @@ pub const CASES: &[Case] = &[
     c09_family_chat::CASE,
     c10_others_comment::CASE,
     c11_cite_state::CASE,
-    c12_still_pass::CASE,
     o1_cut_recheck::CASE,
     o2_readmit::CASE,
     o3_many_writers::CASE,
@@ -320,29 +307,6 @@ pub const CASES: &[Case] = &[
     v4_events_survive_restart::CASE,
     v5_event_flood::CASE,
     d8_batched_burst::CASE,
-    answers::A1,
-    answers::A2,
-    answers::A3,
-    answers::A4,
-    answers::A5,
-    answers::A6,
-    answers::A7,
-    answers::A8,
-    answers::A9,
-    answers::A10,
-    answers::A11,
-    answers::A12,
-    answers::A13,
-    answers::A14,
-    answers::A15,
-    answers::A16,
-    answers::A17,
-    answers::A18,
-    answers::A19,
-    answers::A20,
-    answers::A21,
-    answers::A22,
-    answers::A23,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

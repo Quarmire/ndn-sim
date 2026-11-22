@@ -1,17 +1,16 @@
-//! Storage, d8 — a burst of puts and a group, each stored as one batch, reach another device in
-//! order and survive a restart.
+//! Storage, d8 — a burst of puts, each stored as one batch, reaches another device in order and
+//! survives a restart.
 //!
 //! Alice's laptop and phone share a folder of ledgers. The laptop puts sixty entries back to back
-//! (each put's writes reach its store as one batch, behind the durability barrier), then a group
-//! of five versions in five collections (one batch for the whole group). The phone, on the
-//! lossy network of a `--faulty` run too, ends up holding every entry and the whole group. The
-//! laptop then stops and starts again on what it stored: it still holds every version, and its
-//! next put signs the very next seq of its log, one the restart neither reused nor skipped, which
-//! the phone then holds too.
+//! (each put's writes reach its store as one batch, behind the durability barrier). The phone, on
+//! the lossy network of a `--faulty` run too, ends up holding every entry. The laptop then stops
+//! and starts again on what it stored: it still holds every version, and its next put signs the
+//! very next seq of its log, one the restart neither reused nor skipped, which the phone then
+//! holds too.
 //!
 //! The guard: grouping a put's store writes changes nothing a peer or the device itself can tell:
-//! seqs are consecutive in put order, what a peer is served is what was put, a group is whole,
-//! and the log continues where a restart finds it.
+//! seqs are consecutive in put order, what a peer is served is what was put, and the log
+//! continues where a restart finds it.
 
 use std::time::Duration;
 
@@ -22,21 +21,15 @@ use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
     id: "d8",
-    title: "A burst of puts and a group, each stored as one batch, arrive in order and survive a \
+    title: "A burst of puts, each stored as one batch, arrives in order and survives a \
             restart",
     slice: 7,
-    needs: &[
-        Feature::Seal,
-        Feature::Log,
-        Feature::Groups,
-        Feature::FolderMembers,
-    ],
+    needs: &[Feature::Seal, Feature::Log, Feature::FolderMembers],
     model: &[],
-    guards: "The writes of a put (and of a group) reach the store as one batch without changing \
-             what a peer sees: sixty back-to-back puts take consecutive seqs and all reach the \
-             other device; a group of five collections is held whole by both; after the device \
-             stops and starts on its store, it holds every version and its next put signs the \
-             next seq, not one before or after.",
+    guards: "The writes of a put reach the store as one batch without changing what a peer \
+             sees: sixty back-to-back puts take consecutive seqs and all reach the other \
+             device; after the device stops and starts on its store, it holds every version \
+             and its next put signs the next seq, not one before or after.",
     budget: Duration::from_secs(1800),
     plan,
     run,
@@ -45,7 +38,6 @@ pub(super) const CASE: Case = Case {
 const LAPTOP: Dev = Dev(0);
 const PHONE: Dev = Dev(1);
 const BURST: usize = 60;
-const MEMBERS: usize = 5;
 
 fn plan() -> Plan {
     let mut p = Plan::new();
@@ -83,41 +75,12 @@ fn run(w: &World) -> CaseFuture<'_> {
             ids.iter().map(|id| id.seq.0).collect::<Vec<_>>()
         );
 
-        // A group: five collections of the folder, one batch.
-        let group_items = |tag: &str| -> Vec<(Name, ndn_data::Edit)> {
-            (0..MEMBERS)
-                .map(|j| {
-                    (
-                        folder.clone().append(format!("g{j}")),
-                        ndn_data::Edit::Fields(text(&format!("{tag} {j}"))),
-                    )
-                })
-                .collect()
-        };
-        let group = w
-            .again(|| laptop.put_group(group_items("save"), note(1)))
-            .await?;
-        ensure!(
-            group.len() == MEMBERS,
-            "a group of {MEMBERS} answered {} ids",
-            group.len()
-        );
-        ensure!(
-            group.windows(2).all(|p| p[1].seq.0 == p[0].seq.0 + 1),
-            "a group's members took seqs {:?}, not consecutive ones",
-            group.iter().map(|id| id.seq.0).collect::<Vec<_>>()
-        );
-
-        let everything = |seen: &[Change]| {
-            ids.iter()
-                .chain(&group)
-                .all(|id| versions(seen).any(|v| v.id == *id))
-        };
+        let everything = |seen: &[Change]| ids.iter().all(|id| versions(seen).any(|v| v.id == *id));
         let start = tokio::time::Instant::now();
         drain_until(
             &mut phone_watch,
             &mut phone_seen,
-            "the phone holds the burst and the group",
+            "the phone holds the burst",
             LIMIT,
             |seen| everything(seen),
         )
@@ -132,7 +95,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         drain_until(
             &mut again,
             &mut held,
-            "the restarted laptop holds its burst and its group",
+            "the restarted laptop holds its burst",
             LIMIT,
             |seen| everything(seen),
         )
@@ -142,7 +105,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let next = w
             .put(LAPTOP, &entries, text("after the restart"), note(1))
             .await?;
-        let top = group.last().expect("a group").seq.0;
+        let top = ids.last().expect("a burst").seq.0;
         ensure!(
             next.seq.0 == top + 1,
             "after a restart the laptop signed seq {}, not {}, the one after its last",

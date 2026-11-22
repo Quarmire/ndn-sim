@@ -1188,7 +1188,6 @@ impl Provider for Reference {
                 | Feature::RuleByName
                 | Feature::AppOps
                 | Feature::MergePieces
-                | Feature::Groups
                 | Feature::FolderMembers
                 | Feature::FolderWatch
                 | Feature::Introduction

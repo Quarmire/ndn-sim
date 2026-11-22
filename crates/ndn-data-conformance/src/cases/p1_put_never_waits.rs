@@ -4,8 +4,7 @@
 //! of her namespace, writes too: the laptop hears it in the sync group but reaches nothing of its
 //! summary (its names are cut off), so the phone is known and never walked. Before, every put
 //! into a collection new to the laptop first followed it and looked at what every device known to
-//! write into the namespace holds of it, waiting the first-look time for the phone — a paste of a
-//! dozen paragraphs into new collections waited that time once for each of them, and the first
+//! write into the namespace holds of it, waiting the first-look time for the phone — the first
 //! keystroke in a new note waited it once; on a faulty network each look took longer still. The
 //! fix: a put returns once the version is applied and queued behind the durability barrier, and
 //! never waits for a device. A collection that no record of its own governs here — under a
@@ -31,7 +30,7 @@
 
 use std::time::Duration;
 
-use ndn_data::{Edit, NextStep};
+use ndn_data::NextStep;
 
 use super::*;
 use crate::case::CaseFuture;
@@ -42,20 +41,15 @@ pub(super) const CASE: Case = Case {
     id: "p1",
     title: "A put never waits on other devices",
     slice: 6,
-    needs: &[
-        Feature::Merge,
-        Feature::Log,
-        Feature::Groups,
-        Feature::FolderMembers,
-    ],
+    needs: &[Feature::Merge, Feature::Log, Feature::FolderMembers],
     model: &["M8"],
     guards: "A put never waits on another device: one into a collection no record of its own \
              governs here, while a device of its namespace was not walked toward it — under a \
              folder's record the device holds or under none — answers NotReady at once, naming \
              the device, and the look runs in the background; once the walk has resolved, a \
-             first keystroke in a new collection under a held folder, a paste of a group of new \
-             collections, returns once it is applied locally and queued behind the durability \
-             barrier, with no look at the devices of its namespace, clean or faulty, written \
+             first keystroke in a new collection under a held folder returns once it is \
+             applied locally and queued behind the durability barrier, with no look at the \
+             devices of its namespace, clean or faulty, written \
              under the record in force (never a default record that narrows what it had not \
              seen); share_folder creating a first record waits at most the first-look time.",
     budget: Duration::from_secs(1800),
@@ -120,18 +114,6 @@ fn refused_at_once<T: std::fmt::Debug>(
     }
 }
 
-/// A paste: one group of twelve new collections under `folder`.
-fn paste(folder: &Name) -> Vec<(Name, Edit)> {
-    (0..12)
-        .map(|i| {
-            (
-                folder.clone().append(format!("paste{i}")),
-                Edit::Fields(text(&format!("paragraph {i}"))),
-            )
-        })
-        .collect()
-}
-
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let notes = n("/alice/32=data/notes");
@@ -170,14 +152,6 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await;
         refused_at_once("the first put into a new note", first, took)?;
-        let (group, took) = timed(
-            w,
-            "put_group, twelve new collections under a held folder, the phone not walked: \
-             virtual ms",
-            laptop.put_group(paste(&notes), note(1)),
-        )
-        .await;
-        refused_at_once("a paste of twelve new collections", group, took)?;
 
         // `share_folder` creating a folder's first record: one bounded look, and only it. The
         // look did not reach the phone, so the collections under it wait for its walk too.
@@ -236,17 +210,6 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await;
         first?;
         judge("the first put into a new note", took, LOCAL);
-        let (group, took) = timed(
-            w,
-            "put_group, twelve new collections under a held folder: virtual ms",
-            laptop.put_group(paste(&notes), note(1)),
-        )
-        .await;
-        ensure!(
-            group?.len() == 12,
-            "the paste signed fewer than twelve versions"
-        );
-        judge("a paste of twelve new collections", took, LOCAL);
 
         // A put into a collection followed already.
         let (again, took) = timed(
@@ -304,21 +267,6 @@ fn run(w: &World) -> CaseFuture<'_> {
         new_note?;
         judge(
             "the first put into a new note, the phone reachable",
-            took,
-            LOCAL,
-        );
-        let (group, took) = timed(
-            w,
-            "put_group, twelve new collections, the phone reachable: virtual ms",
-            layer.put_group(paste(&reach), note(1)),
-        )
-        .await;
-        ensure!(
-            group?.len() == 12,
-            "the second paste signed fewer than twelve versions"
-        );
-        judge(
-            "a paste of twelve new collections, the phone reachable",
             took,
             LOCAL,
         );

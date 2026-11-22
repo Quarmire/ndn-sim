@@ -89,9 +89,6 @@ pub enum Feature {
     /// pieces of what it covers, and release of a merge version's pieces only once a checkpoint
     /// covering it is proved held.
     MergePieces,
-    /// Groups (`put_group`): versions of several collections of one folder that count all or
-    /// none, judged alike on every reader.
-    Groups,
     /// A folder's members record (`share_folder`): one record, one seal epoch and one grant per
     /// reader for every collection under it, each collection free to narrow it.
     FolderMembers,
@@ -139,7 +136,6 @@ impl Feature {
             Feature::RuleByName
             | Feature::AppOps
             | Feature::MergePieces
-            | Feature::Groups
             | Feature::FolderMembers
             | Feature::FolderWatch
             | Feature::Introduction
@@ -179,7 +175,6 @@ impl Feature {
             Feature::RuleByName => "merge rules by name",
             Feature::AppOps => "app-built operations",
             Feature::MergePieces => "merge versions in pieces",
-            Feature::Groups => "groups",
             Feature::FolderMembers => "folder members",
             Feature::FolderWatch => "folder watch",
             Feature::Introduction => "introduction",

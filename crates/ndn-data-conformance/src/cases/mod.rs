@@ -12,8 +12,8 @@
 //! substrate for apps that bring their own
 //! merge (`b1`…`b9`: a rule named by the app, operations it builds, merge versions in pieces,
 //! owner locks, counting both ways, and checkpoints beside versions written apart from them;
-//! `g1`…`g4`: groups, and a seq signed twice across collections; `f1`…`f3`: a folder's members
-//! record, and a collection's first own record under it; `i1`…`i13`: joining a folder by a code;
+//! `f1`…`f3`: a folder's members record, and a collection's first own record under it;
+//! `i1`…`i13`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
 //! one folder reading each other), and slice 7's signals (`e1`…`e18`: live data pushed to a
 //! folder's members — reach, a stranger, a forger, a replay, a removal and a revocation, what a
@@ -21,7 +21,7 @@
 //! member claiming another's run, a flood of unfetchable headers, forgeries starving a run, one
 //! member's devices hogging run slots, the last sequence, a revoked issuer, and a scope named
 //! in very many words, and a member whose clock stepped back across a restart), and round 5's
-//! batching (`d8`: a burst of puts and a group, each stored as one batch, arriving in
+//! batching (`d8`: a burst of puts, each stored as one batch, arriving in
 //! order and surviving a restart), and round 9's two ends of a grant
 //! (`i22`…`i24`: the joiner's list of joined folders follows the members record, the joiner holds
 //! a grant for the inviter that the record re-derives, and mutual invitations make an inviter's
@@ -93,14 +93,6 @@ mod f1_folder_members;
 mod f2_folder_narrowing;
 mod f3_first_own_record;
 mod f4_let_go_keeps_joined;
-mod g1_group_all_or_none;
-mod g2_impossible_group;
-mod g3_group_concurrent_narrowing;
-mod g4_seq_reused_across_collections;
-mod g5_large_group;
-mod g6_group_under_lock;
-mod g7_group_member_in_pieces;
-mod g8_reason_kinds;
 mod h10_holder_serves_others;
 mod h1_large_photo;
 mod h2_dropping_holder;
@@ -233,14 +225,6 @@ pub const CASES: &[Case] = &[
     b7_counting_both_ways::CASE,
     b8_checkpoint_alike::CASE,
     b9_offline_over_checkpoint::CASE,
-    g1_group_all_or_none::CASE,
-    g2_impossible_group::CASE,
-    g3_group_concurrent_narrowing::CASE,
-    g4_seq_reused_across_collections::CASE,
-    g5_large_group::CASE,
-    g6_group_under_lock::CASE,
-    g7_group_member_in_pieces::CASE,
-    g8_reason_kinds::CASE,
     f1_folder_members::CASE,
     f2_folder_narrowing::CASE,
     f3_first_own_record::CASE,

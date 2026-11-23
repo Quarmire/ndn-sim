@@ -30,7 +30,11 @@
 //! entry and a mirror entry that end one by one), and round 10's short introduction code (`i25`,
 //! `i26`: a short line of a device name, an address and twenty words joins with one first-contact
 //! dial and a fetched hint record while the compact full link and the old words fetch none, and
-//! a mistyped, miscounted, unanswered, altered, closed or expired line is refused saying why).
+//! a mistyped, miscounted, unanswered, altered, closed or expired line is refused saying why),
+//! and round 11's chain, fold and grants of the log (`q1`…`q6`: two packets at one name from a
+//! copied key, a removal that keeps exactly the chain ancestors of its tip, the membership fold
+//! applied in three arrival orders, a cold device that asks for nothing inside a declared gap,
+//! the epoch repair after two concurrent removals, and a new device's grant of the epoch key).
 //! Each file states the story, the devices, and the invariant it asserts.
 //!
 //! A register collection (`register()`) holds the bytes of the newest version, one value per
@@ -71,6 +75,7 @@ mod d13_kill_nine_loses_nothing;
 mod d14_failed_flush_refuses_puts;
 mod d15_durable_put_survives;
 mod d16_members_op_waits_for_flush;
+mod chain_kit;
 mod d8_batched_burst;
 mod d9_crash_between_put_and_flush;
 mod durability;
@@ -144,6 +149,12 @@ mod o4_sustained_writes;
 mod o5_lossy_sealed_folder;
 mod p1_put_never_waits;
 mod p2_narrowed_audience;
+mod q1_equivocation_evidence;
+mod q2_chain_tip;
+mod q3_fold_order;
+mod q4_declared_voids;
+mod q5_epoch_repair;
+mod q6_grant;
 mod r1_concurrent_shares;
 mod r2_group_removal;
 mod r3_own_device_removed;
@@ -247,6 +258,12 @@ pub const CASES: &[Case] = &[
     d14_failed_flush_refuses_puts::CASE,
     d15_durable_put_survives::CASE,
     d16_members_op_waits_for_flush::CASE,
+    q1_equivocation_evidence::CASE,
+    q2_chain_tip::CASE,
+    q3_fold_order::CASE,
+    q4_declared_voids::CASE,
+    q5_epoch_repair::CASE,
+    q6_grant::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

@@ -1,16 +1,25 @@
 //! Case 8 — a laptop returns after four months.
 //!
-//! 10,000 notes, each its own collection of versions; 37 changed while the laptop was away. One
-//! flat summary per collection meant checking 10,000 summaries to find 37 changes. The fix (M8):
+//! 10,000 notes, each its own path of one space; 37 changed while the laptop was away. One flat
+//! summary per collection meant checking 10,000 summaries to find 37 changes. The fix (M8):
 //! summaries nest — the notes folder summarises its children by digest — and watch descends only
-//! into the branches that changed.
+//! into the branches that changed. Over spaces the notes are the paths `/n0`…`/n9999` of Alice's
+//! space `/alice/32=data/notes`, and the laptop's watch of the space, held open across the
+//! absence, reports what changed and nothing else. (The summaries themselves, and a watch that
+//! starts from a frontier, are the old provider's own structure; the neutral surface has
+//! neither: what it holds of the guard is that a device that comes back is told exactly what
+//! changed, at a cost far below one round trip per note.)
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+
+use super::kit::{DAY, LIMIT, drain_until, items, n, octets, op_is, private};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::SpaceEvent;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -34,6 +43,8 @@ const NOTES: usize = 10_000;
 const CHANGED: usize = 37;
 /// Catching up must cost fewer round trips than one per this many notes.
 const NOTES_PER_ROUND_TRIP: u64 = 10;
+/// What the changed notes say.
+const EDITED: &str = "edited while the laptop was away";
 
 fn plan() -> Plan {
     let mut p = Plan::new();
@@ -43,64 +54,55 @@ fn plan() -> Plan {
     p
 }
 
-fn note_name(i: usize) -> Name {
-    n(&format!("/alice/32=data/notes/n{i}"))
+fn note_path(i: usize) -> Name {
+    n(&format!("/n{i}"))
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n("/alice/32=data/notes");
-        let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
-        let mut feed = laptop.watch(&folder, &Frontier::new()).await?;
+        let space = n("/alice/32=data/notes");
+        let (phone, laptop) = (w.spaces(PHONE), w.spaces(LAPTOP));
+        phone.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| laptop.open(&space)).await?;
+        let mut feed = w.retry_later(|| laptop.watch(&space)).await?;
         for i in 0..NOTES {
-            let note_i = note_name(i);
             phone
-                .share(
-                    &note_i,
-                    members(register(), &["/alice"], &[person("/alice")]),
-                )
-                .await?;
-            phone
-                .put_op(&note_i, octets(&format!("note {i}")), note(1))
+                .put(&space, &note_path(i), octets(&format!("note {i}")))
                 .await?;
         }
         let mut before = Vec::new();
         drain_until(
-            &mut feed,
+            &mut *feed,
             &mut before,
             "setup: the laptop holds every note",
             10 * LIMIT,
-            |seen| versions(seen).count() >= NOTES,
+            |seen| items(seen).count() >= NOTES,
         )
         .await?;
-        let had: Frontier = versions(&before).map(|v| v.id.clone()).collect();
-        drop(feed);
 
         w.net().offline(LAPTOP);
         w.skip(120 * DAY).await;
         let changed: BTreeSet<Name> = (0..CHANGED)
-            .map(|k| note_name(k * NOTES / CHANGED))
+            .map(|k| note_path(k * NOTES / CHANGED))
             .collect();
         for c in &changed {
-            phone
-                .put_op(c, octets("edited while the laptop was away"), note(1))
-                .await?;
+            phone.put(&space, c, octets(EDITED)).await?;
         }
         w.net().online(LAPTOP);
 
         let start = w.mark();
         // The workload is the laptop catching up; populating the notes is setup.
         w.report_from(start);
-        let mut stream = laptop.watch(&folder, &had).await?;
         let mut after = Vec::new();
         let took = drain_until(
-            &mut stream,
+            &mut *feed,
             &mut after,
             "the laptop learns every changed note",
             LIMIT,
             |seen| {
-                let notes: BTreeSet<&Name> = versions(seen).map(|v| &v.collection).collect();
-                changed.iter().all(|c| notes.contains(c))
+                changed
+                    .iter()
+                    .all(|c| items(seen).any(|i| i.path == *c && op_is(i, EDITED)))
             },
         )
         .await?;
@@ -110,23 +112,17 @@ fn run(w: &World) -> CaseFuture<'_> {
             .round_trips
             .expect("a running world measures round trips");
 
-        for v in versions(&after) {
+        ensure!(
+            !after.iter().any(|e| matches!(e, SpaceEvent::Lagged)),
+            "the laptop's watch dropped changes while it caught up"
+        );
+        for item in items(&after) {
             ensure!(
-                changed.contains(&v.collection),
-                "watch since the laptop's frontier delivered {:?} of unchanged {}",
-                v.id,
-                v.collection
+                changed.contains(&item.path),
+                "the watch held across the absence delivered {} of unchanged {}",
+                item.name,
+                item.path
             );
-        }
-        let all: BTreeSet<Name> = (0..NOTES).map(note_name).collect();
-        for c in &after {
-            if let Change::Summary(s) = c {
-                ensure!(
-                    !all.contains(&s.collection) || changed.contains(&s.collection),
-                    "watch descended into unchanged note {}",
-                    s.collection
-                );
-            }
         }
         ensure!(
             round_trips * NOTES_PER_ROUND_TRIP < NOTES as u64,

@@ -4,15 +4,19 @@
 //! clock set to last week, writing on from the phone's own log. Signing-time validity rested on a
 //! timestamp the key holder writes. The fix (M3): revocation is a causal cut — the phone's
 //! versions up to what others had seen stay valid, anything else is refused, and no clock is
-//! trusted.
+//! trusted. The journal is the path `/today` of Alice's space `/alice/32=data/journal`.
 
 use std::time::Duration;
 
 use ndn_sim::ClockSkew;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    DAY, LIMIT, LOOK, SETTLE, contains, has, item_of, known, look, loss_time, n, octets, private,
+    stolen, winning,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -42,30 +46,27 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let journal = n("/alice/32=data/journal");
-        let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
-        laptop
-            .share(
-                &journal,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        let space = n("/alice/32=data/journal");
+        let page = n("/today");
+        let (phone, laptop) = (w.spaces(PHONE), w.spaces(LAPTOP));
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| phone.open(&space)).await?;
         w.until("the phone knows the shared journal", LIMIT, || {
-            known(&*phone, &journal)
+            known(&*phone, &space)
         })
         .await?;
         let seen = w
-            .put_op(PHONE, &journal, octets("last honest entry"), note(1))
+            .space_put(PHONE, &space, &page, octets("last honest entry"))
             .await?;
         w.until("the laptop holds the phone's entry", LIMIT, || {
-            has(&*laptop, &journal, &seen)
+            has(&*laptop, &space, &seen)
         })
         .await?;
 
         // Stolen: the phone leaves the network; the thief has it, and a clock a week slow. Alice
         // says when she lost it, and revokes the key with a cut at what her laptop held by then.
         let lost = loss_time(w, LAPTOP).await;
-        let thief = stolen(w, THIEF, &journal, &seen).await?;
+        stolen(w, THIEF, &space, &seen).await?;
         w.net().offline(PHONE);
         w.net().set_clock(THIEF, ClockSkew::behind(7 * DAY));
         w.revoke(LAPTOP, PHONE, lost).await?;
@@ -73,7 +74,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let revoked_at = w.net().true_date();
 
         let forged = w
-            .put_op(THIEF, &journal, octets("dated last week"), note(1))
+            .space_put(THIEF, &space, &page, octets("dated last week"))
             .await?;
         ensure!(
             forged.writer == seen.writer && forged.seq > seen.seq,
@@ -82,27 +83,26 @@ fn run(w: &World) -> CaseFuture<'_> {
             seen.writer,
             seen.seq
         );
-        let own = look(&*thief, &journal, &Frontier::new(), LOOK).await?;
-        if let Some(v) = version(&own, &forged) {
-            ensure!(
-                v.dated < revoked_at,
-                "precondition: the forged entry should claim a date before the revocation"
-            );
-        }
+        let dated = w.net().date(THIEF);
+        ensure!(
+            dated < revoked_at,
+            "precondition: the forged entry should claim a date before the revocation ({dated:?} \
+             vs {revoked_at:?})"
+        );
         w.sleep(SETTLE).await;
 
-        let at_laptop = look(&*laptop, &journal, &Frontier::new(), LOOK).await?;
+        let at_laptop = look(&*laptop, &space, LOOK).await?;
         ensure!(
-            !versions(&at_laptop).any(|v| v.id == forged),
-            "the laptop accepted a version the thief signed with the revoked key"
+            item_of(&at_laptop, &forged.key()).is_none() && !has(&*laptop, &space, &forged).await?,
+            "the laptop accepted an entry the thief signed with the revoked key"
         );
-        let s = winning(&*laptop, &journal, &[&seen]).await?;
+        let s = winning(&*laptop, &space, &page, &[&seen]).await?;
         ensure!(
-            s.at.contains(&seen),
+            has(&*laptop, &space, &seen).await?,
             "the phone's entry from before the revocation was dropped"
         );
         ensure!(
-            !s.at.contains(&forged) && !contains(written(&s), b"dated last week"),
+            s.key() != forged.key() && !contains(&s.bytes, b"dated last week"),
             "the journal shows the thief's entry"
         );
         Ok(())

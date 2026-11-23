@@ -1,16 +1,20 @@
 //! Case 4 — Calendar shows meeting notes.
 //!
 //! Alice opens a meeting in Calendar and points it at her notes for that meeting. The draft's seal
-//! example named an app as audience, which brings back per-app keys and prompts. The fix (M4): seal
-//! audiences are people, devices and groups; lenses hold no keys; the host opens exactly what the
-//! person pointed at and hands that to the lens. (That an app can never be named is enforced by
-//! the type: `ndn_data::Audience` has no app variant.)
+//! example named an app as audience, which brings back per-app keys and prompts. The fix (M4):
+//! seal audiences are people, devices and groups; lenses hold no keys; the host opens exactly what
+//! the person pointed at and hands that to the lens. (That an app can never be named is enforced
+//! by the type: a space's readers are names of persons, `SpaceShare::readers`.)
+//! The note is the path `/meeting-0412` of Alice's space `/alice/32=data/notes`, a space only
+//! its readers read: Alice alone.
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LOOK, SETTLE, has, item_of, look, members_now, n, octets, private, winning};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::SpaceMembers;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -37,48 +41,62 @@ fn plan() -> Plan {
     p
 }
 
+/// Whether `e` is a refusal a device outside the audience may answer: the note is sealed, or it
+/// holds nothing of it, or it does not hold the members record that would admit it.
+fn outside(e: &Failure) -> bool {
+    e.retry_later()
+        || ["Sealed", "Unavailable", "NotFound"]
+            .iter()
+            .any(|k| e.kind_is(k))
+}
+
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let notes = n("/alice/32=data/notes/meeting-0412");
-        let (host, bob) = (w.at(HOST), w.at(BOB));
-        let audience = ndn_data::Seal {
-            any_of: vec![person("/alice")],
-        };
-        host.share(&notes, members(register(), &["/alice"], &audience.any_of))
-            .await?;
-        let id = host
-            .put_op(&notes, octets("agenda: budget"), note(1))
-            .await?;
+        let space = n("/alice/32=data/notes");
+        let meeting = n("/meeting-0412");
+        let (host, bob) = (w.spaces(HOST), w.spaces(BOB));
+        let alice = n("/alice");
+        let audience = SpaceMembers::new(&alice, Vec::new(), vec![alice.clone()], false);
+        host.create(&space, private(&[], &["/alice"])).await?;
+        let id = host.put(&space, &meeting, octets("agenda: budget")).await?;
 
         // Alice points Calendar at the note: the host opens it and hands the value to the lens.
         w.gesture();
-        let opened = winning(&*host, &notes, &[&id]).await?;
+        let opened = winning(&*host, &space, &meeting, &[&id]).await?;
         ensure!(
-            opened.at.contains(&id) && written(&opened) == b"agenda: budget",
+            has(&*host, &space, &id).await? && opened.bytes == b"agenda: budget"[..],
             "the host could not open the note Alice pointed at"
         );
 
-        let after = look(&*host, &notes, &Frontier::new(), LOOK).await?;
-        let v = version(&after, &id).ok_or_else(|| Failure::new("watch does not list the note"))?;
+        let after = look(&*host, &space, LOOK).await?;
         ensure!(
-            v.seal == audience,
-            "the note's seal is {:?} after the lens read it; it must stay {:?}",
-            v.seal,
-            audience
+            item_of(&after, &id.key()).is_some(),
+            "watch does not list the note"
+        );
+        let readers = members_now(&*host, &space)
+            .await?
+            .ok_or_else(|| Failure::new("the host holds no members record of the space"))?;
+        ensure!(
+            readers == audience,
+            "the note's audience is {readers:?} after the lens read it; it must stay {audience:?}"
         );
 
+        // A device outside the audience tries to follow the space, and to read the note.
+        match bob.open(&space).await {
+            Ok(()) => {}
+            Err(e) if outside(&e) => {}
+            Err(e) => return Err(e),
+        }
         w.sleep(SETTLE).await;
-        match bob.get(&notes).await {
-            Err(ndn_data::DataError::Sealed { .. })
-            | Err(ndn_data::DataError::Unavailable { .. })
-            | Err(ndn_data::DataError::NotFound { .. }) => {}
-            Ok(answer) => {
+        match bob.get(&space, &meeting).await {
+            Ok(None) => {}
+            Ok(Some(item)) => {
                 return Err(Failure::new(format!(
-                    "a device outside the seal read the note: {:?}",
-                    answer.got
+                    "a device outside the seal read the note: {item:?}"
                 )));
             }
-            Err(e) => return Err(e.into()),
+            Err(e) if outside(&e) => {}
+            Err(e) => return Err(e),
         }
         Ok(())
     })

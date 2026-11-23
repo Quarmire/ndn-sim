@@ -451,12 +451,6 @@ fn octets(s: &str) -> bytes::Bytes {
     bytes::Bytes::copy_from_slice(s.as_bytes())
 }
 
-/// Whether the register write `v` carries `part` among its octets.
-fn wrote(v: &Version, part: &str) -> bool {
-    v.op.as_deref()
-        .is_some_and(|op| contains(op, part.as_bytes()))
-}
-
 /// Whether the register write `v` carries exactly the octets of `s`.
 fn op_is(v: &Version, s: &str) -> bool {
     v.op.as_deref() == Some(s.as_bytes())
@@ -634,14 +628,6 @@ async fn loss_time(w: &World, root: Dev) -> Timestamp {
 /// (`<writer>/32=log/<collection>/seq=<n>`): the name a cut and a re-admission speak of.
 fn log_entry(w: &World, writer: Dev, collection: &Name, id: &VersionId) -> Name {
     ndn_data::wire::log_name(&w.net().spec(writer).name(), Some(collection), id.seq.0)
-}
-
-/// The full name among `names` (each a name plus an implicit digest) of the packet named
-/// `entry`.
-fn full_name_of<'n>(names: &'n [Name], entry: &Name) -> Option<&'n Name> {
-    names
-        .iter()
-        .find(|n| n.len() == entry.len() + 1 && n.has_prefix(entry))
 }
 
 /// Whether `changes` report version `id` withdrawn.

@@ -459,7 +459,8 @@ fn op_is(v: &Version, s: &str) -> bool {
 }
 
 /// Rule R (b): `layer`'s state of the register `collection` reads what the head with the highest
-/// digest wrote. `heads` are the versions nothing supersedes, the ones the case made over no
+/// signed digest (`Version::signed`) wrote. `heads` are the versions nothing supersedes, the ones
+/// the case made over no
 /// other, as `layer` lists them with the octets each wrote. Returns the state.
 async fn winning(
     layer: &dyn DataLayer,
@@ -474,14 +475,14 @@ async fn winning(
         let op =
             v.op.clone()
                 .ok_or_else(|| Failure::new(format!("head {id:?} lists no octets of its write")))?;
-        picks.push((&v.digest, op));
+        picks.push((&v.signed, op));
     }
     let want =
         winner(picks).ok_or_else(|| Failure::new(format!("no head of {collection} was given")))?;
     let s = state(layer, collection).await?;
     ensure!(
         written(&s) == &want[..],
-        "the register {collection} reads {:?}; the head with the highest digest wrote {:?}",
+        "the register {collection} reads {:?}; the head with the highest signed digest wrote {:?}",
         String::from_utf8_lossy(written(&s)),
         String::from_utf8_lossy(&want)
     );

@@ -898,6 +898,29 @@ impl World {
             .map_err(|e| Failure::new(format!("cannot hold the flush: {e:#}")))
     }
 
+    /// `d`'s process is killed and starts again on what its store accepted, flushed or not (see
+    /// [`Provider::kill`]); [`spaces`](Self::spaces) answers the new run's spaces, which this
+    /// returns.
+    pub async fn kill(&self, d: Dev) -> Result<Arc<dyn Spaces>, Failure> {
+        self.signals.borrow_mut()[d.0] = None;
+        let started = self
+            .provider
+            .kill(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot kill the device: {e:#}")))?;
+        self.spaces.borrow_mut()[d.0] = Some(Arc::clone(&started));
+        Ok(started)
+    }
+
+    /// `d`'s store fails every flush with `reason`, or flushes again with `None` (see
+    /// [`Provider::fail_flush`]).
+    pub async fn fail_flush(&self, d: Dev, reason: Option<&str>) -> Result<(), Failure> {
+        self.provider
+            .fail_flush(&self.net.fabric, self.net.spec(d), reason)
+            .await
+            .map_err(|e| Failure::new(format!("cannot fail the flush: {e:#}")))
+    }
+
     /// `d`, a copy of a key, signs `bytes` at `path` of `space` as its entry number `seq` (see
     /// [`Provider::sign_at`]).
     pub async fn sign_at(

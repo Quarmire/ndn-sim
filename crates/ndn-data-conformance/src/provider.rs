@@ -756,4 +756,33 @@ pub trait Provider: Send + Sync {
         let _ = (fabric, on);
         anyhow::bail!("this provider cannot hold {}'s flush", device.name())
     }
+
+    /// `device`'s process is killed (SIGKILL), not its power cut: it runs nothing more and closes
+    /// nothing, but everything its store accepted stays, written and not yet flushed alike (the
+    /// operating system holds a killed process's writes). It starts again on that store, which
+    /// returns the new spaces. [`crash`](Self::crash) is the power cut: it keeps only what a
+    /// flush covered.
+    ///
+    /// `ndn-heap`: drops the node with no close and starts a node on the crash store's live
+    /// contents. `ndn-data`: not supported ([`Feature::Crash`]).
+    async fn kill(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Spaces>> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot kill {}", device.name())
+    }
+
+    /// With `Some(reason)`, `device`'s store fails every flush from now on, for good, with
+    /// `reason` as the disk's own words (a disk that is full or dead); with `None` it flushes
+    /// again. What the device wrote is accepted by the store as before. The failing disk, where
+    /// [`block_flush`](Self::block_flush) is a slow one.
+    ///
+    /// `ndn-heap`: the crash store's `fail_syncs`. `ndn-data`: not supported.
+    async fn fail_flush(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        reason: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, reason);
+        anyhow::bail!("this provider cannot fail {}'s flush", device.name())
+    }
 }

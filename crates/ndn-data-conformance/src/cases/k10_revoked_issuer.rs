@@ -98,7 +98,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.gesture();
         w.renew(LAPTOP).await?;
         w.renew(TABLET).await?;
-        let tablet = w.restart(TABLET).await?;
+        w.restart(TABLET).await?;
+        let tablet = w.at(TABLET);
         let mut seen = Vec::new();
         drain(&mut laptops_feed, SETTLE, &mut seen).await?;
         w.converge(

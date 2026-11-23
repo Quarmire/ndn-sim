@@ -31,19 +31,25 @@
 pub mod case;
 pub mod cases;
 pub mod feature;
+pub mod old_spaces;
 pub mod provider;
 pub mod reference;
 pub mod report;
 pub mod runner;
 pub mod signal;
+pub mod spaces;
 pub mod world;
 
 pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;
 pub use provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, NodeRole, Provider, Tally,
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, Image, JoinedList, NodeRole, Provider, Tally,
 };
 pub use reference::Reference;
 pub use report::{CaseResult, Cost, NetworkReport, Report, Status};
 pub use runner::{Network, differences, run_all, run_case, run_only};
+pub use spaces::{
+    AlertKind, EntryRead, RefusalKind, SpaceAlert, SpaceChange, SpaceChanges, SpaceEntry,
+    SpaceEntryKey, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
+};
 pub use world::{Dev, Net, Plan, World};

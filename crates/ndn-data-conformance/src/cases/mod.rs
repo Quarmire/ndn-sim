@@ -33,6 +33,9 @@
 //! digest (`winning`), and nothing a refused or removed writer signed after its cut appears
 //! (rule R).
 
+//! The cases written over the neutral `Spaces` trait import their kit from [`kit`]; the cases not
+//! yet ported use the older kit below, over `ndn_data::DataLayer`, which leaves with them.
+
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -117,6 +120,7 @@ mod k6_recovery_cut;
 mod k7_bounded_cut;
 mod k8_lapsed_guest;
 mod k9_other_bytes;
+pub mod kit;
 mod n1_named_by_key;
 mod n2_members_read_each_other;
 mod o1_cut_recheck;

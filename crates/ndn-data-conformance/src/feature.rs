@@ -77,6 +77,13 @@ pub enum Feature {
     /// for, sealed under the scope's signal key in a sealed scope, gated by the members record in
     /// force on every packet, never a version and never cached.
     Signals,
+    /// Durability under a crash: a device's own log survives its process dying between a
+    /// write and its flush (`Provider::crash`, `image`, `restore`, `block_flush`), a signed gap
+    /// statement stands for what was lost, and a restored backup is detected.
+    Crash,
+    /// A log is a chain: an entry names the entry before it, and a removal keeps exactly the
+    /// chain's ancestors of its tip.
+    Chain,
 }
 
 impl Feature {
@@ -101,6 +108,7 @@ impl Feature {
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
             Feature::Signals => 7,
+            Feature::Crash | Feature::Chain => 9,
         }
     }
 
@@ -129,6 +137,8 @@ impl Feature {
             Feature::Introduction => "introduction",
             Feature::SelfCertifying => "names by key",
             Feature::Signals => "signals",
+            Feature::Crash => "crash durability",
+            Feature::Chain => "chain tip",
         }
     }
 }

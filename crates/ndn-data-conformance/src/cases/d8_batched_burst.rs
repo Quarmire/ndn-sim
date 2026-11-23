@@ -89,7 +89,8 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The laptop stops and starts again on what it stored.
         w.stop(LAPTOP).await?;
-        let laptop = w.restart(LAPTOP).await?;
+        w.restart(LAPTOP).await?;
+        let laptop = w.at(LAPTOP);
         let mut again = laptop.watch(&folder, &Frontier::new()).await?;
         let mut held = Vec::new();
         drain_until(

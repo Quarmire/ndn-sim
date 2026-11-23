@@ -193,7 +193,7 @@ pub fn run_case(
     }));
     match ran {
         Ok(Ok((Ok(()), cost, measured))) => result(Status::Pass, String::new(), cost, measured),
-        Ok(Ok((Err(f), cost, measured))) => result(Status::Fail, f.0, cost, measured),
+        Ok(Ok((Err(f), cost, measured))) => result(Status::Fail, f.detail, cost, measured),
         Ok(Err(exceeded)) => result(
             Status::Fail,
             exceeded.to_string(),

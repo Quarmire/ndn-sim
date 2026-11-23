@@ -112,7 +112,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().forget_cached(&w.net().spec(ALICE).name()).await;
 
         // The upgrade: Alice's laptop starts the current build on that store and opens the plan.
-        let alice = w.restart(ALICE).await?;
+        w.restart(ALICE).await?;
+        let alice = w.at(ALICE);
         w.until("Alice, upgraded, reads the plan", LIMIT, || {
             known(&*alice, &plan)
         })
@@ -141,7 +142,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         w.sleep(SETTLE).await;
         w.stop(CAROL).await?;
-        let carol = w.restart(CAROL).await?;
+        w.restart(CAROL).await?;
+        let carol = w.at(CAROL);
         w.until("Carol, restarted, reads the plan", LIMIT, || {
             known(&*carol, &plan)
         })

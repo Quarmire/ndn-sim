@@ -92,9 +92,11 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::feature::Feature;
+use crate::old_spaces::OldSpaces;
 use crate::provider::{
     Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Provider, Tally,
 };
+use crate::spaces::{SpaceEntry, Spaces};
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
 const VALIDITY_MS: u64 = 10 * 365 * 24 * 3600 * 1000;
@@ -223,7 +225,7 @@ impl Reference {
         keys: Arc<SecurityManager>,
         host: Host,
         store: Arc<MemoryStore>,
-    ) -> anyhow::Result<Arc<dyn DataLayer>> {
+    ) -> anyhow::Result<Arc<dyn Spaces>> {
         let engine = fabric
             .engine_of(node)
             .with_context(|| format!("no engine on node {node}"))?;
@@ -279,7 +281,7 @@ impl Reference {
                     cancel,
                 },
             );
-        Ok(Arc::new(layer))
+        Ok(Arc::new(OldSpaces::new(layer, self.persons())))
     }
 
     /// `device`'s node answers Interests under `prefix` with the packet that answers it now,
@@ -424,7 +426,7 @@ impl Reference {
     }
 
     /// The data layer attached on `device`'s node.
-    fn layer(&self, device: &DeviceSpec) -> anyhow::Result<Device> {
+    fn attached(&self, device: &DeviceSpec) -> anyhow::Result<Device> {
         self.case
             .lock()
             .expect("the provider's lock")
@@ -432,6 +434,22 @@ impl Reference {
             .get(&device.node)
             .map(|a| a.layer.clone())
             .with_context(|| format!("{} has no data layer attached", device.name()))
+    }
+
+    /// Every person's namespace of the case.
+    fn persons(&self) -> Vec<Name> {
+        self.case
+            .lock()
+            .expect("the provider's lock")
+            .namespaces
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The spaces of the data layer attached on `device`'s node, as a fresh view of it.
+    fn spaces_of(&self, device: &DeviceSpec) -> anyhow::Result<OldSpaces> {
+        Ok(OldSpaces::new(self.attached(device)?, self.persons()))
     }
 
     /// The key that signs `person`'s next trust-context version, and the newest one signed.
@@ -550,7 +568,7 @@ impl Reference {
             held_before: Some(held_before),
             ..CutBound::default()
         };
-        self.layer(by)?.revocation_cut(key, &bound).map_err(|e| {
+        self.attached(by)?.revocation_cut(key, &bound).map_err(|e| {
             anyhow::anyhow!(
                 "{} cannot vouch for a cut of {key}: {e} (next step: {:?})",
                 by.name(),
@@ -1031,7 +1049,7 @@ impl ContextStore for FirstVersion {
 }
 
 /// Each device's one key: `<device>/KEY/1`.
-fn device_key(device: &Name) -> Name {
+pub(crate) fn device_key(device: &Name) -> Name {
     device.clone().append("KEY").append("1")
 }
 
@@ -1367,7 +1385,7 @@ impl Provider for Reference {
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
-    ) -> anyhow::Result<Arc<dyn DataLayer>> {
+    ) -> anyhow::Result<Arc<dyn Spaces>> {
         let keys = self
             .case
             .lock()
@@ -1387,6 +1405,54 @@ impl Provider for Reference {
         .await
     }
 
+    fn layer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn DataLayer>> {
+        Ok(Arc::new(self.attached(device)?))
+    }
+
+    async fn readmit_entry(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        from: &DeviceSpec,
+        entry: &SpaceEntry,
+    ) -> anyhow::Result<()> {
+        let log = parse_log_name(&entry.name)
+            .with_context(|| format!("{} is no log entry name", entry.name))?;
+        let collection = log
+            .subject
+            .with_context(|| format!("{} names no collection", entry.name))?;
+        let id = VersionId {
+            writer: ndn_data::Writer::new(device_key(&log.device)),
+            seq: ndn_data::Seq(log.seq),
+        };
+        self.readmit(fabric, by, from, &collection, &id).await
+    }
+
+    async fn sign_at(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        space: &Name,
+        path: &Name,
+        bytes: bytes::Bytes,
+        seq: u64,
+    ) -> anyhow::Result<SpaceEntry> {
+        let entry = self
+            .spaces_of(device)?
+            .put(space, path, bytes)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        anyhow::ensure!(
+            entry.seq == seq,
+            "{} signed its entry {} at seq {}, not at {seq}: this provider writes at the next seq \
+             of the device's own log",
+            device.name(),
+            entry.name,
+            entry.seq
+        );
+        Ok(entry)
+    }
+
     async fn suspect(
         &self,
         _fabric: &Fabric,
@@ -1395,7 +1461,7 @@ impl Provider for Reference {
         since: Timestamp,
     ) -> anyhow::Result<()> {
         let key = device_key(&device.name());
-        self.layer(by)?.suspect(&key, since).map_err(|e| {
+        self.attached(by)?.suspect(&key, since).map_err(|e| {
             anyhow::anyhow!(
                 "{} cannot suspect {key}: {e} (next step: {:?})",
                 by.name(),
@@ -1513,7 +1579,7 @@ impl Provider for Reference {
         // Exactly the packet `from` holds refused: its name and implicit digest, as the host
         // shows the owner.
         let full = self
-            .layer(from)?
+            .attached(from)?
             .refused_by_revocation(&key)
             .into_iter()
             .find(|n| n.len() == log.len() + 1 && n.has_prefix(&log))
@@ -1553,7 +1619,7 @@ impl Provider for Reference {
         fabric: &Fabric,
         victim: &DeviceSpec,
         thief: &DeviceSpec,
-    ) -> anyhow::Result<Arc<dyn DataLayer>> {
+    ) -> anyhow::Result<Arc<dyn Spaces>> {
         let (keys, copy) = {
             let case = self.case.lock().expect("the provider's lock");
             anyhow::ensure!(
@@ -1716,7 +1782,7 @@ impl Provider for Reference {
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
-    ) -> anyhow::Result<Arc<dyn DataLayer>> {
+    ) -> anyhow::Result<Arc<dyn Spaces>> {
         let (keys, store) = {
             let case = self.case.lock().expect("the provider's lock");
             let attached = case
@@ -1983,7 +2049,7 @@ impl Provider for Reference {
         folder: &Name,
         offer: Offer,
     ) -> anyhow::Result<Code> {
-        self.layer(by)?
+        self.attached(by)?
             .offer(folder, offer)
             .await
             .map_err(anyhow::Error::new)
@@ -1995,7 +2061,7 @@ impl Provider for Reference {
         by: &DeviceSpec,
         offer: &Name,
     ) -> anyhow::Result<()> {
-        self.layer(by)?
+        self.attached(by)?
             .close_offer(offer)
             .await
             .map_err(anyhow::Error::new)
@@ -2010,7 +2076,7 @@ impl Provider for Reference {
             .get(&device.node)
             .map(|t| t.lock().expect("the host's lock").clone())
             .unwrap_or_default();
-        let layer = self.layer(device)?;
+        let layer = self.attached(device)?;
         Ok(GrantLog {
             told,
             now: layer.grants(),
@@ -2023,7 +2089,7 @@ impl Provider for Reference {
         _fabric: &Fabric,
         device: &DeviceSpec,
     ) -> anyhow::Result<JoinedList> {
-        let layer = self.layer(device)?;
+        let layer = self.attached(device)?;
         // The folders are read after the generation: a change between the two reads only makes
         // the list newer than its generation, never older.
         let generation = *layer.joined_changes().borrow();
@@ -2041,7 +2107,7 @@ impl Provider for Reference {
         folder: &Name,
         record: &Name,
     ) -> anyhow::Result<()> {
-        self.layer(device)?
+        self.attached(device)?
             .take_departure(&from.name(), folder, record)
             .await
             .map_err(anyhow::Error::new)
@@ -2069,7 +2135,7 @@ impl Provider for Reference {
         device: &DeviceSpec,
         code: &str,
     ) -> anyhow::Result<Joined> {
-        self.layer(device)?
+        self.attached(device)?
             .join(code)
             .await
             .map_err(anyhow::Error::new)
@@ -2148,7 +2214,7 @@ impl Provider for Reference {
         {
             return Ok(signals.clone());
         }
-        let layer = self.layer(device)?;
+        let layer = self.attached(device)?;
         let engine = fabric
             .engine_of(device.node)
             .with_context(|| format!("no engine on node {}", device.node))?;
@@ -2201,7 +2267,7 @@ impl Provider for Reference {
     }
 
     fn gate(&self, device: &DeviceSpec) -> anyhow::Result<Device> {
-        self.layer(device)
+        self.attached(device)
     }
 
     fn signer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Signer>> {

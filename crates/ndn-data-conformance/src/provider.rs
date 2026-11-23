@@ -1,8 +1,10 @@
 //! How an implementation of the `ndn-data` contract plugs into the cases.
 
+use std::any::Any;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use ndn_data::{
     Code, DataLayer, Departure, Grant, Joined, JoinedFolder, Name, Offer, Timestamp, VersionId,
 };
@@ -11,6 +13,7 @@ use ndn_sim::{Fabric, NodeId, NodeProfile};
 use ndn_surface::signal::Signals;
 
 use crate::feature::Feature;
+use crate::spaces::{SpaceEntry, Spaces};
 
 /// What a host was told of a grant, in the order it was told.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +165,32 @@ pub enum Certs {
     Superseded,
 }
 
+/// A copy of a device's durable storage, taken at some moment and put back later
+/// ([`Provider::image`], [`Provider::restore`]). Opaque to the cases: only the provider that made
+/// it opens it.
+pub struct Image(Box<dyn Any + Send>);
+
+impl Image {
+    /// An image holding `stored`, whatever the provider keeps its storage as.
+    pub fn new<T: Any + Send>(stored: T) -> Self {
+        Image(Box::new(stored))
+    }
+
+    /// The storage an image holds, if it was made as a `T`.
+    pub fn into_inner<T: Any + Send>(self) -> Result<T, Image> {
+        match self.0.downcast::<T>() {
+            Ok(stored) => Ok(*stored),
+            Err(other) => Err(Image(other)),
+        }
+    }
+}
+
+impl std::fmt::Debug for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Image(..)")
+    }
+}
+
 /// An implementation of the data layer, as the cases drive it.
 ///
 /// Keys, trust anchors, trust schemas and routes beyond the harness's default topology are the
@@ -197,12 +226,16 @@ pub trait Provider: Send + Sync {
         Ok(())
     }
 
-    /// The data layer of `device`, on its node in `fabric`, signing with the device's own key.
-    async fn attach(
-        &self,
-        fabric: &Fabric,
-        device: &DeviceSpec,
-    ) -> anyhow::Result<Arc<dyn DataLayer>>;
+    /// The spaces of `device`, on its node in `fabric`, signing with the device's own key.
+    async fn attach(&self, fabric: &Fabric, device: &DeviceSpec)
+    -> anyhow::Result<Arc<dyn Spaces>>;
+
+    /// The `ndn-data` [`DataLayer`] of `device`'s current run (its [`attach`](Self::attach), or
+    /// the [`restart`](Self::restart) or [`steal`](Self::steal) after it), for the cases not yet
+    /// written over [`Spaces`]. A provider that is no `ndn-data` layer says so.
+    fn layer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn DataLayer>> {
+        anyhow::bail!("this provider has no ndn-data layer on {}", device.name())
+    }
 
     /// The owner reports `device` lost, and `by`, the namespace's root device, marks its key
     /// suspected since `since` (by `by`'s own clock): from now on `by`'s data layer takes no new
@@ -271,6 +304,20 @@ pub trait Provider: Send + Sync {
         )
     }
 
+    /// [`readmit`](Self::readmit) over the neutral surface: `by`, holding its namespace's
+    /// authority, re-admits the entry `entry` of `from`'s log exactly, the one a revocation of
+    /// `from`'s key left out of its cut. A provider that cannot re-admit says so.
+    async fn readmit_entry(
+        &self,
+        fabric: &Fabric,
+        by: &DeviceSpec,
+        from: &DeviceSpec,
+        entry: &SpaceEntry,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, from, entry);
+        anyhow::bail!("this provider cannot make {} re-admit an entry", by.name())
+    }
+
     /// `by`, holding its namespace's authority, re-admits exactly the packet `full` (a log
     /// entry's full name ending in its implicit digest, as a revocation listed it left out of the
     /// cut): it signs the next context version adding that one name to the cut of the key that
@@ -290,13 +337,13 @@ pub trait Provider: Send + Sync {
     /// everything it stores — and from now on a data layer runs on `thief`'s node, signing with
     /// that key and writing on from the victim's own log, at any date its (skewed) clock gives.
     /// Until then the thief's node runs no data layer: a key in two places at once is the theft,
-    /// not the setup. Returns the thief's data layer.
+    /// not the setup. Returns the thief's spaces.
     async fn steal(
         &self,
         fabric: &Fabric,
         victim: &DeviceSpec,
         thief: &DeviceSpec,
-    ) -> anyhow::Result<Arc<dyn DataLayer>>;
+    ) -> anyhow::Result<Arc<dyn Spaces>>;
 
     /// `device` renews its certificate: its namespace's authority now certifies the same key
     /// again, valid from now, and every node can find the new certificate. A provider that
@@ -354,7 +401,7 @@ pub trait Provider: Send + Sync {
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
-    ) -> anyhow::Result<Arc<dyn DataLayer>> {
+    ) -> anyhow::Result<Arc<dyn Spaces>> {
         let _ = fabric;
         anyhow::bail!(
             "this provider cannot restart {}'s data layer",
@@ -635,5 +682,78 @@ pub trait Provider: Send + Sync {
     /// cannot list its store says so.
     fn stored_names(&self, device: &DeviceSpec) -> anyhow::Result<Vec<Name>> {
         anyhow::bail!("this provider cannot list what {} stores", device.name())
+    }
+
+    /// `device`, a copy of a key (a thief's node after [`steal`](Self::steal)), signs `bytes` at
+    /// `path` of `space` as its log's entry number `seq`, exactly: other bytes at the very name
+    /// of an entry another copy of the key signed. Returns the signed entry. A provider whose
+    /// device writes at its own next seq answers an error when that is not `seq`.
+    ///
+    /// `ndn-data`: the device's own [`put`](Spaces::put); it fails unless the entry it signed is
+    /// number `seq`. `ndn-heap`: the entry is encoded and signed with the device's key at
+    /// `seq` (the public `wire` module) and applied by the device as its own, bypassing the
+    /// head it holds.
+    async fn sign_at(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        space: &Name,
+        path: &Name,
+        bytes: Bytes,
+        seq: u64,
+    ) -> anyhow::Result<SpaceEntry> {
+        let _ = (fabric, space, path, bytes, seq);
+        anyhow::bail!("this provider cannot make {} sign at a seq", device.name())
+    }
+
+    /// `device` crashes: its process dies with no clean close. What its store held at the last
+    /// flush that returned stays; whatever was only in memory is lost. It runs nothing until a
+    /// [`restore`](Self::restore) or [`restart`](Self::restart) starts it on that store, which
+    /// returns the new spaces.
+    ///
+    /// `ndn-heap`: takes the crash store's image at the last returned `sync`, drops the node,
+    /// starts a node on the image. `ndn-data`: not supported ([`Feature::Crash`]).
+    async fn crash(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Spaces>> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot crash {}", device.name())
+    }
+
+    /// A copy of what `device`'s store holds now (what a backup or a cloned disk would hold), for
+    /// [`restore`](Self::restore) to put back later.
+    ///
+    /// `ndn-heap`: the crash store's durable contents. `ndn-data`: not supported.
+    async fn image(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Image> {
+        let _ = fabric;
+        anyhow::bail!("this provider cannot image {}'s store", device.name())
+    }
+
+    /// `device` stops and starts again on `image` in place of its store (restored from a backup,
+    /// offline): it holds less of its own log than it signed. Returns the new spaces.
+    ///
+    /// `ndn-heap`: drops the node, starts one on a store holding `image`. `ndn-data`: not
+    /// supported.
+    async fn restore(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        image: Image,
+    ) -> anyhow::Result<Arc<dyn Spaces>> {
+        let _ = (fabric, image);
+        anyhow::bail!("this provider cannot restore {}'s store", device.name())
+    }
+
+    /// With `on`, `device`'s store accepts writes but its flush does not return until it is
+    /// called again with `on == false` (a disk that is slow or full): what the device wrote since
+    /// is in memory only. Lets a case hold the moment between a write and its flush open.
+    ///
+    /// `ndn-heap`: the `Held` store gate. `ndn-data`: not supported.
+    async fn block_flush(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        on: bool,
+    ) -> anyhow::Result<()> {
+        let _ = (fabric, on);
+        anyhow::bail!("this provider cannot hold {}'s flush", device.name())
     }
 }

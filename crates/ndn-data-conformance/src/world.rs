@@ -27,9 +27,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
 use crate::provider::{
-    Certs, DeviceSpec, GrantLog, Grants, JoinedList, LinkCall, NodeRole, Provider, Tally,
+    Certs, DeviceSpec, GrantLog, Grants, Image, JoinedList, LinkCall, NodeRole, Provider, Tally,
 };
 use crate::report::{Cost, Measure};
+use crate::spaces::{SpaceEntry, Spaces};
 
 /// A device of a [`Plan`], by position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -604,9 +605,9 @@ pub struct Mark {
 /// A case's world: the [`Net`] plus each device's data layer from the provider.
 pub struct World {
     net: Net,
-    /// Each device's data layer; a thief has one once it takes the stolen device
-    /// ([`World::steal`]).
-    layers: RefCell<Vec<Option<Arc<dyn DataLayer>>>>,
+    /// Each device's spaces; a thief has them once it takes the stolen device
+    /// ([`World::steal`]), a device stopped none until it starts again.
+    spaces: RefCell<Vec<Option<Arc<dyn Spaces>>>>,
     /// For each device, the device it holds a stolen key of (a thief).
     victims: Vec<Option<Dev>>,
     provider: Arc<dyn Provider>,
@@ -631,17 +632,17 @@ impl World {
         })
         .await?;
         provider.prepare(&net.fabric, net.hub, &net.specs).await?;
-        let mut layers = Vec::with_capacity(plan.devices.len());
+        let mut spaces = Vec::with_capacity(plan.devices.len());
         for (i, p) in plan.devices.iter().enumerate() {
-            let layer = match p.stolen_from {
+            let attached = match p.stolen_from {
                 Some(_) => None,
                 None => Some(provider.attach(&net.fabric, &net.specs[i]).await?),
             };
-            layers.push(layer);
+            spaces.push(attached);
         }
         Ok(World {
             net,
-            layers: RefCell::new(layers),
+            spaces: RefCell::new(spaces),
             victims: plan.devices.iter().map(|p| p.stolen_from).collect(),
             provider,
             gestures: Cell::new(0),
@@ -657,22 +658,35 @@ impl World {
         &self.net
     }
 
-    /// The device's data layer.
+    /// The device's spaces: the neutral surface every ported case drives.
     ///
     /// # Panics
     ///
     /// For a thief that has not taken the stolen device yet ([`steal`](Self::steal)), and for a
-    /// device whose data layer is stopped ([`stop`](Self::stop)).
-    pub fn at(&self, d: Dev) -> Arc<dyn DataLayer> {
-        let layers = self.layers.borrow();
-        let layer = layers[d.0].as_ref().unwrap_or_else(|| {
+    /// device that is stopped ([`stop`](Self::stop)) until it starts again.
+    pub fn spaces(&self, d: Dev) -> Arc<dyn Spaces> {
+        let spaces = self.spaces.borrow();
+        let attached = spaces[d.0].as_ref().unwrap_or_else(|| {
             panic!(
                 "device {} runs no data layer: a thief before it steals the device, or a device \
                  stopped until it restarts",
                 d.0
             )
         });
-        Arc::clone(layer)
+        Arc::clone(attached)
+    }
+
+    /// The device's `ndn-data` data layer, for the cases not yet written over
+    /// [`spaces`](Self::spaces) (see [`Provider::layer`]).
+    ///
+    /// # Panics
+    ///
+    /// As [`spaces`](Self::spaces), and for a provider that has no `ndn-data` layer.
+    pub fn at(&self, d: Dev) -> Arc<dyn DataLayer> {
+        drop(self.spaces(d));
+        self.provider
+            .layer(self.net.spec(d))
+            .unwrap_or_else(|e| panic!("{e:#}"))
     }
 
     /// Record one person gesture: pointing at data, pointing at someone, throwing away.
@@ -799,36 +813,37 @@ impl World {
         Ok(ended)
     }
 
-    /// `d`'s data layer stops, keeping what it stored (see [`Provider::stop`]); [`at`](Self::at)
-    /// has no layer for it until [`restart`](Self::restart).
+    /// `d`'s data layer stops, keeping what it stored (see [`Provider::stop`]);
+    /// [`spaces`](Self::spaces) and [`at`](Self::at) have none for it until
+    /// [`restart`](Self::restart).
     pub async fn stop(&self, d: Dev) -> Result<(), Failure> {
         self.provider
             .stop(&self.net.fabric, self.net.spec(d))
             .await
             .map_err(|e| Failure::new(format!("cannot stop the data layer: {e:#}")))?;
-        self.layers.borrow_mut()[d.0] = None;
+        self.spaces.borrow_mut()[d.0] = None;
         self.signals.borrow_mut()[d.0] = None;
         Ok(())
     }
 
     /// `d`'s stopped data layer starts again on what it stored (see [`Provider::restart`]);
-    /// [`at`](Self::at) answers the new layer.
-    pub async fn restart(&self, d: Dev) -> Result<Arc<dyn DataLayer>, Failure> {
-        let layer = self
+    /// [`spaces`](Self::spaces) answers the new run's spaces, which this returns.
+    pub async fn restart(&self, d: Dev) -> Result<Arc<dyn Spaces>, Failure> {
+        let started = self
             .provider
             .restart(&self.net.fabric, self.net.spec(d))
             .await
             .map_err(|e| Failure::new(format!("cannot restart the data layer: {e:#}")))?;
-        self.layers.borrow_mut()[d.0] = Some(Arc::clone(&layer));
-        Ok(layer)
+        self.spaces.borrow_mut()[d.0] = Some(Arc::clone(&started));
+        Ok(started)
     }
 
     /// The thief `thief` takes the device whose key it holds, storage and all (see
-    /// [`Provider::steal`]): [`at`](Self::at) answers its data layer from now on.
+    /// [`Provider::steal`]): [`spaces`](Self::spaces) answers its spaces from now on.
     pub async fn steal(&self, thief: Dev) -> Result<(), Failure> {
         let victim = self.victims[thief.0]
             .unwrap_or_else(|| panic!("device {} of the plan is no thief", thief.0));
-        let layer = self
+        let stolen = self
             .provider
             .steal(
                 &self.net.fabric,
@@ -837,8 +852,86 @@ impl World {
             )
             .await
             .map_err(|e| Failure::new(format!("cannot steal the device: {e:#}")))?;
-        self.layers.borrow_mut()[thief.0] = Some(layer);
+        self.spaces.borrow_mut()[thief.0] = Some(stolen);
         Ok(())
+    }
+
+    /// `d` crashes and starts again on what its store kept (see [`Provider::crash`]);
+    /// [`spaces`](Self::spaces) answers the new run's spaces, which this returns.
+    pub async fn crash(&self, d: Dev) -> Result<Arc<dyn Spaces>, Failure> {
+        self.signals.borrow_mut()[d.0] = None;
+        let started = self
+            .provider
+            .crash(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot crash the device: {e:#}")))?;
+        self.spaces.borrow_mut()[d.0] = Some(Arc::clone(&started));
+        Ok(started)
+    }
+
+    /// A copy of what `d`'s store holds now (see [`Provider::image`]).
+    pub async fn image(&self, d: Dev) -> Result<Image, Failure> {
+        self.provider
+            .image(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot image the store: {e:#}")))
+    }
+
+    /// `d` starts again on `image` in place of its store (see [`Provider::restore`]);
+    /// [`spaces`](Self::spaces) answers the new run's spaces, which this returns.
+    pub async fn restore(&self, d: Dev, image: Image) -> Result<Arc<dyn Spaces>, Failure> {
+        self.signals.borrow_mut()[d.0] = None;
+        let started = self
+            .provider
+            .restore(&self.net.fabric, self.net.spec(d), image)
+            .await
+            .map_err(|e| Failure::new(format!("cannot restore the store: {e:#}")))?;
+        self.spaces.borrow_mut()[d.0] = Some(Arc::clone(&started));
+        Ok(started)
+    }
+
+    /// `d`'s store holds its flush (`on`) or lets it return again (see [`Provider::block_flush`]).
+    pub async fn block_flush(&self, d: Dev, on: bool) -> Result<(), Failure> {
+        self.provider
+            .block_flush(&self.net.fabric, self.net.spec(d), on)
+            .await
+            .map_err(|e| Failure::new(format!("cannot hold the flush: {e:#}")))
+    }
+
+    /// `d`, a copy of a key, signs `bytes` at `path` of `space` as its entry number `seq` (see
+    /// [`Provider::sign_at`]).
+    pub async fn sign_at(
+        &self,
+        d: Dev,
+        space: &Name,
+        path: &Name,
+        bytes: Bytes,
+        seq: u64,
+    ) -> Result<SpaceEntry, Failure> {
+        self.provider
+            .sign_at(&self.net.fabric, self.net.spec(d), space, path, bytes, seq)
+            .await
+            .map_err(|e| Failure::new(format!("cannot sign at seq {seq}: {e:#}")))
+    }
+
+    /// `by`, holding the namespace's authority, re-admits `entry` of `from`'s log exactly (see
+    /// [`Provider::readmit_entry`]), and the new trust-context version reaches every node.
+    pub async fn readmit_entry(
+        &self,
+        by: Dev,
+        from: Dev,
+        entry: &SpaceEntry,
+    ) -> Result<(), Failure> {
+        self.provider
+            .readmit_entry(
+                &self.net.fabric,
+                self.net.spec(by),
+                self.net.spec(from),
+                entry,
+            )
+            .await
+            .map_err(|e| Failure::new(format!("readmit failed: {e:#}")))?;
+        self.spread_all().await
     }
 
     /// `d` renews its certificate (see [`Provider::renew`]).
@@ -994,6 +1087,42 @@ impl World {
     ) -> Result<VersionId, DataError> {
         let layer = self.at(d);
         self.again(|| layer.put_op(collection, op.clone(), options.clone()))
+            .await
+    }
+
+    /// `verb`, done again while it fails with next step `"RetryLater"`
+    /// ([`Failure::retry_later`]) — a host does what the refusal says — every [`AGAIN_PAUSE`]
+    /// for at most [`AGAIN_FOR`] of virtual time; then, or at any other failure, the failure as
+    /// it came. [`again`](Self::again) over [`Spaces`]' failures: asking again is liveness only.
+    pub async fn retry_later<T, F, Fut>(&self, mut verb: F) -> Result<T, Failure>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, Failure>>,
+    {
+        let start = tokio::time::Instant::now();
+        loop {
+            match verb().await {
+                Err(e) if e.retry_later() && start.elapsed() < AGAIN_FOR => {
+                    tokio::time::sleep(AGAIN_PAUSE).await;
+                }
+                answer => return answer,
+            }
+        }
+    }
+
+    /// `d` writes `bytes` at `path` of `space` ([`Spaces::put`]), writing again while the device
+    /// answers `"RetryLater"` ([`retry_later`](Self::retry_later)): a writer whose device has not
+    /// yet received the members record admitting it is told so, and writes once it has. The
+    /// neutral twin of [`put_op`](Self::put_op).
+    pub async fn space_put(
+        &self,
+        d: Dev,
+        space: &Name,
+        path: &Name,
+        bytes: Bytes,
+    ) -> Result<SpaceEntry, Failure> {
+        let spaces = self.spaces(d);
+        self.retry_later(|| spaces.put(space, path, bytes.clone()))
             .await
     }
 

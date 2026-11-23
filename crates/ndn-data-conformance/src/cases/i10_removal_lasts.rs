@@ -84,7 +84,8 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Alice's laptop restarts: what it kept in memory is gone.
         w.stop(ALICE).await?;
-        let alice = w.restart(ALICE).await?;
+        w.restart(ALICE).await?;
+        let alice = w.at(ALICE);
         let again = w.join(BOB, &code.words).await?;
         ensure!(
             answered(&again),

@@ -19,7 +19,12 @@
 //! member's devices hogging run slots, the last sequence, a revoked issuer, and a scope named
 //! in very many words, and a member whose clock stepped back across a restart), and round 5's
 //! batching (`d8`: a burst of puts, each stored as one batch, arriving in
-//! order and surviving a restart), and round 9's two ends of a grant
+//! order and surviving a restart), round 11's durability under a crash (`d9`…`d16`: a crash
+//! between a put and its flush never re-signs a seq a peer saw, or returns the entries whole
+//! from a reachable peer, or signs the hole when none is reachable; a restored old image is
+//! detected; a killed process loses nothing; a failing disk refuses puts past the reservation;
+//! a durable put survives; a members operation is not shown before its flush), and round 9's
+//! two ends of a grant
 //! (`i22`…`i24`: the joiner's list of joined folders follows the members record, the joiner holds
 //! a grant for the inviter that the record re-derives, and mutual invitations make an inviter's
 //! entry and a mirror entry that end one by one), and round 10's short introduction code (`i25`,
@@ -59,7 +64,16 @@ mod c03_stolen_key;
 mod c04_lens_seal;
 mod c08_nested_summaries;
 mod c09_family_chat;
+mod d10_crash_peer_returns_entries;
+mod d11_no_peer_hole_is_signed;
+mod d12_restored_image_rolled_back;
+mod d13_kill_nine_loses_nothing;
+mod d14_failed_flush_refuses_puts;
+mod d15_durable_put_survives;
+mod d16_members_op_waits_for_flush;
 mod d8_batched_burst;
+mod d9_crash_between_put_and_flush;
+mod durability;
 mod e10_signal_sixty_hertz;
 mod e11_signal_claimed_run;
 mod e12_signal_admission_flood;
@@ -225,6 +239,14 @@ pub const CASES: &[Case] = &[
     e18_signal_clock_stepped_back::CASE,
     e19_signal_clock_not_ratcheted::CASE,
     d8_batched_burst::CASE,
+    d9_crash_between_put_and_flush::CASE,
+    d10_crash_peer_returns_entries::CASE,
+    d11_no_peer_hole_is_signed::CASE,
+    d12_restored_image_rolled_back::CASE,
+    d13_kill_nine_loses_nothing::CASE,
+    d14_failed_flush_refuses_puts::CASE,
+    d15_durable_put_survives::CASE,
+    d16_members_op_waits_for_flush::CASE,
 ];
 
 // ---- the kit the cases share ------------------------------------------------------------------

@@ -644,6 +644,7 @@ impl Provider for Reference {
                 | Feature::Introduction
                 | Feature::SelfCertifying
                 | Feature::Signals
+                | Feature::OldLayer
         )
     }
 

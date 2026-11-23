@@ -247,12 +247,19 @@ pub async fn drain_until(
 }
 
 /// Everything `spaces` reports for `space` within `window`: a new watch's listing, and what comes.
+/// A device outside the space's audience (a reader that was removed) may be refused the watch
+/// itself, as it is refused a read (`"AskOwner"`, a sealed space): it is told nothing, so it lists
+/// nothing, exactly as [`reads_entry`] reads nothing. A failure of any other kind is returned.
 pub async fn look(
     spaces: &dyn Spaces,
     space: &Name,
     window: Duration,
 ) -> Result<Vec<SpaceEvent>, Failure> {
-    let mut stream = spaces.watch(space).await?;
+    let mut stream = match spaces.watch(space).await {
+        Ok(stream) => stream,
+        Err(e) if e.next_is("AskOwner") || e.kind_is("Sealed") => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
     let mut out = Vec::new();
     drain(&mut *stream, window, &mut out).await?;
     Ok(out)

@@ -18,7 +18,7 @@ pub(super) const CASE: Case = Case {
     id: "r2",
     title: "A member leaves a group another person seals to",
     slice: 2,
-    needs: &[Feature::Merge, Feature::Seal],
+    needs: &[Feature::Merge, Feature::Seal, Feature::OldLayer],
     model: &["M4"],
     guards: "A collection sealed to a group moves to a new epoch when the group drops a reader, \
              whoever owns the collection: the member who left reads nothing written after, the \

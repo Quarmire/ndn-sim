@@ -17,7 +17,7 @@ pub(super) const CASE: Case = Case {
     id: "r3",
     title: "The owner locks one of her own devices out",
     slice: 2,
-    needs: &[Feature::Merge, Feature::Seal],
+    needs: &[Feature::Merge, Feature::Seal, Feature::OldLayer],
     model: &["M4"],
     guards: "A device of the owner's own namespace reads only while the audience admits it: \
              after a share that lists another of her devices alone, it opens nothing written \

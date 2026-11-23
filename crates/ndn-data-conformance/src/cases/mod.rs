@@ -400,55 +400,6 @@ async fn known(layer: &dyn DataLayer, collection: &Name) -> Result<bool, Failure
     Ok(state_now(layer, collection).await?.is_some())
 }
 
-/// The thief `thief` takes the stolen device and switches it on: its data layer, once it holds
-/// version `id` of `collection` as the device did.
-async fn stolen(
-    w: &World,
-    thief: Dev,
-    collection: &Name,
-    id: &VersionId,
-) -> Result<std::sync::Arc<dyn DataLayer>, Failure> {
-    w.steal(thief).await?;
-    let layer = w.at(thief);
-    w.until(
-        "the stolen device, switched on by the thief, holds what it held",
-        LIMIT,
-        || has(&*layer, collection, id),
-    )
-    .await?;
-    Ok(layer)
-}
-
-/// Whether every layer holds the same merged state, including every id in `ids`. Every layer is
-/// read at each poll: a device's first read of a collection is its first look, from which it
-/// follows the collection, so reading a device only once those before it hold would begin its
-/// look late and time the devices one after another rather than side by side.
-async fn agree(
-    layers: &[&dyn DataLayer],
-    collection: &Name,
-    ids: &[&VersionId],
-) -> Result<bool, Failure> {
-    let mut states = Vec::with_capacity(layers.len());
-    for layer in layers {
-        states.push(state_now(*layer, collection).await?);
-    }
-    let mut first: Option<&State> = None;
-    for s in &states {
-        let Some(s) = s else {
-            return Ok(false);
-        };
-        if !ids.iter().all(|id| s.at.contains(id)) {
-            return Ok(false);
-        }
-        match first {
-            None => first = Some(s),
-            Some(f) if f.at != s.at || f.value != s.value => return Ok(false),
-            Some(_) => {}
-        }
-    }
-    Ok(true)
-}
-
 /// Drain `stream` for `window` of virtual time.
 async fn drain(
     stream: &mut Changes,

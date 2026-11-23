@@ -24,7 +24,12 @@ pub(super) const CASE: Case = Case {
     id: "p2",
     title: "A put never seals under a folder's record a device not walked may narrow",
     slice: 6,
-    needs: &[Feature::Log, Feature::Seal, Feature::FolderMembers],
+    needs: &[
+        Feature::Log,
+        Feature::Seal,
+        Feature::FolderMembers,
+        Feature::OldLayer,
+    ],
     model: &["M8"],
     guards: "A put into a collection that has no members record of its own here, under a folder \
              whose record the device holds, while a device of the namespace was not walked toward \

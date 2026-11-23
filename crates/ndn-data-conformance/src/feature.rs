@@ -84,6 +84,11 @@ pub enum Feature {
     /// A log is a chain: an entry names the entry before it, and a removal keeps exactly the
     /// chain's ancestors of its tip.
     Chain,
+    /// The old crate's own shapes, which the neutral `Spaces` trait does not carry:
+    /// collections with their own members records under a folder, device and group audiences
+    /// (`Audience::Device`, `Audience::Group`). A case that still drives `World::at` needs it;
+    /// only `ndn-data` supports it, and a case leaves it when it is ported (or at stage 9).
+    OldLayer,
 }
 
 impl Feature {
@@ -109,6 +114,7 @@ impl Feature {
             | Feature::SelfCertifying => 6,
             Feature::Signals => 7,
             Feature::Crash | Feature::Chain => 9,
+            Feature::OldLayer => 9,
         }
     }
 
@@ -139,6 +145,7 @@ impl Feature {
             Feature::Signals => "signals",
             Feature::Crash => "crash durability",
             Feature::Chain => "chain tip",
+            Feature::OldLayer => "old crate's collections and audiences",
         }
     }
 }

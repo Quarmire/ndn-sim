@@ -26,6 +26,7 @@ pub(super) const CASE: Case = Case {
         Feature::Seal,
         Feature::RemovalCut,
         Feature::FolderMembers,
+        Feature::OldLayer,
     ],
     model: &["M15"],
     guards: "A collection's first own record under a folder starts from the folder's: a writer it \

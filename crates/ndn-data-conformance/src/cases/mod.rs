@@ -269,39 +269,6 @@ fn note(revision: u64) -> PutOptions {
     }
 }
 
-/// The photo type: revision 1 has `file` (the photo's name) and `image` (its octets).
-fn photo(keep: Keep) -> PutOptions {
-    PutOptions {
-        type_id: TypeId {
-            name: n("/types/photo"),
-            revision: 1,
-        },
-        keep,
-    }
-}
-
-/// A photo's octets: about 1.6 MB, some 390 chunks of 4096 octets.
-const IMAGE: usize = 1_600_000;
-
-/// A photo named `file` of `len` octets, the same every run: the octets come from a generator
-/// (xorshift) seeded by the name.
-fn picture(file: &str, len: usize) -> Content {
-    let mut x = file.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    });
-    let mut image = Vec::with_capacity(len + 8);
-    while image.len() < len {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        image.extend_from_slice(&x.to_le_bytes());
-    }
-    image.truncate(len);
-    Content::new()
-        .with("file", bytes::Bytes::copy_from_slice(file.as_bytes()))
-        .with("image", bytes::Bytes::from(image))
-}
-
 /// The version `id` of `collection` as `layer` lists it: a device lists its own writes at once.
 async fn listed(
     layer: &dyn DataLayer,
@@ -315,61 +282,6 @@ async fn listed(
             id.seq.0
         ))
     })
-}
-
-/// The octets a version carries in pieces; `None` when it is carried inline.
-fn large(v: &Version) -> Option<u64> {
-    match v.payload {
-        Payload::Large { size } => Some(size),
-        _ => None,
-    }
-}
-
-/// `d` reads the version `name` whole: `get` until it answers the entry `expected` (while no
-/// path or holder answers, it asks again). Records the read's cost to `d` on its links as
-/// `<what>: Interests` and `<what>: bytes received`.
-async fn read_whole(
-    w: &World,
-    d: Dev,
-    name: &Name,
-    expected: &Content,
-    what: &str,
-) -> Result<(), Failure> {
-    let layer = w.at(d);
-    let before = w.net().device_wire(d);
-    w.until(what, LIMIT, || async {
-        match layer.get(name).await {
-            Ok(Answer {
-                got: Got::Version(v),
-                ..
-            }) => match &v.payload {
-                Payload::Entry(c) if c == expected => Ok(true),
-                Payload::Entry(c) => Err(Failure::new(format!(
-                    "{what}: {name} read as other content than was written ({} octets of \
-                     `image`, {} written)",
-                    c.get("image").map_or(0, |b| b.len()),
-                    expected.get("image").map_or(0, |b| b.len())
-                ))),
-                Payload::Large { size } => Err(Failure::new(format!(
-                    "{what}: get of {name} answered its size ({size} octets), not the entry \
-                     read whole"
-                ))),
-            },
-            Ok(answer) => Err(Failure::new(format!(
-                "{what}: get of version {name} answered {:?}, not the version",
-                answer.got
-            ))),
-            // Not yet (nothing held, a record admitting the reader not walked to): read again.
-            Err(DataError::NotFound { .. }) => Ok(false),
-            Err(e) if e.next() == NextStep::RetryLater => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    })
-    .await?;
-    let spent = w.net().device_wire(d) - before;
-    w.measure(format!("{what}: Interests"), spent.interests, "round trips");
-    w.measure(format!("{what}: bytes received"), spent.in_bytes, "bytes");
-    Ok(())
 }
 
 fn content(fields: &[(&str, &str)]) -> Content {

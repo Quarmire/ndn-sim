@@ -13,9 +13,14 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    LIMIT, LOOK, SETTLE, agree, has, item_of, look, members_now, n, octets, private, reads_entry,
+    winning, wrote,
+};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::{SpaceChange, SpaceMembers};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -54,33 +59,39 @@ fn plan() -> Plan {
     p
 }
 
-/// Whether `s` lists the writer or reader prefix `who`.
-fn lists(s: &Share, who: &str) -> bool {
-    s.writers.contains(&n(who)) || s.readers.contains(&person(who))
+/// Whether `m` lists the person `who` as a writer or a reader.
+fn lists(m: &SpaceMembers, who: &str) -> bool {
+    m.writers.contains(&n(who)) || m.readers.contains(&n(who))
+}
+
+/// `persons` added to both roles.
+fn admit(persons: &[&str]) -> SpaceChange {
+    SpaceChange {
+        add_writers: persons.iter().map(|p| n(p)).collect(),
+        add_readers: persons.iter().map(|p| n(p)).collect(),
+        ..SpaceChange::default()
+    }
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let doc = n("/alice/32=data/docs/plan");
+        let doc = n("/alice/32=data/docs");
+        let plan = n("/plan");
         let (laptop, phone, carol, dave, eve) = (
-            w.at(LAPTOP),
-            w.at(PHONE),
-            w.at(CAROL),
-            w.at(DAVE),
-            w.at(EVE),
+            w.spaces(LAPTOP),
+            w.spaces(PHONE),
+            w.spaces(CAROL),
+            w.spaces(DAVE),
+            w.spaces(EVE),
         );
         laptop
-            .share(
-                &doc,
-                members(
-                    register(),
-                    &["/alice", "/carol"],
-                    &[person("/alice"), person("/carol")],
-                ),
-            )
+            .create(&doc, private(&["/carol"], &["/carol"]))
             .await?;
+        for device in [&phone, &carol] {
+            w.retry_later(|| device.open(&doc)).await?;
+        }
         let seen = w
-            .put_op(CAROL, &doc, octets("carol: edit 1"), note(1))
+            .space_put(CAROL, &doc, &plan, octets("carol: edit 1"))
             .await?;
         w.until(
             "both of Alice's devices hold Carol's edit",
@@ -94,37 +105,20 @@ fn run(w: &World) -> CaseFuture<'_> {
         // again meanwhile.
         w.net().offline(PHONE);
         laptop
-            .share(&doc, members(register(), &["/alice"], &[person("/alice")]))
+            .change(
+                &doc,
+                SpaceChange {
+                    remove: vec![n("/carol")],
+                    ..SpaceChange::default()
+                },
+            )
             .await?;
         w.gesture();
-        phone
-            .share(
-                &doc,
-                members(
-                    register(),
-                    &["/alice", "/carol", "/dave"],
-                    &[person("/alice"), person("/carol"), person("/dave")],
-                ),
-            )
-            .await?;
-        phone
-            .share(
-                &doc,
-                members(
-                    register(),
-                    &["/alice", "/carol", "/dave", "/eve"],
-                    &[
-                        person("/alice"),
-                        person("/carol"),
-                        person("/dave"),
-                        person("/eve"),
-                    ],
-                ),
-            )
-            .await?;
+        phone.change(&doc, admit(&["/dave"])).await?;
+        phone.change(&doc, admit(&["/eve"])).await?;
         w.gesture();
         let late = carol
-            .put_op(&doc, octets("carol: edit 2, after her removal"), note(1))
+            .put(&doc, &plan, octets("carol: edit 2, after her removal"))
             .await?;
         w.net().online(PHONE);
         w.sleep(SETTLE).await;
@@ -143,21 +137,19 @@ fn run(w: &World) -> CaseFuture<'_> {
             LIMIT,
             || async {
                 let mut held = Vec::with_capacity(all.len());
-                for (who, layer) in all {
-                    let m = layer.members(&doc).await;
-                    if matches!(m, Err(DataError::NotReady { .. })) {
+                for (who, spaces) in all {
+                    let m = members_now(&**spaces, &doc).await?;
+                    if m.is_none() {
                         // Dave and Eve, told of nothing, follow the document by watching it.
-                        look(&**layer, &doc, &Frontier::new(), LOOK).await?;
+                        look(&**spaces, &doc, LOOK).await?;
                     }
                     held.push((who, m));
                 }
                 *last.borrow_mut() = format!("{held:?}");
-                let mut first: Option<&Share> = None;
+                let mut first: Option<&SpaceMembers> = None;
                 for (_, m) in &held {
-                    let m = match m {
-                        Ok(m) => m,
-                        Err(DataError::NotReady { .. }) => return Ok(false),
-                        Err(e) => return Err(e.clone().into()),
+                    let Some(m) = m else {
+                        return Ok(false);
                     };
                     if lists(m, "/carol") || !lists(m, "/dave") || !lists(m, "/eve") {
                         return Ok(false);
@@ -178,17 +170,18 @@ fn run(w: &World) -> CaseFuture<'_> {
         // the key of the epoch in force, still on its way: refused Unavailable (RetryLater), put
         // again as the refusal says (data-layer §17.1, §18.1).
         let daves = w
-            .put_op(DAVE, &doc, octets("dave: his first edit"), note(1))
+            .space_put(DAVE, &doc, &plan, octets("dave: his first edit"))
             .await?;
         let eves = w
-            .put_op(EVE, &doc, octets("eve: her first edit"), note(1))
+            .space_put(EVE, &doc, &plan, octets("eve: her first edit"))
             .await?;
         w.until(
             "every device takes Dave's and Eve's edits",
             LIMIT,
             || async {
-                for (_, layer) in all {
-                    if !(has(&**layer, &doc, &daves).await? && has(&**layer, &doc, &eves).await?) {
+                for (_, spaces) in all {
+                    if !(has(&**spaces, &doc, &daves).await? && has(&**spaces, &doc, &eves).await?)
+                    {
                         return Ok(false);
                     }
                 }
@@ -197,36 +190,25 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await?;
         let later = w
-            .put_op(PHONE, &doc, octets("phone: after every record"), note(1))
+            .space_put(PHONE, &doc, &plan, octets("phone: after every record"))
             .await?;
         w.until(
             "Dave and Eve open the phone's later version",
             LIMIT,
-            || async {
-                for layer in [&dave, &eve] {
-                    let seen = look(&**layer, &doc, &Frontier::new(), LOOK).await?;
-                    if version(&seen, &later).is_none() {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            },
+            || async { agree(&[&*dave, &*eve], &doc, &plan, &[&later]).await },
         )
         .await?;
         // Carol may still try; her device may refuse to sign, and every other device must refuse
         // what it signs.
-        let after = carol
-            .put_op(&doc, octets("carol: edit 3"), note(1))
-            .await
-            .ok();
+        let after = carol.put(&doc, &plan, octets("carol: edit 3")).await.ok();
         w.sleep(SETTLE).await;
 
         w.until(
             "every device holds the phone's later version",
             LIMIT,
             || async {
-                for (_, layer) in all {
-                    if !has(&**layer, &doc, &later).await? {
+                for (_, spaces) in all {
+                    if !has(&**spaces, &doc, &later).await? {
                         return Ok(false);
                     }
                 }
@@ -234,31 +216,35 @@ fn run(w: &World) -> CaseFuture<'_> {
             },
         )
         .await?;
-        for (who, layer) in all {
-            let s = winning(&**layer, &doc, &[&later]).await?;
+        for (who, spaces) in all {
+            let read = winning(&**spaces, &doc, &plan, &[&later]).await?;
             ensure!(
-                s.at.contains(&seen),
+                has(&**spaces, &doc, &seen).await?,
                 "Carol's edit from before her removal left the document at the {who}"
             );
-            for id in std::iter::once(&late).chain(after.as_ref()) {
+            for entry in std::iter::once(&late).chain(after.as_ref()) {
                 ensure!(
-                    !s.at.contains(id),
-                    "the document at the {who} includes Carol's edit {id:?}, signed after the \
+                    !has(&**spaces, &doc, entry).await?,
+                    "the document at the {who} includes Carol's edit {entry:?}, signed after the \
                      laptop removed her (a later revision the phone signed without that record \
                      listed her again)"
                 );
             }
             ensure!(
-                !contains(written(&s), b"carol: edit 2")
-                    && !contains(written(&s), b"carol: edit 3"),
+                !wrote(&read, "carol: edit 2") && !wrote(&read, "carol: edit 3"),
                 "the document at the {who} shows an edit Carol signed after the laptop removed her"
             );
         }
-        let at_carol = look(&*carol, &doc, &Frontier::new(), LOOK).await?;
+        let at_carol = look(&*carol, &doc, LOOK).await?;
         ensure!(
-            version(&at_carol, &later).is_none(),
+            item_of(&at_carol, &later.key()).is_none(),
             "Carol, removed by the laptop at revision 2, opened a version written after the \
              phone's revision 3 listed her again"
+        );
+        ensure!(
+            !reads_entry(&*carol, &doc, &plan, &later).await?,
+            "Carol, removed by the laptop at revision 2, reads the register as a version \
+             written after the phone's revision 3 listed her again"
         );
         Ok(())
     })

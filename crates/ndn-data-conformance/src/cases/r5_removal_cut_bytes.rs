@@ -13,11 +13,16 @@
 
 use std::time::Duration;
 
-use ndn_data::Refusal;
+use ndn_data::Name;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    LIMIT, LOOK, SETTLE, has, item, items, known, look, n, octets, op_is, public, value_now,
+    winning,
+};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::{EntryRead, RefusalKind, SpaceChange, Spaces};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -58,53 +63,57 @@ fn plan() -> Plan {
 const HONEST: &str = "bob's plan";
 const OTHER: &str = "the copy's other bytes";
 
-/// Whether `layer`'s state of `c` shows the copy's other bytes.
-async fn shows_other(layer: &dyn DataLayer, c: &Name) -> Result<bool, Failure> {
-    Ok(state_now(layer, c)
+/// Whether `spaces`' register at `path` of `space` shows the copy's other bytes.
+async fn shows_other(spaces: &dyn Spaces, space: &Name, path: &Name) -> Result<bool, Failure> {
+    Ok(value_now(spaces, space, path)
         .await?
-        .is_some_and(|s| written(&s) == OTHER.as_bytes()))
+        .is_some_and(|bytes| bytes == OTHER.as_bytes()))
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let trip = n("/alice/32=data/trip");
-        let plan = trip.clone().append("plan");
-        let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
+        let plan = n("/plan");
+        let (alice, bob, carol) = (w.spaces(ALICE), w.spaces(BOB), w.spaces(CAROL));
         w.net().offline(CAROL);
 
-        alice
-            .share_folder(&trip, members(register(), &["/alice", "/bob"], &[]).into())
-            .await?;
-        let seed = alice
-            .put_op(&plan, octets("alice: the trip"), note(1))
-            .await?;
-        w.until("Bob holds the folder", LIMIT, || has(&*bob, &plan, &seed))
+        alice.create(&trip, public(&["/bob"])).await?;
+        let seed = alice.put(&trip, &plan, octets("alice: the trip")).await?;
+        w.until("Bob holds the folder", LIMIT, || has(&*bob, &trip, &seed))
             .await?;
 
         // The copy: Bob's phone, key and storage, before Bob writes into the folder; offline.
         w.steal(COPY).await?;
-        let copy = w.at(COPY);
-        w.until("the copy knows the plan", LIMIT, || known(&*copy, &plan))
+        let copy = w.spaces(COPY);
+        w.until("the copy knows the plan", LIMIT, || known(&*copy, &trip))
             .await?;
         w.net().offline(COPY);
 
         // Bob writes his plan, which Alice holds; the copy signs other bytes at its name.
         w.gesture();
-        let kept = bob.put_op(&plan, octets(HONEST), note(1)).await?;
+        let kept = bob.put(&trip, &plan, octets(HONEST)).await?;
         w.until("Alice holds Bob's plan", LIMIT, || {
-            has(&*alice, &plan, &kept)
+            has(&*alice, &trip, &kept)
         })
         .await?;
-        let other = copy.put_op(&plan, octets(OTHER), note(1)).await?;
+        let other = w
+            .sign_at(COPY, &trip, &plan, octets(OTHER), kept.seq)
+            .await?;
         ensure!(
-            other == kept,
+            other.name == kept.name && other.seq == kept.seq,
             "precondition: the copy signs at the name of Bob's plan ({kept:?}), got {other:?}"
         );
 
         // Alice removes Bob from the folder: the cut keeps the plan she holds.
         w.gesture();
         alice
-            .share_folder(&trip, members(register(), &["/alice"], &[]).into())
+            .change(
+                &trip,
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
+            )
             .await?;
         w.sleep(LOOK).await;
 
@@ -117,35 +126,37 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().forget_cached(&w.net().spec(ALICE).name()).await;
         w.net().online(COPY);
         w.net().online(CAROL);
-        let name = log_entry(w, BOB, &plan, &kept);
-        let _ = state_now(&*carol, &plan).await?;
-        let _ = carol.get(&name).await;
+        let name = kept.name.clone();
+        let _ = item(&*carol, &trip, &plan).await?;
+        let _ = carol.entry(&trip, &name).await;
         w.sleep(SETTLE).await;
         w.net().online(ALICE);
         w.until("Carol holds the folder's record", LIMIT, || {
-            known(&*carol, &plan)
+            known(&*carol, &trip)
         })
         .await?;
         w.sleep(SETTLE).await;
         ensure!(
-            !shows_other(&*carol, &plan).await?,
+            !shows_other(&*carol, &trip, &plan).await?,
             "Carol, who never held Bob's plan, takes the copy's other bytes at {name}, a seq the \
              removal cut kept"
         );
-        match carol.get(&name).await {
-            Err(DataError::Refused {
-                why: Refusal::OutsideCut(_),
+        match carol.entry(&trip, &name).await? {
+            EntryRead::Refused {
+                kind: RefusalKind::OutsideCut,
                 ..
-            }) => {}
-            Ok(answer) if matches!(&answer.got, Got::Version(v) if op_is(v, OTHER)) => {
+            } => {}
+            EntryRead::Read(read) if op_is(&read, OTHER) => {
                 return Err(Failure::new(format!(
                     "Carol answers the copy's other bytes at {name}, a seq the removal cut kept"
                 )));
             }
             // Alice, back with the record, holds Bob's plan and answers for his phone while it
             // is away (spec §13.5): Carol reads the honest bytes the cut kept, never the copy's.
-            Ok(answer) if matches!(&answer.got, Got::Version(v) if v.id == kept && op_is(v, HONEST)) =>
-                {}
+            EntryRead::Read(read) if read.key() == kept.key() && op_is(&read, HONEST) => {}
+            // Carol holds nothing at the name yet: she never shows the copy's bytes, and reads
+            // the honest plan below once a device holding it answers.
+            EntryRead::NotHeld => {}
             other => {
                 return Err(Failure::new(format!(
                     "Carol, reaching only the copy, answers {other:?} for {name}; the copy's \
@@ -160,24 +171,25 @@ fn run(w: &World) -> CaseFuture<'_> {
             "Carol reads the plan the removal cut kept",
             LIMIT,
             || async {
-                Ok(state_now(&*carol, &plan)
-                    .await?
-                    .is_some_and(|s| s.at.contains(&kept) && written(&s) == HONEST.as_bytes()))
+                Ok(has(&*carol, &trip, &kept).await?
+                    && value_now(&*carol, &trip, &plan)
+                        .await?
+                        .is_some_and(|bytes| bytes == HONEST.as_bytes()))
             },
         )
         .await?;
         w.sleep(SETTLE).await;
-        for (who, layer) in [("Carol", &carol), ("Alice", &alice)] {
-            let looked = look(&**layer, &plan, &Frontier::new(), LOOK).await?;
+        for (who, spaces) in [("Carol", &carol), ("Alice", &alice)] {
+            let looked = look(&**spaces, &trip, LOOK).await?;
             ensure!(
-                !versions(&looked).any(|v| op_is(v, OTHER)),
+                !items(&looked).any(|i| op_is(i, OTHER)),
                 "{who} lists the copy's other bytes at {name}"
             );
-            let s = winning(&**layer, &plan, &[&kept]).await?;
+            let read = winning(&**spaces, &trip, &plan, &[&kept]).await?;
             ensure!(
-                written(&s) == HONEST.as_bytes() && s.at.contains(&kept),
+                read.bytes == HONEST.as_bytes() && has(&**spaces, &trip, &kept).await?,
                 "{who} lacks Bob's plan the removal cut kept ({:?})",
-                String::from_utf8_lossy(written(&s))
+                String::from_utf8_lossy(&read.bytes)
             );
         }
         Ok(())

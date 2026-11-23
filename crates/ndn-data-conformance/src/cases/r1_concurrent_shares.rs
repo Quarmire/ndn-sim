@@ -10,9 +10,11 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, LOOK, SETTLE, agree, item_of, look, n, octets, private, reads_entry};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -45,43 +47,44 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let doc = n("/alice/32=data/docs/budget");
-        let (laptop, phone, bob, carol) = (w.at(LAPTOP), w.at(PHONE), w.at(BOB), w.at(CAROL));
-        let readers = |names: &[&str]| names.iter().map(|p| person(p)).collect::<Vec<_>>();
+        let doc = n("/alice/32=data/docs");
+        let budget = n("/budget");
+        let (laptop, phone, bob, carol) = (
+            w.spaces(LAPTOP),
+            w.spaces(PHONE),
+            w.spaces(BOB),
+            w.spaces(CAROL),
+        );
         phone
-            .share(
-                &doc,
-                members(
-                    register(),
-                    &["/alice"],
-                    &readers(&["/alice", "/bob", "/carol"]),
-                ),
-            )
+            .create(&doc, private(&[], &["/bob", "/carol"]))
             .await?;
-        let first = w.put_op(PHONE, &doc, octets("draft"), note(1)).await?;
+        for device in [&laptop, &bob, &carol] {
+            w.retry_later(|| device.open(&doc)).await?;
+        }
+        let first = w.space_put(PHONE, &doc, &budget, octets("draft")).await?;
         w.until("every reader opens the draft", LIMIT, || async {
-            for layer in [&laptop, &bob, &carol] {
-                let seen = look(&**layer, &doc, &Frontier::new(), LOOK).await?;
-                if version(&seen, &first).is_none() {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
+            agree(&[&*laptop, &*bob, &*carol], &doc, &budget, &[&first]).await
         })
         .await?;
 
         // The laptop, offline, removes Bob; the phone, at the same time, removes Carol.
         w.net().offline(LAPTOP);
         laptop
-            .share(
+            .change(
                 &doc,
-                members(register(), &["/alice"], &readers(&["/alice", "/carol"])),
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         phone
-            .share(
+            .change(
                 &doc,
-                members(register(), &["/alice"], &readers(&["/alice", "/bob"])),
+                SpaceChange {
+                    remove: vec![n("/carol")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.gesture();
@@ -91,24 +94,26 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The epoch in force may be the laptop's: the phone asks it for the key, and on a faulty
         // network may answer RetryLater first (spec §9, §17.1) — a host puts again.
         let later = w
-            .put_op(PHONE, &doc, octets("final figures"), note(1))
+            .space_put(PHONE, &doc, &budget, octets("final figures"))
             .await?;
         w.until(
             "the laptop opens the phone's later version",
             LIMIT,
-            || async {
-                let seen = look(&*laptop, &doc, &Frontier::new(), LOOK).await?;
-                Ok(version(&seen, &later).is_some())
-            },
+            || async { agree(&[&*laptop, &*phone], &doc, &budget, &[&later]).await },
         )
         .await?;
         w.sleep(SETTLE).await;
-        for (who, layer) in [("Bob", &bob), ("Carol", &carol)] {
-            let seen = look(&**layer, &doc, &Frontier::new(), LOOK).await?;
+        for (who, spaces) in [("Bob", &bob), ("Carol", &carol)] {
+            let seen = look(&**spaces, &doc, LOOK).await?;
             ensure!(
-                version(&seen, &later).is_none(),
+                item_of(&seen, &later.key()).is_none(),
                 "{who}, removed by one of Alice's devices while the other changed the readers \
                  too, opened a version written after both records were known"
+            );
+            ensure!(
+                !reads_entry(&**spaces, &doc, &budget, &later).await?,
+                "{who}, removed by one of Alice's devices while the other changed the readers \
+                 too, reads the register as a version written after both records were known"
             );
         }
         Ok(())

@@ -30,7 +30,9 @@
 
 pub mod case;
 pub mod cases;
+pub mod crash_store;
 pub mod feature;
+pub mod new_reference;
 pub mod old_spaces;
 pub mod provider;
 pub mod reference;
@@ -43,6 +45,7 @@ pub mod world_common;
 
 pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;
+pub use new_reference::NewReference;
 pub use provider::{
     Certs, DeviceSpec, GrantEvent, GrantLog, Grants, Image, JoinedList, NodeRole, Provider, Tally,
 };

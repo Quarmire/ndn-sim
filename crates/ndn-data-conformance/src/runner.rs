@@ -104,7 +104,10 @@ impl Network {
 }
 
 /// The implementations the runner knows, by constructor.
-pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[crate::reference::Reference::provider];
+pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[
+    crate::reference::Reference::provider,
+    crate::new_reference::NewReference::provider,
+];
 
 /// The seed of the thread-local RNG `ndn-sync` draws its jitter from (the periodic sync interval
 /// and the suppression delay), set before each case. Unseeded, it is seeded per process from the

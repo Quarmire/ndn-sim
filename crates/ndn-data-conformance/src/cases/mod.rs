@@ -392,7 +392,9 @@ fn field<'c>(c: &'c Content, f: &str) -> Option<&'c str> {
     c.get(f).and_then(|v| std::str::from_utf8(v).ok())
 }
 
-/// The merged state of a merge collection as `layer` sees it now; `None` while it has nothing.
+/// The merged state of a merge collection as `layer` sees it now; `None` while it has nothing, or
+/// while the device answers [`NextStep::RetryLater`] (a record admitting it not received or
+/// walked to yet: read again).
 async fn state_now(layer: &dyn DataLayer, collection: &Name) -> Result<Option<State>, Failure> {
     match layer.get(collection).await {
         Ok(answer) => match answer.got {
@@ -403,6 +405,7 @@ async fn state_now(layer: &dyn DataLayer, collection: &Name) -> Result<Option<St
             ))),
         },
         Err(DataError::Unavailable { .. } | DataError::NotFound { .. }) => Ok(None),
+        Err(e) if e.next() == NextStep::RetryLater => Ok(None),
         Err(e) => Err(e.into()),
     }
 }

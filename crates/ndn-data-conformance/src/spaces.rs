@@ -205,6 +205,19 @@ pub enum EntryRead {
     NotHeld,
 }
 
+/// The epoch a sealed space is sealed in, as a device's fold of the owner's entries holds it
+/// ([`Spaces::epoch`]): the one writers seal in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpaceEpoch {
+    /// The owner device that signed the epoch's entry.
+    pub creator: Name,
+    /// That entry's sequence number in its creator's log; `(creator, seq)` names the epoch.
+    pub seq: u64,
+    /// Whether every person that reads the space holds the epoch's key or is to be given it, and
+    /// nobody else ever was: nothing left for an owner device to repair.
+    pub complete: bool,
+}
+
 /// What kind of event a device raises beside the changes it applies ([`SpaceAlert`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AlertKind {
@@ -320,4 +333,14 @@ pub trait Spaces: Send + Sync {
     /// asks for it by that name: what it wrote, the refusal of the device that holds it, or that
     /// it holds none.
     async fn entry(&self, space: &Name, name: &Name) -> Result<EntryRead, Failure>;
+
+    /// The epoch in force over the sealed `space`, as this device's fold holds it. `None` for a
+    /// public space, or while no epoch is in force (a removal's repair not signed yet).
+    /// A provider whose spaces have no epochs of this kind answers a refusal.
+    async fn epoch(&self, space: &Name) -> Result<Option<SpaceEpoch>, Failure> {
+        let _ = space;
+        Err(Failure::new(
+            "this provider does not report the epoch in force",
+        ))
+    }
 }

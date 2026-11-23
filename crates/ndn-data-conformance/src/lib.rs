@@ -54,6 +54,6 @@ pub use report::{CaseResult, Cost, NetworkReport, Report, Status};
 pub use runner::{Network, differences, run_all, run_case, run_only};
 pub use spaces::{
     AlertKind, EntryRead, RefusalKind, SpaceAlert, SpaceChange, SpaceChanges, SpaceEntry,
-    SpaceEntryKey, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
+    SpaceEntryKey, SpaceEpoch, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
 };
 pub use world::{Dev, Net, Plan, World};

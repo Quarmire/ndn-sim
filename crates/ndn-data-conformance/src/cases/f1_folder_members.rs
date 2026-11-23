@@ -1,20 +1,23 @@
-//! Slice 6, f1 — one members record and one grant per reader for a folder of a thousand
-//! collections.
+//! Slice 6, f1 — one members record and one grant per reader for a space of a thousand paths.
 //!
-//! Alice keeps her recipes as a thousand collections under one folder and shares the folder with
-//! three friends. Slice 2 knew only per-collection records: a thousand records signed, a thousand
+//! Alice keeps her recipes as a thousand paths in one space and shares the space with three
+//! friends. Slice 2 knew only per-collection records: a thousand records signed, a thousand
 //! seal epochs, and each friend asking a grant for every one (N records, N·k grants — "open after
-//! slice 2"). The fix: a folder's members record governs every collection under it; collections
-//! without their own readers seal in the folder's epoch, so a reader asks one grant per folder
-//! epoch whatever the number of collections. The case measures both ways side by side — the
-//! slice-2 way over its own folder of per-collection records, and the folder record — and asserts
-//! that every friend reads every collection with one grant for the whole folder.
+//! slice 2"). The fix: a space's members record governs every path under it, which seals in the
+//! space's epoch, so a reader asks one grant per space epoch whatever the number of paths. The
+//! case measures both ways side by side — the slice-2 way as a space of its own for every recipe
+//! (a members record, an epoch and a grant each), and the one space — and asserts that every
+//! friend reads every path with one grant for the whole space.
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+
+use super::kit::{LIMIT, n, octets, private};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::Spaces;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -34,9 +37,9 @@ pub(super) const CASE: Case = Case {
 
 const OWNER: Dev = Dev(0);
 const READERS: [Dev; 3] = [Dev(1), Dev(2), Dev(3)];
-/// Collections under the folder record.
+/// Paths under the one space.
 const FOLDER_N: usize = 1000;
-/// Collections shared one by one, the slice-2 way.
+/// Recipes shared a space each, the slice-2 way.
 const PER_COLLECTION_N: usize = 1000;
 
 fn plan() -> Plan {
@@ -48,32 +51,14 @@ fn plan() -> Plan {
     p
 }
 
-/// The recipe type.
-fn recipe() -> PutOptions {
-    PutOptions {
-        type_id: TypeId {
-            name: n("/types/recipe"),
-            revision: 1,
-        },
-        keep: Keep::Forever,
-    }
-}
-
-/// Whether `layer` reads recipe `i` as collection `c`'s newest version.
-async fn reads(layer: &dyn DataLayer, c: &Name, i: usize) -> Result<bool, Failure> {
-    match layer.get(c).await {
-        Ok(Answer {
-            got: Got::Version(v),
-            ..
-        }) => Ok(field_of(&v, "n") == Some(i.to_string().as_str())),
-        Ok(a) => Err(Failure::new(format!(
-            "get of the log collection {c} answered {:?}, not its newest version",
-            a.got
-        ))),
-        Err(
-            DataError::Unavailable { .. } | DataError::NotFound { .. } | DataError::Sealed { .. },
-        ) => Ok(false),
-        Err(e) => Err(e.into()),
+/// Whether `spaces` reads recipe `i` at `path` of `space`. A reader that has not yet received the
+/// record, or the keys of the epoch the recipe is sealed in, reads nothing yet.
+async fn reads(spaces: &dyn Spaces, space: &Name, path: &Name, i: usize) -> Result<bool, Failure> {
+    match spaces.get(space, path).await {
+        Ok(Some(read)) => Ok(read.bytes == i.to_string().as_bytes()),
+        Ok(None) => Ok(false),
+        Err(e) if e.retry_later() || e.kind_is("Sealed") => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -88,25 +73,32 @@ struct Spent {
     took: Duration,
 }
 
-/// Alice shares `count` collections under `folder` with every reader — by one folder record, or
-/// by a record per collection — writes one recipe into each, and every reader reads every one.
+/// Alice shares `count` recipes under `root` with every reader — as one space of `count` paths,
+/// or as a space each (a record per recipe) — writes one recipe into each, and every reader reads
+/// every one.
 async fn share_and_read(
     w: &World,
-    folder: &Name,
+    root: &Name,
     count: usize,
     by_folder: bool,
 ) -> Result<Spent, Failure> {
-    let alice = w.at(OWNER);
-    let readers = [
-        person("/alice"),
-        person("/bob"),
-        person("/carol"),
-        person("/dave"),
-    ];
-    let share = members(Rule::Log, &["/alice"], &readers);
-    let collections: Vec<Name> = (0..count)
-        .map(|i| n(&format!("{folder}/r{i:04}")))
+    let alice = w.spaces(OWNER);
+    let share = private(&[], &["/bob", "/carol", "/dave"]);
+    // Where each recipe lives: a path of the one space, or the one path of a space of its own.
+    let places: Vec<(Name, Name)> = (0..count)
+        .map(|i| {
+            if by_folder {
+                (root.clone(), n(&format!("/r{i:04}")))
+            } else {
+                (n(&format!("{root}/r{i:04}")), n("/recipe"))
+            }
+        })
         .collect();
+    let spaces: Vec<&Name> = if by_folder {
+        vec![root]
+    } else {
+        places.iter().map(|(space, _)| space).collect()
+    };
 
     // Readers follow the owner's writes as they come: what they spend is counted from the share.
     let asked: Vec<u64> = READERS.iter().map(|r| w.grants(*r).asked).collect();
@@ -114,29 +106,28 @@ async fn share_and_read(
     let wire: Vec<_> = READERS.iter().map(|r| w.net().device_wire(*r)).collect();
     let signed = w.signed_by(OWNER);
     w.gesture();
-    let records = if by_folder {
-        alice.share_folder(folder, share.into()).await?;
-        1
-    } else {
-        for c in &collections {
-            alice.share(c, share.clone()).await?;
-        }
-        collections.len() as u64
-    };
+    for space in &spaces {
+        alice.create(space, share.clone()).await?;
+    }
+    let records = spaces.len() as u64;
     let signatures = w.signed_by(OWNER) - signed;
     let start = tokio::time::Instant::now();
-    for (i, c) in collections.iter().enumerate() {
-        alice
-            .put(c, content(&[("n", &i.to_string())]), recipe())
-            .await?;
+    for r in READERS {
+        let reader = w.spaces(r);
+        for space in &spaces {
+            w.retry_later(|| reader.open(space)).await?;
+        }
     }
-    for (i, c) in collections.iter().enumerate() {
+    for (i, (space, path)) in places.iter().enumerate() {
+        alice.put(space, path, octets(&i.to_string())).await?;
+    }
+    for (i, (space, path)) in places.iter().enumerate() {
         for r in READERS {
-            let layer = w.at(r);
+            let reader = w.spaces(r);
             w.until(
-                &format!("{} reads {c}", w.net().spec(r).name()),
+                &format!("{} reads {space}{path}", w.net().spec(r).name()),
                 LIMIT,
-                || reads(&*layer, c, i),
+                || reads(&*reader, space, path, i),
             )
             .await?;
         }

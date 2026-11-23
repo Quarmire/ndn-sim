@@ -1,35 +1,39 @@
-//! Names by key, n2 — Alice invites Bob and Carol to one folder; each writes; all three see
+//! Names by key, n2 — Alice adds Bob and Carol to one space; each writes; all three see
 //! everything.
 //!
 //! Alice, Bob and Carol are each named by their genesis root key alone (`/user/<0xA1: …>`) and
-//! are strangers. Alice offers her notebook folder to Bob and, by a second code, to Carol, each
-//! as a writer. Each join adopts Alice's namespace at the joiner and the joiner's at Alice: so
+//! are strangers. Alice's device adopts Bob's and Carol's namespaces by name, and each of theirs
+//! adopts Alice's; then Alice adds Bob and Carol to her notebook space, each as a writer. So
 //! Bob and Carol still hold nothing of each other's namespace. Bob writes a page and Carol
 //! writes a page; Alice, Bob and Carol each read both. Bob's device reads Carol's page because
-//! Carol is a writer in a members record of the folder that Alice's device signed, which Bob
+//! Carol is a writer in a members record of the space that Alice's device signed, which Bob
 //! holds: it adopts Carol's namespace by name (version 1 fetched and checked as the genesis the
-//! name hashes, the newest reached from it) for judging that folder's data alone, and Carol's
+//! name hashes, the newest reached from it) for judging that space's data alone, and Carol's
 //! device adopts Bob's the same way (spec §6.3).
 //!
 //! The guards:
-//! - that adoption judges nothing else at Bob: Carol's own diary folder, which she opens to
+//! - that adoption judges nothing else at Bob: Carol's own diary space, which she opens to
 //!   anyone and which Alice (who holds Carol's namespace) reads, stays unreadable at Bob, and
 //!   Bob's forwarder (its node's validator) still refuses Carol's page as a person's name it
 //!   does not hold;
-//! - once Alice's next record drops Carol, Bob refuses a page Carol writes later in the folder
+//! - once Alice's next record drops Carol, Bob refuses a page Carol writes later in the space
 //!   (outside the removal cut), while her earlier page, which the cut keeps, still reads.
 //!
 //! Mirrors ndf's G-series with three members (REPLY-to-ndn-workspace-13 §4).
+//!
+//! The members are introduced to Alice by the host's `adopt` of an anchor link by name and by the
+//! owner's `change` of the members record, not by an invitation code (`offer`/`join`, which the
+//! neutral surface does not have until stage 5): what the case guards is the adoption that the
+//! record, not the invitation, causes at the other members.
 
 use std::time::Duration;
 
-use ndn_data::Role;
-use ndn_data::wire::{device_of, log_name};
-
-use super::i1_join_by_code::{joins, offer, reads, shut_out};
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, members_now, n, octets, private, public};
+use super::n1_named_by_key::{adopts, by_name, reads, shut_out, under};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::{EntryRead, SpaceChange, SpaceMembers};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -40,7 +44,6 @@ pub(super) const CASE: Case = Case {
         Feature::Log,
         Feature::Seal,
         Feature::FolderMembers,
-        Feature::Introduction,
         Feature::SelfCertifying,
     ],
     model: &[],
@@ -74,91 +77,70 @@ fn plan() -> Plan {
     p
 }
 
-/// `ns` followed by the components of `rest`.
-fn under(ns: &Name, rest: &str) -> Name {
-    Name::from_components(
-        ns.components()
-            .iter()
-            .chain(n(rest).components().iter())
-            .cloned(),
-    )
-}
-
-/// `d` writes `text` as a note into `page`, once its device can (it may first wait for the
-/// folder's record and epoch key): the version written.
-async fn writes(w: &World, d: Dev, page: &Name, words: &str) -> Result<VersionId, Failure> {
-    let layer = w.at(d);
-    let written = std::sync::Mutex::new(None);
-    w.until(
-        &format!("{} writes {page}", w.net().spec(d).name()),
-        LIMIT,
-        || async {
-            match layer.put(page, text(words), note(1)).await {
-                Ok(id) => {
-                    *written.lock().expect("the case's lock") = Some(id);
-                    Ok(true)
-                }
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        },
-    )
-    .await?;
-    let id = written.lock().expect("the case's lock").take();
-    id.ok_or_else(|| Failure::new(format!("{page} was not written")))
-}
-
-/// The log entry name of version `id` of collection `c`.
-fn entry_of(c: &Name, id: &VersionId) -> Result<Name, Failure> {
-    let device = device_of(id.writer.key())
-        .ok_or_else(|| Failure::new(format!("{:?} names no device's key", id.writer)))?;
-    Ok(log_name(&device, Some(c), id.seq.0))
-}
-
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let alice_ns = w.net().spec(ALICE).person.clone();
         let bob_ns = w.net().spec(BOB).person.clone();
         let carol_ns = w.net().spec(CAROL).person.clone();
-        let folder = under(&alice_ns, "/32=data/notebook");
-        let cover = under(&folder, "/cover");
-        let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
-        alice
-            .share_folder(
-                &folder,
-                Share {
-                    rule: Rule::Log,
-                    writers: vec![alice_ns.clone()],
-                    readers: vec![Audience::Person(alice_ns.clone())],
-                }
-                .into(),
+        let space = under(&alice_ns, "/32=data/notebook");
+        let cover = n("/cover");
+        let (alice, bob, carol) = (w.spaces(ALICE), w.spaces(BOB), w.spaces(CAROL));
+        // Alice alone writes and reads her notebook.
+        alice.create(&space, private(&[], &[])).await?;
+        alice.put(&space, &cover, octets("cover by alice")).await?;
+
+        // Alice's device adopts Bob's and Carol's namespaces, and theirs adopt Alice's, each by
+        // name alone; Alice adds them as writers (and readers) of the space.
+        let start = tokio::time::Instant::now();
+        for (d, ns, who) in [(BOB, &bob_ns, "bob"), (CAROL, &carol_ns, "carol")] {
+            adopts(
+                w,
+                ALICE,
+                &by_name(ns),
+                &format!("{who}'s namespace by its name"),
             )
             .await?;
-        alice.put(&cover, text("cover by alice"), note(1)).await?;
-
-        // Alice invites Bob, then Carol, each by a code of their own.
-        let start = tokio::time::Instant::now();
-        for (d, who) in [(BOB, "bob"), (CAROL, "carol")] {
-            let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
-            let joined = joins(w, d, &code.link).await?;
-            ensure!(
-                joined.folder == folder
-                    && joined.role == Role::Writer
-                    && joined.inviter == alice_ns,
-                "{who}'s join says {joined:?}, not alice's notebook as a writer"
-            );
+            adopts(w, d, &by_name(&alice_ns), "alice's namespace by its name").await?;
+        }
+        alice
+            .change(
+                &space,
+                SpaceChange {
+                    add_writers: vec![bob_ns.clone(), carol_ns.clone()],
+                    add_readers: vec![bob_ns.clone(), carol_ns.clone()],
+                    remove: Vec::new(),
+                },
+            )
+            .await?;
+        let members = SpaceMembers::new(
+            &alice_ns,
+            vec![bob_ns.clone(), carol_ns.clone()],
+            vec![bob_ns.clone(), carol_ns.clone()],
+            false,
+        );
+        for (spaces, who) in [(&bob, "bob"), (&carol, "carol")] {
+            w.retry_later(|| spaces.open(&space)).await?;
+            w.until(
+                &format!("{who} holds the record that lists both writers"),
+                LIMIT,
+                || async { Ok(members_now(&**spaces, &space).await?.as_ref() == Some(&members)) },
+            )
+            .await?;
         }
 
         // Each writes; all three read everything.
-        let page_b = under(&folder, "/page-bob");
-        let page_c = under(&folder, "/page-carol");
-        writes(w, BOB, &page_b, "a page by bob").await?;
-        let carols = writes(w, CAROL, &page_c, "a page by carol").await?;
-        for (d, layer) in [(ALICE, &alice), (BOB, &bob), (CAROL, &carol)] {
+        let page_b = n("/page-bob");
+        let page_c = n("/page-carol");
+        w.space_put(BOB, &space, &page_b, octets("a page by bob"))
+            .await?;
+        let carols = w
+            .space_put(CAROL, &space, &page_c, octets("a page by carol"))
+            .await?;
+        for (d, spaces) in [(ALICE, &alice), (BOB, &bob), (CAROL, &carol)] {
             let who = w.net().spec(d).name();
             for (page, words) in [(&page_b, "a page by bob"), (&page_c, "a page by carol")] {
                 w.until(&format!("{who} reads {page}"), LIMIT, || {
-                    reads(&**layer, page, words)
+                    reads(&**spaces, &space, page, words)
                 })
                 .await?;
             }
@@ -168,34 +150,27 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Bob trusts Carol's namespace for the notebook alone. Carol's diary, open to anyone,
         // reaches Alice, who holds Carol's namespace: Bob, who does not, reads nothing of it.
         let diary = under(&carol_ns, "/32=data/diary");
-        let note_c = under(&diary, "/monday");
-        carol
-            .share_folder(
-                &diary,
-                Share {
-                    rule: Rule::Log,
-                    writers: vec![carol_ns.clone()],
-                    readers: Vec::new(),
-                }
-                .into(),
-            )
-            .await?;
-        carol.put(&note_c, text("diary by carol"), note(1)).await?;
+        let monday = n("/monday");
+        carol.create(&diary, public(&[])).await?;
+        carol.put(&diary, &monday, octets("diary by carol")).await?;
+        w.retry_later(|| alice.open(&diary)).await?;
         w.until("alice reads carol's diary", LIMIT, || {
-            reads(&*alice, &note_c, "diary by carol")
+            reads(&*alice, &diary, &monday, "diary by carol")
         })
         .await?;
+        w.retry_later(|| bob.open(&diary)).await?;
+        w.sleep(SETTLE).await;
         ensure!(
-            shut_out(&*bob, &note_c).await?,
-            "bob reads carol's diary: the notebook's adoption of {carol_ns} judged another folder"
+            shut_out(&*bob, &diary, &monday).await?,
+            "bob reads carol's diary: the notebook's adoption of {carol_ns} judged another space"
         );
         // Nor does it reach Bob's forwarder: its node's validator refuses Carol's page.
-        let page_c_entry = entry_of(&page_c, &carols)?;
-        match w.forwarder_verdict(BOB, CAROL, &page_c_entry).await? {
+        match w.forwarder_verdict(BOB, CAROL, &carols.name).await? {
             Ok(()) => {
                 return Err(Failure::new(format!(
-                    "bob's forwarder accepts {page_c_entry}: the notebook's adoption of \
-                     {carol_ns} vouched for it outside the folder"
+                    "bob's forwarder accepts {}: the notebook's adoption of {carol_ns} vouched \
+                     for it outside the space",
+                    carols.name
                 )));
             }
             Err(why) => ensure!(
@@ -208,36 +183,38 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Alice drops Carol while Carol is away; Carol, not knowing, writes again.
         w.net().offline(CAROL);
         alice
-            .share_folder(
-                &folder,
-                Share {
-                    rule: Rule::Log,
-                    writers: vec![alice_ns.clone(), bob_ns.clone()],
-                    readers: vec![
-                        Audience::Person(alice_ns.clone()),
-                        Audience::Person(bob_ns.clone()),
-                    ],
-                }
-                .into(),
+            .change(
+                &space,
+                SpaceChange {
+                    add_writers: Vec::new(),
+                    add_readers: Vec::new(),
+                    remove: vec![carol_ns.clone()],
+                },
             )
             .await?;
-        let late = under(&folder, "/page-carol-late");
-        let lates = writes(w, CAROL, &late, "a page carol wrote once dropped").await?;
-        let late_entry = entry_of(&late, &lates)?;
+        let late = n("/page-carol-late");
+        let lates = w
+            .space_put(
+                CAROL,
+                &space,
+                &late,
+                octets("a page carol wrote once dropped"),
+            )
+            .await?;
         w.net().online(CAROL);
         w.until(
             "bob refuses carol's page written after her removal",
             LIMIT,
             || async {
                 Ok(matches!(
-                    bob.get(&late_entry).await,
-                    Err(DataError::Refused { .. })
+                    bob.entry(&space, &lates.name).await?,
+                    EntryRead::Refused { .. }
                 ))
             },
         )
         .await?;
         ensure!(
-            !reads(&*bob, &late, "a page carol wrote once dropped").await?,
+            !reads(&*bob, &space, &late, "a page carol wrote once dropped").await?,
             "bob reads a page carol wrote after alice's record dropped her"
         );
         // Her earlier page is taken with the bytes the removal cut's manifest lists (spec §8):
@@ -246,7 +223,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.until(
             "bob still reads carol's page from before her removal, which the cut keeps",
             LIMIT,
-            || reads(&*bob, &page_c, "a page by carol"),
+            || reads(&*bob, &space, &page_c, "a page by carol"),
         )
         .await?;
         Ok(())

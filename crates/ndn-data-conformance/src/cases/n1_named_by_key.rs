@@ -1,4 +1,4 @@
-//! Names by key, n1 — two people named by their keys share a folder, each adopting the other by
+//! Names by key, n1 — two people named by their keys share a space, each adopting the other by
 //! name alone.
 //!
 //! Alice and Bob are each named by their genesis root key alone: `/user/<0xA1: SHA-256 of the
@@ -8,18 +8,21 @@
 //! nothing of it is held (else Bob's genuine version 1 would be refused later as a fork). Then
 //! Alice's device adopts Bob's namespace by its name alone — version 1 fetched from Bob's device
 //! and checked as signed by the key the name hashes — and Bob's device adopts Alice's the same
-//! way. Alice adds Bob to her notebook folder as a writer; Bob reads her cover and writes a page,
+//! way. Alice adds Bob to her notebook space as a writer; Bob reads her cover and writes a page,
 //! and Alice reads his page. Mirrors ndf's personal names (`record::personal_root`).
 
 use std::time::Duration;
 
+use bytes::Bytes;
+use ndn_data::Name;
 use ndn_security::{SecurityManager, SignedTrustContext};
 use ndn_trust_envelope::TrustEnvelope;
 
-use super::i1_join_by_code::{reads, shut_out};
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{DAY, LIMIT, n, octets};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::{SpaceChange, SpaceShare, Spaces};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -61,7 +64,7 @@ fn plan() -> Plan {
 }
 
 /// `ns` followed by the components of `rest`.
-fn under(ns: &Name, rest: &str) -> Name {
+pub(super) fn under(ns: &Name, rest: &str) -> Name {
     Name::from_components(
         ns.components()
             .iter()
@@ -71,7 +74,7 @@ fn under(ns: &Name, rest: &str) -> Name {
 }
 
 /// The anchor link naming `ns` alone, as `ndn-fwd init --self-certifying` prints it.
-fn by_name(ns: &Name) -> String {
+pub(super) fn by_name(ns: &Name) -> String {
     TrustEnvelope::Anchor {
         namespace: Some(ns.to_string()),
         fingerprint: None,
@@ -116,7 +119,7 @@ fn forged_genesis(ns: &Name) -> Result<String, Failure> {
 }
 
 /// `d` adopts `link`, which must succeed.
-async fn adopts(w: &World, d: Dev, link: &str, what: &str) -> Result<(), Failure> {
+pub(super) async fn adopts(w: &World, d: Dev, link: &str, what: &str) -> Result<(), Failure> {
     w.adopt(d, link).await?.map_err(|why| {
         Failure::new(format!(
             "{} could not adopt {what}: {why}",
@@ -125,29 +128,46 @@ async fn adopts(w: &World, d: Dev, link: &str, what: &str) -> Result<(), Failure
     })
 }
 
+/// Whether `spaces` reads the octets of `text` at `path` of `space` now. A device that has not
+/// received what it needs (the record, the keys) reads nothing yet.
+pub(super) async fn reads(
+    spaces: &dyn Spaces,
+    space: &Name,
+    path: &Name,
+    text: &str,
+) -> Result<bool, Failure> {
+    match spaces.get(space, path).await {
+        Ok(Some(read)) => Ok(read.bytes == Bytes::copy_from_slice(text.as_bytes())),
+        Ok(None) => Ok(false),
+        Err(e) if e.retry_later() || e.kind_is("Sealed") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether `spaces` cannot read anything at `path` of `space` now: sealed to it, refused, or
+/// nothing held.
+pub(super) async fn shut_out(
+    spaces: &dyn Spaces,
+    space: &Name,
+    path: &Name,
+) -> Result<bool, Failure> {
+    Ok(!matches!(spaces.get(space, path).await, Ok(Some(_))))
+}
+
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let alice_ns = w.net().spec(ALICE).person.clone();
         let bob_ns = w.net().spec(BOB).person.clone();
-        let folder = under(&alice_ns, "/32=data/notebook");
-        let cover = under(&folder, "/cover");
-        let alice = w.at(ALICE);
-        let bob = w.at(BOB);
-        alice
-            .share_folder(
-                &folder,
-                Share {
-                    rule: Rule::Log,
-                    writers: vec![alice_ns.clone()],
-                    readers: vec![Audience::Person(alice_ns.clone())],
-                }
-                .into(),
-            )
-            .await?;
-        alice.put(&cover, text("cover by alice"), note(1)).await?;
+        let space = under(&alice_ns, "/32=data/notebook");
+        let cover = n("/cover");
+        let alice = w.spaces(ALICE);
+        let bob = w.spaces(BOB);
+        // Alice alone writes and reads her notebook.
+        alice.create(&space, SpaceShare::default()).await?;
+        alice.put(&space, &cover, octets("cover by alice")).await?;
         ensure!(
-            shut_out(&*bob, &cover).await?,
-            "bob reads alice's folder before adopting her name"
+            shut_out(&*bob, &space, &cover).await?,
+            "bob reads alice's notebook before adopting her name"
         );
 
         // A genesis for Bob's name that his key did not sign.
@@ -165,37 +185,28 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.measure("adoption by name alone", took.as_millis() as u64, "ms");
         adopts(w, BOB, &by_name(&alice_ns), "alice's namespace by its name").await?;
 
-        // Alice adds Bob to the folder as a writer and a reader.
+        // Alice adds Bob to the space as a writer and a reader.
         alice
-            .share_folder(
-                &folder,
-                Share {
-                    rule: Rule::Log,
-                    writers: vec![alice_ns.clone(), bob_ns.clone()],
-                    readers: vec![
-                        Audience::Person(alice_ns.clone()),
-                        Audience::Person(bob_ns.clone()),
-                    ],
-                }
-                .into(),
+            .change(
+                &space,
+                SpaceChange {
+                    add_writers: vec![bob_ns.clone()],
+                    add_readers: vec![bob_ns.clone()],
+                    remove: Vec::new(),
+                },
             )
             .await?;
         let start = tokio::time::Instant::now();
+        w.retry_later(|| bob.open(&space)).await?;
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
-        let page = under(&folder, "/page-bob");
-        w.until("bob writes a page into the folder", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
+        let page = n("/page-bob");
+        w.space_put(BOB, &space, &page, octets("a page by bob"))
+            .await?;
         w.until("alice reads bob's page", LIMIT, || {
-            reads(&*alice, &page, "a page by bob")
+            reads(&*alice, &space, &page, "a page by bob")
         })
         .await?;
         w.converged(start.elapsed());

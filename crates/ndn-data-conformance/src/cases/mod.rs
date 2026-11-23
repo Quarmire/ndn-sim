@@ -602,13 +602,6 @@ fn version<'c>(changes: &'c [Change], id: &VersionId) -> Option<&'c Version> {
     versions(changes).find(|v| v.id == *id)
 }
 
-/// Whether `changes` report an equivocation.
-fn equivocation(changes: &[Change]) -> bool {
-    changes
-        .iter()
-        .any(|c| matches!(c, Change::Equivocation { .. }))
-}
-
 // ---- the keys-over-time kit (c3, k1–k10, o2) -----------------------------------------------
 
 /// The time the owner says a device was lost, by the clock of `root` (the namespace's root

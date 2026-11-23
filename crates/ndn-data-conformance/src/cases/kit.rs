@@ -59,6 +59,26 @@ pub fn contains(bytes: &[u8], part: &[u8]) -> bool {
     !part.is_empty() && bytes.windows(part.len()).any(|w| w == part)
 }
 
+/// A photo's octets: about 1.6 MB, some 390 chunks of 4096 octets.
+pub const IMAGE: usize = 1_600_000;
+
+/// The octets of a photo named `file` of `len` octets, the same every run: they come from a
+/// generator (xorshift) seeded by the name, so no store can shrink them.
+pub fn picture(file: &str, len: usize) -> Bytes {
+    let mut x = file.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    let mut image = Vec::with_capacity(len + 8);
+    while image.len() < len {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        image.extend_from_slice(&x.to_le_bytes());
+    }
+    image.truncate(len);
+    Bytes::from(image)
+}
+
 /// A space only its members read: `writers` write beside the owner, `readers` read beside it.
 pub fn private(writers: &[&str], readers: &[&str]) -> SpaceShare {
     SpaceShare {

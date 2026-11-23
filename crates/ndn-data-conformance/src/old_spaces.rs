@@ -32,11 +32,11 @@ use ndn_data::{
 };
 
 use crate::case::Failure;
-use crate::reference::device_key;
 use crate::spaces::{
     AlertKind, EntryRead, RefusalKind, SpaceAlert, SpaceChange, SpaceChanges, SpaceEntry,
     SpaceEntryKey, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
 };
+use crate::world_common::device_key;
 
 /// One `ndn-data` device as [`Spaces`].
 pub struct OldSpaces {

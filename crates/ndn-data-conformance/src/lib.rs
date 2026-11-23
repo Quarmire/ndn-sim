@@ -39,6 +39,7 @@ pub mod runner;
 pub mod signal;
 pub mod spaces;
 pub mod world;
+pub mod world_common;
 
 pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;

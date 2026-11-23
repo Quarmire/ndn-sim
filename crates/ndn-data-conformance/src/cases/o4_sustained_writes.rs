@@ -1,11 +1,10 @@
 //! Open item 4 — a reader keeps up with a writer that never pauses.
 //!
 //! Alice's phone autosaves her notes many times a second while her laptop starts watching the
-//! folder. A summary root names its nodes by digest; if the writer stopped serving the nodes of a
-//! root once newer roots superseded them, the laptop's descent would have to start over from a
-//! newer root, and it would finish only once the phone paused. The fix (§7 of the spec): the
-//! writer serves every node any root it signed lists, the reader finishes the descent it started
-//! against the root it started from and continues from there.
+//! space. A reader that restarted its walk from the newest state whenever the writer signed a
+//! newer one would finish only once the phone paused. The invariant is the reader's: it
+//! finishes what it started against the state it started from and continues from there, and so
+//! comes to hold everything written before it looked, and reports it to its watcher.
 //!
 //! On a faulty network the phone's pace is the one workload parameter that follows the path
 //! (spec §18.1: a sustained-write case offers the load the path carries): every version is a
@@ -20,11 +19,15 @@
 //! and both bounds are measured.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+
+use super::kit::{LIMIT, item, n, octets, private};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::feature::Feature;
+use crate::spaces::{SpaceChanges, SpaceEntry, SpaceEntryKey, SpaceEvent, SpaceItem, Spaces};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -117,67 +120,100 @@ fn plan() -> Plan {
     p
 }
 
-fn note_name(i: usize) -> Name {
-    n(&format!("/alice/32=data/notes/n{i}"))
+fn note_path(i: usize) -> Name {
+    n(&format!("/n{i}"))
 }
 
-/// Read `feed` until every id of `want` is among the versions it reported (`held`), for at most
-/// `limit` of virtual time; returns how long it took.
-async fn until_held(
-    feed: &mut Changes,
-    held: &mut HashSet<VersionId>,
-    want: &[VersionId],
+/// Whether `reported` holds, for `path`, the entry `want` or a later one of its log.
+fn reported_up_to(
+    reported: &BTreeMap<Name, SpaceEntryKey>,
+    path: &Name,
+    want: &SpaceEntry,
+) -> bool {
+    reported
+        .get(path)
+        .is_some_and(|key| key.covers(&want.key()))
+}
+
+/// Note that the watch reported `item`: the newest entry it reported at the item's path.
+fn record(reported: &mut BTreeMap<Name, SpaceEntryKey>, item: &SpaceItem) {
+    let key = item.key();
+    match reported.get(&item.path) {
+        Some(known) if known.covers(&key) => {}
+        _ => {
+            reported.insert(item.path.clone(), key);
+        }
+    }
+}
+
+/// Read `feed` until, at every path of `want`, it has reported the entry or a later one of the
+/// same log (`reported`: the newest each path has been reported at), for at most `limit` of
+/// virtual time; returns how long it took. A watch that lags is read again with `get`.
+async fn until_reported(
+    spaces: &dyn Spaces,
+    space: &Name,
+    feed: &mut dyn SpaceChanges,
+    reported: &mut BTreeMap<Name, SpaceEntryKey>,
+    want: &BTreeMap<Name, SpaceEntry>,
     what: &str,
     limit: Duration,
 ) -> Result<Duration, Failure> {
     let start = tokio::time::Instant::now();
     let deadline = start + limit;
-    let mut missing: Vec<&VersionId> = want.iter().filter(|id| !held.contains(id)).collect();
+    let mut missing: Vec<&Name> = want
+        .iter()
+        .filter(|(path, entry)| !reported_up_to(reported, path, entry))
+        .map(|(path, _)| path)
+        .collect();
     while !missing.is_empty() {
         match tokio::time::timeout_at(deadline, feed.next()).await {
             Err(_) => {
                 return Err(Failure::new(format!(
-                    "{what}: {} of {} versions not reported within {limit:?} of virtual time \
-                     (first missing {:?})",
+                    "{what}: {} of {} paths not reported at their newest entry within {limit:?} \
+                     of virtual time (first missing {})",
                     missing.len(),
                     want.len(),
                     missing[0]
                 )));
             }
             Ok(None) => return Err(Failure::new(format!("{what}: the watch ended"))),
-            Ok(Some(change)) => {
-                if let Change::Version(v) = change? {
-                    held.insert(v.id);
-                    missing.retain(|id| !held.contains(id));
+            Ok(Some(event)) => match event? {
+                SpaceEvent::Put(item) | SpaceEvent::Removed(item) => record(reported, &item),
+                SpaceEvent::Lagged => {
+                    for path in &missing {
+                        if let Some(item) = item(spaces, space, path).await? {
+                            record(reported, &item);
+                        }
+                    }
                 }
-            }
+                _ => {}
+            },
         }
+        missing.retain(|path| !reported_up_to(reported, path, &want[*path]));
     }
     Ok(start.elapsed())
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n("/alice/32=data/notes");
-        let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
-        let written: RefCell<Vec<VersionId>> = RefCell::new(Vec::new());
+        let space = n("/alice/32=data/notes");
+        let (phone, laptop) = (w.spaces(PHONE), w.spaces(LAPTOP));
+        phone.create(&space, private(&[], &[])).await?;
+        // The newest entry the phone wrote at each path: a later entry of a log covers the
+        // earlier ones, so holding each path's newest is holding everything written.
+        let written: RefCell<BTreeMap<Name, SpaceEntry>> = RefCell::new(BTreeMap::new());
         for i in 0..NOTES {
-            let note_i = note_name(i);
-            phone
-                .share(
-                    &note_i,
-                    members(register(), &["/alice"], &[person("/alice")]),
-                )
+            let path = note_path(i);
+            let entry = w
+                .space_put(PHONE, &space, &path, octets(&format!("note {i}")))
                 .await?;
-            let id = phone
-                .put_op(&note_i, octets(&format!("note {i}")), note(1))
-                .await?;
-            written.borrow_mut().push(id);
+            written.borrow_mut().insert(path, entry);
         }
 
         // The tablet watches throughout: each of its refreshes has the phone sign a newer root,
         // superseding the nodes of the root the laptop is descending many times over.
-        let _tablet_feed = w.at(TABLET).watch(&folder, &Frontier::new()).await?;
+        let tablet = w.spaces(TABLET);
+        let _tablet_feed = w.retry_later(|| tablet.watch(&space)).await?;
         let pace = pace(w);
         w.measure(
             "the phone's pace on a clean network",
@@ -206,11 +242,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             // supersedes another branch of the summary.
             let mut k = 0usize;
             while !stop.get() {
-                let note_k = note_name(k * 7 % NOTES);
-                let id = phone
-                    .put_op(&note_k, octets(&format!("autosave {k}")), note(1))
+                let path = note_path(k * 7 % NOTES);
+                let entry = w
+                    .space_put(PHONE, &space, &path, octets(&format!("autosave {k}")))
                     .await?;
-                written.borrow_mut().push(id);
+                written.borrow_mut().insert(path, entry);
                 k += 1;
                 w.sleep(pace).await;
             }
@@ -222,11 +258,13 @@ fn run(w: &World) -> CaseFuture<'_> {
                 let before = written.borrow().clone();
                 let start = w.mark();
                 w.report_from(start);
-                let mut feed = laptop.watch(&folder, &Frontier::new()).await?;
-                let mut held = HashSet::new();
-                let took = until_held(
-                    &mut feed,
-                    &mut held,
+                let mut feed = w.retry_later(|| laptop.watch(&space)).await?;
+                let mut reported = BTreeMap::new();
+                let took = until_reported(
+                    &*laptop,
+                    &space,
+                    &mut *feed,
+                    &mut reported,
                     &before,
                     "the laptop holds everything written before it looked",
                     LIMIT,
@@ -235,12 +273,14 @@ fn run(w: &World) -> CaseFuture<'_> {
                 w.converged(took);
                 for round in 1..=ROUNDS {
                     let target = written.borrow().clone();
-                    until_held(
-                        &mut feed,
-                        &mut held,
+                    until_reported(
+                        &*laptop,
+                        &space,
+                        &mut *feed,
+                        &mut reported,
                         &target,
                         &format!(
-                            "catch-up {round}: the laptop holds all {} versions written so far",
+                            "catch-up {round}: the laptop holds all {} paths as written so far",
                             target.len()
                         ),
                         keep_up,

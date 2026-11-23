@@ -1,30 +1,30 @@
-//! Open item 3 — who signs a shared summary.
+//! Open item 3 — who vouches for completeness with many writers.
 //!
-//! With many writers each signs its own summary; a combined one has no single signer. Completeness
-//! is then per writer, gathered by the members record. Eight people write into one shared log
-//! collection; one of them keeps writing while offline. Whether this is enough for large shared
-//! folders needs measuring, so the case records, besides its cost, what checking completeness
-//! costs the reader: a full check of every member's summary with 8 writers and again with 32, and
-//! catching one new version.
+//! With many writers each member's log is its own: completeness is per writer, gathered by the
+//! members record. Eight people write into one shared space, each at a path of its own; one of
+//! them keeps writing while offline. Whether this is enough for large shared folders needs
+//! measuring, so the case records, besides its cost, what checking completeness costs the
+//! reader: a full look at every member's state with 8 writers and again with 32, and catching one
+//! new entry.
 //!
-//! The reader's own key is not among the summaries it checks: a writer's own log is complete to
-//! itself (it holds every entry it signed), and a summary exists for the others.
+//! The reader's own entries are checked like the others': a writer's own log is complete to
+//! itself (it holds every entry it signed).
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ndn_data::{Change, Summary, Writer};
-
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, LOOK, SETTLE, drain, has, items, look, n, octets, private, required};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::{SpaceEntry, SpaceEvent, Spaces};
 use crate::world::{Dev, Plan, World};
+use ndn_data::Name;
 
 pub(super) const CASE: Case = Case {
     id: "o3",
     title: "Completeness with many writers",
     slice: 2,
-    needs: &[Feature::Log, Feature::WritersAcrossPrefixes],
+    needs: &[Feature::WritersAcrossPrefixes],
     model: &["M8"],
     guards: "Completeness is per writer: each member signs a summary of its own log, a reader \
              holds exactly what each other member's newest summary covers, and a member offline \
@@ -59,40 +59,31 @@ fn plan() -> Plan {
     p
 }
 
-/// The newest summary each signer has sent, among `changes`.
-fn newest_by_signer(changes: &[Change]) -> BTreeMap<Writer, Summary> {
-    let mut out: BTreeMap<Writer, Summary> = BTreeMap::new();
-    for c in changes {
-        if let Change::Summary(s) = c {
-            match out.get(&s.signer) {
-                Some(old) if old.frontier.covers(&s.frontier) => {}
-                _ => {
-                    out.insert(s.signer.clone(), s.clone());
-                }
-            }
-        }
-    }
-    out
+fn path_of(who: &str) -> Name {
+    n(&format!("/{who}"))
 }
 
-/// What a full completeness check costs `reader`, holding `held`: a fresh watch of `folder`
-/// looks at every member's newest summary; nothing changed. Records Interests and bytes received,
-/// in total and per other writer.
+/// What a full completeness check costs `reader`, which holds everything `written`: a fresh look
+/// at the space lists what the device holds of every member; nothing changed. Records Interests
+/// and bytes received, in total and per other writer.
 async fn full_check(
     w: &World,
     reader: Dev,
-    folder: &Name,
-    held: &Frontier,
+    space: &Name,
+    written: &[SpaceEntry],
     writers: usize,
 ) -> Result<(), Failure> {
     let before = w.net().device_wire(reader);
-    let mut stream = w.at(reader).watch(folder, held).await?;
-    let mut seen = Vec::new();
-    drain(&mut stream, LOOK, &mut seen).await?;
+    let spaces = w.spaces(reader);
+    let seen = look(&*spaces, space, LOOK).await?;
     let spent = w.net().device_wire(reader) - before;
+    let strangers: Vec<_> = items(&seen)
+        .filter(|i| !written.iter().any(|e| e.key() == i.key()))
+        .map(|i| i.key())
+        .collect();
     ensure!(
-        versions(&seen).next().is_none(),
-        "a check with nothing changed delivered versions"
+        strangers.is_empty(),
+        "a check with nothing changed listed entries nobody wrote: {strangers:?}"
     );
     let others = writers as u64 - 1;
     w.measure(
@@ -113,117 +104,164 @@ async fn full_check(
     Ok(())
 }
 
+/// Whether `reader` has applied every entry of `entries`.
+async fn holds_all(
+    reader: &dyn Spaces,
+    space: &Name,
+    entries: &[&SpaceEntry],
+) -> Result<bool, Failure> {
+    for entry in entries {
+        if !has(reader, space, entry).await? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n("/alice/32=data/shared/garden-club");
-        let alice = w.at(ALICE);
+        let space = n("/alice/32=data/shared/garden-club");
+        let alice = w.spaces(ALICE);
         let writers: Vec<String> = PEOPLE
             .iter()
             .map(|p| format!("/{p}"))
             .chain((0..MORE).map(|i| format!("/{}", more(i))))
             .collect();
         let writer_refs: Vec<&str> = writers.iter().map(String::as_str).collect();
-        let readers: Vec<Audience> = writers.iter().map(|p| person(p)).collect();
         alice
-            .share(&folder, members(Rule::Log, &writer_refs, &readers))
+            .create(&space, private(&writer_refs, &writer_refs))
             .await?;
+        for i in 1..PEOPLE.len() {
+            let member = w.spaces(Dev(i));
+            w.retry_later(|| member.open(&space)).await?;
+        }
 
-        let mut by_person: Vec<Vec<VersionId>> = vec![Vec::new(); PEOPLE.len()];
+        // Each member writes its own path five times: its own log, newest last.
+        let mut by_person: Vec<Vec<SpaceEntry>> = vec![Vec::new(); PEOPLE.len()];
         for round in 0..EACH {
             for (i, who) in PEOPLE.iter().enumerate() {
-                let id = w
-                    .put(Dev(i), &folder, text(&format!("{who} {round}")), note(1))
+                let entry = w
+                    .space_put(
+                        Dev(i),
+                        &space,
+                        &path_of(who),
+                        octets(&format!("{who} {round}")),
+                    )
                     .await?;
-                by_person[i].push(id);
+                by_person[i].push(entry);
             }
         }
-        let mut feed = alice.watch(&folder, &Frontier::new()).await?;
+        let mut written: Vec<SpaceEntry> = by_person.iter().flatten().cloned().collect();
+        let mut feed = alice.watch(&space).await?;
         let mut seen = Vec::new();
-        let all: Vec<VersionId> = by_person.iter().flatten().cloned().collect();
-        let took = drain_until(
-            &mut feed,
-            &mut seen,
-            "Alice holds every member's log",
-            LIMIT,
-            |c| all.iter().all(|id| version(c, id).is_some()),
-        )
+        let newest: Vec<&SpaceEntry> = by_person
+            .iter()
+            .map(|entries| entries.last().expect("each member wrote"))
+            .collect();
+        w.converge("Alice holds every member's log", LIMIT, || {
+            holds_all(&*alice, &space, &newest)
+        })
         .await?;
-        w.converged(took);
 
-        let summaries = newest_by_signer(&seen);
-        for ids in by_person.iter().skip(1) {
-            let key = &ids[0].writer;
-            let s = summaries
-                .get(key)
-                .ok_or_else(|| Failure::new(format!("no summary signed by member {key:?}")))?;
+        // Completeness is per writer: Alice holds every entry of each member's log, and each
+        // member's path reads its newest write.
+        for (i, entries) in by_person.iter().enumerate() {
+            for entry in entries {
+                ensure!(
+                    has(&*alice, &space, entry).await?,
+                    "Alice lacks {} though she holds {}'s newest entry",
+                    entry.name,
+                    PEOPLE[i]
+                );
+            }
+            let got = required(&*alice, &space, &path_of(PEOPLE[i])).await?;
             ensure!(
-                s.frontier.get(key) == ids.last().map(|id| id.seq),
-                "{key:?}'s own summary covers {:?}, not its last version",
-                s.frontier.get(key)
+                got.entry() == *newest[i],
+                "Alice reads {:?} at {}'s path, not the newest write of that member",
+                String::from_utf8_lossy(&got.bytes),
+                PEOPLE[i]
             );
         }
 
-        // Frank keeps writing offline: Alice's view of Frank stays complete against his last
-        // summary, and catches up when he returns.
+        // Frank keeps writing offline: Alice's view of Frank stays complete up to what reached
+        // her (his newest entry before he went offline, and nothing past it she cannot see), and
+        // catches up when he returns.
         w.net().offline(FRANK);
-        let frank = w.at(FRANK);
+        let frank = w.spaces(FRANK);
+        let frank_path = path_of(PEOPLE[FRANK.0]);
         let mut later = Vec::new();
         for k in 0..3 {
             later.push(
                 frank
-                    .put(&folder, text(&format!("frank offline {k}")), note(1))
+                    .put(&space, &frank_path, octets(&format!("frank offline {k}")))
                     .await?,
             );
         }
-        drain(&mut feed, SETTLE, &mut seen).await?;
-        let frank_key = later[0].writer.clone();
-        let held: Frontier = versions(&seen).map(|v| v.id.clone()).collect();
-        let summary = newest_by_signer(&seen)
-            .remove(&frank_key)
-            .ok_or_else(|| Failure::new("Frank's summary disappeared"))?;
+        written.extend(later.iter().cloned());
+        drain(&mut *feed, SETTLE, &mut seen).await?;
+        for entry in &later {
+            ensure!(
+                !has(&*alice, &space, entry).await?,
+                "Alice holds Frank's entry {} though he wrote it offline and nobody else has it",
+                entry.name
+            );
+        }
         ensure!(
-            summary.frontier.get(&frank_key) == held.get(&frank_key),
-            "Alice holds Frank up to {:?} but his newest summary says {:?}",
-            held.get(&frank_key),
-            summary.frontier.get(&frank_key)
+            holds_all(
+                &*alice,
+                &space,
+                &by_person[FRANK.0].iter().collect::<Vec<_>>()
+            )
+            .await?,
+            "Alice lost entries of Frank's she held before he went offline"
+        );
+        let before_return = required(&*alice, &space, &frank_path).await?;
+        ensure!(
+            before_return.entry() == *newest[FRANK.0],
+            "Alice reads {:?} at Frank's path while he is offline, not his newest entry she holds",
+            String::from_utf8_lossy(&before_return.bytes)
         );
 
         w.net().online(FRANK);
-        drain_until(
-            &mut feed,
-            &mut seen,
-            "Alice catches up with Frank",
-            LIMIT,
-            |c| {
-                later.iter().all(|id| version(c, id).is_some())
-                    && newest_by_signer(c)
-                        .get(&frank_key)
-                        .is_some_and(|s| s.frontier.contains(later.last().expect("three writes")))
-            },
-        )
+        w.until("Alice catches up with Frank", LIMIT, || {
+            has(&*alice, &space, later.last().expect("three writes"))
+        })
         .await?;
+        for entry in &later {
+            ensure!(
+                has(&*alice, &space, entry).await?,
+                "Alice caught up with Frank's newest entry but lacks {}",
+                entry.name
+            );
+        }
+        let caught_up = required(&*alice, &space, &frank_path).await?;
+        ensure!(
+            caught_up.entry() == *later.last().expect("three writes"),
+            "Alice reads {:?} at Frank's path after he returned, not his newest entry",
+            String::from_utf8_lossy(&caught_up.bytes)
+        );
 
         // Measured: what completeness costs the reader.
         w.sleep(SETTLE).await;
-        drain(&mut feed, LOOK, &mut seen).await?;
-        let held: Frontier = versions(&seen).map(|v| v.id.clone()).collect();
-        full_check(w, ALICE, &folder, &held, PEOPLE.len()).await?;
+        drain(&mut *feed, LOOK, &mut seen).await?;
+        full_check(w, ALICE, &space, &written, PEOPLE.len()).await?;
 
         let before = w.net().device_wire(ALICE);
         let start = tokio::time::Instant::now();
         let one = w
-            .at(BOB)
-            .put(&folder, text("bob, one more"), note(1))
+            .spaces(BOB)
+            .put(&space, &path_of("bob"), octets("bob, one more"))
             .await?;
-        // Read the feed one change at a time, so the counters stop when the version arrives.
+        written.push(one.clone());
+        // Read the feed one event at a time, so the counters stop when the entry arrives.
         let deadline = tokio::time::Instant::now() + LIMIT;
         loop {
-            let change = match tokio::time::timeout_at(deadline, feed.next()).await {
-                Ok(Some(change)) => change?,
-                _ => return Err(Failure::new("Alice did not get Bob's one new version")),
+            let event = match tokio::time::timeout_at(deadline, feed.next()).await {
+                Ok(Some(event)) => event?,
+                _ => return Err(Failure::new("Alice did not get Bob's one new entry")),
             };
-            let arrived = matches!(&change, Change::Version(v) if v.id == one);
-            seen.push(change);
+            let arrived = matches!(&event, SpaceEvent::Put(i) if i.key() == one.key());
+            seen.push(event);
             if arrived {
                 break;
             }
@@ -247,28 +285,27 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         let mut joined = Vec::new();
         for i in 0..MORE {
+            let member = w.spaces(Dev(PEOPLE.len() + i));
+            w.retry_later(|| member.open(&space)).await?;
             joined.push(
-                w.put(
+                w.space_put(
                     Dev(PEOPLE.len() + i),
-                    &folder,
-                    text(&format!("{} joins", more(i))),
-                    note(1),
+                    &space,
+                    &path_of(&more(i)),
+                    octets(&format!("{} joins", more(i))),
                 )
                 .await?,
             );
         }
-        drain_until(
-            &mut feed,
-            &mut seen,
-            "Alice holds the 24 later members' versions",
-            LIMIT,
-            |c| joined.iter().all(|id| version(c, id).is_some()),
-        )
+        written.extend(joined.iter().cloned());
+        let newest_joined: Vec<&SpaceEntry> = joined.iter().collect();
+        w.until("Alice holds the 24 later members' entries", LIMIT, || {
+            holds_all(&*alice, &space, &newest_joined)
+        })
         .await?;
         w.sleep(SETTLE).await;
-        drain(&mut feed, LOOK, &mut seen).await?;
-        let held: Frontier = versions(&seen).map(|v| v.id.clone()).collect();
-        full_check(w, ALICE, &folder, &held, writers.len()).await?;
+        drain(&mut *feed, LOOK, &mut seen).await?;
+        full_check(w, ALICE, &space, &written, writers.len()).await?;
 
         // The background cost: with nothing written, the reader still runs one sync group per
         // namespace the members record names (spec §12), each sending its periodic notice.

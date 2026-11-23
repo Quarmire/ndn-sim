@@ -7,11 +7,11 @@
 
 use std::time::Duration;
 
-use ndn_data::{Change, Refusal};
-
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, agree, drain_until, has, n, octets, private, winning, withdrawn_as};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::{RefusalKind, SpaceChange};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -47,60 +47,50 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let doc = n("/alice/32=data/docs/plan");
-        let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
-        let all = [person("/alice"), person("/bob"), person("/carol")];
+        let space = n("/alice/32=data/docs");
+        let path = n("/plan");
+        let (alice, bob, carol) = (w.spaces(ALICE), w.spaces(BOB), w.spaces(CAROL));
         alice
-            .share(
-                &doc,
-                members(register(), &["/alice", "/bob", "/carol"], &all),
-            )
+            .create(&space, private(&["/bob", "/carol"], &["/bob", "/carol"]))
             .await?;
-        let inside = w.put_op(BOB, &doc, octets("bob: first"), note(1)).await?;
+        let inside = w
+            .space_put(BOB, &space, &path, octets("bob: first"))
+            .await?;
         w.until("everyone holds Bob's first edit", LIMIT, || async {
-            agree(&[&*alice, &*bob, &*carol], &doc, &[&inside]).await
+            agree(&[&*alice, &*bob, &*carol], &space, &path, &[&inside]).await
         })
         .await?;
 
         // Alice, on a plane, removes Bob; the cut cannot leave her laptop yet.
         w.net().offline(ALICE);
         alice
-            .share(
-                &doc,
-                members(
-                    register(),
-                    &["/alice", "/carol"],
-                    &[person("/alice"), person("/carol")],
-                ),
+            .change(
+                &space,
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.gesture();
 
-        let mut carols_feed = carol.watch(&doc, &Frontier::new()).await?;
-        let outside = bob.put_op(&doc, octets("bob: second"), note(1)).await?;
+        let mut carols_feed = carol.watch(&space).await?;
+        let outside = bob.put(&space, &path, octets("bob: second")).await?;
         w.until(
             "Carol accepts Bob's second edit, not knowing the cut",
             LIMIT,
-            || has(&*carol, &doc, &outside),
+            || has(&*carol, &space, &outside),
         )
         .await?;
 
         w.net().online(ALICE);
         let mut seen = Vec::new();
         let took = drain_until(
-            &mut carols_feed,
+            &mut *carols_feed,
             &mut seen,
             "Carol withdraws Bob's second edit",
             LIMIT,
-            |changes| {
-                changes.iter().any(|c| {
-                    matches!(
-                        c,
-                        Change::Withdrawn { collection, id, why: Refusal::OutsideCut(cut) }
-                            if *collection == doc && *id == outside && cut.refuses(&doc, id)
-                    )
-                })
-            },
+            |events| withdrawn_as(events, &outside.key(), RefusalKind::OutsideCut),
         )
         .await?;
         w.converged(took);
@@ -110,18 +100,22 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.until(
             "the re-check keeps Bob's edit inside the cut",
             LIMIT,
-            || has(&*carol, &doc, &inside),
+            || has(&*carol, &space, &inside),
         )
         .await?;
-        let s = winning(&*carol, &doc, &[&inside]).await?;
         ensure!(
-            !s.at.contains(&outside),
-            "Carol's state still includes Bob's edit the cut refuses"
+            !has(&*carol, &space, &outside).await?,
+            "Carol still holds Bob's edit the cut refuses as applied"
+        );
+        let got = winning(&*carol, &space, &path, &[&inside]).await?;
+        ensure!(
+            got.key() != outside.key() && !got.after.iter().any(|a| a.covers(&outside.key())),
+            "Carol's register at {path} still rests on Bob's edit the cut refuses"
         );
         ensure!(
-            written(&s) == b"bob: first",
+            got.bytes == b"bob: first".as_slice(),
             "Carol shows {:?} for Bob's edit after the cut",
-            String::from_utf8_lossy(written(&s))
+            String::from_utf8_lossy(&got.bytes)
         );
         Ok(())
     })

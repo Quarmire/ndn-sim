@@ -21,21 +21,19 @@ use std::time::Duration;
 
 use ndn_sim::Faults;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, n, octets, private};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::SpaceEvent;
 use crate::world::{Dev, Plan, World};
+use ndn_data::Name;
 
 pub(super) const CASE: Case = Case {
     id: "o5",
     title: "A sealed folder converges under loss",
     slice: 6,
-    needs: &[
-        Feature::Seal,
-        Feature::Log,
-        Feature::FolderMembers,
-        Feature::FolderWatch,
-    ],
+    needs: &[Feature::Seal, Feature::FolderMembers, Feature::FolderWatch],
     model: &["M15"],
     guards: "With one packet in five dropped on its way to each device, the first version a \
              writer seals in a folder reaches a reader's folder watch, opened, within seconds of \
@@ -80,47 +78,40 @@ fn plan() -> Plan {
     p
 }
 
-fn folder() -> Name {
+fn space() -> Name {
     n("/alice/32=data/diary")
 }
 
 fn page() -> Name {
-    folder().append("monday")
-}
-
-fn diary() -> PutOptions {
-    PutOptions {
-        type_id: TypeId {
-            name: n("/types/diary"),
-            revision: 1,
-        },
-        keep: Keep::Forever,
-    }
+    n("/monday")
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let alice = w.at(ALICE);
+        let alice = w.spaces(ALICE);
+        let bob = w.spaces(BOB);
         w.gesture();
-        alice
-            .share_folder(
-                &folder(),
-                members(Rule::Log, &["/alice"], &[person("/alice"), person("/bob")]).into(),
-            )
-            .await?;
-        let mut feed = w.at(BOB).watch(&folder(), &Frontier::new()).await?;
+        let space = space();
+        alice.create(&space, private(&[], &["/bob"])).await?;
+        let mut feed = w.retry_later(|| bob.watch(&space)).await?;
 
         w.report_from(w.mark());
         let sent = w.net().device_wire(BOB).interests;
         let asked = w.grants(BOB).asked;
         w.gesture();
         let start = tokio::time::Instant::now();
-        let id = alice.put(&page(), text("rain all day"), diary()).await?;
+        let entry = alice.put(&space, &page(), octets("rain all day")).await?;
         let deadline = start + LIMIT;
-        let mut seen = Vec::new();
-        while version(&seen, &id).is_none() {
+        let mut reported = None;
+        while reported.is_none() {
             match tokio::time::timeout_at(deadline, feed.next()).await {
-                Ok(Some(item)) => seen.push(item?),
+                Ok(Some(event)) => {
+                    if let SpaceEvent::Put(item) = event?
+                        && item.key() == entry.key()
+                    {
+                        reported = Some(item);
+                    }
+                }
                 Ok(None) => return Err(Failure::new("Bob's folder watch ended")),
                 Err(_) => {
                     return Err(Failure::new(format!(
@@ -147,10 +138,10 @@ fn run(w: &World) -> CaseFuture<'_> {
             w.grants(BOB).asked - asked,
             "grants",
         );
-        let v = version(&seen, &id).expect("drained until it came");
+        let item = reported.expect("drained until it came");
         ensure!(
-            field_of(v, "text") == Some("rain all day"),
-            "Bob's watch reported Alice's version unopened or altered: {v:?}"
+            item.path == page() && item.bytes == b"rain all day".as_slice(),
+            "Bob's watch reported Alice's version unopened or altered: {item:?}"
         );
         ensure!(
             took <= BOUND,

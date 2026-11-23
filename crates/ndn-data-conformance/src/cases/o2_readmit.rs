@@ -9,9 +9,12 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    LIMIT, SETTLE, contains, has, known, loss_time, n, octets, private, stolen, winning,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -42,39 +45,34 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let notes = n("/alice/32=data/notes/garden");
-        let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
-        laptop
-            .share(
-                &notes,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        let space = n("/alice/32=data/notes");
+        let path = n("/garden");
+        let (phone, laptop) = (w.spaces(PHONE), w.spaces(LAPTOP));
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| phone.open(&space)).await?;
         w.until("the phone knows the shared notes", LIMIT, || {
-            known(&*phone, &notes)
+            known(&*phone, &space)
         })
         .await?;
         // The phone's first put races the epoch key's grant (spec §17.1): put again on RetryLater.
         let seen = w
-            .put_op(PHONE, &notes, octets("phone: planted beans"), note(1))
+            .space_put(PHONE, &space, &path, octets("phone: planted beans"))
             .await?;
         w.until("the laptop holds the phone's entry", LIMIT, || {
-            has(&*laptop, &notes, &seen)
+            has(&*laptop, &space, &seen)
         })
         .await?;
 
         // The key leaks with a copy of the phone's storage; the phone goes offline and writes on.
         let lost = loss_time(w, LAPTOP).await;
-        let thief = stolen(w, THIEF, &notes, &seen).await?;
+        let thief = stolen(w, THIEF, &space, &seen).await?;
         w.net().offline(PHONE);
         let honest = phone
-            .put_op(&notes, octets("phone: watered, offline"), note(1))
+            .put(&space, &path, octets("phone: watered, offline"))
             .await?;
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
-        let forged = thief
-            .put_op(&notes, octets("thief: forged"), note(1))
-            .await?;
+        let forged = thief.put(&space, &path, octets("thief: forged")).await?;
         ensure!(
             forged.writer == honest.writer && forged.seq == honest.seq,
             "precondition: the thief writes at the honest entry's name ({honest:?}), got \
@@ -84,33 +82,39 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().online(PHONE);
         w.sleep(SETTLE).await;
         ensure!(
-            !has(&*laptop, &notes, &honest).await?,
+            !has(&*laptop, &space, &honest).await?,
             "precondition: the honest offline entry outside the cut should be refused before \
              re-admission"
         );
 
         // Alice signs the honest entry back in, as her phone shows it refused.
         w.gesture();
-        w.readmit(LAPTOP, PHONE, &notes, &honest).await?;
+        w.readmit_entry(LAPTOP, PHONE, &honest).await?;
         w.converge("the laptop holds the re-admitted entry", LIMIT, || {
-            has(&*laptop, &notes, &honest)
+            has(&*laptop, &space, &honest)
         })
         .await?;
         w.sleep(SETTLE).await;
 
-        let s = winning(&*laptop, &notes, &[&honest]).await?;
         ensure!(
-            s.at.contains(&seen) && s.at.contains(&honest),
+            has(&*laptop, &space, &seen).await? && has(&*laptop, &space, &honest).await?,
             "the notes lack the entry inside the cut or the re-admitted one"
         );
+        let got = winning(&*laptop, &space, &path, &[&honest]).await?;
         ensure!(
-            !contains(written(&s), b"thief: forged"),
+            !contains(&got.bytes, b"thief: forged"),
             "re-admitting one entry let the thief's version ({forged:?}) in"
         );
         ensure!(
-            written(&s) == b"phone: watered, offline",
+            got.bytes == b"phone: watered, offline".as_slice(),
             "the re-admitted entry does not show: {:?}",
-            String::from_utf8_lossy(written(&s))
+            String::from_utf8_lossy(&got.bytes)
+        );
+        ensure!(
+            got.entry() == honest,
+            "the register at {path} rests on {:?}, not on the entry the owner re-admitted \
+             ({honest:?}); the thief's was {forged:?}",
+            got.entry()
         );
         Ok(())
     })

@@ -50,15 +50,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice", "/bob"],
                     &[person("/alice"), person("/bob")],
                 ),
             )
             .await?;
-        let seen = w
-            .put(BOB, &doc, content(&[("bob", "edit 41")]), note(1))
-            .await?;
+        let seen = w.put_op(BOB, &doc, octets("edit 41"), note(1)).await?;
         w.until("Alice holds Bob's edit", LIMIT, || {
             has(&*alice, &doc, &seen)
         })
@@ -66,14 +64,14 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         w.net().offline(BOB);
         alice
-            .share(&doc, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(&doc, members(register(), &["/alice"], &[person("/alice")]))
             .await?;
         w.gesture();
         let removed_at = w.net().true_date();
 
         w.net().set_clock(BOB, ClockSkew::behind(2 * DAY));
         let late = bob
-            .put(&doc, content(&[("bob", "edit 42, dated earlier")]), note(1))
+            .put_op(&doc, octets("edit 42, dated earlier"), note(1))
             .await?;
         ensure!(
             late.writer == seen.writer && late.seq > seen.seq,
@@ -97,7 +95,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             version(&at_alice, &late).is_none(),
             "Alice's watch delivered Bob's edit made after his removal"
         );
-        let s = state(&*alice, &doc).await?;
+        let s = winning(&*alice, &doc, &[&seen]).await?;
         ensure!(
             s.at.contains(&seen),
             "Bob's edit from before the removal left the document"
@@ -107,9 +105,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             "the document includes Bob's edit made after his removal"
         );
         ensure!(
-            field(&s.value, "bob") == Some("edit 41"),
-            "the document shows {:?} for Bob's field; only the edit inside the cut counts",
-            field(&s.value, "bob")
+            written(&s) == b"edit 41" && !contains(written(&s), b"edit 42"),
+            "the document shows {:?} for Bob; only the edit inside the cut counts",
+            String::from_utf8_lossy(written(&s))
         );
         Ok(())
     })

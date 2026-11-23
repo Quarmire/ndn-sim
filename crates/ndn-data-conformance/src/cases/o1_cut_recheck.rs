@@ -51,11 +51,12 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
         let all = [person("/alice"), person("/bob"), person("/carol")];
         alice
-            .share(&doc, members(merge(), &["/alice", "/bob", "/carol"], &all))
+            .share(
+                &doc,
+                members(register(), &["/alice", "/bob", "/carol"], &all),
+            )
             .await?;
-        let inside = w
-            .put(BOB, &doc, content(&[("bob", "first")]), note(1))
-            .await?;
+        let inside = w.put_op(BOB, &doc, octets("bob: first"), note(1)).await?;
         w.until("everyone holds Bob's first edit", LIMIT, || async {
             agree(&[&*alice, &*bob, &*carol], &doc, &[&inside]).await
         })
@@ -67,7 +68,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice", "/carol"],
                     &[person("/alice"), person("/carol")],
                 ),
@@ -76,9 +77,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.gesture();
 
         let mut carols_feed = carol.watch(&doc, &Frontier::new()).await?;
-        let outside = bob
-            .put(&doc, content(&[("bob", "second")]), note(1))
-            .await?;
+        let outside = bob.put_op(&doc, octets("bob: second"), note(1)).await?;
         w.until(
             "Carol accepts Bob's second edit, not knowing the cut",
             LIMIT,
@@ -114,15 +113,15 @@ fn run(w: &World) -> CaseFuture<'_> {
             || has(&*carol, &doc, &inside),
         )
         .await?;
-        let s = state(&*carol, &doc).await?;
+        let s = winning(&*carol, &doc, &[&inside]).await?;
         ensure!(
             !s.at.contains(&outside),
             "Carol's state still includes Bob's edit the cut refuses"
         );
         ensure!(
-            field(&s.value, "bob") == Some("first"),
-            "Carol shows {:?} for Bob's field after the cut",
-            field(&s.value, "bob")
+            written(&s) == b"bob: first",
+            "Carol shows {:?} for Bob's edit after the cut",
+            String::from_utf8_lossy(written(&s))
         );
         Ok(())
     })

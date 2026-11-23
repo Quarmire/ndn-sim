@@ -51,17 +51,20 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
         w.net().offline(TABLET);
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared journal", LIMIT, || {
             known(&*phone, &journal)
         })
         .await?;
         let monday = w
-            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
+            .put_op(PHONE, &journal, octets("monday: market"), note(1))
             .await?;
         let tuesday = w
-            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
+            .put_op(PHONE, &journal, octets("tuesday: dentist"), note(1))
             .await?;
         w.until("the laptop holds the phone's entries", LIMIT, || async {
             agree(&[&*phone, &*laptop], &journal, &[&monday, &tuesday]).await
@@ -80,12 +83,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let revoked_at = w.net().true_date();
 
         let forged = w
-            .put(
-                THIEF,
-                &journal,
-                content(&[("thief", "dated last month")]),
-                note(1),
-            )
+            .put_op(THIEF, &journal, octets("dated last month"), note(1))
             .await?;
         ensure!(
             forged.writer == monday.writer && forged.seq > tuesday.seq,
@@ -113,16 +111,16 @@ fn run(w: &World) -> CaseFuture<'_> {
             let seen = look(&**layer, &journal, &Frontier::new(), LOOK).await?;
             ensure!(
                 version(&seen, &forged).is_none()
-                    && !versions(&seen).any(|v| field_of(v, "thief").is_some()),
+                    && !versions(&seen).any(|v| wrote(v, "dated last month")),
                 "the {who} accepted the thief's backdated version"
             );
-            let s = state(&**layer, &journal).await?;
+            let s = winning(&**layer, &journal, &[&tuesday]).await?;
             ensure!(
                 s.at.contains(&monday) && s.at.contains(&tuesday),
                 "the {who} lacks an entry of the phone's inside the cut"
             );
             ensure!(
-                !s.at.contains(&forged) && field(&s.value, "thief").is_none(),
+                !s.at.contains(&forged) && !contains(written(&s), b"dated last month"),
                 "the {who}'s journal shows the thief's version"
             );
         }

@@ -52,14 +52,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
         w.net().offline(TABLET);
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared journal", LIMIT, || {
             known(&*phone, &journal)
         })
         .await?;
         let monday = w
-            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
+            .put_op(PHONE, &journal, octets("monday: market"), note(1))
             .await?;
         w.until("the laptop holds the phone's entry", LIMIT, || {
             has(&*laptop, &journal, &monday)
@@ -71,19 +74,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         stolen(w, THIEF, &journal, &monday).await?;
         w.net().offline(THIEF);
         let tuesday = w
-            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
+            .put_op(PHONE, &journal, octets("tuesday: dentist"), note(1))
             .await?;
         w.until("the laptop holds the phone's later entry", LIMIT, || {
             has(&*laptop, &journal, &tuesday)
         })
         .await?;
         let forged = w
-            .put(
-                THIEF,
-                &journal,
-                content(&[("thief", "other bytes")]),
-                note(1),
-            )
+            .put_op(THIEF, &journal, octets("other bytes"), note(1))
             .await?;
         ensure!(
             forged == tuesday,
@@ -128,19 +126,20 @@ fn run(w: &World) -> CaseFuture<'_> {
         for (who, layer) in [("tablet", &tablet), ("laptop", &laptop)] {
             let looked = look(&**layer, &journal, &Frontier::new(), LOOK).await?;
             ensure!(
-                !versions(&looked).any(|v| field_of(v, "thief").is_some()),
+                !versions(&looked).any(|v| wrote(v, "other bytes")),
                 "the {who} accepts the thief's other bytes at {name}, a name in the cut"
             );
-            let s = state(&**layer, &journal).await?;
+            let s = winning(&**layer, &journal, &[&tuesday]).await?;
             ensure!(
-                field(&s.value, "thief").is_none(),
+                !contains(written(&s), b"other bytes"),
                 "the {who}'s journal shows the thief's other bytes at {name}"
             );
             ensure!(
-                field(&s.value, "monday") == Some("market")
-                    && field(&s.value, "tuesday") == Some("dentist"),
+                s.at.contains(&monday)
+                    && s.at.contains(&tuesday)
+                    && written(&s) == b"tuesday: dentist",
                 "the {who} lacks the honest bytes of an entry in the cut ({:?})",
-                s.value
+                String::from_utf8_lossy(written(&s))
             );
         }
         Ok(())

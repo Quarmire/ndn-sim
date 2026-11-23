@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
 use crate::provider::{
-    Certs, DeviceSpec, GrantLog, Grants, JoinedList, LinkCall, NodeRole, Program, Provider, Tally,
+    Certs, DeviceSpec, GrantLog, Grants, JoinedList, LinkCall, NodeRole, Provider, Tally,
 };
 use crate::report::{Cost, Measure};
 
@@ -50,8 +50,6 @@ struct Planned {
     device: String,
     /// A thief: takes this device, key and storage ([`World::steal`]).
     stolen_from: Option<Dev>,
-    /// The merge rules its program knows beyond the standard ones.
-    program: Program,
     /// The person's genesis root key, for a self-certifying person ([`Plan::self_certifying`]).
     genesis: Option<[u8; 32]>,
     /// Its host's introductions make link grants ([`Plan::no_link_grants`]).
@@ -136,12 +134,6 @@ impl Plan {
         d
     }
 
-    /// The merge rules `d`'s program knows beyond the standard ones (every device's program
-    /// knows the element rule unless the case says otherwise).
-    pub fn program(&mut self, d: Dev, program: Program) {
-        self.devices[d.0].program = program;
-    }
-
     /// `d`'s host makes no link grants: its `IntroPolicy::grant_for` is zero.
     pub fn no_link_grants(&mut self, d: Dev) {
         self.devices[d.0].link_grants = false;
@@ -164,7 +156,6 @@ impl Plan {
             role: None,
             device: device.to_owned(),
             stolen_from: None,
-            program: Program::default(),
             genesis: None,
             link_grants: true,
         });
@@ -179,7 +170,6 @@ impl Plan {
             role: None,
             device: format!("with-{}", self.devices[victim.0].device),
             stolen_from: Some(victim),
-            program: Program::default(),
             genesis: None,
             link_grants: true,
         });
@@ -251,7 +241,6 @@ impl Net {
                 device: p.device.clone(),
                 // The hub is node 0; devices follow in plan order.
                 node: NodeId(i + 1),
-                program: p.program,
                 stranger: plan.strangers,
                 genesis: p.genesis,
                 link_grants: p.link_grants,
@@ -991,6 +980,20 @@ impl World {
     ) -> Result<VersionId, DataError> {
         let layer = self.at(d);
         self.again(|| layer.put(collection, content.clone(), options.clone()))
+            .await
+    }
+
+    /// `d` writes `op` into the register `collection` (`put_op`), putting again while the device
+    /// answers [`NextStep::RetryLater`] ([`again`](Self::again)), as [`put`](Self::put) does.
+    pub async fn put_op(
+        &self,
+        d: Dev,
+        collection: &Name,
+        op: Bytes,
+        options: PutOptions,
+    ) -> Result<VersionId, DataError> {
+        let layer = self.at(d);
+        self.again(|| layer.put_op(collection, op.clone(), options.clone()))
             .await
     }
 

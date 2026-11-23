@@ -45,14 +45,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
         w.net().offline(TABLET);
         laptop
-            .share(&notes, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &notes,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared notes", LIMIT, || {
             known(&*phone, &notes)
         })
         .await?;
         let before = w
-            .put(PHONE, &notes, content(&[("sown", "beans")]), note(1))
+            .put_op(PHONE, &notes, octets("sown beans"), note(1))
             .await?;
         w.until("the laptop holds the first note", LIMIT, || {
             has(&*laptop, &notes, &before)
@@ -61,7 +64,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         w.renew(PHONE).await?;
         let renewed = w
-            .put(PHONE, &notes, content(&[("watered", "tuesday")]), note(1))
+            .put_op(PHONE, &notes, octets("watered tuesday"), note(1))
             .await?;
         w.until("the laptop holds the note after the renewal", LIMIT, || {
             has(&*laptop, &notes, &renewed)
@@ -71,7 +74,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The certificate the renewal superseded runs out.
         w.expire(PHONE, Certs::Superseded).await?;
         let after = w
-            .put(PHONE, &notes, content(&[("picked", "friday")]), note(1))
+            .put_op(PHONE, &notes, octets("picked friday"), note(1))
             .await?;
         ensure!(
             before.writer == renewed.writer && renewed.writer == after.writer,
@@ -92,10 +95,15 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.sleep(SETTLE).await;
 
         for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
-            let s = state(&**layer, &notes).await?;
+            let s = winning(&**layer, &notes, &[&after]).await?;
             ensure!(
                 s.at.contains(&before) && s.at.contains(&renewed) && s.at.contains(&after),
                 "the {who} dropped a note of the renewed key's log"
+            );
+            ensure!(
+                written(&s) == b"picked friday",
+                "the {who} reads {:?}; the renewed key's newest note is the register's value",
+                String::from_utf8_lossy(written(&s))
             );
         }
         Ok(())

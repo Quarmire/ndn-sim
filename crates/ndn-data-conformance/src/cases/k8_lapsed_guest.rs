@@ -59,7 +59,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (laptop, guest, tablet) = (w.at(LAPTOP), w.at(GUEST), w.at(TABLET));
         w.net().offline(TABLET);
         laptop
-            .share(&notes, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &notes,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the guest knows the shared notes", LIMIT, || {
             known(&*guest, &notes)
@@ -67,7 +70,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         // The guest's first put races the epoch key's grant (spec §17.1): put again on RetryLater.
         let before = w
-            .put(GUEST, &notes, content(&[("sown", "beans")]), note(1))
+            .put_op(GUEST, &notes, octets("sown beans"), note(1))
             .await?;
         w.until("the laptop holds the guest's note", LIMIT, || {
             has(&*laptop, &notes, &before)
@@ -78,11 +81,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The guest certificate reaches its NotAfter; Bob writes on with his key.
         w.expire(GUEST, Certs::All).await?;
         let after = guest
-            .put(
-                &notes,
-                content(&[("picked", "written after the lapse")]),
-                note(1),
-            )
+            .put_op(&notes, octets("written after the lapse"), note(1))
             .await?;
         ensure!(
             after.writer == before.writer && after.seq > before.seq,
@@ -119,18 +118,18 @@ fn run(w: &World) -> CaseFuture<'_> {
             let looked = look(&**layer, &notes, &Frontier::new(), LOOK).await?;
             ensure!(
                 version(&looked, &after).is_none()
-                    && !versions(&looked).any(|v| field_of(v, "picked").is_some()),
+                    && !versions(&looked).any(|v| wrote(v, "written after the lapse")),
                 "the {who} accepts the note the guest signed after its certificate lapsed"
             );
-            let s = state(&**layer, &notes).await?;
+            let s = winning(&**layer, &notes, &[&before]).await?;
             ensure!(
-                s.at.contains(&before) && field(&s.value, "sown") == Some("beans"),
+                s.at.contains(&before) && written(&s) == b"sown beans",
                 "the {who} lacks the guest's note from before the lapse, which the root's cut \
                  keeps ({:?})",
-                s.value
+                String::from_utf8_lossy(written(&s))
             );
             ensure!(
-                !s.at.contains(&after) && field(&s.value, "picked").is_none(),
+                !s.at.contains(&after) && !contains(written(&s), b"written after the lapse"),
                 "the {who}'s notes include the guest's note from after the lapse"
             );
         }

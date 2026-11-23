@@ -100,8 +100,6 @@ pub struct DeviceSpec {
     pub device: String,
     /// Its forwarder in the fabric.
     pub node: NodeId,
-    /// The merge rules its program knows beyond the standard ones.
-    pub program: Program,
     /// A stranger to every other person: its node holds its own person's trust context and
     /// certificates only, until an introduction adopts another's.
     pub stranger: bool,
@@ -112,22 +110,6 @@ pub struct DeviceSpec {
     /// Its host's introductions make link grants (`IntroPolicy::grant_for` is the default);
     /// `false`: `grant_for` is zero, and the device grants no link.
     pub link_grants: bool,
-}
-
-/// The merge rules a device's program knows beyond the standard ones every program knows
-/// (`/merge/yrs`). A provider registers them on the device's data layer by their names.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Program {
-    /// The cases' element rule ([`crate::element`], `/conformance/merge/element/v=1`), as
-    /// written.
-    #[default]
-    Element,
-    /// None beyond the standard ones: a program older than the element rule.
-    Standard,
-    /// The element rule, named alike, but with a check that refuses nothing
-    /// ([`Element::lax`](crate::element::Element::lax)): a faulty or hostile writer's program,
-    /// whose versions only honest readers judge.
-    LaxElement,
 }
 
 impl DeviceSpec {

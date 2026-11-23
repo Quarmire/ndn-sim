@@ -52,13 +52,15 @@ fn run(w: &World) -> CaseFuture<'_> {
         bob.share(
             &notes,
             members(
-                merge(),
+                register(),
                 &["/bob"],
                 &[Audience::Group(team.clone()), person("/bob")],
             ),
         )
         .await?;
-        let first = bob.put(&notes, text("offsite: march"), note(1)).await?;
+        let first = bob
+            .put_op(&notes, octets("offsite: march"), note(1))
+            .await?;
         w.until(
             "Carol, a member of the team, opens Bob's note",
             LIMIT,
@@ -79,7 +81,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.sleep(SETTLE).await;
 
         let later = bob
-            .put(&notes, text("offsite: moved to april"), note(1))
+            .put_op(&notes, octets("offsite: moved to april"), note(1))
             .await?;
         w.until(
             "Alice, still a member, opens Bob's later note",

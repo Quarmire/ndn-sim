@@ -73,14 +73,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice", "/carol"],
                     &[person("/alice"), person("/carol")],
                 ),
             )
             .await?;
         let seen = w
-            .put(CAROL, &doc, content(&[("carol", "edit 1")]), note(1))
+            .put_op(CAROL, &doc, octets("carol: edit 1"), note(1))
             .await?;
         w.until(
             "both of Alice's devices hold Carol's edit",
@@ -94,14 +94,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         // again meanwhile.
         w.net().offline(PHONE);
         laptop
-            .share(&doc, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(&doc, members(register(), &["/alice"], &[person("/alice")]))
             .await?;
         w.gesture();
         phone
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice", "/carol", "/dave"],
                     &[person("/alice"), person("/carol"), person("/dave")],
                 ),
@@ -111,7 +111,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice", "/carol", "/dave", "/eve"],
                     &[
                         person("/alice"),
@@ -124,11 +124,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         w.gesture();
         let late = carol
-            .put(
-                &doc,
-                content(&[("carol", "edit 2, after her removal")]),
-                note(1),
-            )
+            .put_op(&doc, octets("carol: edit 2, after her removal"), note(1))
             .await?;
         w.net().online(PHONE);
         w.sleep(SETTLE).await;
@@ -182,10 +178,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         // the key of the epoch in force, still on its way: refused Unavailable (RetryLater), put
         // again as the refusal says (data-layer §17.1, §18.1).
         let daves = w
-            .put(DAVE, &doc, content(&[("dave", "his first edit")]), note(1))
+            .put_op(DAVE, &doc, octets("dave: his first edit"), note(1))
             .await?;
         let eves = w
-            .put(EVE, &doc, content(&[("eve", "her first edit")]), note(1))
+            .put_op(EVE, &doc, octets("eve: her first edit"), note(1))
             .await?;
         w.until(
             "every device takes Dave's and Eve's edits",
@@ -201,7 +197,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await?;
         let later = w
-            .put(PHONE, &doc, text("after every record"), note(1))
+            .put_op(PHONE, &doc, octets("phone: after every record"), note(1))
             .await?;
         w.until(
             "Dave and Eve open the phone's later version",
@@ -220,13 +216,26 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Carol may still try; her device may refuse to sign, and every other device must refuse
         // what it signs.
         let after = carol
-            .put(&doc, content(&[("carol", "edit 3")]), note(1))
+            .put_op(&doc, octets("carol: edit 3"), note(1))
             .await
             .ok();
         w.sleep(SETTLE).await;
 
+        w.until(
+            "every device holds the phone's later version",
+            LIMIT,
+            || async {
+                for (_, layer) in all {
+                    if !has(&**layer, &doc, &later).await? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
+        )
+        .await?;
         for (who, layer) in all {
-            let s = state(&**layer, &doc).await?;
+            let s = winning(&**layer, &doc, &[&later]).await?;
             ensure!(
                 s.at.contains(&seen),
                 "Carol's edit from before her removal left the document at the {who}"
@@ -239,6 +248,11 @@ fn run(w: &World) -> CaseFuture<'_> {
                      listed her again)"
                 );
             }
+            ensure!(
+                !contains(written(&s), b"carol: edit 2")
+                    && !contains(written(&s), b"carol: edit 3"),
+                "the document at the {who} shows an edit Carol signed after the laptop removed her"
+            );
         }
         let at_carol = look(&*carol, &doc, &Frontier::new(), LOOK).await?;
         ensure!(

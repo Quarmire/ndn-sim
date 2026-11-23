@@ -45,7 +45,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         let notes = n("/alice/32=data/notes/garden");
         let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         laptop
-            .share(&notes, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &notes,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared notes", LIMIT, || {
             known(&*phone, &notes)
@@ -53,12 +56,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         // The phone's first put races the epoch key's grant (spec §17.1): put again on RetryLater.
         let seen = w
-            .put(
-                PHONE,
-                &notes,
-                content(&[("phone", "planted beans")]),
-                note(1),
-            )
+            .put_op(PHONE, &notes, octets("phone: planted beans"), note(1))
             .await?;
         w.until("the laptop holds the phone's entry", LIMIT, || {
             has(&*laptop, &notes, &seen)
@@ -70,12 +68,12 @@ fn run(w: &World) -> CaseFuture<'_> {
         let thief = stolen(w, THIEF, &notes, &seen).await?;
         w.net().offline(PHONE);
         let honest = phone
-            .put(&notes, content(&[("phone", "watered, offline")]), note(1))
+            .put_op(&notes, octets("phone: watered, offline"), note(1))
             .await?;
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let forged = thief
-            .put(&notes, content(&[("thief", "forged")]), note(1))
+            .put_op(&notes, octets("thief: forged"), note(1))
             .await?;
         ensure!(
             forged.writer == honest.writer && forged.seq == honest.seq,
@@ -100,19 +98,19 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         w.sleep(SETTLE).await;
 
-        let s = state(&*laptop, &notes).await?;
+        let s = winning(&*laptop, &notes, &[&honest]).await?;
         ensure!(
             s.at.contains(&seen) && s.at.contains(&honest),
             "the notes lack the entry inside the cut or the re-admitted one"
         );
         ensure!(
-            field(&s.value, "thief").is_none(),
+            !contains(written(&s), b"thief: forged"),
             "re-admitting one entry let the thief's version ({forged:?}) in"
         );
         ensure!(
-            field(&s.value, "phone") == Some("watered, offline"),
+            written(&s) == b"phone: watered, offline",
             "the re-admitted entry does not show: {:?}",
-            field(&s.value, "phone")
+            String::from_utf8_lossy(written(&s))
         );
         Ok(())
     })

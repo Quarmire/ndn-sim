@@ -42,9 +42,12 @@ fn run(w: &World) -> CaseFuture<'_> {
         let journal = n("/alice/32=data/journal");
         let (laptop, phone) = (w.at(LAPTOP), w.at(PHONE));
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
-        let first = laptop.put(&journal, text("day 1"), note(1)).await?;
+        let first = laptop.put_op(&journal, octets("day 1"), note(1)).await?;
         w.until("the phone opens the first entry", LIMIT, || async {
             let seen = look(&*phone, &journal, &Frontier::new(), LOOK).await?;
             Ok(version(&seen, &first).is_some())
@@ -55,14 +58,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share(
                 &journal,
                 members(
-                    merge(),
+                    register(),
                     &["/alice"],
                     &[Audience::Device(n("/alice/laptop"))],
                 ),
             )
             .await?;
         w.gesture();
-        let later = laptop.put(&journal, text("day 2"), note(1)).await?;
+        let later = laptop.put_op(&journal, octets("day 2"), note(1)).await?;
         let own = look(&*laptop, &journal, &Frontier::new(), LOOK).await?;
         ensure!(
             version(&own, &later).is_some(),

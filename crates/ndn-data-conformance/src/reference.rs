@@ -37,9 +37,7 @@
 //! manifest packet) through its engine. A renewed or expired certificate is handed to every
 //! node's cache in place of the copy it held; the validators judge validity by the host's
 //! clock. A device's data layer can stop and start again on its store, re-judging what it
-//! restores. Each device's program registers the standard merge rules and the ones its
-//! [`Program`] names — the cases' element rule ([`crate::element`]), as written or lax — so a
-//! case can give one device a program that lacks a rule, or one that signs what the rule refuses.
+//! restores.
 //!
 //! A self-certifying person (`/user/<hash>`, [`DeviceSpec::genesis`]) has its genesis root as
 //! its key, so version 1 is the genesis its name hashes. It is adopted by its name alone: each of
@@ -73,7 +71,7 @@ use ndn_data::wire::{
 };
 use ndn_data::{
     Code, Config, CutBound, CutProposal, DataLayer, Departure, Device, Entropy, Grant, IntroPolicy,
-    Introducer, Joined, MergeRules, Name, Offer, Timestamp, Transport, VersionId,
+    Introducer, Joined, Name, Offer, Timestamp, Transport, VersionId,
 };
 use ndn_link::{EngineFaces, FaceSink};
 use ndn_namespace::publish::{OwnCertificates, PublishedContexts};
@@ -93,10 +91,9 @@ use ndn_trust_envelope::TrustEnvelope;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
-use crate::element::Element;
 use crate::feature::Feature;
 use crate::provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Program, Provider, Tally,
+    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Provider, Tally,
 };
 
 /// Certificates live far longer than any case (they are checked against the host's real clock).
@@ -251,7 +248,6 @@ impl Reference {
         let config = Config {
             clock: Arc::new(move || Timestamp(clock.now_ns() / 1_000_000)),
             svs: SvsConfig::default(),
-            rules: rules(host.program),
             entropy: seeded(&device, runs),
             introducer: Some(introducer),
             intro: IntroPolicy {
@@ -697,17 +693,13 @@ impl Reference {
 
 /// What a device's host configures its data layer with.
 struct Host {
-    /// The merge rules its program knows beyond the standard ones.
-    program: Program,
     /// How long a grant lasts: `Some(ZERO)` for a host that makes none.
     grant_for: Option<std::time::Duration>,
 }
 
-/// How `device`'s host configures its layer: the program registers the merge rules the case gave
-/// it.
+/// How `device`'s host configures its layer.
 fn host(device: &DeviceSpec) -> Host {
     Host {
-        program: device.program,
         grant_for: if device.link_grants {
             IntroPolicy::new().grant_for
         } else {
@@ -1038,16 +1030,6 @@ impl ContextStore for FirstVersion {
     }
 }
 
-/// The merge rules a device running `program` registers.
-fn rules(program: Program) -> MergeRules {
-    let standard = MergeRules::standard();
-    match program {
-        Program::Standard => standard,
-        Program::Element => standard.with(Arc::new(Element::new())),
-        Program::LaxElement => standard.with(Arc::new(Element::lax())),
-    }
-}
-
 /// Each device's one key: `<device>/KEY/1`.
 fn device_key(device: &Name) -> Name {
     device.clone().append("KEY").append("1")
@@ -1143,7 +1125,6 @@ impl Provider for Reference {
             feature,
             Feature::Merge
                 | Feature::WritersAcrossPrefixes
-                | Feature::Snapshot
                 | Feature::RemovalCut
                 | Feature::CutRecheck
                 | Feature::Seal
@@ -1159,9 +1140,6 @@ impl Provider for Reference {
                 | Feature::UnboundCut
                 | Feature::GuestExpiry
                 | Feature::IssuerRecheck
-                | Feature::RuleByName
-                | Feature::AppOps
-                | Feature::MergePieces
                 | Feature::FolderMembers
                 | Feature::FolderWatch
                 | Feature::Introduction
@@ -1600,9 +1578,7 @@ impl Provider for Reference {
             }
             (keys, Arc::new(copy))
         };
-        // The thief runs the stolen device's program.
         let thief_host = Host {
-            program: victim.program,
             grant_for: IntroPolicy::new().grant_for,
         };
         self.start(fabric, thief.node, victim.name(), keys, thief_host, copy)

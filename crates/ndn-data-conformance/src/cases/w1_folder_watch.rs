@@ -1,27 +1,25 @@
 //! Slice 6, w1 — a 1,000-paragraph note; the other person adds a paragraph; my screen shows it.
 //!
-//! An app such as ndf keeps a document as a folder with one collection per element, often
+//! An app such as ndf keeps a document as a folder with one collection per paragraph, often
 //! thousands, and its read engine watches by dependency across elements. A watch per collection
 //! meant as many watch calls as elements, and an element created later went unseen until someone
 //! looked at it. `watch(folder)` is one stream for every collection under the folder — those
 //! created after the watch began included, by any writer, local or remote — carrying every kind
 //! of change, each tagged with the collection it is about.
 //!
-//! Alice keeps a note as a folder of 1,000 paragraphs, one element collection each, shared with
+//! Alice keeps a note as a folder of 1,000 paragraphs, one register collection each, shared with
 //! Bob as a writer and a reader by one folder record. Both watch the folder. Bob adds a paragraph:
 //! Alice's watch reports it, tagged with the new paragraph. Alice adds one: Bob's watch reports it.
-//! Alice adds one more: her own watch reports it. While Bob is offline, Alice (the owner) locks one
-//! paragraph's text and Bob, not having seen the lock, sets it: Alice's watch reports Bob's version
-//! not counted, then counted once she unlocks, each tagged with that paragraph. No watch is handed
-//! one version twice. The case measures the
-//! Interests the watching device sent from each add to its delivery, and the time it took.
+//! Alice adds one more: her own watch reports it. While Bob is offline, Alice and Bob each rewrite
+//! one paragraph: Alice's watch reports Bob's version, tagged with that paragraph, and both devices
+//! read the head with the highest digest. No watch is handed one version twice. The case measures
+//! the Interests the watching device sent from each add to its delivery, and the time it took.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use super::*;
 use crate::case::CaseFuture;
-use crate::element::Edit;
 use crate::ensure;
 use crate::world::{Dev, Plan, World};
 
@@ -29,17 +27,12 @@ pub(super) const CASE: Case = Case {
     id: "w1",
     title: "A 1,000-paragraph note: the other person adds a paragraph, my screen shows it",
     slice: 6,
-    needs: &[
-        Feature::Merge,
-        Feature::AppOps,
-        Feature::FolderMembers,
-        Feature::FolderWatch,
-    ],
+    needs: &[Feature::Merge, Feature::FolderMembers, Feature::FolderWatch],
     model: &["M8", "M15"],
     guards: "One watch of a folder reports every collection under it, those created after the \
-             watch began included, whoever creates them, with every kind of change (versions, \
-             NotCounted, Counted) each tagged with its collection, and never hands one watch the \
-             same version twice.",
+             watch began included, whoever creates them, every version tagged with its \
+             collection — a concurrent one in a register that exists included — and never hands \
+             one watch the same version twice.",
     budget: Duration::from_secs(12 * 3600),
     plan,
     run,
@@ -51,8 +44,8 @@ const WHO: [(&str, Dev); 2] = [("Alice", ALICE), ("Bob", BOB)];
 
 /// Paragraphs in the note before anyone adds one.
 const PARAGRAPHS: usize = 1000;
-/// The paragraph whose text Alice locks.
-const LOCKED: usize = 7;
+/// The paragraph both people rewrite at once.
+const EDITED: usize = 7;
 
 fn plan() -> Plan {
     let mut p = Plan::new();
@@ -69,13 +62,14 @@ fn paragraph(i: usize) -> Name {
     note().append(format!("p{i:04}").as_str())
 }
 
-/// `d` writes paragraph `i` as a new element: its first operation, over nothing.
+/// `d` writes paragraph `i` as a new register: its first version, over nothing.
 async fn add_paragraph(w: &World, d: Dev, i: usize) -> Result<VersionId, Failure> {
-    let op = Operation::by(&w.net().spec(d).name())
-        .then(0, Edit::Create("paragraph".into()))
-        .set("text", prose(&format!("paragraph {i}"), 80));
     Ok(w.at(d)
-        .put_op(&paragraph(i), op.encode(), element_type())
+        .put_op(
+            &paragraph(i),
+            octets(&format!("paragraph {i}")),
+            super::note(1),
+        )
         .await?)
 }
 
@@ -164,7 +158,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share_folder(
                 &folder,
                 members(
-                    element_rule(),
+                    register(),
                     &["/alice", "/bob"],
                     &[person("/alice"), person("/bob")],
                 )
@@ -174,7 +168,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         for i in 0..PARAGRAPHS {
             add_paragraph(w, ALICE, i).await?;
         }
-        let locked_c = paragraph(LOCKED);
+        let edited = paragraph(EDITED);
 
         // Both watch the note from nothing: the listing, then everything new, in one stream each.
         let mut feeds = Vec::new();
@@ -234,56 +228,45 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await?;
 
-        // Bob, offline, sets a paragraph's text Alice locks meanwhile: made apart from the lock,
-        // it waits until she unlocks (spec §5.1) — not counted, then counted, reported on the one
-        // folder watch, tagged with the paragraph.
+        // Bob, offline, rewrites a paragraph Alice rewrites meanwhile: the two versions are heads
+        // of one register. Alice's one folder watch reports Bob's version when he is back, tagged
+        // with the paragraph, and both devices read the head with the highest digest.
         w.gesture();
         w.net().offline(BOB);
-        put_element(w, ALICE, &locked_c, |op| {
-            op.then(0, Edit::Lock("text".into()))
-        })
-        .await?;
-        let bobs = put_element(w, BOB, &locked_c, |op| op.set("text", "bob's text")).await?;
+        let alices = w
+            .put_op(ALICE, &edited, octets("alice's text"), super::note(1))
+            .await?;
+        let bobs = w
+            .put_op(BOB, &edited, octets("bob's text"), super::note(1))
+            .await?;
         w.net().online(BOB);
         drain_until(
             alice_feed,
             alice_seen,
-            "Alice's folder watch reports Bob's version not counted",
+            "Alice's folder watch reports Bob's version",
             LIMIT,
-            |seen| reported_not_counted(seen, &bobs),
+            |seen| version(seen, &bobs).is_some(),
         )
         .await?;
-        let not_counted = found(
+        let reported = found(
             alice_seen,
-            |c| matches!(c, Change::NotCounted { id, .. } if *id == bobs),
+            |c| matches!(c, Change::Version(v) if v.id == bobs),
         );
         ensure!(
-            *not_counted.collection() == locked_c,
-            "Bob's version of {locked_c} was reported not counted tagged with {}",
-            not_counted.collection()
+            *reported.collection() == edited,
+            "Bob's version of {edited} was reported tagged with {}",
+            reported.collection()
         );
-        w.gesture();
-        put_element(w, ALICE, &locked_c, |op| {
-            op.then(0, Edit::Unlock("text".into()))
-        })
-        .await?;
-        drain_until(
-            alice_feed,
-            alice_seen,
-            "Alice's folder watch reports Bob's version counted",
+        let (a, b) = (w.at(ALICE), w.at(BOB));
+        w.converge(
+            "Alice and Bob agree on the paragraph with both rewrites",
             LIMIT,
-            |seen| reported_counted(seen, &bobs),
+            || async { agree(&[&*a, &*b], &edited, &[&alices, &bobs]).await },
         )
         .await?;
-        let counted = found(
-            alice_seen,
-            |c| matches!(c, Change::Counted { id, .. } if *id == bobs),
-        );
-        ensure!(
-            *counted.collection() == locked_c,
-            "Bob's version of {locked_c} was reported counted tagged with {}",
-            counted.collection()
-        );
+        for layer in [&a, &b] {
+            winning(&**layer, &edited, &[&alices, &bobs]).await?;
+        }
 
         // Whatever else came meanwhile (summaries, the other adds) settles; then every change of
         // both watches is tagged within the folder, and no version came twice.

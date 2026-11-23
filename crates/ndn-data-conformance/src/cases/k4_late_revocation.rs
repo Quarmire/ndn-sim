@@ -53,19 +53,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         let journal = n("/alice/32=data/journal");
         let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared journal", LIMIT, || {
             known(&*phone, &journal)
         })
         .await?;
         let inside = w
-            .put(
-                PHONE,
-                &journal,
-                content(&[("phone", "last honest entry")]),
-                note(1),
-            )
+            .put_op(PHONE, &journal, octets("last honest entry"), note(1))
             .await?;
         w.until("every device holds the phone's entry", LIMIT, || async {
             agree(&[&*phone, &*laptop, &*tablet], &journal, &[&inside]).await
@@ -81,10 +79,10 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         let mut tablets_feed = tablet.watch(&journal, &Frontier::new()).await?;
         let outside = w
-            .put(
+            .put_op(
                 THIEF,
                 &journal,
-                content(&[("thief", "written after the revocation")]),
+                octets("written after the revocation"),
                 note(1),
             )
             .await?;
@@ -118,13 +116,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.converged(took);
         w.sleep(SETTLE).await;
 
-        let s = state(&*tablet, &journal).await?;
+        let s = winning(&*tablet, &journal, &[&inside]).await?;
         ensure!(
-            !s.at.contains(&outside) && field(&s.value, "thief").is_none(),
+            !s.at.contains(&outside) && !contains(written(&s), b"written after the revocation"),
             "the tablet's journal still includes the thief's version the cut refuses"
         );
         ensure!(
-            s.at.contains(&inside) && field(&s.value, "phone") == Some("last honest entry"),
+            s.at.contains(&inside) && written(&s) == b"last honest entry",
             "the re-check also dropped the phone's entry inside the cut"
         );
         ensure!(

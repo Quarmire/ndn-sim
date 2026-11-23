@@ -1,5 +1,5 @@
-//! The cases, in study order: the use cases (`c1`…`c4`, `c7`…`c9`, `c11`), with slice 3's large
-//! data (`h1`) beside them and slice 5's keys over time (`k1`…`k10`: an expired
+//! The cases, in study order: the use cases (`c1`…`c4`, `c8`, `c9`), with slice 3's large
+//! data (`h1`, `h10`) beside them and slice 5's keys over time (`k1`…`k10`: an expired
 //! certificate, a backdated version, exact re-admission, a late revocation, a renewal, a
 //! recovery, and from its
 //! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
@@ -8,10 +8,8 @@
 //! share its merge must keep, other bytes at a seq a removal cut kept, and an old-form removal
 //! cut across an upgrade — with round 3's removal that outlasts a later revision signed without
 //! it (`r7`) —, and slice 6's
-//! substrate for apps that bring their own
-//! merge (`b1`…`b9`: a rule named by the app, operations it builds, merge versions in pieces,
-//! owner locks, counting both ways, and checkpoints beside versions written apart from them;
-//! `f1`…`f3`: a folder's members record, and a collection's first own record under it;
+//! substrate for apps that write registers (the built-in newest-wins rule) in folders
+//! (`f1`, `f3`: a folder's members record, and a collection's first own record under it;
 //! `i1`…`i13`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
 //! one folder reading each other), and slice 7's signals (`e1`…`e18`: live data pushed to a
@@ -29,41 +27,35 @@
 //! dial and a fetched hint record while the compact full link and the old words fetch none, and
 //! a mistyped, miscounted, unanswered, altered, closed or expired line is refused saying why).
 //! Each file states the story, the devices, and the invariant it asserts.
+//!
+//! A register collection (`register()`) holds the bytes of the newest version, one value per
+//! path: every device converges to one value (`agree`), the value is the head with the highest
+//! digest (`winning`), and nothing a refused or removed writer signed after its cut appears
+//! (rule R).
 
 use std::time::Duration;
 
 use futures::StreamExt;
+use ndn_data::merge::{NEWEST, winner};
 use ndn_data::wire::device_of;
 use ndn_data::{
     Answer, Audience, Change, Changes, Content, DataError, DataLayer, Frontier, Got, Keep, Name,
-    NextStep, Payload, PutOptions, Rule, Share, State, Timestamp, TypeId, Value, Version,
-    VersionId,
+    NextStep, Payload, PutOptions, Rule, Share, State, Timestamp, TypeId, Version, VersionId,
 };
 use ndn_surface::signal::{Signal, SignalError, SignalRun, SignalStats};
 
 use crate::case::{Case, Failure};
-use crate::element::{self, ElementValue, Operation};
 use crate::ensure;
 use crate::feature::Feature;
 use crate::signal;
 use crate::world::{Dev, Plan, World};
 
-mod b1_rule_by_name;
-mod b2_basis_outside_past;
-mod b3_locked_setting;
-mod b4_merge_pieces;
-mod b6_owner_lock;
-mod b7_counting_both_ways;
-mod b8_checkpoint_alike;
-mod b9_offline_over_checkpoint;
 mod c01_offline_notes;
 mod c02_removed_offline;
 mod c03_stolen_key;
 mod c04_lens_seal;
-mod c07_unknown_fields;
 mod c08_nested_summaries;
 mod c09_family_chat;
-mod c11_cite_state;
 mod d8_batched_burst;
 mod e10_signal_sixty_hertz;
 mod e11_signal_claimed_run;
@@ -85,7 +77,6 @@ mod e7_signal_no_store;
 mod e8_signal_latest_under_loss;
 mod e9_signal_commit;
 mod f1_folder_members;
-mod f2_folder_narrowing;
 mod f3_first_own_record;
 mod f4_let_go_keeps_joined;
 mod h10_holder_serves_others;
@@ -162,10 +153,8 @@ pub const CASES: &[Case] = &[
     c04_lens_seal::CASE,
     h1_large_photo::CASE,
     h10_holder_serves_others::CASE,
-    c07_unknown_fields::CASE,
     c08_nested_summaries::CASE,
     c09_family_chat::CASE,
-    c11_cite_state::CASE,
     o1_cut_recheck::CASE,
     o2_readmit::CASE,
     o3_many_writers::CASE,
@@ -180,16 +169,7 @@ pub const CASES: &[Case] = &[
     r5_removal_cut_bytes::CASE,
     r6_unbound_cut_upgrade::CASE,
     r7_removal_across_revisions::CASE,
-    b1_rule_by_name::CASE,
-    b2_basis_outside_past::CASE,
-    b3_locked_setting::CASE,
-    b4_merge_pieces::CASE,
-    b6_owner_lock::CASE,
-    b7_counting_both_ways::CASE,
-    b8_checkpoint_alike::CASE,
-    b9_offline_over_checkpoint::CASE,
     f1_folder_members::CASE,
-    f2_folder_narrowing::CASE,
     f3_first_own_record::CASE,
     w1_folder_watch::CASE,
     i1_join_by_code::CASE,
@@ -267,10 +247,10 @@ fn person(s: &str) -> Audience {
     Audience::Person(n(s))
 }
 
-/// The merge rule the cases use (the plan's recommended CRDT).
-fn merge() -> Rule {
+/// The rule of the registers the cases write: the built-in newest-wins one.
+fn register() -> Rule {
     Rule::Merge {
-        function: n("/merge/yrs"),
+        function: n(NEWEST),
     }
 }
 
@@ -407,29 +387,9 @@ fn members(rule: Rule, writers: &[&str], readers: &[Audience]) -> Share {
     }
 }
 
-/// What holds named fields: a version's content, or a merged value of fields (`/merge/yrs`).
-trait Fields {
-    /// The fields, if it is made of fields.
-    fn fields_of(&self) -> Option<&Content>;
-}
-
-impl Fields for Content {
-    fn fields_of(&self) -> Option<&Content> {
-        Some(self)
-    }
-}
-
-impl Fields for Value {
-    fn fields_of(&self) -> Option<&Content> {
-        self.fields()
-    }
-}
-
 /// The field `f` of `c` as text.
-fn field<'c>(c: &'c impl Fields, f: &str) -> Option<&'c str> {
-    c.fields_of()?
-        .get(f)
-        .and_then(|v| std::str::from_utf8(v).ok())
+fn field<'c>(c: &'c Content, f: &str) -> Option<&'c str> {
+    c.get(f).and_then(|v| std::str::from_utf8(v).ok())
 }
 
 /// The merged state of a merge collection as `layer` sees it now; `None` while it has nothing.
@@ -470,6 +430,61 @@ async fn has(layer: &dyn DataLayer, collection: &Name, id: &VersionId) -> Result
         .is_some_and(|s| s.at.contains(id)))
 }
 
+/// The octets `s`'s register value holds after `by` (its first 32 octets): what the head that
+/// wins wrote. Empty while nothing is written, and for a removal.
+fn written(s: &State) -> &[u8] {
+    s.value
+        .bytes()
+        .and_then(|b| b.get(32..))
+        .unwrap_or_default()
+}
+
+/// The octets for a register write of `s`.
+fn octets(s: &str) -> bytes::Bytes {
+    bytes::Bytes::copy_from_slice(s.as_bytes())
+}
+
+/// Whether the register write `v` carries `part` among its octets.
+fn wrote(v: &Version, part: &str) -> bool {
+    v.op.as_deref()
+        .is_some_and(|op| contains(op, part.as_bytes()))
+}
+
+/// Whether the register write `v` carries exactly the octets of `s`.
+fn op_is(v: &Version, s: &str) -> bool {
+    v.op.as_deref() == Some(s.as_bytes())
+}
+
+/// Rule R (b): `layer`'s state of the register `collection` reads what the head with the highest
+/// digest wrote. `heads` are the versions nothing supersedes, the ones the case made over no
+/// other, as `layer` lists them with the octets each wrote. Returns the state.
+async fn winning(
+    layer: &dyn DataLayer,
+    collection: &Name,
+    heads: &[&VersionId],
+) -> Result<State, Failure> {
+    let changes = look(layer, collection, &Frontier::new(), LOOK).await?;
+    let mut picks = Vec::with_capacity(heads.len());
+    for id in heads {
+        let v = version(&changes, id)
+            .ok_or_else(|| Failure::new(format!("the watch does not list head {id:?}")))?;
+        let op =
+            v.op.clone()
+                .ok_or_else(|| Failure::new(format!("head {id:?} lists no octets of its write")))?;
+        picks.push((&v.digest, op));
+    }
+    let want =
+        winner(picks).ok_or_else(|| Failure::new(format!("no head of {collection} was given")))?;
+    let s = state(layer, collection).await?;
+    ensure!(
+        written(&s) == &want[..],
+        "the register {collection} reads {:?}; the head with the highest digest wrote {:?}",
+        String::from_utf8_lossy(written(&s)),
+        String::from_utf8_lossy(&want)
+    );
+    Ok(s)
+}
+
 /// Whether `layer` holds a state of `collection` at all: it knows the collection's members
 /// record, so its writes go into the collection as shared.
 async fn known(layer: &dyn DataLayer, collection: &Name) -> Result<bool, Failure> {
@@ -496,7 +511,9 @@ async fn stolen(
 }
 
 /// Whether every layer holds the same merged state, including every id in `ids`. Every layer is
-/// read at each poll ([`hold`]).
+/// read at each poll: a device's first read of a collection is its first look, from which it
+/// follows the collection, so reading a device only once those before it hold would begin its
+/// look late and time the devices one after another rather than side by side.
 async fn agree(
     layers: &[&dyn DataLayer],
     collection: &Name,
@@ -521,21 +538,6 @@ async fn agree(
         }
     }
     Ok(true)
-}
-
-/// Whether every device of `devices` holds each of `ids` of `c`. Every device is read at each
-/// poll: a device's first read of a collection is its first look, from which it follows the
-/// collection, so reading a device only once those before it hold would begin its look late and
-/// time the devices one after another rather than side by side.
-async fn hold(w: &World, devices: &[Dev], c: &Name, ids: &[&VersionId]) -> Result<bool, Failure> {
-    let mut all = true;
-    for d in devices {
-        let layer = w.at(*d);
-        for id in ids {
-            all &= has(&*layer, c, id).await?;
-        }
-    }
-    Ok(all)
 }
 
 /// Drain `stream` for `window` of virtual time.
@@ -639,129 +641,6 @@ fn withdrawn(changes: &[Change], id: &VersionId) -> bool {
     changes
         .iter()
         .any(|c| matches!(c, Change::Withdrawn { id: w, .. } if w == id))
-}
-
-// ---- slice 6's kit: the element rule, app-built operations, groups, folders ------------------
-
-/// A collection merged by the cases' element rule ([`crate::element`]), named by its full,
-/// versioned name.
-fn element_rule() -> Rule {
-    Rule::Merge {
-        function: element::name(),
-    }
-}
-
-/// The element type, as an app writes its operations.
-fn element_type() -> PutOptions {
-    PutOptions {
-        type_id: TypeId {
-            name: n("/types/element"),
-            revision: 1,
-        },
-        keep: Keep::Forever,
-    }
-}
-
-/// The state of the element collection `c` as `layer` sees it now, its value decoded; `None`
-/// while it holds nothing of it.
-async fn element_now(
-    layer: &dyn DataLayer,
-    c: &Name,
-) -> Result<Option<(State, ElementValue)>, Failure> {
-    let Some(s) = state_now(layer, c).await? else {
-        return Ok(None);
-    };
-    let v = element::decode(&s.value).map_err(|e| {
-        Failure::new(format!(
-            "the state of {c} is no value of the element rule its record names: {e}"
-        ))
-    })?;
-    Ok(Some((s, v)))
-}
-
-/// The state of the element collection `c`, which `layer` must hold.
-async fn element_state(layer: &dyn DataLayer, c: &Name) -> Result<(State, ElementValue), Failure> {
-    element_now(layer, c)
-        .await?
-        .ok_or_else(|| Failure::new(format!("no state of {c} is held")))
-}
-
-/// The operation `edits` makes of one by `d`, over every head of `c` that `d` holds (as an app
-/// names its basis), or over its own previous version when it holds none.
-async fn element_op(
-    w: &World,
-    d: Dev,
-    c: &Name,
-    edits: impl FnOnce(Operation) -> Operation,
-) -> Result<Operation, Failure> {
-    let op = Operation::by(&w.net().spec(d).name());
-    let op = match element_now(&*w.at(d), c).await? {
-        Some((_, v)) => op.over_heads(&v),
-        None => op,
-    };
-    Ok(edits(op))
-}
-
-/// `d` writes into the element collection `c` the operation `edits` makes (see
-/// [`element_op`]), putting it again, unchanged, while the device answers retry later
-/// ([`World::again`]: its members record not arrived yet).
-async fn put_element(
-    w: &World,
-    d: Dev,
-    c: &Name,
-    edits: impl FnOnce(Operation) -> Operation,
-) -> Result<VersionId, Failure> {
-    let op = element_op(w, d, c, edits).await?.encode();
-    let layer = w.at(d);
-    Ok(w.again(|| layer.put_op(c, op.clone(), element_type()))
-        .await?)
-}
-
-/// The setting `s` of an element's merged value.
-fn setting<'v>(v: &'v ElementValue, s: &str) -> Option<&'v str> {
-    v.state.settings.get(s).map(String::as_str)
-}
-
-/// Why `state` holds `id` without counting it, if it does.
-fn not_counted_in<'s>(state: &'s State, id: &VersionId) -> Option<&'s str> {
-    state
-        .not_counted
-        .iter()
-        .find(|(v, _)| v == id)
-        .map(|(_, why)| why.reason())
-}
-
-/// Whether `changes` report `id` held but not counted.
-fn reported_not_counted(changes: &[Change], id: &VersionId) -> bool {
-    changes
-        .iter()
-        .any(|c| matches!(c, Change::NotCounted { id: v, .. } if v == id))
-}
-
-/// Whether `changes` report `id`, once not counted, counting now.
-fn reported_counted(changes: &[Change], id: &VersionId) -> bool {
-    changes
-        .iter()
-        .any(|c| matches!(c, Change::Counted { id: v, .. } if v == id))
-}
-
-/// `len` characters of text, the same every run: lower-case letters and spaces from a generator
-/// (xorshift) seeded by `seed`.
-fn prose(seed: &str, len: usize) -> String {
-    let mut x = seed.bytes().fold(0x9e37_79b9_7f4a_7c15_u64, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    });
-    (0..len)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            match x % 27 {
-                26 => ' ',
-                c => char::from(b'a' + c as u8),
-            }
-        })
-        .collect()
 }
 
 // ---- the signals kit (e1–e10) -----------------------------------------------------------------

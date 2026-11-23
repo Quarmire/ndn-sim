@@ -47,7 +47,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         for c in [&garden, &kitchen] {
             laptop
-                .share(c, members(merge(), &["/alice"], &[person("/alice")]))
+                .share(c, members(register(), &["/alice"], &[person("/alice")]))
                 .await?;
         }
         w.until("the phone knows both shared collections", LIMIT, || async {
@@ -57,12 +57,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The garden is sealed: the phone's first put races its epoch key's grant, and is put
         // again while refused RetryLater (spec §18.1), as is the thief's first kitchen put.
         let seen = w
-            .put(
-                PHONE,
-                &garden,
-                content(&[("phone", "planted beans")]),
-                note(1),
-            )
+            .put_op(PHONE, &garden, octets("planted beans"), note(1))
             .await?;
         w.until("the laptop holds the phone's note", LIMIT, || {
             has(&*laptop, &garden, &seen)
@@ -74,10 +69,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         let thief = stolen(w, THIEF, &garden, &seen).await?;
         w.net().offline(PHONE);
         let wanted = phone
-            .put(&garden, content(&[("watered", "tuesday")]), note(1))
+            .put_op(&garden, octets("watered tuesday"), note(1))
             .await?;
         let neighbour = phone
-            .put(&garden, content(&[("weeded", "wednesday")]), note(1))
+            .put_op(&garden, octets("weeded wednesday"), note(1))
             .await?;
         ensure!(
             neighbour.seq.0 == wanted.seq.0 + 1,
@@ -91,10 +86,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
         let forged = w
-            .put(
+            .put_op(
                 THIEF,
                 &kitchen,
-                content(&[("thief", "same seq, other collection")]),
+                octets("same seq, other collection"),
                 note(1),
             )
             .await?;
@@ -119,19 +114,19 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         w.sleep(SETTLE).await;
 
-        let s = state(&*laptop, &garden).await?;
+        let s = winning(&*laptop, &garden, &[&wanted]).await?;
         ensure!(
             s.at.contains(&seen) && s.at.contains(&wanted),
             "the garden lacks the note inside the cut or the re-admitted one"
         );
         ensure!(
-            !s.at.contains(&neighbour) && field(&s.value, "weeded").is_none(),
+            !s.at.contains(&neighbour) && !contains(written(&s), b"weeded wednesday"),
             "re-admitting one note brought back its neighbour {neighbour:?}"
         );
         let kitchen_seen = look(&*laptop, &kitchen, &Frontier::new(), LOOK).await?;
         ensure!(
             version(&kitchen_seen, &forged).is_none()
-                && !versions(&kitchen_seen).any(|v| field_of(v, "thief").is_some()),
+                && !versions(&kitchen_seen).any(|v| wrote(v, "same seq, other collection")),
             "re-admitting the garden note let the thief's kitchen version at its seq in"
         );
         ensure!(

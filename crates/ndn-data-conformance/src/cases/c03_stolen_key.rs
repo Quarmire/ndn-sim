@@ -45,19 +45,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         let journal = n("/alice/32=data/journal");
         let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared journal", LIMIT, || {
             known(&*phone, &journal)
         })
         .await?;
         let seen = w
-            .put(
-                PHONE,
-                &journal,
-                content(&[("phone", "last honest entry")]),
-                note(1),
-            )
+            .put_op(PHONE, &journal, octets("last honest entry"), note(1))
             .await?;
         w.until("the laptop holds the phone's entry", LIMIT, || {
             has(&*laptop, &journal, &seen)
@@ -75,12 +73,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let revoked_at = w.net().true_date();
 
         let forged = w
-            .put(
-                THIEF,
-                &journal,
-                content(&[("thief", "dated last week")]),
-                note(1),
-            )
+            .put_op(THIEF, &journal, octets("dated last week"), note(1))
             .await?;
         ensure!(
             forged.writer == seen.writer && forged.seq > seen.seq,
@@ -100,16 +93,16 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         let at_laptop = look(&*laptop, &journal, &Frontier::new(), LOOK).await?;
         ensure!(
-            !versions(&at_laptop).any(|v| field_of(v, "thief").is_some()),
+            !versions(&at_laptop).any(|v| v.id == forged),
             "the laptop accepted a version the thief signed with the revoked key"
         );
-        let s = state(&*laptop, &journal).await?;
+        let s = winning(&*laptop, &journal, &[&seen]).await?;
         ensure!(
             s.at.contains(&seen),
             "the phone's entry from before the revocation was dropped"
         );
         ensure!(
-            field(&s.value, "thief").is_none(),
+            !s.at.contains(&forged) && !contains(written(&s), b"dated last week"),
             "the journal shows the thief's entry"
         );
         Ok(())

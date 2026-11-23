@@ -44,15 +44,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         let audience = ndn_data::Seal {
             any_of: vec![person("/alice")],
         };
-        host.share(&notes, members(merge(), &["/alice"], &audience.any_of))
+        host.share(&notes, members(register(), &["/alice"], &audience.any_of))
             .await?;
-        let id = host.put(&notes, text("agenda: budget"), note(1)).await?;
+        let id = host
+            .put_op(&notes, octets("agenda: budget"), note(1))
+            .await?;
 
         // Alice points Calendar at the note: the host opens it and hands the value to the lens.
         w.gesture();
-        let opened = state(&*host, &notes).await?;
+        let opened = winning(&*host, &notes, &[&id]).await?;
         ensure!(
-            opened.at.contains(&id) && field(&opened.value, "text") == Some("agenda: budget"),
+            opened.at.contains(&id) && written(&opened) == b"agenda: budget",
             "the host could not open the note Alice pointed at"
         );
 

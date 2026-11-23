@@ -61,27 +61,20 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.recovery_kit(LAPTOP).await?;
         w.gesture();
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the intruder knows the shared journal", LIMIT, || {
             known(&*intruder, &journal)
         })
         .await?;
         let honest = w
-            .put(
-                LAPTOP,
-                &journal,
-                content(&[("laptop", "before the recovery")]),
-                note(1),
-            )
+            .put_op(LAPTOP, &journal, octets("before the recovery"), note(1))
             .await?;
         let planted = w
-            .put(
-                INTRUDER,
-                &journal,
-                content(&[("intruder", "planted")]),
-                note(1),
-            )
+            .put_op(INTRUDER, &journal, octets("planted"), note(1))
             .await?;
         w.until(
             "the laptop and the tablet hold the honest and the planted entry",
@@ -122,16 +115,16 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Both ways of re-judging, each reported on its own.
         let mut wrong = Vec::new();
-        let restarted = state(&*tablet, &journal).await?;
-        if restarted.at.contains(&planted) || field(&restarted.value, "intruder").is_some() {
+        let restarted = winning(&*tablet, &journal, &[&honest]).await?;
+        if restarted.at.contains(&planted) || contains(written(&restarted), b"planted") {
             wrong.push(
                 "after its restart the tablet still holds the entry of a key whose only issuer \
                  the recovery revoked"
                     .to_owned(),
             );
         }
-        let adopted = state(&*laptop, &journal).await?;
-        if adopted.at.contains(&planted) || field(&adopted.value, "intruder").is_some() {
+        let adopted = winning(&*laptop, &journal, &[&honest]).await?;
+        if adopted.at.contains(&planted) || contains(written(&adopted), b"planted") {
             wrong.push(
                 "on adopting the recovery the laptop kept the entry of a key whose only issuer \
                  it revokes"
@@ -150,10 +143,10 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         for (who, s) in [("tablet", &restarted), ("laptop", &adopted)] {
             ensure!(
-                s.at.contains(&honest) && field(&s.value, "laptop") == Some("before the recovery"),
+                s.at.contains(&honest) && written(s) == b"before the recovery",
                 "the {who} lost the laptop's entry from before the recovery, though the laptop's \
                  key renewed with the new root ({:?})",
-                s.value
+                String::from_utf8_lossy(written(s))
             );
         }
         Ok(())

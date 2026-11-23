@@ -60,17 +60,20 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
         w.net().offline(TABLET);
         laptop
-            .share(&notes, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &notes,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared notes", LIMIT, || {
             known(&*phone, &notes)
         })
         .await?;
         let first = w
-            .put(PHONE, &notes, content(&[("sown", "beans")]), note(1))
+            .put_op(PHONE, &notes, octets("sown beans"), note(1))
             .await?;
         let second = w
-            .put(PHONE, &notes, content(&[("watered", "tuesday")]), note(1))
+            .put_op(PHONE, &notes, octets("watered tuesday"), note(1))
             .await?;
         w.until("the laptop holds the phone's notes", LIMIT, || async {
             agree(&[&*phone, &*laptop], &notes, &[&first, &second]).await
@@ -81,11 +84,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The phone's certificate runs out unrenewed, and the phone writes on with its key.
         w.expire(PHONE, Certs::All).await?;
         let late = phone
-            .put(
-                &notes,
-                content(&[("picked", "written after the lapse")]),
-                note(1),
-            )
+            .put_op(&notes, octets("written after the lapse"), note(1))
             .await?;
         ensure!(
             late.writer == first.writer && late.seq > second.seq,
@@ -119,19 +118,18 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.sleep(SETTLE).await;
 
         for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
-            let s = state(&**layer, &notes).await?;
+            let s = winning(&**layer, &notes, &[&second]).await?;
             ensure!(
                 s.at.contains(&first) && s.at.contains(&second),
                 "the {who} dropped a note the expired key signed while it was valid"
             );
             ensure!(
-                field(&s.value, "sown") == Some("beans")
-                    && field(&s.value, "watered") == Some("tuesday"),
+                written(&s) == b"watered tuesday",
                 "the {who} shows {:?} for the expired key's notes",
-                s.value
+                String::from_utf8_lossy(written(&s))
             );
             ensure!(
-                !s.at.contains(&late) && field(&s.value, "picked").is_none(),
+                !s.at.contains(&late) && !contains(written(&s), b"written after the lapse"),
                 "the {who}'s notes include the note the phone signed after its certificate \
                  lapsed"
             );

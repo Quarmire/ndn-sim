@@ -54,8 +54,7 @@ fn plan() -> Plan {
     p
 }
 
-/// The field Bob writes, and what his two versions set it to.
-const FIELD: &str = "bob";
+/// What Bob's two versions write.
 const FIRST: &str = "bob's first plan";
 const SECOND: &str = "bob's second plan";
 
@@ -80,17 +79,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
 
         alice
-            .share_folder(&trip, members(merge(), &["/alice", "/bob"], &[]).into())
+            .share_folder(&trip, members(register(), &["/alice", "/bob"], &[]).into())
             .await?;
         let seed = alice
-            .put(&plan, content(&[("alice", "the trip")]), note(1))
+            .put_op(&plan, octets("alice: the trip"), note(1))
             .await?;
         w.until("Bob holds the folder", LIMIT, || has(&*bob, &plan, &seed))
             .await?;
         w.gesture();
-        let first = bob.put(&plan, content(&[(FIELD, FIRST)]), note(1)).await?;
+        let first = bob.put_op(&plan, octets(FIRST), note(1)).await?;
         w.gesture();
-        let second = bob.put(&plan, content(&[(FIELD, SECOND)]), note(1)).await?;
+        let second = bob.put_op(&plan, octets(SECOND), note(1)).await?;
         let kept = [&first, &second];
         for (who, layer) in [("Alice", &alice), ("Carol", &carol)] {
             w.until(&format!("{who} holds Bob's plans"), LIMIT, || {
@@ -105,7 +104,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().offline(CAROL);
         w.gesture();
         alice
-            .share_folder(&trip, members(merge(), &["/alice"], &[]).into())
+            .share_folder(&trip, members(register(), &["/alice"], &[]).into())
             .await?;
         w.sleep(LOOK).await;
         w.stop(ALICE).await?;
@@ -152,7 +151,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // old one kept, from the bytes she holds.
         w.gesture();
         alice
-            .share_folder(&trip, members(merge(), &["/alice", "/dave"], &[]).into())
+            .share_folder(&trip, members(register(), &["/alice", "/dave"], &[]).into())
             .await?;
         for (who, layer) in [("Alice", &alice), ("Carol", &carol)] {
             let what = format!(
@@ -164,14 +163,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         }
         w.sleep(SETTLE).await;
         for (who, layer) in [("Alice", &alice), ("Carol", &carol)] {
-            let s = state(&**layer, &plan).await?;
+            let s = winning(&**layer, &plan, &[&second]).await?;
             ensure!(
-                kept.iter()
-                    .all(|id| s.at.contains(id) && !counted_not(&s, id))
-                    && field(&s.value, FIELD) == Some(SECOND),
-                "{who} does not count Bob's plans the old-form cut kept ({:?}, not counted {:?})",
-                s.value,
-                s.not_counted
+                kept.iter().all(|id| s.at.contains(id)) && written(&s) == SECOND.as_bytes(),
+                "{who} does not count Bob's plans the old-form cut kept ({:?})",
+                String::from_utf8_lossy(written(&s))
             );
             for name in &names {
                 match layer.get(name).await {
@@ -187,9 +183,4 @@ fn run(w: &World) -> CaseFuture<'_> {
         }
         Ok(())
     })
-}
-
-/// Whether `s` lists `id` as not counted.
-fn counted_not(s: &State, id: &VersionId) -> bool {
-    s.not_counted.iter().any(|(x, _)| x == id)
 }

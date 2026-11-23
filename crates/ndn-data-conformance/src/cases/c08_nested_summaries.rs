@@ -55,10 +55,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         for i in 0..NOTES {
             let note_i = note_name(i);
             phone
-                .share(&note_i, members(merge(), &["/alice"], &[person("/alice")]))
+                .share(
+                    &note_i,
+                    members(register(), &["/alice"], &[person("/alice")]),
+                )
                 .await?;
             phone
-                .put(&note_i, text(&format!("note {i}")), note(1))
+                .put_op(&note_i, octets(&format!("note {i}")), note(1))
                 .await?;
         }
         let mut before = Vec::new();
@@ -80,7 +83,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .collect();
         for c in &changed {
             phone
-                .put(c, text("edited while the laptop was away"), note(1))
+                .put_op(c, octets("edited while the laptop was away"), note(1))
                 .await?;
         }
         w.net().online(LAPTOP);

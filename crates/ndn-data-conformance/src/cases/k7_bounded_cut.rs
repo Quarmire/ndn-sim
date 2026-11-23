@@ -61,14 +61,17 @@ fn run(w: &World) -> CaseFuture<'_> {
             (w.at(PHONE), w.at(LAPTOP), w.at(TABLET), w.at(DESKTOP));
         w.net().offline(DESKTOP);
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared journal", LIMIT, || {
             known(&*phone, &journal)
         })
         .await?;
         let early = w
-            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
+            .put_op(PHONE, &journal, octets("monday: market"), note(1))
             .await?;
         w.until(
             "the laptop and the tablet hold the phone's entry",
@@ -81,7 +84,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // laptop first sees after that time; then the thief takes it.
         let lost = loss_time(w, LAPTOP).await;
         let late = w
-            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
+            .put_op(PHONE, &journal, octets("tuesday: dentist"), note(1))
             .await?;
         w.until(
             "the laptop and the tablet hold the phone's later entry",
@@ -92,10 +95,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         stolen(w, THIEF, &journal, &late).await?;
         w.net().offline(PHONE);
         let taken = w
-            .put(
+            .put_op(
                 THIEF,
                 &journal,
-                content(&[("thief", "written before the report")]),
+                octets("thief: written before the report"),
                 note(1),
             )
             .await?;
@@ -119,10 +122,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.suspect(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let after_report = w
-            .put(
+            .put_op(
                 THIEF,
                 &journal,
-                content(&[("thief2", "written after the report")]),
+                octets("thief2: written after the report"),
                 note(1),
             )
             .await?;
@@ -182,25 +185,21 @@ fn run(w: &World) -> CaseFuture<'_> {
         ] {
             let looked = look(&**layer, &journal, &Frontier::new(), LOOK).await?;
             ensure!(
-                !versions(&looked)
-                    .any(|v| field_of(v, "thief").is_some() || field_of(v, "thief2").is_some()),
+                !versions(&looked).any(|v| wrote(v, "thief")),
                 "the {who} accepts a version the thief wrote with the key before or after the \
                  owner's report"
             );
-            let s = state(&**layer, &journal).await?;
+            let s = winning(&**layer, &journal, &[&late]).await?;
             ensure!(
                 !s.at.contains(&taken) && !s.at.contains(&after_report),
                 "the {who}'s journal includes a thief's version ({taken:?} or {after_report:?}) \
                  after the cut bounded by the loss"
             );
             ensure!(
-                s.at.contains(&early)
-                    && s.at.contains(&late)
-                    && field(&s.value, "monday") == Some("market")
-                    && field(&s.value, "tuesday") == Some("dentist"),
+                s.at.contains(&early) && s.at.contains(&late) && written(&s) == b"tuesday: dentist",
                 "the {who} lacks an honest entry of the phone's: the one in the cut or the one \
                  re-admitted ({:?})",
-                s.value
+                String::from_utf8_lossy(written(&s))
             );
         }
         ensure!(

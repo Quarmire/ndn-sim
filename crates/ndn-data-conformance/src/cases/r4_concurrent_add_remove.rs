@@ -58,15 +58,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice", "/bob"],
                     &[person("/alice"), person("/bob")],
                 ),
             )
             .await?;
-        let seen = w
-            .put(BOB, &doc, content(&[("bob", "edit 1")]), note(1))
-            .await?;
+        let seen = w.put_op(BOB, &doc, octets("bob: edit 1"), note(1)).await?;
         w.until("both of Alice's devices hold Bob's edit", LIMIT, || async {
             Ok(has(&*laptop, &doc, &seen).await? && has(&*phone, &doc, &seen).await?)
         })
@@ -76,13 +74,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         // writer as far as the laptop knows, edits again meanwhile.
         w.net().offline(PHONE);
         phone
-            .share(&doc, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(&doc, members(register(), &["/alice"], &[person("/alice")]))
             .await?;
         laptop
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice", "/bob", "/carol"],
                     &[person("/alice"), person("/bob"), person("/carol")],
                 ),
@@ -90,11 +88,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         w.gesture();
         let late = bob
-            .put(
-                &doc,
-                content(&[("bob", "edit 2, after his removal")]),
-                note(1),
-            )
+            .put_op(&doc, octets("bob: edit 2, after his removal"), note(1))
             .await?;
         w.net().online(PHONE);
         w.sleep(SETTLE).await;
@@ -102,7 +96,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The phone's first put once both records are known needs the key of the epoch in force,
         // which may still be on its way: refused Unavailable (RetryLater), put again as the
         // refusal says (data-layer §17.1, §18.1).
-        let later = w.put(PHONE, &doc, text("after both"), note(1)).await?;
+        let later = w
+            .put_op(PHONE, &doc, octets("phone: after both"), note(1))
+            .await?;
         w.until(
             "Carol, added by the laptop, opens the phone's later version",
             LIMIT,
@@ -113,12 +109,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await?;
         let carols = w
-            .put(
-                CAROL,
-                &doc,
-                content(&[("carol", "her first edit")]),
-                note(1),
-            )
+            .put_op(CAROL, &doc, octets("carol: her first edit"), note(1))
             .await?;
         w.until(
             "both of Alice's devices take Carol's edit",
@@ -130,14 +121,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         // Bob may still try; his device may refuse to sign, and every other device must refuse
         // what it signs.
-        let after = bob
-            .put(&doc, content(&[("bob", "edit 3")]), note(1))
-            .await
-            .ok();
+        let after = bob.put_op(&doc, octets("bob: edit 3"), note(1)).await.ok();
         w.sleep(SETTLE).await;
 
         for (who, layer) in [("laptop", &laptop), ("phone", &phone), ("Carol", &carol)] {
-            let s = state(&**layer, &doc).await?;
+            let s = winning(&**layer, &doc, &[&carols]).await?;
             ensure!(
                 s.at.contains(&seen),
                 "Bob's edit from before his removal left the document at the {who}"
@@ -149,6 +137,10 @@ fn run(w: &World) -> CaseFuture<'_> {
                      removal"
                 );
             }
+            ensure!(
+                !contains(written(&s), b"bob: edit 2") && !contains(written(&s), b"bob: edit 3"),
+                "the document at the {who} shows an edit Bob signed after his removal"
+            );
         }
         let at_bob = look(&*bob, &doc, &Frontier::new(), LOOK).await?;
         ensure!(

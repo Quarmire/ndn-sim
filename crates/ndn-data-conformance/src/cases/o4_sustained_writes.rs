@@ -164,10 +164,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         for i in 0..NOTES {
             let note_i = note_name(i);
             phone
-                .share(&note_i, members(merge(), &["/alice"], &[person("/alice")]))
+                .share(
+                    &note_i,
+                    members(register(), &["/alice"], &[person("/alice")]),
+                )
                 .await?;
             let id = phone
-                .put(&note_i, text(&format!("note {i}")), note(1))
+                .put_op(&note_i, octets(&format!("note {i}")), note(1))
                 .await?;
             written.borrow_mut().push(id);
         }
@@ -205,7 +208,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             while !stop.get() {
                 let note_k = note_name(k * 7 % NOTES);
                 let id = phone
-                    .put(&note_k, text(&format!("autosave {k}")), note(1))
+                    .put_op(&note_k, octets(&format!("autosave {k}")), note(1))
                     .await?;
                 written.borrow_mut().push(id);
                 k += 1;

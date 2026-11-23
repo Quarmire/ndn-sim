@@ -54,16 +54,15 @@ fn plan() -> Plan {
     p
 }
 
-/// The field Bob writes, and what each side signs in it.
-const FIELD: &str = "bob";
+/// What each side signs in Bob's plan.
 const HONEST: &str = "bob's plan";
 const OTHER: &str = "the copy's other bytes";
 
-/// Whether `layer`'s state of `c` shows the copy's other bytes in Bob's field.
+/// Whether `layer`'s state of `c` shows the copy's other bytes.
 async fn shows_other(layer: &dyn DataLayer, c: &Name) -> Result<bool, Failure> {
     Ok(state_now(layer, c)
         .await?
-        .is_some_and(|s| field(&s.value, FIELD) == Some(OTHER)))
+        .is_some_and(|s| written(&s) == OTHER.as_bytes()))
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
@@ -74,10 +73,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().offline(CAROL);
 
         alice
-            .share_folder(&trip, members(merge(), &["/alice", "/bob"], &[]).into())
+            .share_folder(&trip, members(register(), &["/alice", "/bob"], &[]).into())
             .await?;
         let seed = alice
-            .put(&plan, content(&[("alice", "the trip")]), note(1))
+            .put_op(&plan, octets("alice: the trip"), note(1))
             .await?;
         w.until("Bob holds the folder", LIMIT, || has(&*bob, &plan, &seed))
             .await?;
@@ -91,12 +90,12 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Bob writes his plan, which Alice holds; the copy signs other bytes at its name.
         w.gesture();
-        let kept = bob.put(&plan, content(&[(FIELD, HONEST)]), note(1)).await?;
+        let kept = bob.put_op(&plan, octets(HONEST), note(1)).await?;
         w.until("Alice holds Bob's plan", LIMIT, || {
             has(&*alice, &plan, &kept)
         })
         .await?;
-        let other = copy.put(&plan, content(&[(FIELD, OTHER)]), note(1)).await?;
+        let other = copy.put_op(&plan, octets(OTHER), note(1)).await?;
         ensure!(
             other == kept,
             "precondition: the copy signs at the name of Bob's plan ({kept:?}), got {other:?}"
@@ -105,7 +104,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Alice removes Bob from the folder: the cut keeps the plan she holds.
         w.gesture();
         alice
-            .share_folder(&trip, members(merge(), &["/alice"], &[]).into())
+            .share_folder(&trip, members(register(), &["/alice"], &[]).into())
             .await?;
         w.sleep(LOOK).await;
 
@@ -138,15 +137,14 @@ fn run(w: &World) -> CaseFuture<'_> {
                 why: Refusal::OutsideCut(_),
                 ..
             }) => {}
-            Ok(answer) if matches!(&answer.got, Got::Version(v) if field_of(v, FIELD) == Some(OTHER)) =>
-            {
+            Ok(answer) if matches!(&answer.got, Got::Version(v) if op_is(v, OTHER)) => {
                 return Err(Failure::new(format!(
                     "Carol answers the copy's other bytes at {name}, a seq the removal cut kept"
                 )));
             }
             // Alice, back with the record, holds Bob's plan and answers for his phone while it
             // is away (spec §13.5): Carol reads the honest bytes the cut kept, never the copy's.
-            Ok(answer) if matches!(&answer.got, Got::Version(v) if v.id == kept && field_of(v, FIELD) == Some(HONEST)) =>
+            Ok(answer) if matches!(&answer.got, Got::Version(v) if v.id == kept && op_is(v, HONEST)) =>
                 {}
             other => {
                 return Err(Failure::new(format!(
@@ -162,9 +160,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             "Carol reads the plan the removal cut kept",
             LIMIT,
             || async {
-                Ok(state_now(&*carol, &plan).await?.is_some_and(|s| {
-                    s.at.contains(&kept) && field(&s.value, FIELD) == Some(HONEST)
-                }))
+                Ok(state_now(&*carol, &plan)
+                    .await?
+                    .is_some_and(|s| s.at.contains(&kept) && written(&s) == HONEST.as_bytes()))
             },
         )
         .await?;
@@ -172,14 +170,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         for (who, layer) in [("Carol", &carol), ("Alice", &alice)] {
             let looked = look(&**layer, &plan, &Frontier::new(), LOOK).await?;
             ensure!(
-                !versions(&looked).any(|v| field_of(v, FIELD) == Some(OTHER)),
+                !versions(&looked).any(|v| op_is(v, OTHER)),
                 "{who} lists the copy's other bytes at {name}"
             );
-            let s = state(&**layer, &plan).await?;
+            let s = winning(&**layer, &plan, &[&kept]).await?;
             ensure!(
-                field(&s.value, FIELD) == Some(HONEST) && s.at.contains(&kept),
+                written(&s) == HONEST.as_bytes() && s.at.contains(&kept),
                 "{who} lacks Bob's plan the removal cut kept ({:?})",
-                s.value
+                String::from_utf8_lossy(written(&s))
             );
         }
         Ok(())

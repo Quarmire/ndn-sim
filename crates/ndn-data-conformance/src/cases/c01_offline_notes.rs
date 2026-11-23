@@ -3,9 +3,9 @@
 //! Bob edits the same note on the plane (laptop) and in the taxi (phone). Under the draft model
 //! both edits were "v=18" by one writer — equivocation for an ordinary offline edit. The fix (M1):
 //! a writer is a key; the edits are (laptop, n) and (phone, m), each naming the shared version as
-//! parent, and the merge rule combines them. Bob's namespace is `/home/bob`, of two components:
-//! the collection's `32=data` marks where it ends (spec §3), and his devices take it from the
-//! trust context that governs them.
+//! parent, and the register keeps the head with the highest digest. Bob's namespace is
+//! `/home/bob`, of two components: the collection's `32=data` marks where it ends (spec §3), and
+//! his devices take it from the trust context that governs them.
 
 use std::time::Duration;
 
@@ -21,8 +21,8 @@ pub(super) const CASE: Case = Case {
     needs: &[Feature::Merge],
     model: &["M1"],
     guards: "A writer is one key: two devices' offline edits are distinct versions (writer, seq), \
-             each naming the common parent; they merge into one state on both devices and are \
-             never reported as equivocation.",
+             each naming the common parent; they converge on both devices to one register value, \
+             the head with the highest digest, and are never reported as equivocation.",
     budget: Duration::from_secs(1800),
     plan,
     run,
@@ -45,10 +45,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         laptop
             .share(
                 &doc,
-                members(merge(), &["/home/bob"], &[person("/home/bob")]),
+                members(register(), &["/home/bob"], &[person("/home/bob")]),
             )
             .await?;
-        let v17 = laptop.put(&doc, text("day 1"), note(1)).await?;
+        let v17 = laptop.put_op(&doc, octets("day 1"), note(1)).await?;
         w.until("the phone holds the shared version", LIMIT, || {
             has(&*phone, &doc, &v17)
         })
@@ -57,9 +57,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.net().offline(LAPTOP);
         w.net().offline(PHONE);
         let plane = laptop
-            .put(&doc, text("day 1, on the plane"), note(1))
+            .put_op(&doc, octets("day 1, on the plane"), note(1))
             .await?;
-        let taxi = phone.put(&doc, text("day 1, in the taxi"), note(1)).await?;
+        let taxi = phone
+            .put_op(&doc, octets("day 1, in the taxi"), note(1))
+            .await?;
         ensure!(
             plane.writer != taxi.writer,
             "both offline edits carry writer {:?}: a writer must be the device's key",
@@ -74,6 +76,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             || async { agree(&[&*laptop, &*phone], &doc, &[&plane, &taxi]).await },
         )
         .await?;
+        for layer in [&laptop, &phone] {
+            winning(&**layer, &doc, &[&plane, &taxi]).await?;
+        }
 
         for device in [&laptop, &phone] {
             let changes = look(&**device, &doc, &Frontier::new(), LOOK).await?;

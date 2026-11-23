@@ -52,13 +52,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             .share(
                 &doc,
                 members(
-                    merge(),
+                    register(),
                     &["/alice"],
                     &readers(&["/alice", "/bob", "/carol"]),
                 ),
             )
             .await?;
-        let first = w.put(PHONE, &doc, text("draft"), note(1)).await?;
+        let first = w.put_op(PHONE, &doc, octets("draft"), note(1)).await?;
         w.until("every reader opens the draft", LIMIT, || async {
             for layer in [&laptop, &bob, &carol] {
                 let seen = look(&**layer, &doc, &Frontier::new(), LOOK).await?;
@@ -75,13 +75,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         laptop
             .share(
                 &doc,
-                members(merge(), &["/alice"], &readers(&["/alice", "/carol"])),
+                members(register(), &["/alice"], &readers(&["/alice", "/carol"])),
             )
             .await?;
         phone
             .share(
                 &doc,
-                members(merge(), &["/alice"], &readers(&["/alice", "/bob"])),
+                members(register(), &["/alice"], &readers(&["/alice", "/bob"])),
             )
             .await?;
         w.gesture();
@@ -90,7 +90,9 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The epoch in force may be the laptop's: the phone asks it for the key, and on a faulty
         // network may answer RetryLater first (spec §9, §17.1) — a host puts again.
-        let later = w.put(PHONE, &doc, text("final figures"), note(1)).await?;
+        let later = w
+            .put_op(PHONE, &doc, octets("final figures"), note(1))
+            .await?;
         w.until(
             "the laptop opens the phone's later version",
             LIMIT,

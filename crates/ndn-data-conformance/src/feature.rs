@@ -7,13 +7,12 @@
 /// One feature of the data layer a case relies on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
-    /// Versions (writer = key, seq, parents, type, keep), owner-signed members records, the merge
-    /// rule, signed nested summaries, and `get`, `put`, `watch` over them.
+    /// Versions (writer = key, seq, parents, type, keep), owner-signed members records, the
+    /// built-in newest-wins register, signed nested summaries, and `get`, `put`, `put_op`,
+    /// `watch` over them.
     Merge,
     /// Members records whose writers lie under other people's prefixes.
     WritersAcrossPrefixes,
-    /// `snapshot`: one signed record pinning exact versions or states.
-    Snapshot,
     /// `share` removing a writer: a cut at what the owner had seen.
     RemovalCut,
     /// Re-checking accepted versions when a cut arrives (`Change::Withdrawn`).
@@ -58,18 +57,6 @@ pub enum Feature {
     /// A later trust-context version that revokes an issuer re-checks what a device holds
     /// through it, on adoption and on restart.
     IssuerRecheck,
-    /// Merge rules by name: a members record names its rule by a full, versioned name matched
-    /// exactly; a device whose program does not know it holds the collection's versions
-    /// unreadable and answers `DataError::RuleUnknown`, never a state under another rule.
-    RuleByName,
-    /// Operations the app builds (`put_op`): the rule checks each against its past, refuses for
-    /// good, or keeps it shown but not counted until it counts; checkpoints replace the state of
-    /// their past.
-    AppOps,
-    /// Versions of a merge collection carried in pieces, a checkpoint sparing a late reader the
-    /// pieces of what it covers, and release of a merge version's pieces only once a checkpoint
-    /// covering it is proved held.
-    MergePieces,
     /// A folder's members record (`share_folder`): one record, one seal epoch and one grant per
     /// reader for every collection under it, each collection free to narrow it.
     FolderMembers,
@@ -96,7 +83,7 @@ impl Feature {
     /// The plan slice that adds it.
     pub fn slice(self) -> u8 {
         match self {
-            Feature::Merge | Feature::WritersAcrossPrefixes | Feature::Snapshot => 1,
+            Feature::Merge | Feature::WritersAcrossPrefixes => 1,
             Feature::RemovalCut | Feature::CutRecheck | Feature::Seal | Feature::Log => 2,
             Feature::LargePayloads => 3,
             Feature::Revocation
@@ -109,10 +96,7 @@ impl Feature {
             | Feature::UnboundCut
             | Feature::GuestExpiry
             | Feature::IssuerRecheck => 5,
-            Feature::RuleByName
-            | Feature::AppOps
-            | Feature::MergePieces
-            | Feature::FolderMembers
+            Feature::FolderMembers
             | Feature::FolderWatch
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
@@ -125,7 +109,6 @@ impl Feature {
         match self {
             Feature::Merge => "merge rule",
             Feature::WritersAcrossPrefixes => "writers across prefixes",
-            Feature::Snapshot => "snapshot",
             Feature::RemovalCut => "removal cut",
             Feature::CutRecheck => "re-check on cut arrival",
             Feature::Seal => "seal",
@@ -141,9 +124,6 @@ impl Feature {
             Feature::UnboundCut => "old-form removal cut kept",
             Feature::GuestExpiry => "lapsed key needs a cut",
             Feature::IssuerRecheck => "re-check on issuer revocation",
-            Feature::RuleByName => "merge rules by name",
-            Feature::AppOps => "app-built operations",
-            Feature::MergePieces => "merge versions in pieces",
             Feature::FolderMembers => "folder members",
             Feature::FolderWatch => "folder watch",
             Feature::Introduction => "introduction",

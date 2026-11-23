@@ -53,17 +53,20 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.recovery_kit(LAPTOP).await?;
         w.gesture();
         laptop
-            .share(&journal, members(merge(), &["/alice"], &[person("/alice")]))
+            .share(
+                &journal,
+                members(register(), &["/alice"], &[person("/alice")]),
+            )
             .await?;
         w.until("the phone knows the shared journal", LIMIT, || {
             known(&*phone, &journal)
         })
         .await?;
         let monday = w
-            .put(PHONE, &journal, content(&[("monday", "market")]), note(1))
+            .put_op(PHONE, &journal, octets("monday: market"), note(1))
             .await?;
         let tuesday = w
-            .put(PHONE, &journal, content(&[("tuesday", "dentist")]), note(1))
+            .put_op(PHONE, &journal, octets("tuesday: dentist"), note(1))
             .await?;
         w.until("the laptop holds the phone's entries", LIMIT, || async {
             agree(&[&*phone, &*laptop], &journal, &[&monday, &tuesday]).await
@@ -76,10 +79,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let before = w
-            .put(
+            .put_op(
                 THIEF,
                 &journal,
-                content(&[("thief", "before the recovery")]),
+                octets("thief: before the recovery"),
                 note(1),
             )
             .await?;
@@ -95,20 +98,15 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.renew(LAPTOP).await?;
         w.renew(TABLET).await?;
         let after = w
-            .put(
+            .put_op(
                 THIEF,
                 &journal,
-                content(&[("thief", "after the recovery")]),
+                octets("thief: after the recovery"),
                 note(1),
             )
             .await?;
         let own = w
-            .put(
-                LAPTOP,
-                &journal,
-                content(&[("laptop", "recovered")]),
-                note(1),
-            )
+            .put_op(LAPTOP, &journal, octets("recovered"), note(1))
             .await?;
 
         w.net().online(TABLET);
@@ -123,16 +121,16 @@ fn run(w: &World) -> CaseFuture<'_> {
         for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
             let seen = look(&**layer, &journal, &Frontier::new(), LOOK).await?;
             ensure!(
-                !versions(&seen).any(|v| field_of(v, "thief").is_some()),
+                !versions(&seen).any(|v| wrote(v, "the recovery")),
                 "the {who} accepted a version the thief signed with the revoked key"
             );
-            let s = state(&**layer, &journal).await?;
+            let s = winning(&**layer, &journal, &[&own]).await?;
             ensure!(
                 s.at.contains(&monday) && s.at.contains(&tuesday),
                 "after the recovery the {who} lacks an entry of the phone's inside the cut"
             );
             ensure!(
-                s.at.contains(&own) && field(&s.value, "laptop") == Some("recovered"),
+                s.at.contains(&own) && written(&s) == b"recovered",
                 "after the recovery the {who} lacks the laptop's entry signed under its renewed \
                  certificate"
             );

@@ -451,11 +451,6 @@ fn octets(s: &str) -> bytes::Bytes {
     bytes::Bytes::copy_from_slice(s.as_bytes())
 }
 
-/// Whether the register write `v` carries exactly the octets of `s`.
-fn op_is(v: &Version, s: &str) -> bool {
-    v.op.as_deref() == Some(s.as_bytes())
-}
-
 /// Rule R (b): `layer`'s state of the register `collection` reads what the head with the highest
 /// signed digest (`Version::signed`) wrote. `heads` are the versions nothing supersedes, the ones
 /// the case made over no

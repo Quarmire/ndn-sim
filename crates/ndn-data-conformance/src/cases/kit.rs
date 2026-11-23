@@ -112,6 +112,23 @@ pub async fn required(
         .ok_or_else(|| Failure::new(format!("nothing is held at {path} of {space}")))
 }
 
+/// Whether `spaces` reads the write of `entry` at `path` of `space` now. A device that is no
+/// longer a reader may answer the read with a refusal (`AskOwner`, a sealed path) or with what it
+/// held before; either way it does not read `entry`, so a refusal is `false`, and so is the wait
+/// for a record (`"RetryLater"`). A failure of any other kind is returned.
+pub async fn reads_entry(
+    spaces: &dyn Spaces,
+    space: &Name,
+    path: &Name,
+    entry: &SpaceEntry,
+) -> Result<bool, Failure> {
+    match spaces.get(space, path).await {
+        Ok(read) => Ok(read.is_some_and(|read| read.key() == entry.key())),
+        Err(e) if e.retry_later() || e.next_is("AskOwner") || e.kind_is("Sealed") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Whether `spaces` has applied `entry`; `false` while the device answers `"RetryLater"`.
 pub async fn has(spaces: &dyn Spaces, space: &Name, entry: &SpaceEntry) -> Result<bool, Failure> {
     match spaces.applied(space, entry).await {

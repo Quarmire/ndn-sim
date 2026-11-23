@@ -12,9 +12,13 @@ use std::time::Duration;
 
 use ndn_sim::ClockSkew;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    DAY, LIMIT, LOOK, SETTLE, agree, has, item_of, items, known, look, loss_time, n, octets, op_is,
+    private, stolen, winning, wrote,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -47,27 +51,24 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let journal = n("/alice/32=data/journal");
-        let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
+        let space = n("/alice/32=data/journal");
+        let path = n("/entries");
+        let (phone, laptop, tablet) = (w.spaces(PHONE), w.spaces(LAPTOP), w.spaces(TABLET));
         w.net().offline(TABLET);
-        laptop
-            .share(
-                &journal,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| phone.open(&space)).await?;
         w.until("the phone knows the shared journal", LIMIT, || {
-            known(&*phone, &journal)
+            known(&*phone, &space)
         })
         .await?;
         let monday = w
-            .put_op(PHONE, &journal, octets("monday: market"), note(1))
+            .space_put(PHONE, &space, &path, octets("monday: market"))
             .await?;
         let tuesday = w
-            .put_op(PHONE, &journal, octets("tuesday: dentist"), note(1))
+            .space_put(PHONE, &space, &path, octets("tuesday: dentist"))
             .await?;
         w.until("the laptop holds the phone's entries", LIMIT, || async {
-            agree(&[&*phone, &*laptop], &journal, &[&monday, &tuesday]).await
+            agree(&[&*phone, &*laptop], &space, &path, &[&monday, &tuesday]).await
         })
         .await?;
 
@@ -75,7 +76,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // laptop held when she lost the phone; the revocation reaches every honest device (the
         // tablet holds it from the moment it joins).
         let lost = loss_time(w, LAPTOP).await;
-        let thief = stolen(w, THIEF, &journal, &tuesday).await?;
+        stolen(w, THIEF, &space, &tuesday).await?;
         w.net().offline(PHONE);
         w.net().set_clock(THIEF, ClockSkew::behind(30 * DAY));
         w.revoke(LAPTOP, PHONE, lost).await?;
@@ -83,45 +84,50 @@ fn run(w: &World) -> CaseFuture<'_> {
         let revoked_at = w.net().true_date();
 
         let forged = w
-            .put_op(THIEF, &journal, octets("dated last month"), note(1))
+            .space_put(THIEF, &space, &path, octets("dated last month"))
             .await?;
         ensure!(
             forged.writer == monday.writer && forged.seq > tuesday.seq,
             "precondition: the thief signs as the phone past its entries ({tuesday:?}), got \
              {forged:?}"
         );
-        let own = look(&*thief, &journal, &Frontier::new(), LOOK).await?;
-        let dated = version(&own, &forged).map(|v| v.dated);
+        // The thief signs by its own clock: the version claims a date before the revocation.
+        let thief_date = w.net().date(THIEF);
         ensure!(
-            dated.is_some_and(|d| d < revoked_at),
-            "precondition: the thief's version should claim a date before the revocation \
-             ({revoked_at:?}), it claims {dated:?}"
+            thief_date < revoked_at,
+            "precondition: the thief's clock should read a date before the revocation \
+             ({revoked_at:?}), it reads {thief_date:?}"
         );
 
         w.net().online(TABLET);
         w.converge(
             "the tablet, joining after the revocation, reads the phone's entries in the cut",
             LIMIT,
-            || async { agree(&[&*laptop, &*tablet], &journal, &[&monday, &tuesday]).await },
+            || async { agree(&[&*laptop, &*tablet], &space, &path, &[&monday, &tuesday]).await },
         )
         .await?;
         w.sleep(SETTLE).await;
 
-        for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
-            let seen = look(&**layer, &journal, &Frontier::new(), LOOK).await?;
+        for (who, spaces) in [("laptop", &laptop), ("tablet", &tablet)] {
+            let seen = look(&**spaces, &space, LOOK).await?;
             ensure!(
-                version(&seen, &forged).is_none()
-                    && !versions(&seen).any(|v| wrote(v, "dated last month")),
+                item_of(&seen, &forged.key()).is_none()
+                    && !items(&seen).any(|i| wrote(i, "dated last month")),
                 "the {who} accepted the thief's backdated version"
             );
-            let s = winning(&**layer, &journal, &[&tuesday]).await?;
+            let s = winning(&**spaces, &space, &path, &[&tuesday]).await?;
             ensure!(
-                s.at.contains(&monday) && s.at.contains(&tuesday),
+                has(&**spaces, &space, &monday).await? && has(&**spaces, &space, &tuesday).await?,
                 "the {who} lacks an entry of the phone's inside the cut"
             );
             ensure!(
-                !s.at.contains(&forged) && !contains(written(&s), b"dated last month"),
+                !has(&**spaces, &space, &forged).await? && !wrote(&s, "dated last month"),
                 "the {who}'s journal shows the thief's version"
+            );
+            ensure!(
+                op_is(&s, "tuesday: dentist"),
+                "the {who}'s journal reads {:?} for the phone's entries in the cut",
+                String::from_utf8_lossy(&s.bytes)
             );
         }
         Ok(())

@@ -13,11 +13,14 @@
 
 use std::time::Duration;
 
-use ndn_data::{Change, Refusal};
-
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    LIMIT, LOOK, SETTLE, agree, drain, has, known, n, octets, op_is, private, winning,
+    withdrawn_as, wrote,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::{RefusalKind, Spaces};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -56,25 +59,22 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let journal = n("/alice/32=data/journal");
-        let (laptop, tablet, intruder) = (w.at(LAPTOP), w.at(TABLET), w.at(INTRUDER));
+        let space = n("/alice/32=data/journal");
+        let path = n("/entries");
+        let (laptop, tablet, intruder) = (w.spaces(LAPTOP), w.spaces(TABLET), w.spaces(INTRUDER));
         w.recovery_kit(LAPTOP).await?;
         w.gesture();
-        laptop
-            .share(
-                &journal,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| intruder.open(&space)).await?;
         w.until("the intruder knows the shared journal", LIMIT, || {
-            known(&*intruder, &journal)
+            known(&*intruder, &space)
         })
         .await?;
         let honest = w
-            .put_op(LAPTOP, &journal, octets("before the recovery"), note(1))
+            .space_put(LAPTOP, &space, &path, octets("before the recovery"))
             .await?;
         let planted = w
-            .put_op(INTRUDER, &journal, octets("planted"), note(1))
+            .space_put(INTRUDER, &space, &path, octets("planted"))
             .await?;
         w.until(
             "the laptop and the tablet hold the honest and the planted entry",
@@ -82,7 +82,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             || async {
                 agree(
                     &[&*laptop, &*tablet, &*intruder],
-                    &journal,
+                    &space,
+                    &path,
                     &[&honest, &planted],
                 )
                 .await
@@ -93,47 +94,43 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The tablet's data layer goes down; Alice recovers with the kit, the old root revoked,
         // and her laptop and tablet renew with the new root.
         w.stop(TABLET).await?;
-        let mut laptops_feed = laptop.watch(&journal, &Frontier::new()).await?;
+        let mut laptops_feed = laptop.watch(&space).await?;
         w.recover(LAPTOP).await?;
         w.gesture();
         w.renew(LAPTOP).await?;
         w.renew(TABLET).await?;
-        w.restart(TABLET).await?;
-        let tablet = w.at(TABLET);
+        let tablet = w.restart(TABLET).await?;
         let mut seen = Vec::new();
-        drain(&mut laptops_feed, SETTLE, &mut seen).await?;
+        drain(&mut *laptops_feed, SETTLE, &mut seen).await?;
         w.converge(
             "the honest entry is back at every honest device after the renewal",
             LIMIT,
             || async {
-                Ok(has(&*laptop, &journal, &honest).await?
-                    && has(&*tablet, &journal, &honest).await?)
+                Ok(has(&*laptop, &space, &honest).await? && has(&*tablet, &space, &honest).await?)
             },
         )
         .await?;
         w.sleep(SETTLE).await;
-        drain(&mut laptops_feed, LOOK, &mut seen).await?;
+        drain(&mut *laptops_feed, LOOK, &mut seen).await?;
 
         // Both ways of re-judging, each reported on its own.
         let mut wrong = Vec::new();
-        let restarted = winning(&*tablet, &journal, &[&honest]).await?;
-        if restarted.at.contains(&planted) || contains(written(&restarted), b"planted") {
+        let restarted = winning(&*tablet, &space, &path, &[&honest]).await?;
+        if has(&*tablet, &space, &planted).await? || wrote(&restarted, "planted") {
             wrong.push(
                 "after its restart the tablet still holds the entry of a key whose only issuer \
                  the recovery revoked"
                     .to_owned(),
             );
         }
-        let adopted = winning(&*laptop, &journal, &[&honest]).await?;
-        if adopted.at.contains(&planted) || contains(written(&adopted), b"planted") {
+        let adopted = winning(&*laptop, &space, &path, &[&honest]).await?;
+        if has(&*laptop, &space, &planted).await? || wrote(&adopted, "planted") {
             wrong.push(
                 "on adopting the recovery the laptop kept the entry of a key whose only issuer \
                  it revokes"
                     .to_owned(),
             );
-        } else if !seen.iter().any(|c| {
-            matches!(c, Change::Withdrawn { id, why: Refusal::Untrusted { .. }, .. } if *id == planted)
-        }) {
+        } else if !withdrawn_as(&seen, &planted.key(), RefusalKind::Untrusted) {
             wrong.push(
                 "the laptop dropped the intruder's entry without reporting it withdrawn to its \
                  watcher because its chain is refused"
@@ -142,12 +139,16 @@ fn run(w: &World) -> CaseFuture<'_> {
         }
         ensure!(wrong.is_empty(), "{}", wrong.join("; "));
 
-        for (who, s) in [("tablet", &restarted), ("laptop", &adopted)] {
+        let judged: [(&str, &dyn Spaces, &_); 2] = [
+            ("tablet", &*tablet, &restarted),
+            ("laptop", &*laptop, &adopted),
+        ];
+        for (who, spaces, s) in judged {
             ensure!(
-                s.at.contains(&honest) && written(s) == b"before the recovery",
+                has(spaces, &space, &honest).await? && op_is(s, "before the recovery"),
                 "the {who} lost the laptop's entry from before the recovery, though the laptop's \
                  key renewed with the new root ({:?})",
-                String::from_utf8_lossy(written(s))
+                String::from_utf8_lossy(&s.bytes)
             );
         }
         Ok(())

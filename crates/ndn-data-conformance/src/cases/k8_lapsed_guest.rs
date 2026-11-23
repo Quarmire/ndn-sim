@@ -14,9 +14,13 @@ use std::time::Duration;
 
 use ndn_sim::ClockSkew;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    DAY, LIMIT, LOOK, SETTLE, has, item_of, items, known, look, n, octets, op_is, private, winning,
+    wrote,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::provider::Certs;
 use crate::world::{Dev, Plan, World};
 
@@ -55,25 +59,22 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let notes = n("/alice/32=data/notes/garden");
-        let (laptop, guest, tablet) = (w.at(LAPTOP), w.at(GUEST), w.at(TABLET));
+        let space = n("/alice/32=data/notes");
+        let path = n("/garden");
+        let (laptop, guest, tablet) = (w.spaces(LAPTOP), w.spaces(GUEST), w.spaces(TABLET));
         w.net().offline(TABLET);
-        laptop
-            .share(
-                &notes,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| guest.open(&space)).await?;
         w.until("the guest knows the shared notes", LIMIT, || {
-            known(&*guest, &notes)
+            known(&*guest, &space)
         })
         .await?;
         // The guest's first put races the epoch key's grant (spec §17.1): put again on RetryLater.
         let before = w
-            .put_op(GUEST, &notes, octets("sown beans"), note(1))
+            .space_put(GUEST, &space, &path, octets("sown beans"))
             .await?;
         w.until("the laptop holds the guest's note", LIMIT, || {
-            has(&*laptop, &notes, &before)
+            has(&*laptop, &space, &before)
         })
         .await?;
         w.sleep(Duration::from_secs(1)).await;
@@ -81,7 +82,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The guest certificate reaches its NotAfter; Bob writes on with his key.
         w.expire(GUEST, Certs::All).await?;
         let after = guest
-            .put_op(&notes, octets("written after the lapse"), note(1))
+            .put(&space, &path, octets("written after the lapse"))
             .await?;
         ensure!(
             after.writer == before.writer && after.seq > before.seq,
@@ -90,17 +91,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         w.sleep(SETTLE).await;
         ensure!(
-            !has(&*laptop, &notes, &after).await?,
+            !has(&*laptop, &space, &after).await?,
             "the laptop accepted a note the guest signed after its certificate lapsed, before \
              any revocation: a lapsed guest's data must wait for the owner's cut"
         );
 
         // Alice's root device ends the lapsed key on its own, with a cut at the lapse.
         let ended = w.end_keys(LAPTOP).await?;
-        let key = before.writer.key();
         ensure!(
-            ended.iter().any(|k| key.has_prefix(k)),
-            "the root did not end the lapsed guest key {key} (it ended {ended:?})"
+            ended.iter().any(|k| k.has_prefix(&before.writer)),
+            "the root did not end the lapsed key of the guest {} (it ended {ended:?})",
+            before.writer
         );
 
         // A reader whose clock is a year ahead joins.
@@ -109,27 +110,27 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.converge(
             "the tablet, a year ahead, reads the guest's note from before the lapse",
             LIMIT,
-            || has(&*tablet, &notes, &before),
+            || has(&*tablet, &space, &before),
         )
         .await?;
         w.sleep(SETTLE).await;
 
-        for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
-            let looked = look(&**layer, &notes, &Frontier::new(), LOOK).await?;
+        for (who, spaces) in [("laptop", &laptop), ("tablet", &tablet)] {
+            let looked = look(&**spaces, &space, LOOK).await?;
             ensure!(
-                version(&looked, &after).is_none()
-                    && !versions(&looked).any(|v| wrote(v, "written after the lapse")),
+                item_of(&looked, &after.key()).is_none()
+                    && !items(&looked).any(|i| wrote(i, "written after the lapse")),
                 "the {who} accepts the note the guest signed after its certificate lapsed"
             );
-            let s = winning(&**layer, &notes, &[&before]).await?;
+            let s = winning(&**spaces, &space, &path, &[&before]).await?;
             ensure!(
-                s.at.contains(&before) && written(&s) == b"sown beans",
+                has(&**spaces, &space, &before).await? && op_is(&s, "sown beans"),
                 "the {who} lacks the guest's note from before the lapse, which the root's cut \
                  keeps ({:?})",
-                String::from_utf8_lossy(written(&s))
+                String::from_utf8_lossy(&s.bytes)
             );
             ensure!(
-                !s.at.contains(&after) && !contains(written(&s), b"written after the lapse"),
+                !has(&**spaces, &space, &after).await? && !wrote(&s, "written after the lapse"),
                 "the {who}'s notes include the guest's note from after the lapse"
             );
         }

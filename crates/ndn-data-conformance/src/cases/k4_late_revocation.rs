@@ -9,11 +9,13 @@
 
 use std::time::Duration;
 
-use ndn_data::Change;
-
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    LIMIT, SETTLE, agree, drain_until, has, known, loss_time, n, octets, op_is, private, stolen,
+    winning, withdrawn, wrote,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -50,41 +52,33 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let journal = n("/alice/32=data/journal");
-        let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
-        laptop
-            .share(
-                &journal,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        let space = n("/alice/32=data/journal");
+        let path = n("/entries");
+        let (phone, laptop, tablet) = (w.spaces(PHONE), w.spaces(LAPTOP), w.spaces(TABLET));
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| phone.open(&space)).await?;
         w.until("the phone knows the shared journal", LIMIT, || {
-            known(&*phone, &journal)
+            known(&*phone, &space)
         })
         .await?;
         let inside = w
-            .put_op(PHONE, &journal, octets("last honest entry"), note(1))
+            .space_put(PHONE, &space, &path, octets("last honest entry"))
             .await?;
         w.until("every device holds the phone's entry", LIMIT, || async {
-            agree(&[&*phone, &*laptop, &*tablet], &journal, &[&inside]).await
+            agree(&[&*phone, &*laptop, &*tablet], &space, &path, &[&inside]).await
         })
         .await?;
 
         // Stolen; Alice revokes on her laptop, and the new version stays there for now.
         let lost = loss_time(w, LAPTOP).await;
-        stolen(w, THIEF, &journal, &inside).await?;
+        stolen(w, THIEF, &space, &inside).await?;
         w.net().offline(PHONE);
         w.revoke_at(LAPTOP, PHONE, lost).await?;
         w.gesture();
 
-        let mut tablets_feed = tablet.watch(&journal, &Frontier::new()).await?;
+        let mut tablets_feed = tablet.watch(&space).await?;
         let outside = w
-            .put_op(
-                THIEF,
-                &journal,
-                octets("written after the revocation"),
-                note(1),
-            )
+            .space_put(THIEF, &space, &path, octets("written after the revocation"))
             .await?;
         ensure!(
             outside.writer == inside.writer && outside.seq > inside.seq,
@@ -94,7 +88,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.until(
             "the tablet accepts the thief's version, not knowing the revocation",
             LIMIT,
-            || has(&*tablet, &journal, &outside),
+            || has(&*tablet, &space, &outside),
         )
         .await?;
 
@@ -102,31 +96,27 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.spread_all().await?;
         let mut seen = Vec::new();
         let took = drain_until(
-            &mut tablets_feed,
+            &mut *tablets_feed,
             &mut seen,
             "the tablet withdraws the thief's version",
             LIMIT,
-            |changes| {
-                changes
-                    .iter()
-                    .any(|c| matches!(c, Change::Withdrawn { id, .. } if *id == outside))
-            },
+            |events| withdrawn(events, &outside.key()),
         )
         .await?;
         w.converged(took);
         w.sleep(SETTLE).await;
 
-        let s = winning(&*tablet, &journal, &[&inside]).await?;
+        let s = winning(&*tablet, &space, &path, &[&inside]).await?;
         ensure!(
-            !s.at.contains(&outside) && !contains(written(&s), b"written after the revocation"),
+            !has(&*tablet, &space, &outside).await? && !wrote(&s, "written after the revocation"),
             "the tablet's journal still includes the thief's version the cut refuses"
         );
         ensure!(
-            s.at.contains(&inside) && written(&s) == b"last honest entry",
+            has(&*tablet, &space, &inside).await? && op_is(&s, "last honest entry"),
             "the re-check also dropped the phone's entry inside the cut"
         );
         ensure!(
-            !has(&*laptop, &journal, &outside).await?,
+            !has(&*laptop, &space, &outside).await?,
             "the laptop, which revoked the key, accepted the thief's version"
         );
         Ok(())

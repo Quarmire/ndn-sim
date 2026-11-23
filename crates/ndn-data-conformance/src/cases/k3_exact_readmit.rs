@@ -9,9 +9,17 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use bytes::Bytes;
+use ndn_data::Name;
+
+use super::kit::{
+    LIMIT, LOOK, SETTLE, has, item_of, items, known, look, loss_time, n, octets, op_is, private,
+    stolen, winning, wrote,
+};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::spaces::SpaceEntry;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -40,24 +48,45 @@ fn plan() -> Plan {
     p
 }
 
+/// The thief signs `bytes` at `path` of `space` as the phone's entry number `seq`. Its first
+/// write into a sealed space races the grant of the epoch key, so it asks again until the
+/// device signs, for as long as devices that reach each other get to agree; the last refusal
+/// is the failure.
+async fn forge(
+    w: &World,
+    space: &Name,
+    path: &Name,
+    bytes: Bytes,
+    seq: u64,
+) -> Result<SpaceEntry, Failure> {
+    let start = tokio::time::Instant::now();
+    loop {
+        match w.sign_at(THIEF, space, path, bytes.clone(), seq).await {
+            Ok(entry) => return Ok(entry),
+            Err(e) if start.elapsed() >= LIMIT => return Err(e),
+            Err(_) => w.sleep(Duration::from_secs(1)).await,
+        }
+    }
+}
+
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let garden = n("/alice/32=data/notes/garden");
         let kitchen = n("/alice/32=data/notes/kitchen");
-        let (phone, laptop) = (w.at(PHONE), w.at(LAPTOP));
-        for c in [&garden, &kitchen] {
-            laptop
-                .share(c, members(register(), &["/alice"], &[person("/alice")]))
-                .await?;
+        let path = n("/notes");
+        let (phone, laptop) = (w.spaces(PHONE), w.spaces(LAPTOP));
+        for space in [&garden, &kitchen] {
+            laptop.create(space, private(&[], &[])).await?;
+            w.retry_later(|| phone.open(space)).await?;
         }
-        w.until("the phone knows both shared collections", LIMIT, || async {
+        w.until("the phone knows both shared spaces", LIMIT, || async {
             Ok(known(&*phone, &garden).await? && known(&*phone, &kitchen).await?)
         })
         .await?;
         // The garden is sealed: the phone's first put races its epoch key's grant, and is put
-        // again while refused RetryLater (spec §18.1), as is the thief's first kitchen put.
+        // again while refused RetryLater (spec §18.1).
         let seen = w
-            .put_op(PHONE, &garden, octets("planted beans"), note(1))
+            .space_put(PHONE, &garden, &path, octets("planted beans"))
             .await?;
         w.until("the laptop holds the phone's note", LIMIT, || {
             has(&*laptop, &garden, &seen)
@@ -68,31 +97,30 @@ fn run(w: &World) -> CaseFuture<'_> {
         let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &garden, &seen).await?;
         w.net().offline(PHONE);
-        let wanted = phone
-            .put_op(&garden, octets("watered tuesday"), note(1))
-            .await?;
+        let wanted = phone.put(&garden, &path, octets("watered tuesday")).await?;
         let neighbour = phone
-            .put_op(&garden, octets("weeded wednesday"), note(1))
+            .put(&garden, &path, octets("weeded wednesday"))
             .await?;
         ensure!(
-            neighbour.seq.0 == wanted.seq.0 + 1,
+            neighbour.seq == wanted.seq + 1,
             "precondition: the two offline notes are neighbours in the phone's log, got \
              {wanted:?} and {neighbour:?}"
         );
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
+        w.retry_later(|| thief.open(&kitchen)).await?;
         w.until("the stolen device knows the shared kitchen", LIMIT, || {
             known(&*thief, &kitchen)
         })
         .await?;
-        let forged = w
-            .put_op(
-                THIEF,
-                &kitchen,
-                octets("same seq, other collection"),
-                note(1),
-            )
-            .await?;
+        let forged = forge(
+            w,
+            &kitchen,
+            &path,
+            octets("same seq, other space"),
+            wanted.seq,
+        )
+        .await?;
         ensure!(
             forged.writer == wanted.writer && forged.seq == wanted.seq,
             "precondition: the thief writes the kitchen at the re-admitted note's seq \
@@ -107,26 +135,31 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
 
         w.gesture();
-        w.readmit(LAPTOP, PHONE, &garden, &wanted).await?;
+        w.readmit_entry(LAPTOP, PHONE, &wanted).await?;
         w.converge("the laptop holds the re-admitted note", LIMIT, || {
             has(&*laptop, &garden, &wanted)
         })
         .await?;
         w.sleep(SETTLE).await;
 
-        let s = winning(&*laptop, &garden, &[&wanted]).await?;
+        let s = winning(&*laptop, &garden, &path, &[&wanted]).await?;
         ensure!(
-            s.at.contains(&seen) && s.at.contains(&wanted),
+            has(&*laptop, &garden, &seen).await? && has(&*laptop, &garden, &wanted).await?,
             "the garden lacks the note inside the cut or the re-admitted one"
         );
         ensure!(
-            !s.at.contains(&neighbour) && !contains(written(&s), b"weeded wednesday"),
+            !has(&*laptop, &garden, &neighbour).await? && !wrote(&s, "weeded wednesday"),
             "re-admitting one note brought back its neighbour {neighbour:?}"
         );
-        let kitchen_seen = look(&*laptop, &kitchen, &Frontier::new(), LOOK).await?;
         ensure!(
-            version(&kitchen_seen, &forged).is_none()
-                && !versions(&kitchen_seen).any(|v| wrote(v, "same seq, other collection")),
+            op_is(&s, "watered tuesday"),
+            "the garden reads {:?} once the note is re-admitted",
+            String::from_utf8_lossy(&s.bytes)
+        );
+        let kitchen_seen = look(&*laptop, &kitchen, LOOK).await?;
+        ensure!(
+            item_of(&kitchen_seen, &forged.key()).is_none()
+                && !items(&kitchen_seen).any(|i| wrote(i, "same seq, other space")),
             "re-admitting the garden note let the thief's kitchen version at its seq in"
         );
         ensure!(

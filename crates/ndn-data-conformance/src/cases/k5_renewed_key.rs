@@ -8,9 +8,10 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, agree, has, known, n, octets, op_is, private, winning};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::provider::Certs;
 use crate::world::{Dev, Plan, World};
 
@@ -41,40 +42,37 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let notes = n("/alice/32=data/notes/garden");
-        let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
+        let space = n("/alice/32=data/notes");
+        let path = n("/garden");
+        let (phone, laptop, tablet) = (w.spaces(PHONE), w.spaces(LAPTOP), w.spaces(TABLET));
         w.net().offline(TABLET);
-        laptop
-            .share(
-                &notes,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| phone.open(&space)).await?;
         w.until("the phone knows the shared notes", LIMIT, || {
-            known(&*phone, &notes)
+            known(&*phone, &space)
         })
         .await?;
         let before = w
-            .put_op(PHONE, &notes, octets("sown beans"), note(1))
+            .space_put(PHONE, &space, &path, octets("sown beans"))
             .await?;
         w.until("the laptop holds the first note", LIMIT, || {
-            has(&*laptop, &notes, &before)
+            has(&*laptop, &space, &before)
         })
         .await?;
 
         w.renew(PHONE).await?;
         let renewed = w
-            .put_op(PHONE, &notes, octets("watered tuesday"), note(1))
+            .space_put(PHONE, &space, &path, octets("watered tuesday"))
             .await?;
         w.until("the laptop holds the note after the renewal", LIMIT, || {
-            has(&*laptop, &notes, &renewed)
+            has(&*laptop, &space, &renewed)
         })
         .await?;
 
         // The certificate the renewal superseded runs out.
         w.expire(PHONE, Certs::Superseded).await?;
         let after = w
-            .put_op(PHONE, &notes, octets("picked friday"), note(1))
+            .space_put(PHONE, &space, &path, octets("picked friday"))
             .await?;
         ensure!(
             before.writer == renewed.writer && renewed.writer == after.writer,
@@ -86,7 +84,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.converge("every reader holds the whole log", LIMIT, || async {
             agree(
                 &[&*phone, &*laptop, &*tablet],
-                &notes,
+                &space,
+                &path,
                 &[&before, &renewed, &after],
             )
             .await
@@ -94,16 +93,18 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         w.sleep(SETTLE).await;
 
-        for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
-            let s = winning(&**layer, &notes, &[&after]).await?;
+        for (who, spaces) in [("laptop", &laptop), ("tablet", &tablet)] {
+            let s = winning(&**spaces, &space, &path, &[&after]).await?;
             ensure!(
-                s.at.contains(&before) && s.at.contains(&renewed) && s.at.contains(&after),
+                has(&**spaces, &space, &before).await?
+                    && has(&**spaces, &space, &renewed).await?
+                    && has(&**spaces, &space, &after).await?,
                 "the {who} dropped a note of the renewed key's log"
             );
             ensure!(
-                written(&s) == b"picked friday",
+                op_is(&s, "picked friday"),
                 "the {who} reads {:?}; the renewed key's newest note is the register's value",
-                String::from_utf8_lossy(written(&s))
+                String::from_utf8_lossy(&s.bytes)
             );
         }
         Ok(())

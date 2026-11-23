@@ -11,9 +11,13 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    LIMIT, LOOK, SETTLE, agree, has, items, known, look, loss_time, n, octets, op_is, private,
+    stolen, winning, wrote,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -47,44 +51,36 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let journal = n("/alice/32=data/journal");
-        let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
+        let space = n("/alice/32=data/journal");
+        let path = n("/entries");
+        let (phone, laptop, tablet) = (w.spaces(PHONE), w.spaces(LAPTOP), w.spaces(TABLET));
         w.net().offline(TABLET);
         w.recovery_kit(LAPTOP).await?;
         w.gesture();
-        laptop
-            .share(
-                &journal,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| phone.open(&space)).await?;
         w.until("the phone knows the shared journal", LIMIT, || {
-            known(&*phone, &journal)
+            known(&*phone, &space)
         })
         .await?;
         let monday = w
-            .put_op(PHONE, &journal, octets("monday: market"), note(1))
+            .space_put(PHONE, &space, &path, octets("monday: market"))
             .await?;
         let tuesday = w
-            .put_op(PHONE, &journal, octets("tuesday: dentist"), note(1))
+            .space_put(PHONE, &space, &path, octets("tuesday: dentist"))
             .await?;
         w.until("the laptop holds the phone's entries", LIMIT, || async {
-            agree(&[&*phone, &*laptop], &journal, &[&monday, &tuesday]).await
+            agree(&[&*phone, &*laptop], &space, &path, &[&monday, &tuesday]).await
         })
         .await?;
 
         let lost = loss_time(w, LAPTOP).await;
-        stolen(w, THIEF, &journal, &tuesday).await?;
+        stolen(w, THIEF, &space, &tuesday).await?;
         w.net().offline(PHONE);
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();
         let before = w
-            .put_op(
-                THIEF,
-                &journal,
-                octets("thief: before the recovery"),
-                note(1),
-            )
+            .space_put(THIEF, &space, &path, octets("thief: before the recovery"))
             .await?;
         ensure!(
             before.writer == monday.writer && before.seq > tuesday.seq,
@@ -98,44 +94,47 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.renew(LAPTOP).await?;
         w.renew(TABLET).await?;
         let after = w
-            .put_op(
-                THIEF,
-                &journal,
-                octets("thief: after the recovery"),
-                note(1),
-            )
+            .space_put(THIEF, &space, &path, octets("thief: after the recovery"))
             .await?;
         let own = w
-            .put_op(LAPTOP, &journal, octets("recovered"), note(1))
+            .space_put(LAPTOP, &space, &path, octets("recovered"))
             .await?;
 
         w.net().online(TABLET);
         w.converge(
             "the tablet, joining after the recovery, reads the cut and the laptop's entry",
             LIMIT,
-            || async { agree(&[&*laptop, &*tablet], &journal, &[&monday, &tuesday, &own]).await },
+            || async {
+                agree(
+                    &[&*laptop, &*tablet],
+                    &space,
+                    &path,
+                    &[&monday, &tuesday, &own],
+                )
+                .await
+            },
         )
         .await?;
         w.sleep(SETTLE).await;
 
-        for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
-            let seen = look(&**layer, &journal, &Frontier::new(), LOOK).await?;
+        for (who, spaces) in [("laptop", &laptop), ("tablet", &tablet)] {
+            let seen = look(&**spaces, &space, LOOK).await?;
             ensure!(
-                !versions(&seen).any(|v| wrote(v, "the recovery")),
+                !items(&seen).any(|i| wrote(i, "the recovery")),
                 "the {who} accepted a version the thief signed with the revoked key"
             );
-            let s = winning(&**layer, &journal, &[&own]).await?;
+            let s = winning(&**spaces, &space, &path, &[&own]).await?;
             ensure!(
-                s.at.contains(&monday) && s.at.contains(&tuesday),
+                has(&**spaces, &space, &monday).await? && has(&**spaces, &space, &tuesday).await?,
                 "after the recovery the {who} lacks an entry of the phone's inside the cut"
             );
             ensure!(
-                s.at.contains(&own) && written(&s) == b"recovered",
+                has(&**spaces, &space, &own).await? && op_is(&s, "recovered"),
                 "after the recovery the {who} lacks the laptop's entry signed under its renewed \
                  certificate"
             );
             ensure!(
-                !s.at.contains(&before) && !s.at.contains(&after),
+                !has(&**spaces, &space, &before).await? && !has(&**spaces, &space, &after).await?,
                 "after the recovery the {who}'s journal includes a thief's version ({before:?} \
                  or {after:?})"
             );

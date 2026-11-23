@@ -15,9 +15,13 @@ use std::time::Duration;
 
 use ndn_sim::ClockSkew;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{
+    DAY, LIMIT, LOOK, SETTLE, agree, has, item_of, items, known, look, n, octets, op_is, private,
+    winning, wrote,
+};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
 use crate::provider::Certs;
 use crate::world::{Dev, Plan, World};
 
@@ -56,27 +60,24 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let notes = n("/alice/32=data/notes/garden");
-        let (phone, laptop, tablet) = (w.at(PHONE), w.at(LAPTOP), w.at(TABLET));
+        let space = n("/alice/32=data/notes");
+        let path = n("/garden");
+        let (phone, laptop, tablet) = (w.spaces(PHONE), w.spaces(LAPTOP), w.spaces(TABLET));
         w.net().offline(TABLET);
-        laptop
-            .share(
-                &notes,
-                members(register(), &["/alice"], &[person("/alice")]),
-            )
-            .await?;
+        laptop.create(&space, private(&[], &[])).await?;
+        w.retry_later(|| phone.open(&space)).await?;
         w.until("the phone knows the shared notes", LIMIT, || {
-            known(&*phone, &notes)
+            known(&*phone, &space)
         })
         .await?;
         let first = w
-            .put_op(PHONE, &notes, octets("sown beans"), note(1))
+            .space_put(PHONE, &space, &path, octets("sown beans"))
             .await?;
         let second = w
-            .put_op(PHONE, &notes, octets("watered tuesday"), note(1))
+            .space_put(PHONE, &space, &path, octets("watered tuesday"))
             .await?;
         w.until("the laptop holds the phone's notes", LIMIT, || async {
-            agree(&[&*phone, &*laptop], &notes, &[&first, &second]).await
+            agree(&[&*phone, &*laptop], &space, &path, &[&first, &second]).await
         })
         .await?;
         w.sleep(Duration::from_secs(1)).await;
@@ -84,7 +85,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The phone's certificate runs out unrenewed, and the phone writes on with its key.
         w.expire(PHONE, Certs::All).await?;
         let late = phone
-            .put_op(&notes, octets("written after the lapse"), note(1))
+            .put(&space, &path, octets("written after the lapse"))
             .await?;
         ensure!(
             late.writer == first.writer && late.seq > second.seq,
@@ -93,17 +94,17 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         w.sleep(SETTLE).await;
         ensure!(
-            !has(&*laptop, &notes, &late).await?,
+            !has(&*laptop, &space, &late).await?,
             "the laptop accepted a note the phone signed after its certificate lapsed, before \
              the owner ended the key: a lapsed key's data must wait for the owner's cut"
         );
 
         // Alice's root device ends the lapsed key, with a cut at the lapse.
         let ended = w.end_keys(LAPTOP).await?;
-        let key = first.writer.key();
         ensure!(
-            ended.iter().any(|k| key.has_prefix(k)),
-            "the root did not end the lapsed phone key {key} (it ended {ended:?})"
+            ended.iter().any(|k| k.has_prefix(&first.writer)),
+            "the root did not end the lapsed key of {} (it ended {ended:?})",
+            first.writer
         );
 
         // A reader whose clock is a year ahead joins and reads the expired key's old notes.
@@ -112,24 +113,27 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.converge(
             "the tablet, a year ahead, reads the expired key's notes from before the lapse",
             LIMIT,
-            || async { agree(&[&*laptop, &*tablet], &notes, &[&first, &second]).await },
+            || async { agree(&[&*laptop, &*tablet], &space, &path, &[&first, &second]).await },
         )
         .await?;
         w.sleep(SETTLE).await;
 
-        for (who, layer) in [("laptop", &laptop), ("tablet", &tablet)] {
-            let s = winning(&**layer, &notes, &[&second]).await?;
+        for (who, spaces) in [("laptop", &laptop), ("tablet", &tablet)] {
+            let s = winning(&**spaces, &space, &path, &[&second]).await?;
             ensure!(
-                s.at.contains(&first) && s.at.contains(&second),
+                has(&**spaces, &space, &first).await? && has(&**spaces, &space, &second).await?,
                 "the {who} dropped a note the expired key signed while it was valid"
             );
             ensure!(
-                written(&s) == b"watered tuesday",
+                op_is(&s, "watered tuesday"),
                 "the {who} shows {:?} for the expired key's notes",
-                String::from_utf8_lossy(written(&s))
+                String::from_utf8_lossy(&s.bytes)
             );
+            let looked = look(&**spaces, &space, LOOK).await?;
             ensure!(
-                !s.at.contains(&late) && !contains(written(&s), b"written after the lapse"),
+                !has(&**spaces, &space, &late).await?
+                    && item_of(&looked, &late.key()).is_none()
+                    && !items(&looked).any(|i| wrote(i, "written after the lapse")),
                 "the {who}'s notes include the note the phone signed after its certificate \
                  lapsed"
             );

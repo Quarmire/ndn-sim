@@ -51,8 +51,26 @@ fn run(w: &World) -> CaseFuture<'_> {
         laptop.create(&space, public(&[])).await?;
         w.retry_later(|| phone.open(&space)).await?;
         let v17 = laptop.put(&space, &doc, octets("day 1")).await?;
-        w.until("the phone holds the shared version", LIMIT, || {
+        w.until("the phone holds the first version", LIMIT, || {
             has(&*phone, &space, &v17)
+        })
+        .await?;
+        // Each device writes online, over what the other wrote, before both go offline: a device
+        // that holds a space's entries may not be able to write into it yet (the write answers
+        // "RetryLater" until it has what admits it), and offline it never would. The laptop's
+        // second write, made over the phone's, is the shared version both edit.
+        let seen = w
+            .space_put(PHONE, &space, &doc, octets("day 1, read on the phone"))
+            .await?;
+        w.until("the laptop holds the phone's write", LIMIT, || {
+            has(&*laptop, &space, &seen)
+        })
+        .await?;
+        let shared = w
+            .space_put(LAPTOP, &space, &doc, octets("day 1, read on the laptop"))
+            .await?;
+        w.until("the phone holds the shared version", LIMIT, || {
+            has(&*phone, &space, &shared)
         })
         .await?;
 
@@ -97,10 +115,10 @@ fn run(w: &World) -> CaseFuture<'_> {
                     )));
                 };
                 ensure!(
-                    written.after.iter().any(|a| a.covers(&v17.key())),
+                    written.after.iter().any(|a| a.covers(&shared.key())),
                     "{} does not supersede the shared write {}: it lists {:?}",
                     entry.name,
-                    v17.name,
+                    shared.name,
                     written.after
                 );
             }

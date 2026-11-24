@@ -163,6 +163,44 @@ pub async fn known(spaces: &dyn Spaces, space: &Name) -> Result<bool, Failure> {
     Ok(members_now(spaces, space).await?.is_some())
 }
 
+/// What a person is listed as in a space's members record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// Listed among the writers.
+    Writer,
+    /// Listed among the readers (or the space is public).
+    Reader,
+}
+
+/// Wait until the device of `spaces` has applied the members change that lists `person` as
+/// `role` of `space`: its [`Spaces::members`] lists the person. A device holding a record older
+/// than the change cannot know it was added, so for as long as it holds that one it refuses the
+/// person's verbs as an outsider's (`AskOwner`) and reads nothing: a case that writes or reads as
+/// the new member waits for this first, as the refusal's next step says to wait for the owner's
+/// record.
+pub async fn joined(
+    w: &World,
+    spaces: &dyn Spaces,
+    space: &Name,
+    person: &Name,
+    role: Role,
+) -> Result<(), Failure> {
+    w.until(
+        &format!("the device lists {person} as {role:?} of {space}"),
+        LIMIT,
+        || async {
+            Ok(members_now(spaces, space)
+                .await?
+                .is_some_and(|m| match role {
+                    Role::Writer => m.writers.contains(person),
+                    Role::Reader => m.public || m.readers.contains(person),
+                }))
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 /// The members `spaces` holds over `space`; `None` while it holds none (`"RetryLater"`).
 pub async fn members_now(
     spaces: &dyn Spaces,

@@ -10,7 +10,8 @@
 use std::time::Duration;
 
 use super::kit::{
-    LIMIT, LOOK, SETTLE, has, item, items, look, n, octets, people, private, value_now,
+    LIMIT, LOOK, Role, SETTLE, has, item, items, joined, look, n, octets, people, private,
+    value_now,
 };
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
@@ -67,10 +68,12 @@ fn run(w: &World) -> CaseFuture<'_> {
         alice.change(&chat, adding("/bob")).await?;
         w.gesture();
         w.retry_later(|| bob.open(&chat)).await?;
+        joined(w, &*bob, &chat, &n("/bob"), Role::Writer).await?;
         let hi = w.space_put(BOB, &chat, &hi_at, octets("hi")).await?;
         alice.change(&chat, adding("/carol")).await?;
         w.gesture();
         w.retry_later(|| carol.open(&chat)).await?;
+        joined(w, &*carol, &chat, &n("/carol"), Role::Writer).await?;
         let hello = w
             .space_put(CAROL, &chat, &hello_at, octets("hello"))
             .await?;

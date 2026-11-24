@@ -107,6 +107,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let later = w
             .space_put(PHONE, &doc, &plan, octets("phone: after both"))
             .await?;
+
         w.until(
             "Carol, added by the laptop, opens the phone's later version",
             RELAYED,

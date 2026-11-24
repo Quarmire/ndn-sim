@@ -140,12 +140,16 @@ fn run(w: &World) -> CaseFuture<'_> {
             },
         )
         .await?;
-        ensure!(
-            members_now(&*bobs_phone, &notes)
-                .await?
-                .is_some_and(|m| m.readers.contains(&bob) && !m.readers.contains(&carol)),
-            "Bob's phone does not hold the record that removed Carol and kept Bob"
-        );
+        w.until(
+            "Bob's phone holds the record that removed Carol and kept Bob",
+            LIMIT,
+            || async {
+                Ok(members_now(&*bobs_phone, &notes)
+                    .await?
+                    .is_some_and(|m| m.readers.contains(&bob) && !m.readers.contains(&carol)))
+            },
+        )
+        .await?;
 
         // Carol's phone, new to the space, asks after her removal and is refused.
         w.net().online(CAROLS_PHONE);

@@ -4,14 +4,16 @@
 //! starts again on its disk: an unclean start resumes above everything the earlier run could have
 //! signed (its reservation), so the first entry after each restart carries the signed statement
 //! that Bob signed nothing between it and the entry before: two voids of about a reservation
-//! each, in a log of seven entries. Carol, who never held any of it, joins afterwards, hears the
-//! counter of Bob's last entry, and must fetch what is there. Until she holds the entry that
-//! declares a void she cannot tell it from a hole, and asks for the seqs in it as any hole,
-//! bounded by the misses; once she holds it, the seqs in it are never asked again.
+//! each, in a log of seven entries, all of which Alice holds. Carol, who never held any of it,
+//! joins afterwards while Bob's phone is away, hears the counter of Bob's last entry, and must
+//! fetch what is there from Alice. Until she holds the entry that declares a void she cannot tell
+//! it from a hole, and asks for the seqs in it as any hole, bounded by the misses; the asks
+//! already on their way when she holds it end within a few Interest lifetimes, and after that the
+//! seqs in it are never asked again.
 //!
 //! The guard: a cold device ends up holding every entry the writer signed, and the Interests it
 //! sends for the seqs inside the two voids stay within the miss bound before it holds the entries
-//! that declare them and are none after.
+//! that declare them and stop once the asks then in flight have ended.
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -35,9 +37,9 @@ pub(super) const CASE: Case = Case {
     needs: &[Feature::Crash, Feature::Chain],
     model: &[],
     guards: "A device that joins a space whose writer crashed twice fetches every entry the \
-             writer signed and, once it holds the entry that states a gap, asks for no seq \
-             inside it; before that it asks for the seqs of a void no more often than the miss \
-             bound allows.",
+             writer signed and, once it holds the entry that states a gap and the asks then in \
+             flight have ended, asks for no seq inside it; before that it asks for the seqs of a \
+             void no more often than the miss bound allows.",
     budget: Duration::from_secs(2400),
     plan,
     run,
@@ -51,6 +53,9 @@ const CAROL: Dev = Dev(2);
 /// declares the void: a miss waits 250 ms × 2^m, so a seq asked more often than a handful of
 /// times while the walk reaches the declaring entry is asked faster than the backoff allows.
 const MISS_BOUND: usize = 4;
+
+/// How long asks launched before a declaring entry arrived get to end.
+const IN_FLIGHT: Duration = Duration::from_secs(30);
 
 fn plan() -> Plan {
     let mut p = Plan::new();
@@ -127,6 +132,21 @@ async fn die_and_restart(
     Ok(bob)
 }
 
+/// Whether `spaces` has applied every entry of `log`: a reader that is to serve what Bob lost, or
+/// all of it once Bob is away, holds the whole log, not only its last entry.
+async fn holds_all(
+    spaces: &dyn Spaces,
+    ledger: &Name,
+    log: &[(SpaceEntry, Name, String)],
+) -> Result<bool, Failure> {
+    for (entry, _, _) in log {
+        if !has(spaces, ledger, entry).await? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let ledger = n("/alice/32=data/ledger");
@@ -146,27 +166,26 @@ fn run(w: &World) -> CaseFuture<'_> {
         for k in 1..=3 {
             log.push(write(w, &ledger, k).await?);
         }
-        let held = log[2].0.clone();
-        w.until("Alice holds Bob's third entry", LIMIT, || {
-            has(&*alice, &ledger, &held)
+        w.until("Alice holds Bob's first three entries", LIMIT, || {
+            holds_all(&*alice, &ledger, &log)
         })
         .await?;
+        let held = log[2].0.clone();
         die_and_restart(w, &ledger, &held).await?;
         for k in 4..=5 {
             log.push(write(w, &ledger, k).await?);
         }
-        let held = log[4].0.clone();
-        w.until("Alice holds Bob's fifth entry", LIMIT, || {
-            has(&*alice, &ledger, &held)
+        w.until("Alice holds Bob's first five entries", LIMIT, || {
+            holds_all(&*alice, &ledger, &log)
         })
         .await?;
+        let held = log[4].0.clone();
         die_and_restart(w, &ledger, &held).await?;
         for k in 6..=7 {
             log.push(write(w, &ledger, k).await?);
         }
-        let held = log[6].0.clone();
-        w.until("Alice holds Bob's seventh entry", LIMIT, || {
-            has(&*alice, &ledger, &held)
+        w.until("Alice holds every entry Bob signed", LIMIT, || {
+            holds_all(&*alice, &ledger, &log)
         })
         .await?;
 
@@ -239,15 +258,32 @@ fn run(w: &World) -> CaseFuture<'_> {
                 i + 1
             );
         }
+        // Asks launched before she held the declaring entry may still be retrying their
+        // Interests; they end within a few Interest lifetimes. What is asked after that is asked
+        // because the log still wants it.
+        w.sleep(IN_FLIGHT).await;
+        let quiet: Vec<usize> = voids
+            .iter()
+            .map(|(from, to)| asks_inside(&taps, &bob_name, &ledger, *from, *to))
+            .collect();
+        w.measure(
+            "Interests for seqs inside the two voids from asks in flight when the declaring \
+             entries arrived",
+            quiet
+                .iter()
+                .sum::<usize>()
+                .saturating_sub(at_declared.iter().sum::<usize>()) as u64,
+            "asks",
+        );
         w.sleep(SETTLE).await;
         for (i, (from, to)) in voids.iter().enumerate() {
             let now = asks_inside(&taps, &bob_name, &ledger, *from, *to);
             ensure!(
-                now == at_declared[i],
-                "Carol asks for seqs inside Bob's void {} (between seq {from} and seq {to}) after \
-                 she holds the entry that declares it: {} Interests more",
+                now == quiet[i],
+                "Carol asks for seqs inside Bob's void {} (between seq {from} and seq {to}) long \
+                 after she holds the entry that declares it: {} Interests more",
                 i + 1,
-                now.saturating_sub(at_declared[i])
+                now.saturating_sub(quiet[i])
             );
         }
         Ok(())

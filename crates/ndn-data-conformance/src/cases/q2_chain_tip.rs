@@ -223,17 +223,24 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         // The copy goes away and Bob's phone comes back with the entry it signed after the
-        // crash, which lies above the tip.
+        // crash, which lies above the tip. A phone that learned it was removed would refuse its
+        // own entry and serve it to no one, so it is cut off from the devices that hold the
+        // removal until Alice has been offered the entry: what the case asks is what a reader
+        // does with it.
         w.net().offline(THIEF);
+        let from_alice = w.net().cut_off(BOB, &w.net().spec(ALICE).name()).await;
+        let from_carol = w.net().cut_off(BOB, &w.net().spec(CAROL).name()).await;
         w.net().online(BOB);
         drain_until(
             &mut *alice_feed,
             &mut alice_seen,
             "Alice is told of an entry outside the removal cut (Bob's entry above the tip)",
-            LIMIT,
+            RELAYED,
             |events| alerted(events, |kind| matches!(kind, AlertKind::OutsideCut)),
         )
         .await?;
+        from_alice.restore();
+        from_carol.restore();
         w.sleep(SETTLE).await;
 
         drain(&mut *alice_feed, LOOK, &mut alice_seen).await?;

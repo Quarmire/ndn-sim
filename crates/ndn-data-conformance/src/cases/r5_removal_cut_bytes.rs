@@ -79,8 +79,13 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         alice.create(&trip, public(&["/bob"])).await?;
         let seed = alice.put(&trip, &plan, octets("alice: the trip")).await?;
-        w.until("Bob holds the folder", LIMIT, || has(&*bob, &trip, &seed))
-            .await?;
+        // A device may apply a write before it has heard of the space's creation (the entries
+        // reach it in any order): it holds the folder once it knows the creation as well, and
+        // only then can it tell that it may write.
+        w.until("Bob holds the folder", LIMIT, || async {
+            Ok(has(&*bob, &trip, &seed).await? && known(&*bob, &trip).await?)
+        })
+        .await?;
 
         // The copy: Bob's phone, key and storage, before Bob writes into the folder; offline.
         w.steal(COPY).await?;

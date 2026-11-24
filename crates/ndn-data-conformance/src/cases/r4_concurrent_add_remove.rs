@@ -12,7 +12,8 @@
 use std::time::Duration;
 
 use super::kit::{
-    LIMIT, LOOK, SETTLE, agree, has, item_of, look, n, octets, private, reads_entry, winning, wrote,
+    LIMIT, LOOK, RELAYED, SETTLE, agree_admitted, has, item_of, look, n, octets, private,
+    reads_entry, winning, wrote,
 };
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
@@ -65,9 +66,6 @@ fn run(w: &World) -> CaseFuture<'_> {
             w.spaces(CAROL),
         );
         laptop.create(&doc, private(&["/bob"], &["/bob"])).await?;
-        for device in [&phone, &bob] {
-            w.retry_later(|| device.open(&doc)).await?;
-        }
         let seen = w.space_put(BOB, &doc, &plan, octets("bob: edit 1")).await?;
         w.until("both of Alice's devices hold Bob's edit", LIMIT, || async {
             Ok(has(&*laptop, &doc, &seen).await? && has(&*phone, &doc, &seen).await?)
@@ -109,11 +107,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         let later = w
             .space_put(PHONE, &doc, &plan, octets("phone: after both"))
             .await?;
-        w.retry_later(|| carol.open(&doc)).await?;
         w.until(
             "Carol, added by the laptop, opens the phone's later version",
-            LIMIT,
-            || async { agree(&[&*carol, &*phone], &doc, &plan, &[&later]).await },
+            RELAYED,
+            || async {
+                // Carol, told of nothing, follows the document by watching it.
+                let seen = look(&*carol, &doc, LOOK).await?;
+                Ok(item_of(&seen, &later.key()).is_some())
+            },
         )
         .await?;
         let carols = w
@@ -121,7 +122,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         w.until(
             "both of Alice's devices take Carol's edit",
-            LIMIT,
+            RELAYED,
             || async {
                 Ok(has(&*laptop, &doc, &carols).await? && has(&*phone, &doc, &carols).await?)
             },
@@ -131,6 +132,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         // what it signs.
         let after = bob.put(&doc, &plan, octets("bob: edit 3")).await.ok();
         w.sleep(SETTLE).await;
+        w.until("all devices agree on the document", RELAYED, || async {
+            agree_admitted(&[&*laptop, &*phone, &*carol], &doc, &plan, &[&carols]).await
+        })
+        .await?;
 
         for (who, spaces) in [("laptop", &laptop), ("phone", &phone), ("Carol", &carol)] {
             let read = winning(&**spaces, &doc, &plan, &[&carols]).await?;
@@ -150,10 +155,6 @@ fn run(w: &World) -> CaseFuture<'_> {
                 "the document at the {who} shows an edit Bob signed after his removal"
             );
         }
-        w.until("all devices agree on the document", LIMIT, || async {
-            agree(&[&*laptop, &*phone, &*carol], &doc, &plan, &[&carols]).await
-        })
-        .await?;
         let at_bob = look(&*bob, &doc, LOOK).await?;
         ensure!(
             item_of(&at_bob, &later.key()).is_none(),

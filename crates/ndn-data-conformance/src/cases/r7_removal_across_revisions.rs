@@ -11,16 +11,19 @@
 //! for — merged three ways against its own parent — so the laptop's removal and cut still apply
 //! and the phone's additions stand, at every reader whatever order the records reach it in.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use ndn_data::Name;
+
 use super::kit::{
-    LIMIT, LOOK, SETTLE, agree, has, item_of, look, members_now, n, octets, private, reads_entry,
+    LIMIT, LOOK, RELAYED, SETTLE, has, item_of, look, members_now, n, octets, private, reads_entry,
     winning, wrote,
 };
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
 use crate::feature::Feature;
-use crate::spaces::{SpaceChange, SpaceMembers};
+use crate::spaces::{EntryRead, SpaceChange, SpaceEntry, SpaceMembers, Spaces};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -71,6 +74,42 @@ fn admit(persons: &[&str]) -> SpaceChange {
         add_readers: persons.iter().map(|p| n(p)).collect(),
         ..SpaceChange::default()
     }
+}
+
+/// What each device holds of `entries` and at `path` of `space`, for the report of a wait that
+/// timed out.
+async fn snapshot(
+    all: &[(&str, &Arc<dyn Spaces>)],
+    space: &Name,
+    path: &Name,
+    entries: &[(&str, &SpaceEntry)],
+) -> String {
+    let mut out = String::new();
+    for (who, spaces) in all {
+        out.push_str(who);
+        out.push_str(": applied");
+        for (label, entry) in entries {
+            let applied = spaces.applied(space, entry).await;
+            let held = match spaces.entry(space, &entry.name).await {
+                Ok(EntryRead::Read(_)) => "read".to_string(),
+                Ok(EntryRead::Refused { kind, .. }) => format!("refused {kind:?}"),
+                Ok(EntryRead::NotHeld) => "not held".to_string(),
+                Err(e) => format!("({})", e.detail),
+            };
+            out.push_str(&format!(" {label}={applied:?} ({held})"));
+        }
+        let read = match spaces.get(space, path).await {
+            Ok(Some(read)) => format!("{}#{}", read.writer, read.seq),
+            Ok(None) => "none".to_string(),
+            Err(e) => format!("refused({})", e.detail),
+        };
+        let epoch = match spaces.epoch(space).await {
+            Ok(epoch) => format!("{epoch:?}"),
+            Err(e) => format!("({})", e.detail),
+        };
+        out.push_str(&format!(", reads {read}, epoch {epoch}; "));
+    }
+    out
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
@@ -134,13 +173,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         let last = std::cell::RefCell::new(String::new());
         w.until(
             "every device holds one record in force without Carol, with Dave and Eve",
-            LIMIT,
+            RELAYED,
             || async {
                 let mut held = Vec::with_capacity(all.len());
                 for (who, spaces) in all {
                     let m = members_now(&**spaces, &doc).await?;
+                    // Dave and Eve, told of nothing, follow the document by watching it, until
+                    // they hold the record in force.
                     if m.is_none() {
-                        // Dave and Eve, told of nothing, follow the document by watching it.
                         look(&**spaces, &doc, LOOK).await?;
                     }
                     held.push((who, m));
@@ -175,10 +215,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         let eves = w
             .space_put(EVE, &doc, &plan, octets("eve: her first edit"))
             .await?;
+        let report = std::cell::RefCell::new(String::new());
         w.until(
             "every device takes Dave's and Eve's edits",
-            LIMIT,
+            RELAYED,
             || async {
+                *report.borrow_mut() =
+                    snapshot(&all, &doc, &plan, &[("dave", &daves), ("eve", &eves)]).await;
                 for (_, spaces) in all {
                     if !(has(&**spaces, &doc, &daves).await? && has(&**spaces, &doc, &eves).await?)
                     {
@@ -188,16 +231,27 @@ fn run(w: &World) -> CaseFuture<'_> {
                 Ok(true)
             },
         )
-        .await?;
+        .await
+        .map_err(|e| Failure::new(format!("{e}; at the last ask: {}", report.borrow())))?;
         let later = w
             .space_put(PHONE, &doc, &plan, octets("phone: after every record"))
             .await?;
         w.until(
             "Dave and Eve open the phone's later version",
-            LIMIT,
-            || async { agree(&[&*dave, &*eve], &doc, &plan, &[&later]).await },
+            RELAYED,
+            || async {
+                *report.borrow_mut() = snapshot(&all, &doc, &plan, &[("later", &later)]).await;
+                for spaces in [&dave, &eve] {
+                    let seen = look(&**spaces, &doc, LOOK).await?;
+                    if item_of(&seen, &later.key()).is_none() {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
         )
-        .await?;
+        .await
+        .map_err(|e| Failure::new(format!("{e}; at the last ask: {}", report.borrow())))?;
         // Carol may still try; her device may refuse to sign, and every other device must refuse
         // what it signs.
         let after = carol.put(&doc, &plan, octets("carol: edit 3")).await.ok();
@@ -205,7 +259,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         w.until(
             "every device holds the phone's later version",
-            LIMIT,
+            RELAYED,
             || async {
                 for (_, spaces) in all {
                     if !has(&**spaces, &doc, &later).await? {

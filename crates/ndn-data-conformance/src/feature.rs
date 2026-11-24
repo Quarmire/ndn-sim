@@ -114,7 +114,7 @@ impl Feature {
             | Feature::SelfCertifying => 6,
             Feature::Signals => 7,
             Feature::Crash | Feature::Chain => 9,
-            Feature::OldLayer => 9,
+            Feature::OldLayer => 1,
         }
     }
 

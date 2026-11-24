@@ -23,7 +23,7 @@ use std::time::Duration;
 use super::chain_kit::put_ahead;
 use super::kit::{
     LIMIT, LOOK, RELAYED, SETTLE, alerted, drain, drain_until, has, known, members_now, n, octets,
-    op_is, people, public, stolen, value_now, withdrawn,
+    op_is, people, public, stolen, value_now,
 };
 use crate::case::{Case, CaseFuture};
 use crate::ensure;

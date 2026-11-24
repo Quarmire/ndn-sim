@@ -27,7 +27,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use ndn_app::EngineAppExt;
 use ndn_data::{Name, Timestamp};
-use ndn_heap::wire::{self, Body, Entry, Payload, Prev, PutBody};
+use ndn_heap::wire::{self, Body, Entry, Payload, PutBody};
 use ndn_heap::{
     Adopter, Alert, Change, Changes, Config, CutBound, EntryId, Frontier, Heap, HeapError, Item,
     MembersChange, NextStep, Node, PutOptions, Readers, Refusal, Scoping, Share, Transport,
@@ -308,6 +308,39 @@ fn packets(store: &CrashStore) -> Vec<(Name, Bytes)> {
         .into_iter()
         .filter(|(name, _)| !name.has_prefix(&local))
         .collect()
+}
+
+/// The thief's edit of its copy of a device's store: for each space the copy holds, the
+/// reservation record says the last run closed cleanly with its reservation at the head the copy
+/// holds (`/localhost/ndn-heap/reserve/<S>`: the reserved seq in 8 octets big-endian, then 1 for
+/// a clean close; spec §4.3). A copy of a live disk carries the reservation above the head, and
+/// its node would sign past a gap statement at the next block, never at the very seq the key's
+/// other copy signs; a thief that wants that name claims a clean close. It is the strongest
+/// thief the layer faces, and what the cases that sign "at the name of an entry" need.
+fn claim_clean(image: &mut BTreeMap<Name, Bytes>, device: &Name) {
+    let root: Name = "/localhost/ndn-heap/reserve".parse().expect("a valid name");
+    let spaces: Vec<(Name, Name)> = image
+        .keys()
+        .filter(|key| key.has_prefix(&root) && key.len() > root.len())
+        .map(|key| {
+            (
+                key.clone(),
+                Name::from_components(key.components()[root.len()..].iter().cloned()),
+            )
+        })
+        .collect();
+    for (key, space) in spaces {
+        let head = image
+            .keys()
+            .filter_map(parse_entry)
+            .filter(|p| p.after == 0 && p.device == *device && p.space == space)
+            .map(|p| p.seq)
+            .max()
+            .unwrap_or(0);
+        let mut record = head.to_be_bytes().to_vec();
+        record.push(1);
+        image.insert(key, Bytes::from(record));
+    }
 }
 
 // -- Errors --------------------------------------------------------------------------------
@@ -601,7 +634,8 @@ impl Spaces for NewSpaces {
     }
 
     async fn get(&self, space: &Name, path: &Name) -> Result<Option<SpaceItem>, Failure> {
-        match self.heap(space).await?.get(path).await {
+        let got = self.heap(space).await?.get(path).await;
+        match got {
             Ok(item) => Ok(item.map(|item| self.item(space, &item))),
             Err(HeapError::Unavailable { .. }) => Ok(None),
             Err(e) => Err(failure(e)),
@@ -888,8 +922,10 @@ impl Provider for NewReference {
             thief.name()
         );
         let keys = self.common.keys_of(&victim.name())?;
-        // A copy of everything the victim's store holds, as a cloned disk.
-        let copy = self.run(victim)?.store.live();
+        // A copy of everything the victim's store holds, as a cloned disk, which its thief then
+        // edits so that its node writes on from the entries the copy holds ([`claim_clean`]).
+        let mut copy = self.run(victim)?.store.live();
+        claim_clean(&mut copy, &victim.name());
         self.start(
             fabric,
             thief.node,
@@ -1062,16 +1098,15 @@ impl Provider for NewReference {
             .collect())
     }
 
-    /// The entry, built through the public wire module: a Put at `path` chained to the entry the
-    /// device holds at `seq - 1`, superseding the head it holds at `path`, signed with the
-    /// device's own key and named at `seq`. The device's node serves nothing it has no
-    /// verification marker for, so a producer on the device's forwarder answers for exactly that
-    /// name. The device does not apply the packet, and signs its next entry at its own next seq.
-    /// Only a public space: a sealed entry needs the epoch key the public surface does not hand
-    /// out.
+    /// The device signs `bytes` at `path` as its own entry number `seq`, through its node, as a
+    /// copy of a key does: a node signs at its next seq, so when that is below `seq` the device
+    /// first signs entries at `/pad` (a stolen key's writes the cases never read) until the next
+    /// is `seq`, and when it is above, the call fails. The entry is chained, sealed in a private
+    /// space, applied by the device as its own, served and announced, as any write is; it is
+    /// what another copy of the key signed at the same name when it is.
     async fn sign_at(
         &self,
-        fabric: &Fabric,
+        _fabric: &Fabric,
         device: &DeviceSpec,
         space: &Name,
         path: &Name,
@@ -1080,65 +1115,56 @@ impl Provider for NewReference {
     ) -> anyhow::Result<SpaceEntry> {
         anyhow::ensure!(seq >= 1, "a log starts at seq 1");
         let run = self.run(device)?;
-        let node = self.node_of(device)?;
-        let heap = node
-            .space(space)
-            .with_context(|| format!("{} has not opened {space}", device.name()))?;
-        anyhow::ensure!(
-            matches!(heap.members().readers, Readers::Anyone),
-            "{space} is sealed: sign_at forges plain writes, and a sealed entry needs the epoch \
-             key the public surface does not hand out"
-        );
-        let me = run.device.clone();
-        // PREV: the signed digest of the entry this device holds just before.
-        let prev = if seq == 1 {
-            None
-        } else {
-            let before = wire::log_name(&me, space, seq - 1);
-            let held = run.store.get(&before).with_context(|| {
-                format!(
-                    "{} holds no entry {before}, which entry {seq} chains to",
-                    device.name()
-                )
-            })?;
-            Some(Prev {
-                digest: wire::signed_digest(&held),
-                seq: None,
-            })
+        let spaces = NewSpaces {
+            run: Arc::clone(&run),
+            persons: self.common.persons(),
         };
-        // What it supersedes: the head it holds at the path.
-        let after = heap
-            .get(path)
+        let heap = spaces
+            .heap(space)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-            .map(|head| vec![head.id])
-            .unwrap_or_default();
-        let entry = Entry {
-            prev,
-            after,
-            body: Body::Put(PutBody {
-                path: path.clone(),
-                payload: Payload::Inline(bytes),
-            }),
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let me = run.device.clone();
+        let mut next = 1 + packets(&run.store)
+            .iter()
+            .filter_map(|(name, _)| parse_entry(name))
+            .filter(|p| p.after == 0 && p.device == me && p.space == *space)
+            .map(|p| p.seq)
+            .max()
+            .unwrap_or(0);
+        anyhow::ensure!(
+            next <= seq,
+            "{} has signed its log of {space} up to seq {}: it cannot sign at {seq}",
+            device.name(),
+            next - 1
+        );
+        let pad: Name = "/pad".parse().expect("a valid name");
+        let unwaiting = PutOptions {
+            durable: Some(false),
         };
-        let name = wire::log_name(&me, space, seq);
-        let signer = self.common.signer_of(device)?;
-        let packet = wire::sign_entry(signer.as_ref(), &name, &entry)
-            .map_err(|e| anyhow::anyhow!("{} cannot sign {name}: {e}", device.name()))?;
-        let signed = wire::signed_digest(&packet);
-        let engine = fabric
-            .engine_of(device.node)
-            .with_context(|| format!("no engine on node {}", device.node))?;
-        let app = engine.app_node(CancellationToken::new());
-        self.common
-            .serve_packets(app, &name, move |_| Some(packet.clone()))
-            .await?;
-        Ok(SpaceEntry {
-            name,
-            writer: me,
-            seq,
-            signed,
-        })
+        while next < seq {
+            let id = heap
+                .put(&pad, Bytes::from_static(b"pad"), unwaiting.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("{} cannot pad its log: {e}", device.name()))?;
+            anyhow::ensure!(
+                id.seq == next,
+                "{} signed its padding at seq {}, not at {next}",
+                device.name(),
+                id.seq
+            );
+            next += 1;
+        }
+        let id = heap
+            .put(path, bytes, unwaiting)
+            .await
+            .map_err(|e| anyhow::anyhow!("{} cannot sign at {seq}: {e}", device.name()))?;
+        anyhow::ensure!(
+            id.seq == seq,
+            "{} signed at seq {}, not at {seq}",
+            device.name(),
+            id.seq
+        );
+        Ok(entry_of(space, &id))
     }
 
     async fn crash(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Spaces>> {

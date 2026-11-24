@@ -396,8 +396,30 @@ impl Common {
             .with_context(|| format!("node {node} has no link to the hub"))?;
         Ok(Arc::new(move |person: &Name| {
             ndn_namespace::sync_group::carry(&engine, person);
-            EngineFaces(engine.clone())
-                .add_routes(link, &ndn_link::group_routes(std::iter::once(person), 0));
+            let routes = ndn_link::group_routes(std::iter::once(person), 0);
+            // A route through the RIB rewrites the FIB entry of its prefix from the RIB alone,
+            // while a layer's application face registers its prefix in the FIB directly: what a
+            // layer registered on the group's prefix before the link route came (a device that
+            // followed the space before it adopted its owner) stays.
+            let fib = engine.fib();
+            let registered: Vec<_> = routes
+                .iter()
+                .filter_map(|r| {
+                    fib.get(&r.prefix)
+                        .map(|e| (r.prefix.clone(), e.nexthops.clone()))
+                })
+                .collect();
+            EngineFaces(engine.clone()).add_routes(link, &routes);
+            for (prefix, nexthops) in registered {
+                for hop in nexthops {
+                    let kept = fib
+                        .get(&prefix)
+                        .is_some_and(|e| e.nexthops.iter().any(|n| n.face_id == hop.face_id));
+                    if !kept {
+                        fib.add_nexthop(&prefix, hop.face_id, hop.cost);
+                    }
+                }
+            }
         }))
     }
 

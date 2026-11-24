@@ -1150,19 +1150,29 @@ impl World {
     }
 
     /// `d`'s host adopts the anchor link `link` (see [`Provider::adopt`]): one gesture, the
-    /// adopter's. A refusal of the link is answered as why, for a case that expects one.
+    /// adopter's. A refusal of the link is answered as why, for a case that expects one. An
+    /// adoption of the same namespace already in progress on the node (the data layer follows a
+    /// space of a person it does not hold and adopts her for it on its own) says to wait for it
+    /// and retry: the host does, as [`retry_later`](Self::retry_later) does, for at most
+    /// [`AGAIN_FOR`] of virtual time.
     pub async fn adopt(&self, d: Dev, link: &str) -> Result<Result<(), String>, Failure> {
         self.gesture();
-        match self
-            .provider
-            .adopt(&self.net.fabric, self.net.spec(d), link)
-            .await
-        {
-            Ok(()) => Ok(Ok(())),
-            Err(e) => match e.downcast_ref::<ndn_cert::AdoptError>() {
-                Some(refusal) => Ok(Err(refusal.to_string())),
-                None => Err(Failure::new(format!("adopt failed: {e:#}"))),
-            },
+        let start = tokio::time::Instant::now();
+        loop {
+            let adopted = self
+                .provider
+                .adopt(&self.net.fabric, self.net.spec(d), link)
+                .await;
+            match adopted {
+                Ok(()) => return Ok(Ok(())),
+                Err(e) => match e.downcast_ref::<ndn_cert::AdoptError>() {
+                    Some(ndn_cert::AdoptError::InProgress(_)) if start.elapsed() < AGAIN_FOR => {
+                        tokio::time::sleep(AGAIN_PAUSE).await;
+                    }
+                    Some(refusal) => return Ok(Err(refusal.to_string())),
+                    None => return Err(Failure::new(format!("adopt failed: {e:#}"))),
+                },
+            }
         }
     }
 

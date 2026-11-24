@@ -28,7 +28,7 @@ use super::kit::{
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
 use crate::feature::Feature;
-use crate::spaces::{AlertKind, EntryRead, RefusalKind, SpaceChange};
+use crate::spaces::{AlertKind, EntryRead, RefusalKind, SpaceChange, SpaceEvent};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -254,9 +254,21 @@ fn run(w: &World) -> CaseFuture<'_> {
                     has(&**spaces, &trip, entry).await?,
                     "{who} does not hold Bob's {what} entry, which the removal cut keeps"
                 );
+                // A withdrawal names a seq, not bytes: one of the copy's other bytes, taken
+                // before the cut was known, shares the key of the honest entry. What the cut
+                // keeps is withdrawn only if a withdrawal follows the honest bytes' own Put.
+                let key = entry.key();
+                let honest_put = seen.iter().position(|e| {
+                    matches!(e, SpaceEvent::Put(i) if i.key() == key && i.signed == entry.signed)
+                });
+                let withdrawn_after = seen.iter().enumerate().any(|(at, e)| {
+                    matches!(e, SpaceEvent::Withdrawn { entry: k, .. } if *k == key)
+                        && honest_put.is_some_and(|put| at > put)
+                });
                 ensure!(
-                    !withdrawn(seen, &entry.key()),
-                    "{who} is told Bob's {what} entry is withdrawn, though the removal cut keeps it"
+                    !withdrawn_after,
+                    "{who} is told Bob's {what} entry is withdrawn after it applied, though the \
+                     removal cut keeps it"
                 );
             }
             for (what, entry) in [

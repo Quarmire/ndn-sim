@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use super::kit::{LIMIT, has, known, n, octets, private, winning};
+use super::kit::{LIMIT, RELAYED, has, known, n, octets, private, winning};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
 use crate::feature::Feature;
@@ -97,9 +97,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         let phone_name = w.net().spec(PHONE).name();
         w.net().forget_cached(&phone_name).await;
         w.net().online(BOB);
+        // Bob reaches the rewrite only through the laptop's copy: the writer is asked first and
+        // does not answer, so the read has the time a relayed read has.
         w.until(
             "Bob holds the phone's rewrite, which only Alice's laptop can give him",
-            LIMIT,
+            RELAYED,
             || has(&*bob, &space, &newer),
         )
         .await?;

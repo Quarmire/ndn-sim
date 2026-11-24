@@ -49,10 +49,21 @@ const ALICE: Dev = Dev(0);
 const BOB: Dev = Dev(1);
 const CAROL: Dev = Dev(2);
 
-/// The most Interests a cold device sends for one seq of a void before it holds the entry that
-/// declares the void: a miss waits 250 ms × 2^m, so a seq asked more often than a handful of
-/// times while the walk reaches the declaring entry is asked faster than the backoff allows.
-const MISS_BOUND: usize = 4;
+/// The most asks a cold device makes for one seq of a void before it holds the entry that
+/// declares the void. An ask goes to one source (the writer, or a holder through `32=held`),
+/// the source changes with every miss, and a miss waits 250 ms × 2^m (heap.md §7.4), so while
+/// the walk reaches the declaring entry a seq is asked once or twice; three (`FETCH_TRIES`) is
+/// the bound.
+const ASKS_PER_SEQ: usize = 3;
+
+/// The most Interests one ask expresses: under the 4 s Interest lifetime a lost Interest is
+/// expressed again within the lifetime, up to three in all (heap.md §7.3). The tap sees
+/// Interests, not asks, and does not say when each was sent, so the bound is on Interests.
+const INTERESTS_PER_ASK: usize = 3;
+
+/// The most Interests a cold device sends for one seq of a void before it holds the declaring
+/// entry.
+const MISS_BOUND: usize = ASKS_PER_SEQ * INTERESTS_PER_ASK;
 
 /// How long asks launched before a declaring entry arrived get to end.
 const IN_FLIGHT: Duration = Duration::from_secs(30);

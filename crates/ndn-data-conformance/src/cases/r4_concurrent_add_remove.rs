@@ -12,8 +12,8 @@
 use std::time::Duration;
 
 use super::kit::{
-    LIMIT, LOOK, RELAYED, SETTLE, agree_admitted, has, item_of, look, n, octets, private,
-    reads_entry, winning, wrote,
+    LIMIT, LOOK, SETTLE, agree_admitted, has, item_of, look, n, octets, private, reads_entry,
+    winning, wrote,
 };
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
@@ -110,7 +110,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         w.until(
             "Carol, added by the laptop, opens the phone's later version",
-            RELAYED,
+            LIMIT,
             || async {
                 // Carol, told of nothing, follows the document by watching it.
                 let seen = look(&*carol, &doc, LOOK).await?;
@@ -123,7 +123,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         w.until(
             "both of Alice's devices take Carol's edit",
-            RELAYED,
+            LIMIT,
             || async {
                 Ok(has(&*laptop, &doc, &carols).await? && has(&*phone, &doc, &carols).await?)
             },
@@ -133,7 +133,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // what it signs.
         let after = bob.put(&doc, &plan, octets("bob: edit 3")).await.ok();
         w.sleep(SETTLE).await;
-        w.until("all devices agree on the document", RELAYED, || async {
+        w.until("all devices agree on the document", LIMIT, || async {
             agree_admitted(&[&*laptop, &*phone, &*carol], &doc, &plan, &[&carols]).await
         })
         .await?;

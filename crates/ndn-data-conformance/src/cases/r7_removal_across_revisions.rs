@@ -17,8 +17,8 @@ use std::time::Duration;
 use ndn_data::Name;
 
 use super::kit::{
-    LIMIT, LOOK, RELAYED, SETTLE, has, item_of, look, members_now, n, octets, private, reads_entry,
-    winning, wrote,
+    LIMIT, LOOK, SETTLE, has, item_of, look, members_now, n, octets, private, reads_entry, winning,
+    wrote,
 };
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
@@ -173,7 +173,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let last = std::cell::RefCell::new(String::new());
         w.until(
             "every device holds one record in force without Carol, with Dave and Eve",
-            RELAYED,
+            LIMIT,
             || async {
                 let mut held = Vec::with_capacity(all.len());
                 for (who, spaces) in all {
@@ -218,7 +218,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         let report = std::cell::RefCell::new(String::new());
         w.until(
             "every device takes Dave's and Eve's edits",
-            RELAYED,
+            LIMIT,
             || async {
                 *report.borrow_mut() =
                     snapshot(&all, &doc, &plan, &[("dave", &daves), ("eve", &eves)]).await;
@@ -238,7 +238,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         w.until(
             "Dave and Eve open the phone's later version",
-            RELAYED,
+            LIMIT,
             || async {
                 *report.borrow_mut() = snapshot(&all, &doc, &plan, &[("later", &later)]).await;
                 for spaces in [&dave, &eve] {
@@ -259,7 +259,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         w.until(
             "every device holds the phone's later version",
-            RELAYED,
+            LIMIT,
             || async {
                 for (_, spaces) in all {
                     if !has(&**spaces, &doc, &later).await? {

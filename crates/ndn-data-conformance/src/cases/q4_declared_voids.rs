@@ -190,6 +190,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let taps = [&by_writer, &by_holder];
         let declaring = [&log[3].0, &log[5].0];
         let at_declared: [Cell<Option<usize>>; 2] = [Cell::new(None), Cell::new(None)];
+        // Bob's phone is away while she catches up, so the Interests counted are hers alone
+        // (his own node would ask Alice for the seqs it lost).
+        w.net().offline(BOB);
         w.net().online(CAROL);
         carol.open(&ledger).await?;
         w.converge("Carol holds every entry Bob signed", RELAYED, || async {

@@ -22,13 +22,13 @@ use std::time::Duration;
 
 use super::chain_kit::put_ahead;
 use super::kit::{
-    LIMIT, LOOK, RELAYED, SETTLE, drain, has, known, members_now, n, octets, op_is, people, public,
-    stolen, value_now, withdrawn,
+    LIMIT, LOOK, RELAYED, SETTLE, alerted, drain, drain_until, has, known, members_now, n, octets,
+    op_is, people, public, stolen, value_now, withdrawn,
 };
-use crate::case::{Case, CaseFuture, Failure};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
 use crate::feature::Feature;
-use crate::spaces::{EntryRead, RefusalKind, SpaceChange};
+use crate::spaces::{AlertKind, EntryRead, RefusalKind, SpaceChange};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -226,26 +226,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         // crash, which lies above the tip.
         w.net().offline(THIEF);
         w.net().online(BOB);
-        for (who, spaces) in [("Alice", &alice), ("Carol", &carol)] {
-            w.until(
-                &format!("{who} refuses Bob's entry above the tip as outside the cut"),
-                LIMIT,
-                || async {
-                    match spaces.entry(&trip, &late.name).await? {
-                        EntryRead::Refused {
-                            kind: RefusalKind::OutsideCut,
-                            ..
-                        } => Ok(true),
-                        EntryRead::Read(_) => Err(Failure::new(format!(
-                            "{who} reads Bob's entry {} above the tip the removal kept",
-                            late.name
-                        ))),
-                        _ => Ok(false),
-                    }
-                },
-            )
-            .await?;
-        }
+        drain_until(
+            &mut *alice_feed,
+            &mut alice_seen,
+            "Alice is told of an entry outside the removal cut (Bob's entry above the tip)",
+            LIMIT,
+            |events| alerted(events, |kind| matches!(kind, AlertKind::OutsideCut)),
+        )
+        .await?;
         w.sleep(SETTLE).await;
 
         drain(&mut *alice_feed, LOOK, &mut alice_seen).await?;

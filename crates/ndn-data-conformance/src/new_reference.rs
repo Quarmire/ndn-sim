@@ -30,10 +30,11 @@ use ndn_data::{Name, Timestamp};
 use ndn_heap::wire::{self, Body, Entry, Payload, PutBody};
 use ndn_heap::{
     Adopter, Alert, Change, Changes, Config, CutBound, EntryId, Frontier, Heap, HeapError, Item,
-    MembersChange, NextStep, Node, PutOptions, Readers, Refusal, Scoping, Share, Transport,
+    MembersChange, Node, PutOptions, Readers, Refusal, Scoping, Share, Transport,
 };
+use ndn_invite::{HintCandidate, HintKind, IntroPolicy, InviteConfig, Invites, LinkHint};
 use ndn_packet::{Data, NameComponent};
-use ndn_security::{ScopedContext, SecurityManager, Signer};
+use ndn_security::{ScopedContext, SecurityManager, Signer, Validator, public_key_digest};
 use ndn_sim::{Fabric, NodeId};
 use ndn_sync::DataStore;
 use tokio_util::sync::CancellationToken;
@@ -41,12 +42,19 @@ use tokio_util::sync::CancellationToken;
 use crate::case::Failure;
 use crate::crash_store::CrashStore;
 use crate::feature::Feature;
+use crate::host::{IntroduceCore, Listening, link_address};
+use crate::invite::{
+    GrantLog, InviteCode, InviteJoined, InviteOffer, InviteShort, InviteShortError, JoinedList,
+    LinkCall,
+};
+use crate::new_invite::{self, Stand, heap_kind, next_name};
 use crate::provider::{Certs, DeviceSpec, Grants, Image, Provider, Tally};
+use crate::reference::seeded;
 use crate::spaces::{
     AlertKind, EntryRead, RefusalKind, SpaceAlert, SpaceChange, SpaceChanges, SpaceEntry,
     SpaceEntryKey, SpaceEpoch, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
 };
-use crate::world_common::{Common, Cutter, Proposed, Scoped, device_key};
+use crate::world_common::{Common, Cutter, Proposed, Route, Scoped, device_key};
 
 /// How many seqs one durable reservation covers: small, so a short case shows a reservation
 /// extended (and what a crash leaves above the head) without a thousand writes.
@@ -70,6 +78,10 @@ struct Run {
     store: Arc<CrashStore>,
     /// Ends the node's app faces.
     cancel: CancellationToken,
+    /// How many times a node started on this forwarder: 1, then one more per start again.
+    runs: u64,
+    /// The introductions of the node while it runs, taken with it.
+    invites: Mutex<Option<Invites>>,
 }
 
 impl Run {
@@ -78,7 +90,12 @@ impl Run {
     }
 
     fn take(&self) -> Option<Arc<Node>> {
+        self.invites.lock().expect("the run's lock").take();
         self.node.lock().expect("the run's lock").take()
+    }
+
+    fn invites(&self) -> Option<Invites> {
+        self.invites.lock().expect("the run's lock").clone()
     }
 }
 
@@ -89,6 +106,12 @@ struct Own {
     runs: BTreeMap<NodeId, Arc<Run>>,
     /// The signatures the earlier runs of each node made.
     retired: HashMap<NodeId, u64>,
+    /// What each device's host was told of grants and asked of its link layer, in order, across
+    /// restarts of its node, by forwarder ([`Provider::link_grants`], [`Provider::link_calls`]).
+    hosts: HashMap<NodeId, Arc<IntroduceCore>>,
+    /// Where each device's host listens and the key its link proves there, by address: a dial
+    /// answers for a device that listens at the address it dials, and for no other.
+    listening: Listening,
 }
 
 /// `ndn-heap`'s [`Node`] as a conformance provider.
@@ -122,13 +145,15 @@ impl NewReference {
         Arc::new(Self::default())
     }
 
-    /// Start a node of `device` on `node`'s forwarder over `store`.
+    /// Start a node of `device` on `node`'s forwarder over `store`, its introductions' grants
+    /// lasting `grant_for` (`Some(ZERO)`: its host makes none).
     async fn start(
         &self,
         fabric: &Fabric,
         node: NodeId,
         device: Name,
         keys: Arc<SecurityManager>,
+        grant_for: Option<Duration>,
         store: Arc<CrashStore>,
     ) -> anyhow::Result<Arc<dyn Spaces>> {
         let engine = fabric
@@ -143,7 +168,8 @@ impl NewReference {
             sync: engine.app_face(cancel.child_token()),
         };
         let clock = fabric.node_clock(node)?;
-        let scoped = Scoped::new(engine.clone(), self.common.route(fabric, node)?);
+        let route = self.common.route(fabric, node)?;
+        let scoped = Scoped::new(engine.clone(), Arc::clone(&route));
         let config = Config {
             clock: Arc::new(move || ndn_heap::Timestamp(clock.now_ns() / 1_000_000)),
             first_look: FIRST_LOOK,
@@ -155,11 +181,33 @@ impl NewReference {
             transport,
             device.clone(),
             Arc::clone(&keys),
-            validator,
+            Arc::clone(&validator),
             Arc::clone(&store) as Arc<dyn DataStore>,
             config,
         )
         .await
+        .map_err(|e| anyhow::anyhow!("{device}: {e}"))?;
+        // A node started again on its forwarder draws other randomness than its earlier runs.
+        let runs = self
+            .own
+            .lock()
+            .expect("the provider's lock")
+            .runs
+            .get(&node)
+            .map_or(1, |r| r.runs + 1);
+        let host = self.stand(fabric, node, &device, &keys, &validator, route)?;
+        let invites = Invites::start(
+            &started,
+            host,
+            IntroPolicy {
+                grant_for,
+                ..IntroPolicy::new()
+            },
+            InviteConfig {
+                entropy: seeded(&device, runs),
+                ..InviteConfig::new()
+            },
+        )
         .map_err(|e| anyhow::anyhow!("{device}: {e}"))?;
         let run = Arc::new(Run {
             device,
@@ -167,6 +215,8 @@ impl NewReference {
             node: Mutex::new(Some(Arc::new(started))),
             store,
             cancel,
+            runs,
+            invites: Mutex::new(Some(invites)),
         });
         self.own
             .lock()
@@ -179,6 +229,56 @@ impl NewReference {
         }))
     }
 
+    /// The stand-in host of `device` on `node`: its namespace's newest signed trust context as
+    /// the anchor it gives, its node's validator and engine to adopt into, its link to the hub to
+    /// route an adopted person's sync group over, and, as its link layer, an address it listens
+    /// at (`keys`' key proved there) that a dial of another device's host answers for.
+    fn stand(
+        &self,
+        fabric: &Fabric,
+        node: NodeId,
+        device: &Name,
+        keys: &SecurityManager,
+        validator: &Arc<Validator>,
+        route: Route,
+    ) -> anyhow::Result<Arc<Stand>> {
+        let ns = validator.keyring().context_for(device).namespace().clone();
+        let public = keys
+            .get_signer_sync(&device_key(device))?
+            .public_key()
+            .context("an Ed25519 key")?;
+        let hint = LinkHint {
+            key: public_key_digest(&public),
+            candidates: vec![HintCandidate {
+                kind: HintKind::Host,
+                addr: link_address(node)?,
+            }],
+        };
+        let core = {
+            let mut own = self.own.lock().expect("the provider's lock");
+            let listening = Arc::clone(&own.listening);
+            Arc::clone(own.hosts.entry(node).or_insert_with(|| {
+                Arc::new(IntroduceCore::new(
+                    listening,
+                    hint.candidates[0].addr,
+                    hint.key,
+                ))
+            }))
+        };
+        let engine = fabric
+            .engine_of(node)
+            .with_context(|| format!("no engine on node {node}"))?;
+        Ok(Arc::new(Stand {
+            anchor: self.common.anchor(&ns, device)?,
+            validator: Arc::clone(validator),
+            engine: engine.clone(),
+            route,
+            core,
+            hint,
+            carried: Mutex::default(),
+        }))
+    }
+
     /// The newest run on `device`'s forwarder.
     fn run(&self, device: &DeviceSpec) -> anyhow::Result<Arc<Run>> {
         self.own
@@ -188,6 +288,13 @@ impl NewReference {
             .get(&device.node)
             .cloned()
             .with_context(|| format!("{} has no data layer attached", device.name()))
+    }
+
+    /// The introductions `device` runs now.
+    fn invites_of(&self, device: &DeviceSpec) -> anyhow::Result<Invites> {
+        self.run(device)?
+            .invites()
+            .with_context(|| format!("{}'s data layer is not running", device.name()))
     }
 
     /// The node `device` runs now.
@@ -236,6 +343,7 @@ impl NewReference {
             device.node,
             run.device.clone(),
             Arc::clone(&run.keys),
+            grant_for(device),
             store,
         )
         .await
@@ -345,34 +453,21 @@ fn claim_clean(image: &mut BTreeMap<Name, Bytes>, device: &Name) {
 
 // -- Errors --------------------------------------------------------------------------------
 
-/// The failure a verb answers for `e`: its words, the next step and the kind of refusal.
 fn failure(e: HeapError) -> Failure {
-    let next = match e.next() {
-        NextStep::None => "None",
-        NextStep::RetryLater => "RetryLater",
-        NextStep::AskOwner => "AskOwner",
-        NextStep::UseOwnerDevice => "UseOwnerDevice",
-        NextStep::FixLocal => "FixLocal",
-        NextStep::FixName => "FixName",
-        NextStep::FixRequest => "FixRequest",
-    };
-    let kind = match &e {
-        HeapError::Unavailable { .. } => "Unavailable",
-        HeapError::NotReady { .. } => "NotReady",
-        HeapError::BadName { .. } => "BadName",
-        HeapError::TooLarge { .. } => "TooLarge",
-        HeapError::NotAllowed { .. } => "NotAllowed",
-        HeapError::Sealed { .. } => "Sealed",
-        HeapError::NotOwner { .. } => "NotOwner",
-        HeapError::Refused { .. } => "Refused",
-        HeapError::BadRequest { .. } => "BadRequest",
-        HeapError::Local { .. } => "Local",
-    };
     Failure::answered(
         format!("verb failed: {e} (next step: {:?})", e.next()),
-        next,
-        kind,
+        next_name(e.next()),
+        heap_kind(&e),
     )
+}
+
+/// How long a grant of `device`'s host lasts: `Some(ZERO)` for a host that makes none.
+fn grant_for(device: &DeviceSpec) -> Option<Duration> {
+    if device.link_grants {
+        IntroPolicy::new().grant_for
+    } else {
+        Some(Duration::ZERO)
+    }
 }
 
 fn refusal_kind(why: &Refusal) -> RefusalKind {
@@ -785,9 +880,9 @@ impl Provider for NewReference {
         "ndn-heap"
     }
 
-    /// What the cases of the first stage need of the layer. Not Introduction (a join by a code is
-    /// stage 5), Signals (the layer's run headers are not the old signals), nor UnboundCut (a
-    /// cut without bytes does not exist in the new wire). Members are persons by exact
+    /// What the cases need of the layer: not Signals (the layer's run headers are not the old
+    /// signals, stage 6), nor UnboundCut (a cut without bytes does not exist in the new wire).
+    /// Introductions are `ndn-invite`'s, started with every node. Members are persons by exact
     /// namespace, which is all the cases that need [`Feature::WritersAcrossPrefixes`] ask: a
     /// writer under another person's namespace, listed by its own.
     fn supports(&self, feature: Feature) -> bool {
@@ -812,6 +907,7 @@ impl Provider for NewReference {
                 | Feature::FolderMembers
                 | Feature::FolderWatch
                 | Feature::SelfCertifying
+                | Feature::Introduction
                 | Feature::Crash
                 | Feature::Chain
         )
@@ -839,6 +935,7 @@ impl Provider for NewReference {
             device.node,
             device.name(),
             keys,
+            grant_for(device),
             Arc::new(CrashStore::default()),
         )
         .await
@@ -951,6 +1048,7 @@ impl Provider for NewReference {
             thief.node,
             victim.name(),
             keys,
+            IntroPolicy::new().grant_for,
             Arc::new(CrashStore::booted(copy)),
         )
         .await
@@ -1014,6 +1112,7 @@ impl Provider for NewReference {
             device.node,
             run.device.clone(),
             Arc::clone(&run.keys),
+            grant_for(device),
             Arc::clone(&run.store),
         )
         .await
@@ -1105,6 +1204,166 @@ impl Provider for NewReference {
             .get(name)
             .with_context(|| format!("{} stores no packet {name}", from.name()))?;
         self.common.verdict(fabric, at, name, wire).await
+    }
+
+    async fn link_calls(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<Vec<LinkCall>> {
+        Ok(self
+            .own
+            .lock()
+            .expect("the provider's lock")
+            .hosts
+            .get(&device.node)
+            .map(|host| host.calls())
+            .unwrap_or_default())
+    }
+
+    async fn offer(
+        &self,
+        _fabric: &Fabric,
+        by: &DeviceSpec,
+        space: &Name,
+        offer: InviteOffer,
+    ) -> anyhow::Result<InviteCode> {
+        let code = self
+            .invites_of(by)?
+            .offer(space, new_invite::offer(&offer))
+            .await
+            .map_err(new_invite::error)?;
+        new_invite::code(code, &self.run(by)?.device)
+    }
+
+    async fn close_offer(
+        &self,
+        _fabric: &Fabric,
+        by: &DeviceSpec,
+        offer: &Name,
+    ) -> anyhow::Result<()> {
+        self.invites_of(by)?
+            .close_offer(offer)
+            .await
+            .map_err(new_invite::error)
+    }
+
+    async fn link_grants(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<GrantLog> {
+        let told = self
+            .own
+            .lock()
+            .expect("the provider's lock")
+            .hosts
+            .get(&device.node)
+            .map(|host| host.told())
+            .unwrap_or_default();
+        let invites = self.invites_of(device)?;
+        Ok(GrantLog {
+            told,
+            now: invites.grants().iter().map(new_invite::grant).collect(),
+            departures: invites
+                .departures()
+                .iter()
+                .map(new_invite::departure)
+                .collect(),
+        })
+    }
+
+    async fn joined_folders(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<JoinedList> {
+        let invites = self.invites_of(device)?;
+        // The spaces are read after the generation: a change between the two reads only makes
+        // the list newer than its generation, never older.
+        let generation = *invites.joined_changes().borrow();
+        Ok(JoinedList {
+            spaces: invites
+                .joined_folders()
+                .iter()
+                .map(new_invite::joined_space)
+                .collect(),
+            generation,
+        })
+    }
+
+    async fn take_departure(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        from: &DeviceSpec,
+        space: &Name,
+        record: &Name,
+    ) -> anyhow::Result<()> {
+        self.invites_of(device)?
+            .surface()
+            .take_departure(&from.name(), space, record)
+            .await
+            .map_err(new_invite::error)
+    }
+
+    async fn link_key(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<[u8; 32]> {
+        Ok(public_key_digest(
+            &self.common.public_key_of(&device.name())?,
+        ))
+    }
+
+    /// The join runs with the inviter's introduction prefixes carried in transit by the
+    /// device's forwarder ([`new_invite::carried_by_name`]), as the world's hub carries every
+    /// name to it; the dials of a link layer carry them as well, each as long as its link.
+    async fn join(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        code: &str,
+    ) -> anyhow::Result<InviteJoined> {
+        let invites = self.invites_of(device)?;
+        let engine = fabric
+            .engine_of(device.node)
+            .with_context(|| format!("no engine on node {}", device.node))?;
+        let carried = new_invite::carried_by_name(code);
+        for prefix in &carried {
+            engine.transit().add(prefix, || {});
+        }
+        let joined = invites.join(code).await;
+        for prefix in &carried {
+            engine.transit().remove(prefix, || {});
+        }
+        joined.map(new_invite::joined).map_err(new_invite::error)
+    }
+
+    async fn end_grant_in(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        key: &[u8; 32],
+        space: &Name,
+    ) -> anyhow::Result<bool> {
+        self.invites_of(device)?
+            .end_grant_in(key, space)
+            .await
+            .map_err(new_invite::error)
+    }
+
+    async fn end_grant(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        key: &[u8; 32],
+    ) -> anyhow::Result<bool> {
+        self.invites_of(device)?
+            .end_grant(key)
+            .await
+            .map_err(new_invite::error)
+    }
+
+    fn short_read(&self, line: &str) -> Result<InviteShort, InviteShortError> {
+        new_invite::short_read(line)
+    }
+
+    fn short_write(&self, short: &InviteShort) -> Result<String, InviteShortError> {
+        new_invite::short_write(short)
     }
 
     fn signer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Signer>> {

@@ -24,6 +24,8 @@ ndn-sync    = { workspace = true }
 ndn-trust-envelope = { workspace = true }
 # The second provider (`new_reference`): the re-founded data layer on every device.
 ndn-heap    = { workspace = true }
+# The introductions the second provider runs over (`new_reference`, `new_invite`).
+ndn-invite  = { workspace = true }
 # A device's sync groups set up as a daemon's libraries set them up (`reference`).
 ndn-namespace = { workspace = true }
 ndn-link    = { workspace = true }

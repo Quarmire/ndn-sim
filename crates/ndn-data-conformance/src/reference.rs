@@ -492,7 +492,7 @@ impl Introducer for Introduce {
 /// an audit samples the same pieces with the same nonces every run (`--check-determinism`). A
 /// layer started again on its node (its `run` past the first) seeds with the run too, so it
 /// does not draw its first run's numbers again.
-fn seeded(device: &Name, run: u64) -> Entropy {
+pub(crate) fn seeded(device: &Name, run: u64) -> Entropy {
     let seed = match run {
         1 => device.to_string(),
         n => format!("{device}#{n}"),

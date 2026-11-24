@@ -13,8 +13,8 @@
 //! ([`NewReference`]). The introduction cases (`i1`–`i26`) are written over `Spaces` and the
 //! neutral verbs of [`invite`] (offer, join, the grants a host is told of, the spaces a device
 //! joined, the calls its host's link layer was asked), whose recording core is
-//! [`host::IntroduceCore`]: they run on `ndn-data` through `old_invite` and wait on
-//! `Feature::Introduction` for the `ndn-heap` provider. The signals and the few cases that drive
+//! [`host::IntroduceCore`]: they run on `ndn-data` through `old_invite` and on `ndn-heap`
+//! through `new_invite` over `ndn-invite`. The signals and the few cases that drive
 //! the old crate's own collections and audiences still use [`ndn_data::DataLayer`] and run on
 //! `ndn-data` alone until they are ported or retired. The durability and chain cases
 //! (`d9`–`d16`, `q1`–`q6`) run on `ndn-heap` alone.
@@ -46,6 +46,7 @@ pub mod crash_store;
 pub mod feature;
 pub mod host;
 pub mod invite;
+pub mod new_invite;
 pub mod new_reference;
 pub mod old_invite;
 pub mod old_spaces;

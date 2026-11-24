@@ -66,6 +66,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             w.spaces(CAROL),
         );
         laptop.create(&doc, private(&["/bob"], &["/bob"])).await?;
+        for device in [&phone, &bob] {
+            w.retry_later(|| device.open(&doc)).await?;
+        }
         let seen = w.space_put(BOB, &doc, &plan, octets("bob: edit 1")).await?;
         w.until("both of Alice's devices hold Bob's edit", LIMIT, || async {
             Ok(has(&*laptop, &doc, &seen).await? && has(&*phone, &doc, &seen).await?)
@@ -107,15 +110,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         let later = w
             .space_put(PHONE, &doc, &plan, octets("phone: after both"))
             .await?;
-
+        w.retry_later(|| carol.open(&doc)).await?;
         w.until(
             "Carol, added by the laptop, opens the phone's later version",
             LIMIT,
-            || async {
-                // Carol, told of nothing, follows the document by watching it.
-                let seen = look(&*carol, &doc, LOOK).await?;
-                Ok(item_of(&seen, &later.key()).is_some())
-            },
+            || async { agree_admitted(&[&*carol, &*phone], &doc, &plan, &[&later]).await },
         )
         .await?;
         let carols = w

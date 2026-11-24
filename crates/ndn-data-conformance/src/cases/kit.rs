@@ -473,7 +473,10 @@ pub fn full_name_of<'n>(names: &'n [Name], entry: &Name) -> Option<&'n Name> {
 }
 
 /// The thief `thief` takes the stolen device and switches it on: its spaces, once it holds
-/// `entry` of `space` as the device did.
+/// `entry` of `space` as the device did and, in a sealed space, the key of the epoch in force
+/// (the copy of the storage holds the keys the device held; one it lacks the thief asks for as
+/// the device would, the key not being revoked yet). A thief that signs afterwards signs with
+/// that key, as the device could.
 pub async fn stolen(
     w: &World,
     thief: Dev,
@@ -486,6 +489,12 @@ pub async fn stolen(
         "the stolen device, switched on by the thief, holds what it held",
         LIMIT,
         || has(&*spaces, space, entry),
+    )
+    .await?;
+    w.until(
+        "the stolen device holds the key of the epoch in force",
+        LIMIT,
+        || holds_key(&*spaces, space),
     )
     .await?;
     Ok(spaces)

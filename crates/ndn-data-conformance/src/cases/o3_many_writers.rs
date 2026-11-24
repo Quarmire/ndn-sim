@@ -12,7 +12,9 @@
 
 use std::time::Duration;
 
-use super::kit::{LIMIT, LOOK, SETTLE, drain, has, items, look, n, octets, private, required};
+use super::kit::{
+    LIMIT, LOOK, Role, SETTLE, drain, has, items, joined, look, n, octets, private, required,
+};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
 use crate::feature::Feature;
@@ -131,9 +133,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         alice
             .create(&space, private(&writer_refs, &writer_refs))
             .await?;
-        for i in 1..PEOPLE.len() {
+        for (i, who) in PEOPLE.iter().enumerate().skip(1) {
             let member = w.spaces(Dev(i));
             w.retry_later(|| member.open(&space)).await?;
+            // A member whose device holds only the first of the owner's members entries (the
+            // creation lists 32 writers and 32 readers, in more than one) is told it may not
+            // write: it writes once the record that lists it as a reader has arrived.
+            joined(w, &*member, &space, &path_of(who), Role::Reader).await?;
         }
 
         // Each member writes its own path five times: its own log, newest last.

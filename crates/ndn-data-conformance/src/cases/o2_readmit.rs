@@ -80,12 +80,6 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The key leaks with a copy of the phone's storage; the phone goes offline and writes on.
         let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &space, &seen).await?;
-        w.until(
-            "the stolen device holds the key of the epoch in force",
-            LIMIT,
-            || holds_key(&*thief, &space),
-        )
-        .await?;
         w.net().offline(PHONE);
         let honest = phone
             .put(&space, &path, octets("phone: watered, offline"))

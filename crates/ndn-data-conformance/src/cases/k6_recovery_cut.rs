@@ -88,13 +88,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await?;
         let lost = loss_time(w, LAPTOP).await;
-        let thief = stolen(w, THIEF, &space, &tuesday).await?;
-        w.until(
-            "the stolen device holds the key of the epoch in force",
-            LIMIT,
-            || holds_key(&*thief, &space),
-        )
-        .await?;
+        stolen(w, THIEF, &space, &tuesday).await?;
         w.net().offline(PHONE);
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();

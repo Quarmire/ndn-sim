@@ -8,15 +8,15 @@
 
 use std::time::Duration;
 
-use ndn_data::{IntroRefusal, NextStep, Role};
-
 use super::i1_join_by_code::{
     ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, forged, joins, offer, plan, reads, refused,
     shut_out,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteRefusal, InviteRole};
 use crate::world::World;
 
 pub(super) const CASE: Case = Case {
@@ -40,37 +40,34 @@ pub(super) const CASE: Case = Case {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
 
         let e = refused(w, CAROL, &forged(&code, 0xC4)).await?;
         ensure!(
-            matches!(
-                &e,
-                DataError::Introduction {
-                    why: IntroRefusal::WrongProof { left: 2 },
-                    ..
-                }
-            ) && e.next() == NextStep::FixRequest
-                && !e.retry(),
+            e.refusal == Some(InviteRefusal::WrongProof { left: 2 })
+                && e.next_is("FixRequest")
+                && !e.retry,
             "carol's ask with a guessed secret answered {e:?}, not 'wrong proof, 2 left'"
         );
         w.sleep(SETTLE).await;
         ensure!(
-            shut_out(&*w.at(CAROL), &cover).await?,
+            shut_out(&*w.spaces(CAROL), &space, &cover).await?,
             "carol reads alice's folder after a forged ask"
         );
 
         joins(w, BOB, &code.link).await?;
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
         ensure!(
-            shut_out(&*w.at(CAROL), &cover).await?,
+            shut_out(&*w.spaces(CAROL), &space, &cover).await?,
             "carol reads alice's folder once bob joined"
         );
         Ok(())

@@ -7,14 +7,14 @@
 
 use std::time::Duration;
 
-use ndn_data::{NextStep, Role};
-
 use super::i1_join_by_code::{
-    ALICE, BOB, FOLDER, alice_keeps_a_notebook, joins, offer, plan, reads, refused,
+    ALICE, BOB, FOLDER, alice_keeps_a_notebook, joins, offer, plan, reads, refused, writes,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, n};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::InviteRole;
 use crate::world::World;
 
 pub(super) const CASE: Case = Case {
@@ -38,40 +38,33 @@ pub(super) const CASE: Case = Case {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 1)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 1))
+            .await?;
 
         w.net().offline(ALICE);
         let e = refused(w, BOB, &code.link).await?;
         ensure!(
-            matches!(&e, DataError::NotReady { .. })
-                && e.retry()
-                && e.next() == NextStep::RetryLater,
+            e.kind_is("NotReady") && e.retry && e.next_is("RetryLater"),
             "bob's join while alice's laptop is offline answered {e:?}, not 'not ready: retry'"
         );
         w.net().online(ALICE);
 
         let joined = joins(w, BOB, &code.link).await?;
-        ensure!(joined.folder == folder, "bob joined {joined:?}");
-        let bob = w.at(BOB);
+        ensure!(joined.space == space, "bob joined {joined:?}");
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
-        let page = n(&format!("{FOLDER}/page-bob"));
-        w.until("bob writes a page into the folder", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
-        let alice = w.at(ALICE);
+        let page = n("/page-bob");
+        writes(w, BOB, &space, &page, "a page by bob").await?;
+        let alice = w.spaces(ALICE);
         w.until("alice reads bob's page", LIMIT, || {
-            reads(&*alice, &page, "a page by bob")
+            reads(&*alice, &space, &page, "a page by bob")
         })
         .await?;
         Ok(())

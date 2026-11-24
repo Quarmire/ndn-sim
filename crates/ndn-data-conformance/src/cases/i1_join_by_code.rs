@@ -6,15 +6,22 @@
 //! what the other writes in the folder. Carol joins a second offer by its words, as a reader:
 //! she reads, and her own write into the folder is refused. Mirrors ndf's "alice invites bob to
 //! a note" (G1–G4). The kit the other introduction cases share lives here.
+//!
+//! Written over the neutral [`Spaces`](crate::spaces::Spaces) surface and the neutral
+//! introduction verbs of [`crate::invite`]: the folder is a space and each note a path in it, a
+//! reading is the newest bytes at a path.
 
 use std::time::Duration;
 
-use ndn_data::{Code, Joined, Offer, Role};
+use ndn_data::Name;
 use ndn_trust_envelope::TrustEnvelope;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{DAY, LIMIT, n, octets, private};
+pub(super) use super::n1_named_by_key::{reads, shut_out};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteCode, InviteFailure, InviteJoined, InviteOffer, InviteRole};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -53,43 +60,33 @@ pub(super) fn plan() -> Plan {
     p
 }
 
-/// Alice shares her folder with herself alone (a log of notes, sealed to her), and writes the
-/// cover.
+/// Alice shares her folder with herself alone (notes, sealed to her), and writes the cover.
 pub(super) async fn alice_keeps_a_notebook(w: &World) -> Result<(), Failure> {
-    let alice = w.at(ALICE);
+    let alice = w.spaces(ALICE);
+    alice.create(&n(FOLDER), private(&[], &[])).await?;
     alice
-        .share_folder(
-            &n(FOLDER),
-            members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
-        )
-        .await?;
-    alice
-        .put(
-            &n(&format!("{FOLDER}/cover")),
-            text("cover by alice"),
-            note(1),
-        )
+        .put(&n(FOLDER), &n("/cover"), octets("cover by alice"))
         .await?;
     Ok(())
 }
 
 /// An offer of `role`, allowing `tries` wrong tries, expiring a day from now by Alice's clock.
-pub(super) fn offer(w: &World, role: Role, tries: u32) -> Offer {
-    Offer {
+pub(super) fn offer(w: &World, role: InviteRole, tries: u32) -> InviteOffer {
+    InviteOffer {
         role,
-        until: Timestamp(w.net().date(ALICE).0 + DAY.as_millis() as u64),
+        until: w.net().date(ALICE).0 + DAY.as_millis() as u64,
         tries,
     }
 }
 
 /// `d` joins by `code`, which must succeed: joining again while the refusal says retry later
 /// ([`World::join_again`]).
-pub(super) async fn joins(w: &World, d: Dev, code: &str) -> Result<Joined, Failure> {
+pub(super) async fn joins(w: &World, d: Dev, code: &str) -> Result<InviteJoined, Failure> {
     w.join_again(d, code).await?.map_err(|e| {
         Failure::new(format!(
-            "{} could not join by the code: {e} (next: {:?})",
+            "{} could not join by the code: {e} (next: {})",
             w.net().spec(d).name(),
-            e.next()
+            e.next
         ))
     })
 }
@@ -100,19 +97,44 @@ pub(super) async fn joins(w: &World, d: Dev, code: &str) -> Result<Joined, Failu
 /// does ([`World::join_again`]), so the refusal judged is the inviter's
 /// own, never a lost exchange's — a join refused while the inviter is
 /// offline still ends `NotReady` once the host stops asking.
-pub(super) async fn refused(w: &World, d: Dev, code: &str) -> Result<DataError, Failure> {
+pub(super) async fn refused(w: &World, d: Dev, code: &str) -> Result<InviteFailure, Failure> {
     match w.join_again(d, code).await? {
         Ok(j) => Err(Failure::new(format!(
             "{} joined {} by a code that must be refused",
             w.net().spec(d).name(),
-            j.folder
+            j.space
         ))),
         Err(e) => Ok(e),
     }
 }
 
+/// `d` writes `words` at `path` of `space`, once its device can: it may first wait for the
+/// folder's record and the epoch's key (`"RetryLater"`).
+pub(super) async fn writes(
+    w: &World,
+    d: Dev,
+    space: &Name,
+    path: &Name,
+    words: &str,
+) -> Result<(), Failure> {
+    let spaces = w.spaces(d);
+    w.until(
+        &format!("{} writes {path} into the folder", w.net().spec(d).name()),
+        LIMIT,
+        || async {
+            match spaces.put(space, path, octets(words)).await {
+                Ok(_) => Ok(true),
+                Err(e) if e.retry_later() => Ok(false),
+                Err(e) => Err(e),
+            }
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
 /// `code`'s link with its secret replaced by `secret`: a code forged without the secret.
-pub(super) fn forged(code: &Code, secret: u8) -> String {
+pub(super) fn forged(code: &InviteCode, secret: u8) -> String {
     let Ok(TrustEnvelope::Intro(mut intro)) = TrustEnvelope::from_uri(&code.link) else {
         panic!("an offer's link is an introduction link");
     };
@@ -120,49 +142,21 @@ pub(super) fn forged(code: &Code, secret: u8) -> String {
     TrustEnvelope::Intro(intro).to_uri()
 }
 
-/// Whether `layer` reads `text` as the newest note of the log collection `c`.
-pub(super) async fn reads(layer: &dyn DataLayer, c: &Name, text: &str) -> Result<bool, Failure> {
-    match layer.get(c).await {
-        Ok(Answer {
-            got: Got::Version(v),
-            ..
-        }) => Ok(field_of(&v, "text") == Some(text)),
-        Ok(_) => Ok(false),
-        Err(
-            DataError::Unavailable { .. }
-            | DataError::NotFound { .. }
-            | DataError::Sealed { .. }
-            | DataError::NotReady { .. },
-        ) => Ok(false),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Whether `layer` cannot read `c` at all now: sealed to it, or nothing held.
-pub(super) async fn shut_out(layer: &dyn DataLayer, c: &Name) -> Result<bool, Failure> {
-    Ok(match layer.get(c).await {
-        Ok(Answer {
-            got: Got::Version(v),
-            ..
-        }) => field_of(&v, "text").is_none(),
-        Ok(_) => true,
-        Err(_) => true,
-    })
-}
-
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
 
         // Bob is a stranger: he cannot read Alice's folder.
         ensure!(
-            shut_out(&*w.at(BOB), &cover).await?,
+            shut_out(&*w.spaces(BOB), &space, &cover).await?,
             "bob reads alice's folder before any introduction"
         );
 
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         ensure!(
             code.link.len() <= ndn_trust_envelope::qr::MAX_TEXT_LEN,
             "the code's link ({} characters) does not fit one QR",
@@ -172,56 +166,54 @@ fn run(w: &World) -> CaseFuture<'_> {
         let joined = joins(w, BOB, &code.link).await?;
         let took = start.elapsed();
         ensure!(
-            joined.folder == folder && joined.role == Role::Writer && joined.inviter == n("/alice"),
+            joined.space == space
+                && joined.role == InviteRole::Writer
+                && joined.inviter == n("/alice"),
             "bob's join says {joined:?}, not alice's notebook as a writer"
         );
         w.measure("join, code to member", took.as_millis() as u64, "ms");
 
         // Each reads what the other writes, with no further gesture.
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
-        let page = n(&format!("{FOLDER}/page-bob"));
-        w.until("bob writes a page into the folder", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
-        let alice = w.at(ALICE);
+        let page = n("/page-bob");
+        writes(w, BOB, &space, &page, "a page by bob").await?;
+        let alice = w.spaces(ALICE);
         w.until("alice reads bob's page", LIMIT, || {
-            reads(&*alice, &page, "a page by bob")
+            reads(&*alice, &space, &page, "a page by bob")
         })
         .await?;
         alice
-            .put(&cover, text("cover, second by alice"), note(1))
+            .put(&space, &cover, octets("cover, second by alice"))
             .await?;
         w.until("bob reads alice's second cover", LIMIT, || {
-            reads(&*bob, &cover, "cover, second by alice")
+            reads(&*bob, &space, &cover, "cover, second by alice")
         })
         .await?;
 
         // Carol joins a second offer by its words, as a reader.
-        let words = w.offer(ALICE, &folder, offer(w, Role::Reader, 3)).await?;
+        let words = w
+            .offer(ALICE, &space, offer(w, InviteRole::Reader, 3))
+            .await?;
         let joined = joins(w, CAROL, &words.words).await?;
         ensure!(
-            joined.role == Role::Reader,
+            joined.role == InviteRole::Reader,
             "carol joined as {:?}, not as a reader",
             joined.role
         );
-        let carol = w.at(CAROL);
+        let carol = w.spaces(CAROL);
         w.until("carol reads alice's cover", LIMIT, || {
-            reads(&*carol, &cover, "cover, second by alice")
+            reads(&*carol, &space, &cover, "cover, second by alice")
         })
         .await?;
-        let mine = n(&format!("{FOLDER}/page-carol"));
-        let refusal = carol.put(&mine, text("a page by carol"), note(1)).await;
+        let refusal = carol
+            .put(&space, &n("/page-carol"), octets("a page by carol"))
+            .await;
         ensure!(
-            matches!(refusal, Err(DataError::NotAllowed { .. })),
+            matches!(&refusal, Err(e) if e.kind_is("NotAllowed")),
             "carol, a reader, wrote into the folder: {refusal:?}"
         );
         w.converged(took);

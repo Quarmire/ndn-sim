@@ -14,14 +14,13 @@
 
 use std::time::Duration;
 
-use ndn_data::{Role, ShareChange};
+use ndn_data::ShareChange;
 
-use super::i1_join_by_code::{
-    ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, plan, reads,
-};
+use super::i1_join_by_code::{ALICE, BOB, CAROL, FOLDER, joins, offer, plan};
 use super::*;
 use crate::case::CaseFuture;
 use crate::ensure;
+use crate::invite::InviteRole;
 use crate::world::{Dev, World};
 
 pub(super) const CASE: Case = Case {
@@ -33,6 +32,7 @@ pub(super) const CASE: Case = Case {
         Feature::Seal,
         Feature::FolderMembers,
         Feature::Introduction,
+        Feature::OldLayer,
     ],
     model: &[],
     guards: "A host reads a folder's members record in force (members) and is told every change \
@@ -52,6 +52,44 @@ fn lists(share: &Share, ns: &str) -> bool {
 /// Whether `share` names namespace `ns` at all, as a writer or a reader.
 fn names(share: &Share, ns: &str) -> bool {
     share.writers.contains(&n(ns)) || share.readers.contains(&person(ns))
+}
+
+/// Alice shares her folder with herself alone (a log of notes, sealed to her), and writes the
+/// cover, as the old layer's collections.
+async fn alice_keeps_a_notebook(w: &World) -> Result<(), Failure> {
+    let alice = w.at(ALICE);
+    alice
+        .share_folder(
+            &n(FOLDER),
+            members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
+        )
+        .await?;
+    alice
+        .put(
+            &n(&format!("{FOLDER}/cover")),
+            text("cover by alice"),
+            note(1),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Whether `layer` reads `text` as the newest note of the log collection `c`.
+async fn reads(layer: &dyn DataLayer, c: &Name, text: &str) -> Result<bool, Failure> {
+    match layer.get(c).await {
+        Ok(Answer {
+            got: Got::Version(v),
+            ..
+        }) => Ok(field_of(&v, "text") == Some(text)),
+        Ok(_) => Ok(false),
+        Err(
+            DataError::Unavailable { .. }
+            | DataError::NotFound { .. }
+            | DataError::Sealed { .. }
+            | DataError::NotReady { .. },
+        ) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// The record the newest `Change::Members` among `seen` tells for `folder`.
@@ -94,9 +132,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         // Carol, then Bob, join by codes as writers: Alice's device signs each admission.
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &folder, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, CAROL, &code.link).await?;
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &folder, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &code.link).await?;
         let took = drain_until(
             &mut feed,

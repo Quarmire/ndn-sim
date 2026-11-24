@@ -7,14 +7,14 @@
 
 use std::time::Duration;
 
-use ndn_data::{IntroRefusal, NextStep, Offer, Role};
-
 use super::i1_join_by_code::{
     ALICE, BOB, FOLDER, alice_keeps_a_notebook, joins, offer, plan, reads, refused, shut_out,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteOffer, InviteRefusal, InviteRole};
 use crate::world::World;
 
 pub(super) const CASE: Case = Case {
@@ -37,39 +37,35 @@ pub(super) const CASE: Case = Case {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
-        let short = Offer {
-            role: Role::Writer,
-            until: Timestamp(w.net().date(ALICE).0 + 10 * 60 * 1000),
+        let short = InviteOffer {
+            role: InviteRole::Writer,
+            until: w.net().date(ALICE).0 + 10 * 60 * 1000,
             tries: 3,
         };
-        let code = w.offer(ALICE, &folder, short).await?;
+        let code = w.offer(ALICE, &space, short).await?;
         w.sleep(Duration::from_secs(30 * 60)).await;
 
         let e = refused(w, BOB, &code.link).await?;
         ensure!(
-            matches!(
-                &e,
-                DataError::Introduction {
-                    why: IntroRefusal::Expired,
-                    ..
-                }
-            ) && e.next() == NextStep::AskOwner,
+            e.refusal == Some(InviteRefusal::Expired) && e.next_is("AskOwner"),
             "bob's join by an expired code answered {e:?}, not 'expired: ask the inviter'"
         );
         w.sleep(SETTLE).await;
         ensure!(
-            shut_out(&*w.at(BOB), &cover).await?,
+            shut_out(&*w.spaces(BOB), &space, &cover).await?,
             "bob reads alice's folder after a refused join"
         );
 
-        let fresh = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let fresh = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &fresh.link).await?;
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
         Ok(())

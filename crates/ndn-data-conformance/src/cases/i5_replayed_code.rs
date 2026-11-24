@@ -8,14 +8,14 @@
 
 use std::time::Duration;
 
-use ndn_data::{IntroRefusal, Role};
-
 use super::i1_join_by_code::{
     ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, offer, plan, reads, shut_out,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteFailure, InviteRefusal, InviteRole};
 use crate::world::{Dev, World};
 
 pub(super) const CASE: Case = Case {
@@ -36,22 +36,18 @@ pub(super) const CASE: Case = Case {
     run,
 };
 
-fn used(e: &DataError) -> bool {
-    matches!(
-        e,
-        DataError::Introduction {
-            why: IntroRefusal::Used,
-            ..
-        }
-    )
+fn used(e: &InviteFailure) -> bool {
+    e.refusal == Some(InviteRefusal::Used)
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
 
         // A join that is `NotReady` (the winner's walk of the inviter's summary not done within
         // the join's bound, as on a faulty path) is done again, as a host does what it says.
@@ -76,14 +72,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             matches!(&e, Err(e) if used(e)),
             "the loser asking again answered {e:?}, not 'used'"
         );
-        let admitted = w.at(winner);
+        let admitted = w.spaces(winner);
         w.until("the admitted one reads alice's cover", LIMIT, || {
-            reads(&*admitted, &cover, "cover by alice")
+            reads(&*admitted, &space, &cover, "cover by alice")
         })
         .await?;
         w.sleep(SETTLE).await;
         ensure!(
-            shut_out(&*w.at(loser), &cover).await?,
+            shut_out(&*w.spaces(loser), &space, &cover).await?,
             "{} reads alice's folder though refused",
             w.net().spec(loser).name()
         );

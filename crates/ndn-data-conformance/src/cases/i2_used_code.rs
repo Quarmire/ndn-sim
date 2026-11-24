@@ -6,14 +6,16 @@
 //! folder. Bob, asking again with the same code (his answer was lost), is answered again: one
 //! use is one key, not one packet. Mirrors ndf's G5.
 
-use ndn_data::{IntroRefusal, NextStep, Role};
+use std::time::Duration;
 
 use super::i1_join_by_code::{
     ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, plan, reads, refused, shut_out,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteRefusal, InviteRole};
 use crate::world::World;
 
 pub(super) const CASE: Case = Case {
@@ -37,49 +39,38 @@ pub(super) const CASE: Case = Case {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &code.link).await?;
 
         let e = refused(w, CAROL, &code.link).await?;
         ensure!(
-            matches!(
-                &e,
-                DataError::Introduction {
-                    why: IntroRefusal::Used,
-                    ..
-                }
-            ) && e.next() == NextStep::AskOwner
-                && !e.retry(),
+            e.refusal == Some(InviteRefusal::Used) && e.next_is("AskOwner") && !e.retry,
             "carol's join by the used code answered {e:?}, not 'used: ask the inviter'"
         );
         let e = refused(w, CAROL, &code.words).await?;
         ensure!(
-            matches!(
-                &e,
-                DataError::Introduction {
-                    why: IntroRefusal::Used,
-                    ..
-                }
-            ),
+            e.refusal == Some(InviteRefusal::Used),
             "carol's join by the used code's words answered {e:?}, not 'used'"
         );
         w.sleep(SETTLE).await;
         ensure!(
-            shut_out(&*w.at(CAROL), &cover).await?,
+            shut_out(&*w.spaces(CAROL), &space, &cover).await?,
             "carol reads alice's folder after a refused join"
         );
 
         let again = joins(w, BOB, &code.link).await?;
         ensure!(
-            again.folder == folder,
+            again.space == space,
             "bob's second ask was answered with {again:?}"
         );
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
         Ok(())

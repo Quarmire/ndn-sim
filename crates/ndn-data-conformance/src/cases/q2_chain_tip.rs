@@ -20,6 +20,7 @@
 
 use std::time::Duration;
 
+use super::chain_kit::put_ahead;
 use super::kit::{
     LIMIT, LOOK, RELAYED, SETTLE, drain, has, known, members_now, n, octets, op_is, people, public,
     stolen, value_now, withdrawn,
@@ -75,6 +76,15 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*bob, &trip)
         })
         .await?;
+
+        // Bob hears Alice (her entry reaches him), so his puts do not wait for his flush.
+        let hello = w
+            .space_put(ALICE, &trip, &n("/hello"), octets("alice: hello"))
+            .await?;
+        w.until("Bob holds Alice's entry", LIMIT, || {
+            has(&*bob, &trip, &hello)
+        })
+        .await?;
         let mut alice_feed = alice.watch(&trip).await?;
         let mut alice_seen = Vec::new();
 
@@ -91,8 +101,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Bob's disk stops flushing; he signs two more entries, which Alice holds, and the copy
         // signs other bytes at the name of the second.
         w.block_flush(BOB, true).await?;
-        let two = w.space_put(BOB, &trip, &p2, octets("bob: two")).await?;
-        let three = w.space_put(BOB, &trip, &p3, octets("bob: three")).await?;
+        let two = put_ahead(w, BOB, &trip, &p2, "bob: two").await?;
+        let three = put_ahead(w, BOB, &trip, &p3, "bob: three").await?;
         w.until(
             "Alice holds Bob's second and third entries",
             LIMIT,
@@ -104,8 +114,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         ensure!(
             other.name == two.name && other.signed != two.signed,
-            "precondition: the copy signs other bytes at the name of Bob's second entry ({:?}); \
-             it signed {:?} (same bytes: {})",
+            "precondition: the copy signs other bytes at the name of Bob's second entry ({}); it \
+             signed {} (same bytes: {})",
             two.name,
             other.name,
             other.signed == two.signed
@@ -260,7 +270,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             ] {
                 ensure!(
                     !has(&**spaces, &trip, entry).await?,
-                    "{who} applies {what} ({:?}), outside the removal cut",
+                    "{who} applies {what} ({}), outside the removal cut",
                     entry.name
                 );
             }

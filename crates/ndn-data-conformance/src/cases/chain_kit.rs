@@ -9,9 +9,29 @@ use std::time::Duration;
 use bytes::Bytes;
 use ndn_data::Name;
 
-use super::kit::item;
+use super::kit::{LIMIT, item, octets};
 use crate::case::Failure;
-use crate::spaces::{SpaceChanges, SpaceEpoch, SpaceEvent, Spaces};
+use crate::spaces::{SpaceChanges, SpaceEntry, SpaceEpoch, SpaceEvent, Spaces};
+use crate::world::{Dev, World};
+
+/// `d` writes `text` at `path` of `space` while its flush is held. It must return all the same: a
+/// device that has heard a peer does not make a write wait for its flush (a put waits for it
+/// exactly when no other device is known in the space).
+pub async fn put_ahead(
+    w: &World,
+    d: Dev,
+    space: &Name,
+    path: &Name,
+    text: &str,
+) -> Result<SpaceEntry, Failure> {
+    match tokio::time::timeout(LIMIT, w.space_put(d, space, path, octets(text))).await {
+        Ok(entry) => entry,
+        Err(_) => Err(Failure::new(format!(
+            "a put at {path} of {space} waited for a flush that is held: with a peer heard, a \
+             put returns when it is applied, and the flush follows"
+        ))),
+    }
+}
 
 /// The epoch `spaces` holds in force over `space`; `None` while it holds none, or while the device
 /// answers `"RetryLater"` (a members record not received yet).

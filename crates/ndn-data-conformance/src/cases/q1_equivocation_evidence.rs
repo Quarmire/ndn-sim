@@ -91,8 +91,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         ensure!(
             other.name == second.name && other.signed != second.signed,
-            "precondition: the copy signs other bytes at the name of Bob's second entry ({:?}); \
-             it signed {:?} (same bytes: {})",
+            "precondition: the copy signs other bytes at the name of Bob's second entry ({}); it \
+             signed {} (same bytes: {})",
             second.name,
             other.name,
             other.signed == second.signed
@@ -142,7 +142,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         ] {
             ensure!(
                 !has(&*alice, &ledger, entry).await?,
-                "Alice applies {what} ({:?}) of a key she was told signed two packets at one \
+                "Alice applies {what} ({}) of a key she was told signed two packets at one \
                  name",
                 entry.name
             );

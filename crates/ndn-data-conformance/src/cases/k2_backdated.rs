@@ -13,8 +13,8 @@ use std::time::Duration;
 use ndn_sim::ClockSkew;
 
 use super::kit::{
-    DAY, LIMIT, LOOK, SETTLE, agree, has, item_of, items, known, look, loss_time, n, octets, op_is,
-    private, stolen, winning, wrote,
+    DAY, LIMIT, LOOK, SETTLE, agree, has, holds_key, item_of, items, known, look, loss_time, n,
+    octets, op_is, private, same_epoch, stolen, winning, wrote,
 };
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
@@ -75,8 +75,27 @@ fn run(w: &World) -> CaseFuture<'_> {
         // Stolen; the thief's clock is a month slow. Alice revokes the key with a cut at what her
         // laptop held when she lost the phone; the revocation reaches every honest device (the
         // tablet holds it from the moment it joins).
+        // The owner's devices each sign an epoch for the readers they see, and the one in force
+        // may change under the phone while they learn of each other's: the phone is lost, and
+        // copied, only once the two devices agree on it and the phone holds its key, as it did
+        // on a quiet network.
+        w.until(
+            "the phone holds the key of the epoch in force",
+            LIMIT,
+            || async {
+                Ok(holds_key(&*phone, &space).await?
+                    && same_epoch(&*phone, &*laptop, &space).await?)
+            },
+        )
+        .await?;
         let lost = loss_time(w, LAPTOP).await;
-        stolen(w, THIEF, &space, &tuesday).await?;
+        let thief = stolen(w, THIEF, &space, &tuesday).await?;
+        w.until(
+            "the stolen device holds the key of the epoch in force",
+            LIMIT,
+            || holds_key(&*thief, &space),
+        )
+        .await?;
         w.net().offline(PHONE);
         w.net().set_clock(THIEF, ClockSkew::behind(30 * DAY));
         w.revoke(LAPTOP, PHONE, lost).await?;

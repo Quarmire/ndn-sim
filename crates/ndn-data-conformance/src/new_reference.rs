@@ -685,6 +685,10 @@ impl Spaces for NewSpaces {
         }))
     }
 
+    async fn holds_epoch_key(&self, space: &Name) -> Result<bool, Failure> {
+        Ok(self.heap(space).await?.holds_epoch_key())
+    }
+
     async fn entry(&self, space: &Name, name: &Name) -> Result<EntryRead, Failure> {
         let Some(parsed) = parse_entry(name).filter(|p| p.after == 0) else {
             return Err(Failure::new(format!("{name} is no log entry name")));

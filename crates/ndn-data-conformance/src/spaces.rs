@@ -343,4 +343,12 @@ pub trait Spaces: Send + Sync {
             "this provider does not report the epoch in force",
         ))
     }
+
+    /// Whether this device holds the key of the epoch in force of the sealed `space`, so a put
+    /// seals now instead of answering `"RetryLater"` while the key is on its way. A provider
+    /// whose spaces have no epoch keys has nothing to wait for: `true`.
+    async fn holds_epoch_key(&self, space: &Name) -> Result<bool, Failure> {
+        let _ = space;
+        Ok(true)
+    }
 }

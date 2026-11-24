@@ -12,8 +12,8 @@
 use std::time::Duration;
 
 use super::kit::{
-    LIMIT, LOOK, SETTLE, agree, has, items, known, look, loss_time, n, octets, op_is, private,
-    stolen, winning, wrote,
+    LIMIT, LOOK, SETTLE, agree, has, holds_key, items, known, look, loss_time, n, octets, op_is,
+    private, same_epoch, stolen, winning, wrote,
 };
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
@@ -74,8 +74,27 @@ fn run(w: &World) -> CaseFuture<'_> {
         })
         .await?;
 
+        // The owner's devices each sign an epoch for the readers they see, and the one in force
+        // may change under the phone while they learn of each other's: the phone is lost, and
+        // copied, only once the two devices agree on it and the phone holds its key, as it did
+        // on a quiet network.
+        w.until(
+            "the phone holds the key of the epoch in force",
+            LIMIT,
+            || async {
+                Ok(holds_key(&*phone, &space).await?
+                    && same_epoch(&*phone, &*laptop, &space).await?)
+            },
+        )
+        .await?;
         let lost = loss_time(w, LAPTOP).await;
-        stolen(w, THIEF, &space, &tuesday).await?;
+        let thief = stolen(w, THIEF, &space, &tuesday).await?;
+        w.until(
+            "the stolen device holds the key of the epoch in force",
+            LIMIT,
+            || holds_key(&*thief, &space),
+        )
+        .await?;
         w.net().offline(PHONE);
         w.revoke(LAPTOP, PHONE, lost).await?;
         w.gesture();

@@ -158,6 +158,31 @@ pub async fn has(spaces: &dyn Spaces, space: &Name, entry: &SpaceEntry) -> Resul
     }
 }
 
+/// Whether `spaces` holds the key of the epoch in force of the sealed `space`, so a put seals now
+/// ([`Spaces::holds_epoch_key`]); `false` while the device answers `"RetryLater"`. A device that
+/// is to write while it is cut off from the others (offline) first waits for this: the key comes
+/// by one exchange on the network, which on a lossy one takes seconds.
+pub async fn holds_key(spaces: &dyn Spaces, space: &Name) -> Result<bool, Failure> {
+    match spaces.holds_epoch_key(space).await {
+        Ok(held) => Ok(held),
+        Err(e) if e.retry_later() => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether `a` and `b` hold the same epoch in force of the sealed `space`: the owner's devices
+/// each sign an epoch for the readers they see and the greatest one is in force, so until each
+/// has learned of the other's, the epoch in force of one may still change. `false` while either
+/// answers `"RetryLater"`; `true` for a provider that reports no epochs.
+pub async fn same_epoch(a: &dyn Spaces, b: &dyn Spaces, space: &Name) -> Result<bool, Failure> {
+    let id = |e: Option<crate::spaces::SpaceEpoch>| e.map(|e| (e.creator, e.seq));
+    match (a.epoch(space).await, b.epoch(space).await) {
+        (Ok(a), Ok(b)) => Ok(id(a) == id(b)),
+        (Err(e), _) | (_, Err(e)) if e.retry_later() => Ok(false),
+        (Err(_), _) | (_, Err(_)) => Ok(true),
+    }
+}
+
 /// Whether `spaces` knows the space's members record, so its writes go into the space as shared.
 pub async fn known(spaces: &dyn Spaces, space: &Name) -> Result<bool, Failure> {
     Ok(members_now(spaces, space).await?.is_some())

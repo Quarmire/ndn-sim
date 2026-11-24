@@ -10,7 +10,8 @@
 use std::time::Duration;
 
 use super::kit::{
-    LIMIT, SETTLE, contains, has, known, loss_time, n, octets, private, stolen, winning,
+    LIMIT, SETTLE, contains, has, holds_key, known, loss_time, n, octets, private, same_epoch,
+    stolen, winning,
 };
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
@@ -62,10 +63,29 @@ fn run(w: &World) -> CaseFuture<'_> {
             has(&*laptop, &space, &seen)
         })
         .await?;
+        // The owner's devices each sign an epoch for the readers they see, and the one in force
+        // may change under the phone while they learn of each other's: the phone goes offline
+        // only once the two devices agree on it and the phone holds its key, as a phone that
+        // was online would.
+        w.until(
+            "the phone holds the key of the epoch in force",
+            LIMIT,
+            || async {
+                Ok(holds_key(&*phone, &space).await?
+                    && same_epoch(&*phone, &*laptop, &space).await?)
+            },
+        )
+        .await?;
 
         // The key leaks with a copy of the phone's storage; the phone goes offline and writes on.
         let lost = loss_time(w, LAPTOP).await;
         let thief = stolen(w, THIEF, &space, &seen).await?;
+        w.until(
+            "the stolen device holds the key of the epoch in force",
+            LIMIT,
+            || holds_key(&*thief, &space),
+        )
+        .await?;
         w.net().offline(PHONE);
         let honest = phone
             .put(&space, &path, octets("phone: watered, offline"))

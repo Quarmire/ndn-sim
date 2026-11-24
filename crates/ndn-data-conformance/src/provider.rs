@@ -1,94 +1,20 @@
 //! How an implementation of the `ndn-data` contract plugs into the cases.
 
 use std::any::Any;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_data::{
-    Code, DataLayer, Departure, Grant, Joined, JoinedFolder, Name, Offer, Timestamp, VersionId,
-};
+use ndn_data::{DataLayer, Name, Timestamp, VersionId};
 use ndn_security::Signer;
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 use ndn_surface::signal::Signals;
 
 use crate::feature::Feature;
+use crate::invite::{
+    GrantLog, InviteCode, InviteJoined, InviteOffer, InviteShort, InviteShortError, JoinedList,
+    LinkCall,
+};
 use crate::spaces::{SpaceEntry, Spaces};
-
-/// What a host was told of a grant, in the order it was told.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GrantEvent {
-    /// `Introducer::grant`.
-    Granted(Grant),
-    /// `Introducer::departure`: a held record let the person go.
-    Departed(Departure),
-    /// `Introducer::revoke_grant`, with the key and the folder whose grant ended.
-    Revoked {
-        /// The person's device key.
-        key: [u8; 32],
-        /// The folder whose grant ended.
-        folder: Name,
-    },
-}
-
-/// A device's grants: what its host was told, and what its layer lists now.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GrantLog {
-    /// Every call of the host's `grant`, `departure` and `revoke_grant`, oldest first.
-    pub told: Vec<GrantEvent>,
-    /// `Device::grants` now.
-    pub now: Vec<Grant>,
-    /// `Device::departures` now.
-    pub departures: Vec<Departure>,
-}
-
-/// One call a device's host was made of its link layer during an introduction, in the order it
-/// was made ([`Provider::link_calls`]): the dials the joiner's layer asks for and the links it
-/// takes down.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LinkCall {
-    /// `Introducer::dial_first`: the one address a short code names, no key to expect.
-    DialFirst {
-        /// The inviter's device the code names.
-        inviter: Name,
-        /// The address dialled.
-        addr: SocketAddr,
-        /// Whether a device answered there: a link was made.
-        answered: bool,
-    },
-    /// `Introducer::dial`: by a link hint (a compact link's, or the hint record's) that names
-    /// the key to prove.
-    Dial {
-        /// The inviter's device.
-        inviter: Name,
-        /// The key the link must prove.
-        key: [u8; 32],
-        /// The addresses tried, in order.
-        candidates: Vec<SocketAddr>,
-        /// Whether a candidate answered with the key: a link was made.
-        answered: bool,
-    },
-    /// `Introducer::undial`: a failed join takes down what its dial made.
-    Undial {
-        /// The inviter's device.
-        inviter: Name,
-        /// The key of the link taken down.
-        key: [u8; 32],
-        /// The addresses the dial was made at.
-        candidates: Vec<SocketAddr>,
-    },
-}
-
-/// The folders a device joined, as its layer lists them, and the generation of that list.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct JoinedList {
-    /// `Device::joined_folders` now: what the device's link layer routes for each folder it was
-    /// let into, derived from the record in force.
-    pub folders: Vec<JoinedFolder>,
-    /// The value of `Device::joined_changes` now: it moves (and never repeats) whenever the
-    /// list above changed.
-    pub generation: u64,
-}
 
 /// One device in a case: a person's device, or a thief's node.
 #[derive(Clone, Debug)]
@@ -467,29 +393,28 @@ pub trait Provider: Send + Sync {
         )
     }
 
-    /// `by`, a device of the folder's owner that signs its members records, makes a one-use
-    /// offer of `folder` ([`Device::offer`](ndn_data::Device::offer)) and returns its code. A
-    /// refusal carries the layer's [`DataError`](ndn_data::DataError) as its source. A provider
-    /// without introductions says so.
+    /// `by`, a device of the space's owner that signs its members records, makes a one-use
+    /// offer of `space` (`Device::offer`) and returns its code. A refusal carries an
+    /// [`InviteFailure`](crate::invite::InviteFailure) as its source. A provider without
+    /// introductions says so.
     async fn offer(
         &self,
         fabric: &Fabric,
         by: &DeviceSpec,
-        folder: &Name,
-        offer: Offer,
-    ) -> anyhow::Result<Code> {
-        let _ = (fabric, folder, offer);
+        space: &Name,
+        offer: InviteOffer,
+    ) -> anyhow::Result<InviteCode> {
+        let _ = (fabric, space, offer);
         anyhow::bail!(
-            "this provider cannot make {} offer a folder by a code",
+            "this provider cannot make {} offer a space by a code",
             by.name()
         )
     }
 
-    /// `by`, the device that made the offer `offer`, closes it
-    /// ([`Device::close_offer`](ndn_data::Device::close_offer)): the offer admits no one new
-    /// afterwards, and still answers a retry of the writer it admitted until it expires. A
-    /// refusal carries the layer's [`DataError`](ndn_data::DataError) as its source. A provider
-    /// without introductions says so.
+    /// `by`, the device that made the offer `offer`, closes it (`Device::close_offer`): the
+    /// offer admits no one new afterwards, and still answers a retry of the writer it admitted
+    /// until it expires. A refusal carries an [`InviteFailure`](crate::invite::InviteFailure)
+    /// as its source. A provider without introductions says so.
     async fn close_offer(
         &self,
         fabric: &Fabric,
@@ -500,18 +425,17 @@ pub trait Provider: Send + Sync {
         anyhow::bail!("this provider cannot make {} close an offer", by.name())
     }
 
-    /// What `device`'s host was told of its link grants (`Introducer::grant`,
-    /// `Introducer::revoke_grant`, in order, across restarts of its layer) and what its layer
-    /// lists as in force now (`Device::grants`). A provider without introductions says so.
+    /// What `device`'s host was told of its link grants (`grant`, `departure`, `revoke_grant`,
+    /// in order, across restarts of its layer) and what its layer lists as in force now. A
+    /// provider without introductions says so.
     async fn link_grants(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<GrantLog> {
         let _ = fabric;
         anyhow::bail!("this provider cannot tell {}'s link grants", device.name())
     }
 
-    /// The folders `device`'s layer lists as joined (`Device::joined_folders`: for each live
-    /// mirror entry the record in force still lists it in, the inviter, the owner, its own role
-    /// and the other writers' namespaces) and the generation of that list
-    /// (`Device::joined_changes`). A provider without introductions says so.
+    /// The spaces `device`'s layer lists as joined (for each live mirror entry the record in
+    /// force still lists it in: the inviter, the owner, its own role and the other writers'
+    /// namespaces) and the generation of that list. A provider without introductions says so.
     async fn joined_folders(
         &self,
         fabric: &Fabric,
@@ -531,10 +455,10 @@ pub trait Provider: Send + Sync {
         anyhow::bail!("this provider cannot tell {}'s link key", device.name())
     }
 
-    /// What `device`'s host was asked of its link layer in introductions (`Introducer::dial_first`,
-    /// `dial`, `undial`), in order, across restarts of its layer: the host has no real link, so
-    /// each dial answers at once for a device at the address (or key) it dials. A provider
-    /// without introductions says so.
+    /// What `device`'s host was asked of its link layer in introductions (`dial_first`, `dial`,
+    /// `undial`), in order, across restarts of its layer: the host has no real link, so each
+    /// dial answers at once for a device at the address (or key) it dials. A provider without
+    /// introductions says so.
     async fn link_calls(
         &self,
         fabric: &Fabric,
@@ -564,22 +488,23 @@ pub trait Provider: Send + Sync {
         )
     }
 
-    /// `device`, a person let go of `folder`, takes the members record `record` its inviter's
-    /// link layer named to it ([`Device::take_departure`](ndn_data::Device::take_departure)):
-    /// fetched and taken as any held record, so `device`'s own folder members no longer list it.
-    /// `from` is the device that told it: the peer of the link the notice came over, whose
-    /// certificate the link layer validated; only a device under the folder's namespace lets a
-    /// member go of it, so a notice from another is refused. A refusal carries the layer's
-    /// [`DataError`](ndn_data::DataError) as its source. A provider without introductions says so.
+    /// `device`, a person let go of `space`, takes the members record `record` its inviter's
+    /// link layer named to it (`Device::take_departure`): fetched and taken as any held record,
+    /// so `device`'s own members of the space no longer list it. `from` is the device that told
+    /// it: the peer of the link the notice came over, whose certificate the link layer
+    /// validated; only a device under the space's namespace lets a member go of it, so a notice
+    /// from another is refused. A refusal carries an
+    /// [`InviteFailure`](crate::invite::InviteFailure) as its source. A provider without
+    /// introductions says so.
     async fn take_departure(
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
         from: &DeviceSpec,
-        folder: &Name,
+        space: &Name,
         record: &Name,
     ) -> anyhow::Result<()> {
-        let _ = (fabric, from, folder, record);
+        let _ = (fabric, from, space, record);
         anyhow::bail!(
             "this provider cannot make {} take a departure",
             device.name()
@@ -620,21 +545,69 @@ pub trait Provider: Send + Sync {
         )
     }
 
-    /// `device` joins the folder a code offers, given only the code (its link or its words):
-    /// its host adopts the inviter's anchor on its node when the answer comes. A refusal
-    /// carries the layer's [`DataError`](ndn_data::DataError) as its source. A provider without
-    /// introductions says so.
+    /// `device` joins the space a code offers, given only the code (its link, its words or its
+    /// short line): its host adopts the inviter's anchor on its node when the answer comes. A
+    /// refusal carries an [`InviteFailure`](crate::invite::InviteFailure) as its source
+    /// (`downcast_ref`). A provider without introductions says so.
     async fn join(
         &self,
         fabric: &Fabric,
         device: &DeviceSpec,
         code: &str,
-    ) -> anyhow::Result<Joined> {
+    ) -> anyhow::Result<InviteJoined> {
         let _ = (fabric, code);
         anyhow::bail!(
-            "this provider cannot make {} join a folder by a code",
+            "this provider cannot make {} join a space by a code",
             device.name()
         )
+    }
+
+    /// `device`'s host ends the grant of `key` for `space` (the host's `end_grant_in`): what its
+    /// layer lists for that key and space is dropped, whichever kind of entry it is (an
+    /// inviter's or a mirror's), and no other space's; the host is told nothing and no
+    /// departure is made. Returns whether there was an entry to end. A provider without
+    /// introductions says so.
+    async fn end_grant_in(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        key: &[u8; 32],
+        space: &Name,
+    ) -> anyhow::Result<bool> {
+        let _ = (fabric, key, space);
+        anyhow::bail!("this provider cannot make {} end a grant", device.name())
+    }
+
+    /// `device`'s host ends every grant of `key` (the host's `end_grant`), every space and both
+    /// kinds of entry; as [`end_grant_in`](Self::end_grant_in) otherwise. Returns whether there
+    /// was an entry to end. A provider without introductions says so.
+    async fn end_grant(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+        key: &[u8; 32],
+    ) -> anyhow::Result<bool> {
+        let _ = (fabric, key);
+        anyhow::bail!("this provider cannot make {} end a grant", device.name())
+    }
+
+    /// What the short code `line` reads as: every word on the list, the checksum over the
+    /// device's name and the address matching. Pure: it asks no device. A provider without
+    /// introductions says so.
+    fn short_read(&self, line: &str) -> Result<InviteShort, InviteShortError> {
+        Err(InviteShortError {
+            fault: crate::invite::ShortFault::Other,
+            text: format!("this provider reads no short code: {line}"),
+        })
+    }
+
+    /// The line a short code is written as: the inverse of [`short_read`](Self::short_read). A
+    /// provider without introductions says so.
+    fn short_write(&self, short: &InviteShort) -> Result<String, InviteShortError> {
+        Err(InviteShortError {
+            fault: crate::invite::ShortFault::Other,
+            text: format!("this provider writes no short code for {}", short.device),
+        })
     }
 
     /// `device`'s host starts signals for its data layer (`ndn_surface::signal::Signals`, spec

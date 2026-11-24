@@ -12,10 +12,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ndn_app::{Connection, EngineAppExt, ForwarderEngine};
-use ndn_data::{
-    Code, Content, DataError, DataLayer, Joined, Name, NextStep, Offer, PutOptions, Timestamp,
-    VersionId,
-};
+use ndn_data::{Content, DataError, DataLayer, Name, NextStep, PutOptions, Timestamp, VersionId};
 use ndn_packet::encode::InterestBuilder;
 use ndn_security::Signer;
 use ndn_sim::{
@@ -26,9 +23,11 @@ use ndn_surface::signal::Signals;
 use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
-use crate::provider::{
-    Certs, DeviceSpec, GrantLog, Grants, Image, JoinedList, LinkCall, NodeRole, Provider, Tally,
+use crate::invite::{
+    GrantLog, InviteCode, InviteFailure, InviteJoined, InviteOffer, InviteShort, InviteShortError,
+    JoinedList, LinkCall,
 };
+use crate::provider::{Certs, DeviceSpec, Grants, Image, NodeRole, Provider, Tally};
 use crate::report::{Cost, Measure};
 use crate::spaces::{SpaceEntry, Spaces};
 
@@ -993,12 +992,17 @@ impl World {
         self.spread_all().await
     }
 
-    /// `by` makes a one-use offer of `folder` and returns its code (see [`Provider::offer`]).
+    /// `by` makes a one-use offer of `space` and returns its code (see [`Provider::offer`]).
     /// One gesture: the owner offers.
-    pub async fn offer(&self, by: Dev, folder: &Name, offer: Offer) -> Result<Code, Failure> {
+    pub async fn offer(
+        &self,
+        by: Dev,
+        space: &Name,
+        offer: InviteOffer,
+    ) -> Result<InviteCode, Failure> {
         self.gesture();
         self.provider
-            .offer(&self.net.fabric, self.net.spec(by), folder, offer)
+            .offer(&self.net.fabric, self.net.spec(by), space, offer)
             .await
             .map_err(|e| Failure::new(format!("offer failed: {e:#}")))
     }
@@ -1013,10 +1017,14 @@ impl World {
             .map_err(|e| Failure::new(format!("close_offer failed: {e:#}")))
     }
 
-    /// `d` joins by `code` (its link or its words; see [`Provider::join`]): one gesture, the
-    /// joiner's. A refusal by `d`'s data layer is answered as its error, for a case that
-    /// expects one.
-    pub async fn join(&self, d: Dev, code: &str) -> Result<Result<Joined, DataError>, Failure> {
+    /// `d` joins by `code` (its link, its words or its short line; see [`Provider::join`]): one
+    /// gesture, the joiner's. A refusal by `d`'s device is answered as an [`InviteFailure`], for
+    /// a case that expects one.
+    pub async fn join(
+        &self,
+        d: Dev,
+        code: &str,
+    ) -> Result<Result<InviteJoined, InviteFailure>, Failure> {
         self.gesture();
         match self
             .provider
@@ -1024,7 +1032,7 @@ impl World {
             .await
         {
             Ok(joined) => Ok(Ok(joined)),
-            Err(e) => match e.downcast_ref::<DataError>() {
+            Err(e) => match e.downcast_ref::<InviteFailure>() {
                 Some(refusal) => Ok(Err(refusal.clone())),
                 None => Err(Failure::new(format!("join failed: {e:#}"))),
             },
@@ -1032,14 +1040,14 @@ impl World {
     }
 
     /// `d` joins by `code`, as [`join`](Self::join) — one gesture — joining again while the
-    /// refusal's next step is [`NextStep::RetryLater`] (the inviter's device not reached yet),
-    /// as a host does what the refusal says, every [`AGAIN_PAUSE`] for at most [`AGAIN_FOR`] of
-    /// virtual time. Any other refusal is answered at once.
+    /// refusal's next step is `"RetryLater"` (the inviter's device not reached yet), as a host
+    /// does what the refusal says, every [`AGAIN_PAUSE`] for at most [`AGAIN_FOR`] of virtual
+    /// time. Any other refusal is answered at once.
     pub async fn join_again(
         &self,
         d: Dev,
         code: &str,
-    ) -> Result<Result<Joined, DataError>, Failure> {
+    ) -> Result<Result<InviteJoined, InviteFailure>, Failure> {
         self.gesture();
         let start = tokio::time::Instant::now();
         loop {
@@ -1049,11 +1057,8 @@ impl World {
                 .await
             {
                 Ok(joined) => return Ok(Ok(joined)),
-                Err(e) => match e.downcast_ref::<DataError>() {
-                    Some(refusal)
-                        if refusal.next() == NextStep::RetryLater
-                            && start.elapsed() < AGAIN_FOR =>
-                    {
+                Err(e) => match e.downcast_ref::<InviteFailure>() {
+                    Some(refusal) if refusal.retry_later() && start.elapsed() < AGAIN_FOR => {
                         tokio::time::sleep(AGAIN_PAUSE).await;
                     }
                     Some(refusal) => return Ok(Err(refusal.clone())),
@@ -1254,17 +1259,17 @@ impl World {
             .map_err(|e| Failure::new(format!("link_calls failed: {e:#}")))
     }
 
-    /// `d`, a person let go of `folder`, takes the members record `record` its inviter told it
+    /// `d`, a person let go of `space`, takes the members record `record` its inviter told it
     /// of (see [`Provider::take_departure`]): one gesture, the person's host; `from` is the
-    /// device that told it (the inviter's host). A refusal by `d`'s data layer is answered as
-    /// its error, for a case that expects one.
+    /// device that told it (the inviter's host). A refusal by `d`'s device is answered as an
+    /// [`InviteFailure`], for a case that expects one.
     pub async fn take_departure(
         &self,
         d: Dev,
         from: Dev,
-        folder: &Name,
+        space: &Name,
         record: &Name,
-    ) -> Result<Result<(), DataError>, Failure> {
+    ) -> Result<Result<(), InviteFailure>, Failure> {
         self.gesture();
         match self
             .provider
@@ -1272,17 +1277,51 @@ impl World {
                 &self.net.fabric,
                 self.net.spec(d),
                 self.net.spec(from),
-                folder,
+                space,
                 record,
             )
             .await
         {
             Ok(()) => Ok(Ok(())),
-            Err(e) => match e.downcast_ref::<DataError>() {
+            Err(e) => match e.downcast_ref::<InviteFailure>() {
                 Some(refusal) => Ok(Err(refusal.clone())),
                 None => Err(Failure::new(format!("take_departure failed: {e:#}"))),
             },
         }
+    }
+
+    /// `d`'s host ends the grant of `key` for `space` (see [`Provider::end_grant_in`]): whether
+    /// there was an entry to end. A read of the host's own state, not a gesture.
+    pub async fn end_grant_in(
+        &self,
+        d: Dev,
+        key: &[u8; 32],
+        space: &Name,
+    ) -> Result<bool, Failure> {
+        self.provider
+            .end_grant_in(&self.net.fabric, self.net.spec(d), key, space)
+            .await
+            .map_err(|e| Failure::new(format!("end_grant_in failed: {e:#}")))
+    }
+
+    /// `d`'s host ends every grant of `key` (see [`Provider::end_grant`]): whether there was an
+    /// entry to end.
+    pub async fn end_grant(&self, d: Dev, key: &[u8; 32]) -> Result<bool, Failure> {
+        self.provider
+            .end_grant(&self.net.fabric, self.net.spec(d), key)
+            .await
+            .map_err(|e| Failure::new(format!("end_grant failed: {e:#}")))
+    }
+
+    /// What the short code `line` reads as (see [`Provider::short_read`]); pure, asks no
+    /// device.
+    pub fn short_read(&self, line: &str) -> Result<InviteShort, InviteShortError> {
+        self.provider.short_read(line)
+    }
+
+    /// The line a short code is written as (see [`Provider::short_write`]).
+    pub fn short_write(&self, short: &InviteShort) -> Result<String, InviteShortError> {
+        self.provider.short_write(short)
     }
 
     /// `d`'s stopped data layer holds its newest members record of `subject` as a build from

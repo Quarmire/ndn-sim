@@ -70,8 +70,8 @@ use ndn_data::wire::{
     Record, decode_record, encode_record, log_name, parse_log_name, parse_piece_name,
 };
 use ndn_data::{
-    Code, Config, CutBound, DataLayer, Departure, Device, Entropy, Grant, IntroPolicy, Introducer,
-    Joined, Name, Offer, Timestamp, Transport, VersionId,
+    Config, CutBound, DataLayer, Departure, Device, Entropy, Grant, IntroPolicy, Introducer, Name,
+    Timestamp, Transport, VersionId,
 };
 use ndn_packet::Data;
 use ndn_packet::encode::DataBuilder;
@@ -86,10 +86,14 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::feature::Feature;
-use crate::old_spaces::OldSpaces;
-use crate::provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, JoinedList, LinkCall, Provider, Tally,
+use crate::host::{IntroduceCore, Listening, link_address};
+use crate::invite::{
+    GrantLog, InviteCode, InviteJoined, InviteOffer, InviteShort, InviteShortError, JoinedList,
+    LinkCall,
 };
+use crate::old_invite;
+use crate::old_spaces::OldSpaces;
+use crate::provider::{Certs, DeviceSpec, Grants, Provider, Tally};
 use crate::spaces::{SpaceEntry, Spaces};
 use crate::world_common::{Common, Cutter, Proposed, Route, Scoped, device_key, key_device};
 
@@ -102,36 +106,14 @@ struct Own {
     /// Each device's signals and the connection of their own they run on, by node
     /// ([`Provider::signals`]).
     signals: HashMap<NodeId, (Signals, Arc<dyn Connection>)>,
-    /// What each device's host was told of grants, in order, across restarts of its layer, by
-    /// node ([`Provider::link_grants`]).
-    told: HashMap<NodeId, Told>,
-    /// What each device's host was asked of its link layer, in order, across restarts of its
-    /// layer, by node ([`Provider::link_calls`]).
-    dialled: HashMap<NodeId, Dialled>,
+    /// What each device's host was told of grants and asked of its link layer, in order, across
+    /// restarts of its layer, by node ([`Provider::link_grants`], [`Provider::link_calls`]).
+    hosts: HashMap<NodeId, Arc<IntroduceCore>>,
     /// Where each device's host listens: the address it gives in its link hint and the key its
     /// link proves, by address. A dial answers for a device that listens at the address it
     /// dials (the handshake proving that device's key), and for no other.
     listening: Listening,
 }
-
-/// What a host was asked of its link layer, shared by the runs of one device's layer.
-type Dialled = Arc<Mutex<Vec<LinkCall>>>;
-
-/// The addresses the devices of a case listen at and the keys they prove there.
-type Listening = Arc<Mutex<HashMap<SocketAddr, [u8; 32]>>>;
-
-/// The port every device's link socket listens on.
-const LINK_PORT: u16 = 4433;
-
-/// Where `node`'s host listens: an address of the documentation range 192.0.2.0/24 (RFC 5737),
-/// the node's number as its last octet, so every device has its own and it is the same in every run.
-fn link_address(node: NodeId) -> anyhow::Result<SocketAddr> {
-    let octet = u8::try_from(node.0).with_context(|| format!("{node} has no 192.0.2.x address"))?;
-    Ok(SocketAddr::from(([192, 0, 2, octet], LINK_PORT)))
-}
-
-/// What a host was told of grants, shared by the runs of one device's layer.
-type Told = Arc<Mutex<Vec<GrantEvent>>>;
 
 /// One attached data layer and the store it keeps its packets in.
 struct Attached {
@@ -248,18 +230,17 @@ impl Reference {
             }],
         };
         let anchor = self.common.anchor(&ns, device)?;
-        let (told, dialled, listening) = {
+        let core = {
             let mut own = self.own.lock().expect("the provider's lock");
-            (
-                Arc::clone(own.told.entry(node).or_default()),
-                Arc::clone(own.dialled.entry(node).or_default()),
-                Arc::clone(&own.listening),
-            )
+            let listening = Arc::clone(&own.listening);
+            Arc::clone(own.hosts.entry(node).or_insert_with(|| {
+                Arc::new(IntroduceCore::new(
+                    listening,
+                    hint.candidates[0].addr,
+                    hint.key,
+                ))
+            }))
         };
-        listening
-            .lock()
-            .expect("the host's lock")
-            .insert(hint.candidates[0].addr, hint.key);
         let engine = fabric
             .engine_of(node)
             .with_context(|| format!("no engine on node {node}"))?;
@@ -270,11 +251,8 @@ impl Reference {
             engine: engine.clone(),
             scoped: Scoped::new(engine, Arc::clone(&route)),
             route,
-            told,
+            core,
             hint,
-            dialled,
-            firsts: std::sync::Mutex::new(Vec::new()),
-            listening,
         }))
     }
 
@@ -371,34 +349,12 @@ struct Introduce {
     route: Route,
     /// The adoption of namespaces for the layer alone.
     scoped: Scoped,
-    /// What the host was told of grants, across restarts of its layer ([`Own::told`]).
-    told: Told,
+    /// What the host was told and asked, and how its link layer answers, across restarts of its
+    /// layer ([`Own::hosts`]).
+    core: Arc<IntroduceCore>,
     /// The hint the host gives for an offer's code: its device's key and the address it
     /// listens at.
     hint: LinkHint,
-    /// What the host was asked of its link layer, across restarts of its layer
-    /// ([`Own::dialled`]).
-    dialled: Dialled,
-    /// Who listens where, in this case ([`Own::listening`]).
-    listening: Listening,
-    /// The first-contact links up, by the inviter's device and the address dialled.
-    firsts: std::sync::Mutex<Vec<(Name, SocketAddr)>>,
-}
-
-impl Introduce {
-    /// Record a call of the host's link layer.
-    fn called(&self, call: LinkCall) {
-        self.dialled.lock().expect("the host's lock").push(call);
-    }
-
-    /// The key the device that listens at `addr` proves, if one does.
-    fn proves(&self, addr: &SocketAddr) -> Option<[u8; 32]> {
-        self.listening
-            .lock()
-            .expect("the host's lock")
-            .get(addr)
-            .copied()
-    }
 }
 
 /// The addresses of a hint's candidates, in order.
@@ -426,16 +382,7 @@ impl Introducer for Introduce {
         inviter: &'a Name,
         _within: std::time::Duration,
     ) -> Dialing<'a> {
-        let answered = hint
-            .candidates
-            .iter()
-            .any(|c| self.proves(&c.addr) == Some(hint.key));
-        self.called(LinkCall::Dial {
-            inviter: inviter.clone(),
-            key: hint.key,
-            candidates: addresses(hint),
-            answered,
-        });
+        let answered = self.core.dial(inviter, hint.key, &addresses(hint));
         Box::pin(async move {
             if answered {
                 Ok(())
@@ -459,63 +406,31 @@ impl Introducer for Introduce {
         addr: SocketAddr,
         _within: std::time::Duration,
     ) -> FirstDialing<'a> {
-        let proved = self.proves(&addr);
-        self.called(LinkCall::DialFirst {
-            inviter: inviter.clone(),
-            addr,
-            answered: proved.is_some(),
-        });
+        let proved = self.core.dial_first(inviter, addr);
         if proved.is_some() {
             self.engine.transit().add(&hint_prefix(inviter), || {});
-            self.firsts
-                .lock()
-                .expect("the host's lock")
-                .push((inviter.clone(), addr));
         }
         Box::pin(async move { proved.ok_or_else(|| format!("nothing answers at {addr}")) })
     }
 
     fn undial(&self, hint: &LinkHint, inviter: &Name) {
-        self.called(LinkCall::Undial {
-            inviter: inviter.clone(),
-            key: hint.key,
-            candidates: addresses(hint),
-        });
         // A first contact's link (the hint's candidate is the address dialled first) stops
         // carrying the hint record.
-        let mut firsts = self.firsts.lock().expect("the host's lock");
-        if let Some(at) = firsts.iter().position(|(device, addr)| {
-            device == inviter
-                && hint.candidates.iter().any(|c| c.addr == *addr)
-                && self.proves(addr) == Some(hint.key)
-        }) {
-            firsts.remove(at);
+        if self.core.undial(inviter, hint.key, &addresses(hint)) {
             self.engine.transit().remove(&hint_prefix(inviter), || {});
         }
     }
 
     fn grant(&self, grant: &Grant) {
-        self.told
-            .lock()
-            .expect("the host's lock")
-            .push(GrantEvent::Granted(grant.clone()));
+        self.core.granted(old_invite::grant(grant));
     }
 
     fn departure(&self, departure: &Departure) {
-        self.told
-            .lock()
-            .expect("the host's lock")
-            .push(GrantEvent::Departed(departure.clone()));
+        self.core.departed(old_invite::departure(departure));
     }
 
     fn revoke_grant(&self, key: &[u8; 32], folder: &Name) {
-        self.told
-            .lock()
-            .expect("the host's lock")
-            .push(GrantEvent::Revoked {
-                key: *key,
-                folder: folder.clone(),
-            });
+        self.core.revoked(*key, folder);
     }
 
     fn adopt<'a>(&'a self, link: &'a TrustEnvelope) -> Adopting<'a> {
@@ -1051,9 +966,9 @@ impl Provider for Reference {
             .own
             .lock()
             .expect("the provider's lock")
-            .dialled
+            .hosts
             .get(&device.node)
-            .map(|d| d.lock().expect("the host's lock").clone())
+            .map(|host| host.calls())
             .unwrap_or_default())
     }
 
@@ -1061,13 +976,15 @@ impl Provider for Reference {
         &self,
         _fabric: &Fabric,
         by: &DeviceSpec,
-        folder: &Name,
-        offer: Offer,
-    ) -> anyhow::Result<Code> {
-        self.attached(by)?
-            .offer(folder, offer)
+        space: &Name,
+        offer: InviteOffer,
+    ) -> anyhow::Result<InviteCode> {
+        let code = self
+            .attached(by)?
+            .offer(space, old_invite::offer(&offer))
             .await
-            .map_err(anyhow::Error::new)
+            .map_err(old_invite::error)?;
+        old_invite::code(code, &by.name())
     }
 
     async fn close_offer(
@@ -1079,7 +996,7 @@ impl Provider for Reference {
         self.attached(by)?
             .close_offer(offer)
             .await
-            .map_err(anyhow::Error::new)
+            .map_err(old_invite::error)
     }
 
     async fn link_grants(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<GrantLog> {
@@ -1087,15 +1004,19 @@ impl Provider for Reference {
             .own
             .lock()
             .expect("the provider's lock")
-            .told
+            .hosts
             .get(&device.node)
-            .map(|t| t.lock().expect("the host's lock").clone())
+            .map(|host| host.told())
             .unwrap_or_default();
         let layer = self.attached(device)?;
         Ok(GrantLog {
             told,
-            now: layer.grants(),
-            departures: layer.departures(),
+            now: layer.grants().iter().map(old_invite::grant).collect(),
+            departures: layer
+                .departures()
+                .iter()
+                .map(old_invite::departure)
+                .collect(),
         })
     }
 
@@ -1105,11 +1026,15 @@ impl Provider for Reference {
         device: &DeviceSpec,
     ) -> anyhow::Result<JoinedList> {
         let layer = self.attached(device)?;
-        // The folders are read after the generation: a change between the two reads only makes
+        // The spaces are read after the generation: a change between the two reads only makes
         // the list newer than its generation, never older.
         let generation = *layer.joined_changes().borrow();
         Ok(JoinedList {
-            folders: layer.joined_folders(),
+            spaces: layer
+                .joined_folders()
+                .iter()
+                .map(old_invite::joined_space)
+                .collect(),
             generation,
         })
     }
@@ -1119,13 +1044,13 @@ impl Provider for Reference {
         _fabric: &Fabric,
         device: &DeviceSpec,
         from: &DeviceSpec,
-        folder: &Name,
+        space: &Name,
         record: &Name,
     ) -> anyhow::Result<()> {
         self.attached(device)?
-            .take_departure(&from.name(), folder, record)
+            .take_departure(&from.name(), space, record)
             .await
-            .map_err(anyhow::Error::new)
+            .map_err(old_invite::error)
     }
 
     async fn link_key(&self, _fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<[u8; 32]> {
@@ -1139,11 +1064,45 @@ impl Provider for Reference {
         _fabric: &Fabric,
         device: &DeviceSpec,
         code: &str,
-    ) -> anyhow::Result<Joined> {
+    ) -> anyhow::Result<InviteJoined> {
         self.attached(device)?
             .join(code)
             .await
-            .map_err(anyhow::Error::new)
+            .map(old_invite::joined)
+            .map_err(old_invite::error)
+    }
+
+    async fn end_grant_in(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        key: &[u8; 32],
+        space: &Name,
+    ) -> anyhow::Result<bool> {
+        self.attached(device)?
+            .end_grant_in(key, space)
+            .await
+            .map_err(old_invite::error)
+    }
+
+    async fn end_grant(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+        key: &[u8; 32],
+    ) -> anyhow::Result<bool> {
+        self.attached(device)?
+            .end_grant(key)
+            .await
+            .map_err(old_invite::error)
+    }
+
+    fn short_read(&self, line: &str) -> Result<InviteShort, InviteShortError> {
+        old_invite::short_read(line)
+    }
+
+    fn short_write(&self, short: &InviteShort) -> Result<String, InviteShortError> {
+        old_invite::short_write(short)
     }
 
     async fn adopt(&self, fabric: &Fabric, device: &DeviceSpec, link: &str) -> anyhow::Result<()> {

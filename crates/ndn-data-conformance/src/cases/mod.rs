@@ -60,7 +60,7 @@ use crate::case::{Case, Failure};
 use crate::ensure;
 use crate::feature::Feature;
 use crate::signal;
-use crate::world::{Dev, Plan, World};
+use crate::world::{Dev, World};
 
 mod c01_offline_notes;
 mod c02_removed_offline;
@@ -270,17 +270,10 @@ pub const CASES: &[Case] = &[
 
 /// How long devices that can reach each other get to agree.
 const LIMIT: Duration = Duration::from_secs(120);
-/// How long a device that reaches a writer's data only through a copy another device holds gets
-/// to read it. A walk asks the unreachable writer first, in each of its three tries, before it
-/// asks a device that holds the packet for it, so each packet of the walk (root, folder, collection,
-/// page, entry) costs about 7 s of virtual time before it is had: 39 s with no loss at all, and
-/// 43 to 100 s at 20 % loss over fault seeds 0 to 159 (i20, i22 once 133 s), against a [`LIMIT`] of 120 s.
-const RELAYED: Duration = Duration::from_secs(300);
 /// How long a case lets the network run before asserting that something did *not* happen.
 const SETTLE: Duration = Duration::from_secs(60);
 /// How long a watch is drained for one look at a collection.
 const LOOK: Duration = Duration::from_secs(5);
-const DAY: Duration = Duration::from_secs(24 * 3600);
 
 fn n(s: &str) -> Name {
     s.parse().expect("case names are valid NDN names")

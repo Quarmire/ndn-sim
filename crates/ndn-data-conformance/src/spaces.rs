@@ -37,8 +37,10 @@ pub struct SpaceChange {
     pub add_writers: Vec<Name>,
     /// Persons to add as readers.
     pub add_readers: Vec<Name>,
-    /// Persons to remove from **both** roles, exactly as listed. A removed writer is cut at what
-    /// the owner had seen of it; a removed reader loses the keys of later epochs.
+    /// Persons to remove from **both** roles, exactly as listed, before the additions are made:
+    /// a person listed here and in `add_readers` is demoted, no longer a writer and still a
+    /// reader. A removed writer is cut at what the owner had seen of it; a removed reader loses
+    /// the keys of later epochs.
     pub remove: Vec<Name>,
 }
 

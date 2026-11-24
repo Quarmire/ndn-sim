@@ -222,6 +222,44 @@ impl Spaces for OldSpaces {
 
     async fn change(&self, space: &Name, change: SpaceChange) -> Result<(), Failure> {
         let person = |names: Vec<Name>| names.into_iter().map(Audience::Person).collect();
+        // Members are matched exactly, so a writer listed under a namespace that a listed writer
+        // already covers is a writer of its own. The old crate's change does not list such a
+        // name (it is covered: it says to share the record whole), so the record is then shared
+        // whole, from the record held now with the change applied.
+        let current = self.layer.members(space).await?;
+        let covered = |w: &Name| {
+            !current.writers.contains(w) && current.writers.iter().any(|p| w.has_prefix(p))
+        };
+        if change.add_writers.iter().any(covered) {
+            let mut writers = current.writers.clone();
+            writers.retain(|w| !change.remove.contains(w));
+            for w in change.add_writers {
+                if !writers.contains(&w) {
+                    writers.push(w);
+                }
+            }
+            let sealed = !current.readers.is_empty();
+            let mut readers = current.readers.clone();
+            readers.retain(|r| !change.remove.contains(audience_name(r)));
+            if sealed {
+                for r in change.add_readers {
+                    if !readers.iter().any(|x| audience_name(x) == &r) {
+                        readers.push(Audience::Person(r));
+                    }
+                }
+            }
+            self.layer
+                .share_folder(
+                    space,
+                    Sharing::Whole(Share {
+                        rule: current.rule,
+                        writers,
+                        readers,
+                    }),
+                )
+                .await?;
+            return Ok(());
+        }
         self.layer
             .share_folder(
                 space,

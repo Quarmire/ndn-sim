@@ -10,10 +10,14 @@
 //! The cases of the core suite are written once against the neutral [`Spaces`] trait (a space,
 //! paths in it, plain data types) and run unchanged on both implementations: `ndn-data`'s own
 //! [`Device`](ndn_data::Device) ([`Reference`], through `OldSpaces`) and `ndn-heap`'s `Node`
-//! ([`NewReference`]). The cases of the introductions, the signals and the few that drive the old
-//! crate's own collections and audiences still use [`ndn_data::DataLayer`] and run on `ndn-data`
-//! alone until they are ported or retired. The durability and chain cases (`d9`–`d16`,
-//! `q1`–`q6`) run on `ndn-heap` alone.
+//! ([`NewReference`]). The introduction cases (`i1`–`i26`) are written over `Spaces` and the
+//! neutral verbs of [`invite`] (offer, join, the grants a host is told of, the spaces a device
+//! joined, the calls its host's link layer was asked), whose recording core is
+//! [`host::IntroduceCore`]: they run on `ndn-data` through `old_invite` and wait on
+//! `Feature::Introduction` for the `ndn-heap` provider. The signals and the few cases that drive
+//! the old crate's own collections and audiences still use [`ndn_data::DataLayer`] and run on
+//! `ndn-data` alone until they are ported or retired. The durability and chain cases
+//! (`d9`–`d16`, `q1`–`q6`) run on `ndn-heap` alone.
 //!
 //! An implementation plugs in as a [`Provider`]; the runner
 //! (`cargo run --release -p ndn-data-conformance -- --provider ndn-data|ndn-heap --json <path>`)
@@ -40,7 +44,10 @@ pub mod case;
 pub mod cases;
 pub mod crash_store;
 pub mod feature;
+pub mod host;
+pub mod invite;
 pub mod new_reference;
+pub mod old_invite;
 pub mod old_spaces;
 pub mod provider;
 pub mod reference;
@@ -53,10 +60,9 @@ pub mod world_common;
 
 pub use case::{Case, CaseFuture, Failure};
 pub use feature::Feature;
+pub use invite::{GrantEvent, GrantLog, JoinedList};
 pub use new_reference::NewReference;
-pub use provider::{
-    Certs, DeviceSpec, GrantEvent, GrantLog, Grants, Image, JoinedList, NodeRole, Provider, Tally,
-};
+pub use provider::{Certs, DeviceSpec, Grants, Image, NodeRole, Provider, Tally};
 pub use reference::Reference;
 pub use report::{CaseResult, Cost, NetworkReport, Report, Status};
 pub use runner::{Network, differences, run_all, run_case, run_only};

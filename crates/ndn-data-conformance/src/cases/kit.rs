@@ -185,12 +185,47 @@ pub async fn agree(
     path: &Name,
     entries: &[&SpaceEntry],
 ) -> Result<bool, Failure> {
+    agree_reading(spaces, space, path, entries, false).await
+}
+
+/// [`agree`] for a wait in which a device is still being admitted (added by a record it has not
+/// received yet): meanwhile the device may refuse the read (`AskOwner`, a sealed path), because on
+/// the record it holds it is no member, and that counts as not yet. The wait still ends only when
+/// every device holds the same item, so a device never admitted fails the case by timeout.
+pub async fn agree_admitted(
+    spaces: &[&dyn Spaces],
+    space: &Name,
+    path: &Name,
+    entries: &[&SpaceEntry],
+) -> Result<bool, Failure> {
+    agree_reading(spaces, space, path, entries, true).await
+}
+
+async fn agree_reading(
+    spaces: &[&dyn Spaces],
+    space: &Name,
+    path: &Name,
+    entries: &[&SpaceEntry],
+    refusal_is_not_yet: bool,
+) -> Result<bool, Failure> {
     let mut items = Vec::with_capacity(spaces.len());
     let mut applied = true;
     for s in spaces {
-        items.push(item(*s, space, path).await?);
+        match item(*s, space, path).await {
+            Ok(held) => items.push(held),
+            Err(e) if refusal_is_not_yet && (e.next_is("AskOwner") || e.kind_is("Sealed")) => {
+                items.push(None);
+            }
+            Err(e) => return Err(e),
+        }
         for entry in entries {
-            applied &= has(*s, space, entry).await?;
+            match has(*s, space, entry).await {
+                Ok(held) => applied &= held,
+                Err(e) if refusal_is_not_yet && (e.next_is("AskOwner") || e.kind_is("Sealed")) => {
+                    applied = false;
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
     let mut first: Option<&SpaceItem> = None;

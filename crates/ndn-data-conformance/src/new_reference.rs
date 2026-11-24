@@ -612,15 +612,15 @@ impl Spaces for NewSpaces {
     }
 
     async fn members(&self, space: &Name) -> Result<SpaceMembers, Failure> {
-        let members = self.heap(space).await?.members();
-        if members.owner.is_empty() {
+        let heap = self.heap(space).await?;
+        if !heap.members_known() {
             return Err(Failure::answered(
                 format!("{space}: no members record is held yet"),
                 "RetryLater",
                 "NotReady",
             ));
         }
-        Ok(members_of(members))
+        Ok(members_of(heap.members()))
     }
 
     async fn put(&self, space: &Name, path: &Name, bytes: Bytes) -> Result<SpaceEntry, Failure> {
@@ -653,7 +653,7 @@ impl Spaces for NewSpaces {
                 persons: self.persons.clone(),
             },
             space: space.clone(),
-            members: (!members.owner.is_empty()).then(|| members_of(members)),
+            members: heap.members_known().then(|| members_of(members)),
         }))
     }
 
@@ -671,7 +671,7 @@ impl Spaces for NewSpaces {
 
     async fn epoch(&self, space: &Name) -> Result<Option<SpaceEpoch>, Failure> {
         let heap = self.heap(space).await?;
-        if heap.members().owner.is_empty() {
+        if !heap.members_known() {
             return Err(Failure::answered(
                 format!("{space}: no members record is held yet"),
                 "RetryLater",

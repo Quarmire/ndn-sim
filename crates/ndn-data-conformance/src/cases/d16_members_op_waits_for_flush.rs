@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use super::durability::{create, space};
-use super::kit::{LIMIT, LOOK, SETTLE, drain, known, members_now, people};
+use super::kit::{LIMIT, LOOK, SETTLE, drain, members_now, people};
 use crate::case::{Case, CaseFuture};
 use crate::ensure;
 use crate::feature::Feature;
@@ -52,18 +52,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         create(w, LAPTOP, &space).await?;
         let (laptop, phone) = (w.spaces(LAPTOP), w.spaces(PHONE));
         w.retry_later(|| phone.open(&space)).await?;
-        w.until("the phone holds the space's members", LIMIT, || {
-            known(&*phone, &space)
-        })
-        .await?;
         let owner = super::kit::n("/alice");
         let bob = || people(&["/bob"]);
         let before = SpaceMembers::new(&owner, Vec::new(), Vec::new(), true);
         let after = SpaceMembers::new(&owner, bob(), Vec::new(), true);
-        ensure!(
-            members_now(&*phone, &space).await? == Some(before.clone()),
-            "the phone's members before the change are not the creation's"
-        );
+        w.until("the phone holds the creation's members", LIMIT, || async {
+            Ok(members_now(&*phone, &space).await? == Some(before.clone()))
+        })
+        .await?;
         let mut feed = w.retry_later(|| phone.watch(&space)).await?;
         let mut saw = Vec::new();
         drain(&mut *feed, LOOK, &mut saw).await?;

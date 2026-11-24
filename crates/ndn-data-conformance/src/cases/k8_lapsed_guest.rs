@@ -69,6 +69,17 @@ fn run(w: &World) -> CaseFuture<'_> {
             known(&*guest, &space)
         })
         .await?;
+        // The guest first reads a note the owner wrote at another path: it then holds the key of
+        // the epoch the owner's device signed, and no epoch of its own is left to race it. Once
+        // its certificate lapsed the owner refuses its seal key, so a key not held by then never
+        // comes.
+        let hello = w
+            .space_put(LAPTOP, &space, &n("/hello"), octets("welcome, bob"))
+            .await?;
+        w.until("the guest reads the owner's note", LIMIT, || {
+            has(&*guest, &space, &hello)
+        })
+        .await?;
         // The guest's first put races the epoch key's grant (spec §17.1): put again on RetryLater.
         let before = w
             .space_put(GUEST, &space, &path, octets("sown beans"))

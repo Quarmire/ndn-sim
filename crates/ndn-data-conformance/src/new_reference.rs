@@ -669,6 +669,22 @@ impl Spaces for NewSpaces {
         }))
     }
 
+    async fn epoch(&self, space: &Name) -> Result<Option<SpaceEpoch>, Failure> {
+        let heap = self.heap(space).await?;
+        if heap.members().owner.is_empty() {
+            return Err(Failure::answered(
+                format!("{space}: no members record is held yet"),
+                "RetryLater",
+                "NotReady",
+            ));
+        }
+        Ok(heap.epoch().map(|(epoch, complete)| SpaceEpoch {
+            creator: epoch.creator,
+            seq: epoch.seq,
+            complete,
+        }))
+    }
+
     async fn entry(&self, space: &Name, name: &Name) -> Result<EntryRead, Failure> {
         let Some(parsed) = parse_entry(name).filter(|p| p.after == 0) else {
             return Err(Failure::new(format!("{name} is no log entry name")));

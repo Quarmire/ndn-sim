@@ -302,34 +302,29 @@ pub fn heads<'e>(events: &'e [SpaceEvent], path: &Name) -> Vec<&'e SpaceItem> {
         .collect()
 }
 
-/// Rule R (b): `spaces` reads at `path` of `space` what the head with the highest signed digest
-/// ([`SpaceItem::signed`]) wrote. `heads` are the entries nothing supersedes, the ones the case
-/// made over no other, as `spaces` lists them with the octets each wrote. Returns the item.
+/// Rule R (b): `spaces` reads at `path` of `space` the write of the head with the highest signed
+/// digest ([`SpaceEntry::signed`]). `heads` are the entries nothing supersedes, the ones the case
+/// made over no other. The winner is picked from their signed digests, which bind each entry's
+/// bytes, so the read is the winner's exactly when it carries the winner's name and digest:
+/// no watch listing is needed (a provider may list only each path's winner). Returns the item.
 pub async fn winning(
     spaces: &dyn Spaces,
     space: &Name,
     path: &Name,
     heads: &[&SpaceEntry],
 ) -> Result<SpaceItem, Failure> {
-    let looked = look(spaces, space, LOOK).await?;
-    let mut picks: Vec<&SpaceItem> = Vec::with_capacity(heads.len());
-    for entry in heads {
-        let listed = item_of(&looked, &entry.key())
-            .ok_or_else(|| Failure::new(format!("the watch does not list head {}", entry.name)))?;
-        picks.push(listed);
-    }
-    let want = picks
-        .into_iter()
-        .max_by_key(|i| i.signed)
-        .ok_or_else(|| Failure::new(format!("no head of {path} was given")))?
-        .bytes
-        .clone();
+    let want = heads
+        .iter()
+        .max_by_key(|e| e.signed)
+        .ok_or_else(|| Failure::new(format!("no head of {path} was given")))?;
     let got = required(spaces, space, path).await?;
     ensure!(
-        got.bytes == want,
-        "the register {path} reads {:?}; the head with the highest signed digest wrote {:?}",
+        got.key() == want.key() && got.signed == want.signed,
+        "the register {path} reads the entry {} ({:?}); the head with the highest signed digest \
+         is {}",
+        got.name,
         String::from_utf8_lossy(&got.bytes),
-        String::from_utf8_lossy(&want)
+        want.name
     );
     Ok(got)
 }

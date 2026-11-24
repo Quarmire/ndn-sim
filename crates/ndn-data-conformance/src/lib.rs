@@ -1,18 +1,26 @@
-//! Conformance cases for the `ndn-data` contract.
+//! Conformance cases for the data-layer contract, run on two implementations.
 //!
 //! The data-layer study played twelve use cases through its model and left three items open; a
 //! fourth (a reader keeping up with a writer that never pauses) came out of slice 1. Each
-//! is written here as a deterministic ndn-sim scenario against the [`ndn_data::DataLayer`] trait:
+//! is written here as a deterministic ndn-sim scenario:
 //! real forwarders on a virtual-time kernel, devices that go offline, per-device wall clocks that
 //! lie ([`ndn_sim::ClockSkew`]), and a thief holding a copy of a stolen device's key. Every case
 //! asserts the invariant it guards — the "fix" of its use case — not wording or exact counts.
 //!
+//! The cases of the core suite are written once against the neutral [`Spaces`] trait (a space,
+//! paths in it, plain data types) and run unchanged on both implementations: `ndn-data`'s own
+//! [`Device`](ndn_data::Device) ([`Reference`], through `OldSpaces`) and `ndn-heap`'s `Node`
+//! ([`NewReference`]). The cases of the introductions, the signals and the few that drive the old
+//! crate's own collections and audiences still use [`ndn_data::DataLayer`] and run on `ndn-data`
+//! alone until they are ported or retired. The durability and chain cases (`d9`–`d16`,
+//! `q1`–`q6`) run on `ndn-heap` alone.
+//!
 //! An implementation plugs in as a [`Provider`]; the runner
-//! (`cargo run -p ndn-data-conformance -- --json <path>`) knows one, [`Reference`] — `ndn-data`'s
-//! own [`Device`](ndn_data::Device). A case runs when its provider supports every [`Feature`] it
-//! needs and is otherwise reported [`Status::NotImplemented`], naming what is missing. The cases
-//! are not `#[test]`s: they run only from the runner, so a plain `cargo test` checks the harness
-//! itself (devices going offline, clock skew, the report).
+//! (`cargo run --release -p ndn-data-conformance -- --provider ndn-data|ndn-heap --json <path>`)
+//! knows both and needs `--provider` to choose. A case runs when its provider supports every
+//! [`Feature`] it needs and is otherwise reported [`Status::NotImplemented`], naming what is
+//! missing. The cases are not `#[test]`s: they run only from the runner, so a plain `cargo test`
+//! checks the harness itself (devices going offline, clock skew, the report).
 //!
 //! Each run also records cost — round trips, bytes, signatures, copies, time to converge and
 //! person gestures ([`Cost`]) — so the Results page can show what each slice pays.

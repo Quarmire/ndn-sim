@@ -44,7 +44,7 @@ use crate::feature::Feature;
 use crate::provider::{Certs, DeviceSpec, Grants, Image, Provider, Tally};
 use crate::spaces::{
     AlertKind, EntryRead, RefusalKind, SpaceAlert, SpaceChange, SpaceChanges, SpaceEntry,
-    SpaceEntryKey, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
+    SpaceEntryKey, SpaceEpoch, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
 };
 use crate::world_common::{Common, Cutter, Proposed, Scoped, device_key};
 

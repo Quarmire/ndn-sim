@@ -211,8 +211,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         // Bob, offline, rewrites a paragraph Alice rewrites meanwhile: the two entries are heads
-        // of one register. Alice's one watch of the space reports Bob's entry when he is back,
-        // tagged with the paragraph, and both devices read the head with the highest digest.
+        // of one register. Alice's one watch of the space reports the register's new value when
+        // he is back — the entry with the highest digest, which may be Bob's — tagged with the
+        // paragraph; both devices apply both entries and read that head. (A provider may report
+        // only the winning head, not the entry it superseded, so the case does not ask the
+        // watch for the loser.)
         w.gesture();
         w.net().offline(BOB);
         let alices = w
@@ -222,18 +225,23 @@ fn run(w: &World) -> CaseFuture<'_> {
             .space_put(BOB, &space, &edited, octets("bob's text"))
             .await?;
         w.net().online(BOB);
+        let head = if alices.signed > bobs.signed {
+            &alices
+        } else {
+            &bobs
+        };
         drain_until(
             &mut **alice_feed,
             alice_seen,
-            "Alice's folder watch reports Bob's entry",
+            "Alice's folder watch reports the head with the highest digest",
             LIMIT,
-            |seen| item_of(seen, &bobs.key()).is_some(),
+            |seen| item_of(seen, &head.key()).is_some(),
         )
         .await?;
-        let reported = item_of(alice_seen, &bobs.key()).expect("drained until it came");
+        let reported = item_of(alice_seen, &head.key()).expect("drained until it came");
         ensure!(
             reported.path == edited,
-            "Bob's entry of {edited} was reported tagged with {}",
+            "the head of {edited} was reported tagged with {}",
             reported.path
         );
         let (a, b) = (w.spaces(ALICE), w.spaces(BOB));

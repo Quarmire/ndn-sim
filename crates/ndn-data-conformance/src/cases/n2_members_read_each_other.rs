@@ -28,12 +28,14 @@
 
 use std::time::Duration;
 
-use super::kit::{LIMIT, SETTLE, members_now, n, octets, private, public};
+use super::kit::{
+    LIMIT, LOOK, alerted, drain, members_now, n, octets, private, public, withdrawn_as,
+};
 use super::n1_named_by_key::{adopts, by_name, reads, shut_out, under};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
 use crate::feature::Feature;
-use crate::spaces::{EntryRead, SpaceChange, SpaceMembers};
+use crate::spaces::{AlertKind, EntryRead, RefusalKind, SpaceChange, SpaceMembers};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -148,22 +150,38 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.converged(start.elapsed());
 
         // Bob trusts Carol's namespace for the notebook alone. Carol's diary, open to anyone,
-        // reaches Alice, who holds Carol's namespace: Bob, who does not, reads nothing of it.
+        // reaches Alice, who holds Carol's namespace: Bob, who does not, reads nothing of it, and
+        // his forwarder refuses its entry. Bob does not follow the diary: a provider that judges
+        // the persons a space lists (its owner among them) for that space, as `ndn-heap` does,
+        // adopts Carol for the diary space as soon as a device follows it, which is that space's
+        // own listing and not the notebook's adoption.
         let diary = under(&carol_ns, "/32=data/diary");
         let monday = n("/monday");
         carol.create(&diary, public(&[])).await?;
-        carol.put(&diary, &monday, octets("diary by carol")).await?;
+        let entry = carol.put(&diary, &monday, octets("diary by carol")).await?;
         w.retry_later(|| alice.open(&diary)).await?;
         w.until("alice reads carol's diary", LIMIT, || {
             reads(&*alice, &diary, &monday, "diary by carol")
         })
         .await?;
-        w.retry_later(|| bob.open(&diary)).await?;
-        w.sleep(SETTLE).await;
         ensure!(
             shut_out(&*bob, &diary, &monday).await?,
             "bob reads carol's diary: the notebook's adoption of {carol_ns} judged another space"
         );
+        match w.forwarder_verdict(BOB, CAROL, &entry.name).await? {
+            Ok(()) => {
+                return Err(Failure::new(format!(
+                    "bob's forwarder accepts {}: the notebook's adoption of {carol_ns} vouched \
+                     for the diary outside the space",
+                    entry.name
+                )));
+            }
+            Err(why) => ensure!(
+                why.contains(&carol_ns.to_string()),
+                "bob's forwarder refused carol's diary, but not as a person's name it does not \
+                 hold: {why}"
+            ),
+        }
         // Nor does it reach Bob's forwarder: its node's validator refuses Carol's page.
         match w.forwarder_verdict(BOB, CAROL, &carols.name).await? {
             Ok(()) => {
@@ -181,6 +199,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         }
 
         // Alice drops Carol while Carol is away; Carol, not knowing, writes again.
+        // Bob follows the space through his watch, which tells him what the removal withdraws.
+        let mut bobs_feed = w.retry_later(|| bob.watch(&space)).await?;
+        let mut bobs_events = Vec::new();
         w.net().offline(CAROL);
         alice
             .change(
@@ -202,17 +223,28 @@ fn run(w: &World) -> CaseFuture<'_> {
             )
             .await?;
         w.net().online(CAROL);
-        w.until(
-            "bob refuses carol's page written after her removal",
-            LIMIT,
-            || async {
-                Ok(matches!(
+        // Bob refuses it: his entry read answers a refusal, or his watch told him it is outside
+        // the removal's cut (withdrawn after he applied it before the record dropping Carol
+        // reached him, or refused outright after). A provider keeps the one reason or the other.
+        let key = lates.key();
+        let start = tokio::time::Instant::now();
+        loop {
+            drain(&mut *bobs_feed, LOOK, &mut bobs_events).await?;
+            if withdrawn_as(&bobs_events, &key, RefusalKind::OutsideCut)
+                || alerted(&bobs_events, |k| matches!(k, AlertKind::OutsideCut))
+                || matches!(
                     bob.entry(&space, &lates.name).await?,
                     EntryRead::Refused { .. }
-                ))
-            },
-        )
-        .await?;
+                )
+            {
+                break;
+            }
+            ensure!(
+                start.elapsed() < LIMIT,
+                "bob refuses carol's page written after her removal: not reached within \
+                 {LIMIT:?} of virtual time"
+            );
+        }
         ensure!(
             !reads(&*bob, &space, &late, "a page carol wrote once dropped").await?,
             "bob reads a page carol wrote after alice's record dropped her"

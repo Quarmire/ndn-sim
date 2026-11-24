@@ -62,12 +62,16 @@ async fn reads(spaces: &dyn Spaces, space: &Name, path: &Name, i: usize) -> Resu
     }
 }
 
-/// What one way of sharing cost; grants asked per reader, as each reader's layer counts them.
+/// What one way of sharing cost; grants asked per reader, as each reader's layer counts them
+/// (a layer that counts none says zero), and the signatures the owner made beyond the share and
+/// the recipes, which are its answers to the readers' grant asks (and any record it signs
+/// lazily).
 struct Spent {
     signatures: u64,
     records: u64,
     asked: Vec<u64>,
     answered: u64,
+    grant_signatures: u64,
     interests: u64,
     bytes: u64,
     took: Duration,
@@ -121,23 +125,38 @@ async fn share_and_read(
     for (i, (space, path)) in places.iter().enumerate() {
         alice.put(space, path, octets(&i.to_string())).await?;
     }
+    // Following a thousand spaces of their own, one group and one epoch each, a reader on a lossy
+    // network may wait out a few of the growing pauses before an asked packet arrives, so the
+    // per-collection way gets ten limits for each recipe; the folder, one group, keeps one.
+    let limit = if by_folder { LIMIT } else { 10 * LIMIT };
     for (i, (space, path)) in places.iter().enumerate() {
         for r in READERS {
             let reader = w.spaces(r);
             w.until(
                 &format!("{} reads {space}{path}", w.net().spec(r).name()),
-                LIMIT,
+                limit,
                 || reads(&*reader, space, path, i),
             )
             .await?;
         }
     }
     let took = start.elapsed();
+    // Every signature the owner made, less the share's and one per recipe, answered a grant ask.
+    let signed_in_all = w.signed_by(OWNER) - signed;
+    let grant_signatures = signed_in_all
+        .checked_sub(signatures + count as u64)
+        .ok_or_else(|| {
+            Failure::new(format!(
+                "the owner made {signed_in_all} signatures: fewer than {signatures} to share \
+                 and {count} recipes"
+            ))
+        })?;
     let mut spent = Spent {
         signatures,
         records,
         asked: Vec::new(),
         answered: w.grants(OWNER).answered - answered,
+        grant_signatures,
         interests: 0,
         bytes: 0,
         took,
@@ -163,6 +182,11 @@ fn record(w: &World, way: &str, count: usize, spent: &Spent) {
     w.measure(what("members records signed"), spent.records, "records");
     w.measure(what("grants asked"), spent.asked.iter().sum(), "grants");
     w.measure(what("grants answered"), spent.answered, "grants");
+    w.measure(
+        what("signatures beyond the share and the recipes"),
+        spent.grant_signatures,
+        "signatures",
+    );
     w.measure(what("reader Interests"), spent.interests, "round trips");
     w.measure(what("reader bytes received"), spent.bytes, "bytes");
     w.measure(
@@ -188,14 +212,39 @@ fn run(w: &World) -> CaseFuture<'_> {
         record(w, "folder record", FOLDER_N, &after);
         w.report_from(mark);
         w.converged(after.took);
-        for (j, r) in READERS.iter().enumerate() {
-            ensure!(
-                after.asked[j] == 1,
-                "{} asked {} grants to read {FOLDER_N} collections under one folder record: one \
-                 per reader per folder epoch",
-                w.net().spec(*r).name(),
-                after.asked[j]
-            );
+        // One grant per reader for the whole folder, as the owner's signatures say it: every
+        // reader's ask for the epoch is answered once, not once per collection. Each reader's
+        // grant is a signature, so there are at least as many as readers; a layer may sign a
+        // record or two besides (the old one signs one lazily), so the bound is twice the
+        // readers, against the per-collection way's grant for every collection.
+        let readers = READERS.len() as u64;
+        ensure!(
+            (readers..=2 * readers).contains(&after.grant_signatures),
+            "the owner made {} signatures beyond the share and the recipes to answer the {} \
+             readers of {FOLDER_N} collections under one folder record: one grant per reader \
+             per folder epoch, {readers} to {} of them",
+            after.grant_signatures,
+            READERS.len(),
+            2 * readers
+        );
+        ensure!(
+            before.grant_signatures >= after.grant_signatures * 10,
+            "the per-collection way cost the owner {} answers to grant asks, the folder way {}: \
+             the folder's one epoch should save the grant of every collection",
+            before.grant_signatures,
+            after.grant_signatures
+        );
+        // A layer that counts the grants its readers ask says it per reader.
+        if before.asked.iter().sum::<u64>() > 0 {
+            for (j, r) in READERS.iter().enumerate() {
+                ensure!(
+                    after.asked[j] == 1,
+                    "{} asked {} grants to read {FOLDER_N} collections under one folder record: \
+                     one per reader per folder epoch",
+                    w.net().spec(*r).name(),
+                    after.asked[j]
+                );
+            }
         }
         Ok(())
     })

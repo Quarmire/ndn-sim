@@ -16,6 +16,9 @@ use crate::invite::{
 };
 use crate::spaces::{SpaceEntry, Spaces};
 
+/// A signal key a device holds for a space: its id and its 32 octets.
+pub type SignalKeyPair = ([u8; 8], [u8; 32]);
+
 /// One device in a case: a person's device, or a thief's node.
 #[derive(Clone, Debug)]
 pub struct DeviceSpec {
@@ -610,19 +613,20 @@ pub trait Provider: Send + Sync {
         })
     }
 
-    /// `device`'s host starts signals for its data layer (`ndn_surface::signal::Signals`, spec
-    /// signals §2) as a host does: on a connection of its own to its node's forwarder, gated by
-    /// the device's data layer, with the device's own namespace's sync group (`<ns>/32=sync`,
-    /// where members push for it) routed to that connection's face as its node routes the data
-    /// layer's sync face. Started once; asked again it answers the same one. A provider without
-    /// signals says so.
+    /// `device`'s host starts signals for its node (`ndn_surface::signal::Signals`, spec signals
+    /// §2) as a host does: on a connection of its own to its node's forwarder, gated by the
+    /// node (heap spec §11), with its clock and sequence counter kept in the store the node runs
+    /// on, so that a device started again on its store numbers past what it sent. A space's sync
+    /// group (`<O>/32=sync/<rest of the space>`, where members push for it) is routed to that
+    /// connection's face when the space is first subscribed. Started once; asked again it
+    /// answers the same one. A provider without signals ([`Feature::Signals`]) says so.
     async fn signals(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Signals> {
         let _ = fabric;
         anyhow::bail!("this provider cannot start signals on {}", device.name())
     }
 
-    /// Fault injection: `device`'s host routes the sync group `group` — another namespace's,
-    /// where it is not pushed to — to its signals' connection too, as an eavesdropper on its own
+    /// Fault injection: `device`'s host routes the sync group `group` — one it has not
+    /// subscribed to — to its signals' connection too, as an eavesdropper on its own
     /// node does ([`signals`](Self::signals) starts them first). A provider that cannot says so.
     async fn listen(
         &self,
@@ -637,12 +641,42 @@ pub trait Provider: Send + Sync {
         )
     }
 
-    /// The `ndn-data` [`Device`](ndn_data::Device) behind `device`'s data layer, whose signal gate
-    /// (`ndn_data::signal`: the signal keys it holds, the run headers it signs) a program on the
-    /// device can ask beside the seven verbs — what a member that turns hostile holds. A
-    /// provider that is no `ndn-data` Device says so.
-    fn gate(&self, device: &DeviceSpec) -> anyhow::Result<ndn_data::Device> {
-        anyhow::bail!("this provider has no ndn-data Device on {}", device.name())
+    /// The signal keys `device` holds for `space` (heap spec §11.2, `signal_scope`): the epoch
+    /// in force's first — the one to seal with — then those of the other epochs whose keys it
+    /// holds, each as (id, the 32 octets of the key). Empty for a space that is not sealed. A
+    /// program on the device can ask them beside the seven verbs: what a member that turns
+    /// hostile holds. A refusal (the space not open, the device in no audience) is an error; a
+    /// provider without signals says so.
+    fn signal_keys(&self, device: &DeviceSpec, space: &Name) -> anyhow::Result<Vec<SignalKeyPair>> {
+        let _ = space;
+        anyhow::bail!("this provider holds no signal keys on {}", device.name())
+    }
+
+    /// A run header signed by `device`'s key for `space`, with `run_id` and `body` as its
+    /// content (heap spec §11.2, `signal_header`): what a program on the device holding its key
+    /// can sign beside the seven verbs. Only a writer signs one; a refusal is an error. A
+    /// provider without signals says so.
+    fn signal_header(
+        &self,
+        device: &DeviceSpec,
+        space: &Name,
+        run_id: &[u8; 16],
+        body: &[u8],
+    ) -> anyhow::Result<Bytes> {
+        let _ = (space, run_id, body);
+        anyhow::bail!("this provider signs no run headers on {}", device.name())
+    }
+
+    /// Whether `device` holds the key `key` as a member of `space` now (heap spec §11.2,
+    /// `signal_member`): the key of a device of a person the members record it holds lists as a
+    /// writer, which no trust context it holds revokes. Read from what the device holds at the
+    /// call. A provider without signals says so.
+    fn signal_member(&self, device: &DeviceSpec, space: &Name, key: &Name) -> anyhow::Result<bool> {
+        let _ = (space, key);
+        anyhow::bail!(
+            "this provider judges no signal members on {}",
+            device.name()
+        )
     }
 
     /// `device`'s own signing key, as a hostile program on the device holds it: it signs

@@ -1,13 +1,14 @@
 //! Signals, e14 — one member's devices cannot take a scope's run slots, and removing a member
 //! frees its slots at once.
 //!
-//! Alice's board names Alice, Bob, Carol, Dave, Erin and Frank by their person prefixes, so
-//! every device of theirs is a member; it is not sealed. Carol's tablet receives. Dave's and
-//! Erin's four devices each open four runs (quiet after one signal): 32 runs. Then Bob, with
+//! Alice's board lists Bob, Carol, Dave, Erin and Frank as writers (persons, by their
+//! namespaces) beside her, so every device of theirs is a member; it is public, not sealed.
+//! Carol's tablet receives. Dave's and Erin's four devices each open four runs (quiet after one
+//! signal): 32 runs. Then Bob, with
 //! eight devices, opens four runs on each: 32 more, so one member's devices claim half of the
 //! scope's 64 run slots. Alice then opens a new run and drags at 60 Hz for three seconds.
 //! Frank's four devices then open fifteen runs, which fill the scope; one more run of Frank's
-//! is refused (`flood`). Alice removes Bob from the board, and once Carol holds that record
+//! is refused (`flood`). Alice removes Bob from the board, and once Carol holds that entry
 //! Frank's refused run is pushed again, while Bob's runs are hours from their end. Every run is
 //! a member's genuine run: its header signed by the device key, its packets by the run key.
 //!
@@ -19,12 +20,18 @@
 
 use std::time::Duration;
 
+use ndn_data::Name;
 use ndn_packet::encode::DataBuilder;
 use ndn_sim::Faults;
 use ndn_surface::signal::RUNS_PER_SCOPE;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, n, public};
+use super::signal_kit::{FRAME, Peer, RESEND, group, sender_of, stats, until_counted};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -141,7 +148,7 @@ fn hog_runs(
 /// delivered its signal, for at most [`ROUNDS`] rounds. How many Carol delivered.
 async fn open(w: &World, carol: &Peer, runs: &[HogRun]) -> Result<usize, Failure> {
     let face = w.net().app_face(ALICE);
-    let target = group(&n("/carol"));
+    let target = group(&board());
     let delivered = |r: &HogRun| carol.delivered(&r.payload) > 0;
     for _ in 0..ROUNDS {
         let pending: Vec<&HogRun> = runs.iter().filter(|r| !delivered(r)).collect();
@@ -163,11 +170,9 @@ async fn open(w: &World, carol: &Peer, runs: &[HogRun]) -> Result<usize, Failure
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let everyone = ["/alice", "/bob", "/carol", "/dave", "/erin", "/frank"];
+        let members = ["/bob", "/carol", "/dave", "/erin", "/frank"];
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&board(), members(Rule::Log, &everyone, &[]).into())
-            .await?;
+        w.spaces(ALICE).create(&board(), public(&members)).await?;
         let carol = Peer::join(w, CAROL, &board()).await?;
         let started = tokio::time::Instant::now();
 
@@ -221,7 +226,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         let probe = hog_run(w, Dev(FRANKS.end - 1), PER_KEY - 1)?;
         let face = w.net().app_face(ALICE);
-        let target = group(&n("/carol"));
+        let target = group(&board());
         let before = stats(w, CAROL).await?.flood;
         until_counted(
             w,
@@ -244,16 +249,20 @@ fn run(w: &World) -> CaseFuture<'_> {
             "carol delivered a run over the board's {RUNS_PER_SCOPE}"
         );
 
-        // Alice removes Bob; once Carol holds the record, Frank's run is pushed again.
+        // Alice removes Bob; once Carol holds the entry, Frank's run is pushed again.
         w.gesture();
-        let rest: Vec<&str> = everyone.into_iter().filter(|p| *p != "/bob").collect();
-        w.at(ALICE)
-            .share_folder(&board(), members(Rule::Log, &rest, &[]).into())
+        w.spaces(ALICE)
+            .change(
+                &board(),
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
+            )
             .await?;
         let bob_key = w.signer(Dev(BOBS.start))?.key_name().clone();
-        let gate = w.gate(CAROL)?;
-        w.until("carol holding the record removing bob", LIMIT, || async {
-            Ok(!gate.signal_member(&board(), &bob_key))
+        w.until("carol holding the entry removing bob", LIMIT, || async {
+            Ok(!w.signal_member(CAROL, &board(), &bob_key)?)
         })
         .await?;
         w.measure(

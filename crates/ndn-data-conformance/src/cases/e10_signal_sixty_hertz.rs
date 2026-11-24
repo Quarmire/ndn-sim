@@ -1,6 +1,6 @@
-//! Signals, e10 — four people draw at 60 Hz in one folder.
+//! Signals, e10 — four people draw at 60 Hz in one space.
 //!
-//! Alice, Bob, Carol and Dave share Alice's sealed whiteboard folder, all four writers. For five
+//! Alice, Bob, Carol and Dave share Alice's sealed whiteboard space, all four writers. For five
 //! seconds each drags a cursor at 60 Hz and says four times a second what they are doing; then
 //! each sends their last cursor and presence until all three others acknowledged them. The
 //! relay between the devices is tapped, so the case reports what the push costs per packet.
@@ -8,13 +8,17 @@
 //! The guard: every receiver ends with each sender's last signal per address, and whatever the
 //! network did, every delivery is one its sender sent, once, and never older than one delivered
 //! before it for the same sender and address. The report shows the push Interests the relay
-//! forwarded, the octets of each and how many each signal took (one per member namespace's
-//! group).
+//! forwarded, the octets of each and how many each signal took (one: the space's one group).
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+
+use super::kit::n;
+use super::signal_kit::{FRAME, Peer, pushes, sealed_to, stats};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -78,25 +82,18 @@ async fn draw(w: &World, peer: &Peer, who: &str) -> Result<u64, Failure> {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let namespaces: Vec<String> = PEOPLE.iter().map(|(p, _)| format!("/{p}")).collect();
-        let people: Vec<&str> = namespaces.iter().map(String::as_str).collect();
+        // Everyone but the owner, who creates the space.
+        let namespaces: Vec<String> = PEOPLE
+            .iter()
+            .skip(1)
+            .map(|(p, _)| format!("/{p}"))
+            .collect();
+        let others: Vec<&str> = namespaces.iter().map(String::as_str).collect();
         w.gesture();
-        w.at(Dev(0))
-            .share_folder(&folder(), sealed_to(&people).into())
+        w.spaces(Dev(0))
+            .create(&folder(), sealed_to(&others))
             .await?;
-        let mut taps = Vec::new();
-        for ns in &people {
-            taps.push(
-                w.net()
-                    .tap(
-                        &group(&n(ns)).append_component(ndn_packet::NameComponent::new(
-                            32,
-                            bytes::Bytes::from_static(b"signal"),
-                        )),
-                    )
-                    .await,
-            );
-        }
+        let taps = [w.net().tap(&pushes(&folder())).await];
         let mut peers = Vec::new();
         for i in 0..PEOPLE.len() {
             peers.push(Peer::join(w, Dev(i), &folder()).await?);
@@ -125,10 +122,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (pushes, push_bytes) = (pushes - before, push_bytes - before_bytes);
         let drawing = start.elapsed();
         ensure!(
-            pushes == signals * PEOPLE.len() as u64,
-            "the relay forwarded {pushes} push Interests for {signals} signals: not one per member \
-             namespace's group ({}) per signal",
-            PEOPLE.len()
+            pushes == signals,
+            "the relay forwarded {pushes} push Interests for {signals} signals: not one per \
+             signal, into the space's one group"
         );
 
         for (p, (who, _)) in peers.iter().zip(PEOPLE) {
@@ -170,7 +166,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             "Interests",
         );
         w.measure(
-            "push Interests per signal (one per member namespace's group)",
+            "push Interests per signal (one: the space's group)",
             pushes / signals.max(1),
             "Interests",
         );

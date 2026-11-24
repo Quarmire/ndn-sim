@@ -1,6 +1,6 @@
 //! Signals, e4 — a packet captured on the way is pushed again.
 //!
-//! Alice and Bob share Alice's sealed sketch folder. Alice marks ten spots on the sketch, each
+//! Alice and Bob share Alice's sealed sketch space. Alice marks ten spots on the sketch, each
 //! at its own address. Someone on the path keeps a copy of one of her packets that reached Bob
 //! and pushes it again later, under a fresh Interest nonce (so no forwarder takes it for a
 //! looping copy): once into the network from Alice's node, the way it first came, and once from
@@ -11,9 +11,16 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{SETTLE, n};
+use super::signal_kit::{
+    FRAME, Peer, group, opened, pushes, sealed_to, signal_key, stats, until_counted,
+};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
+use ndn_data::Name;
 
 pub(super) const CASE: Case = Case {
     id: "e4",
@@ -50,21 +57,11 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
-        let bob_group = group(&n("/bob"));
-        let tap = w
-            .net()
-            .tap(
-                &bob_group
-                    .clone()
-                    .append_component(ndn_packet::NameComponent::new(
-                        32,
-                        bytes::Bytes::from_static(b"signal"),
-                    )),
-            )
-            .await;
+        let bob_group = group(&folder());
+        let tap = w.net().tap(&pushes(&folder())).await;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
         for i in 0..10 {

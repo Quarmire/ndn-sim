@@ -73,9 +73,9 @@ pub enum Feature {
     /// what an adopter fetches — its namespace's trust-context versions and its certificate.
     SelfCertifying,
     /// Signals (`ndn_surface::signal`, spec signals.md): ephemeral live data pushed unsigned into
-    /// the members' sync groups, each packet signed by a run key a member's device key vouched
-    /// for, sealed under the scope's signal key in a sealed scope, gated by the members record in
-    /// force on every packet, never a version and never cached.
+    /// a space's sync group, each packet signed by a run key a member's device key vouched
+    /// for, sealed under the space's signal key in a sealed space, gated by the members in
+    /// force on every packet, never an entry and never cached. `ndn-heap` only.
     Signals,
     /// Durability under a crash: a device's own log survives its process dying between a
     /// write and its flush (`Provider::crash`, `image`, `restore`, `block_flush`), a signed gap

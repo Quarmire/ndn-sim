@@ -1,6 +1,6 @@
 //! Signals, e7 — signals leave nothing behind in any store.
 //!
-//! Alice and Bob draw together in Alice's sealed sketch folder, each sending cursor moves and
+//! Alice and Bob draw together in Alice's sealed sketch space, each sending cursor moves and
 //! presence until the other has seen their last. Every link counts what crosses it by name.
 //!
 //! The guard: afterwards no forwarder's content store — the relay's, Alice's node's, Bob's
@@ -10,9 +10,14 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{SETTLE, n};
+use super::signal_kit::{FRAME, Peer, opened, pushes, sealed_to, signal_key};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
+use ndn_data::Name;
 
 pub(super) const CASE: Case = Case {
     id: "e7",
@@ -35,8 +40,8 @@ fn plan() -> Plan {
     let mut p = Plan::new();
     p.device("alice", "laptop");
     p.device("bob", "phone");
-    // Deep enough to name `32=signal` in a push (`<ns>/32=sync/32=signal/<digest>`) and in a run
-    // header's name (`<ns>/<device>/32=signal/<scope>…`).
+    // Deep enough to name `32=signal` in a push (`<ns>/32=sync/<space>/32=signal/<digest>`) and in
+    // a run header's name (`<ns>/<device>/32=signal/<scope>…`).
     p.count_names(4);
     p
 }
@@ -48,18 +53,10 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
-        let tap = w
-            .net()
-            .tap(
-                &group(&n("/bob")).append_component(ndn_packet::NameComponent::new(
-                    32,
-                    bytes::Bytes::from_static(b"signal"),
-                )),
-            )
-            .await;
+        let tap = w.net().tap(&pushes(&folder())).await;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
         for i in 0..30 {

@@ -1,6 +1,6 @@
 //! Signals, e18 — a member whose clock stepped back across a restart is heard again.
 //!
-//! Alice and Bob share Alice's sealed sketch folder, both writers. Both subscribe and open a
+//! Alice and Bob share Alice's sealed sketch space, both writers. Both subscribe and open a
 //! run, and Bob draws; Alice hears him, and each ends with a last signal the other acknowledged.
 //! Bob's device then stops, its clock steps back an hour (a clock set wrong, a machine whose
 //! clock restarted before its last signals) and it starts again on what it stored, subscribes
@@ -14,10 +14,14 @@
 
 use std::time::Duration;
 
+use ndn_data::Name;
 use ndn_sim::ClockSkew;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::n;
+use super::signal_kit::{FRAME, Peer, sealed_to};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -55,8 +59,8 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;

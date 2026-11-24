@@ -1,11 +1,11 @@
 //! Signals, e15 — a member's genuine packet at the last sequence does not stop a receiver.
 //!
-//! Alice, Bob and Carol share Alice's sealed sketch folder, all three writers. A program on
-//! Alice's laptop opens a run of its own: its device key signs (through the device's gate) the
-//! header of a run key the program made, with a RunStart just below 2⁶⁴ − 1, and the run key
+//! Alice, Bob and Carol share Alice's sealed sketch space, all three writers. A program on
+//! Alice's laptop opens a run of its own: its device key signs (as the node signs run headers)
+//! the header of a run key the program made, with a RunStart just below 2⁶⁴ − 1, and the run key
 //! signs a packet carrying one signal at sequence 2⁶⁴ − 1 — a packet every check passes: a
 //! member's header, the run's own signature, a sequence at or above RunStart. It pushes it into
-//! Carol's group, sealed under the folder's key.
+//! the space's group, sealed under the space's key.
 //!
 //! The guards: Carol's signals go on: Bob's later final and Alice's are delivered to her and
 //! acknowledged (a receiver must not overflow its replay window at the last sequence, panic
@@ -13,8 +13,13 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+
+use super::kit::{SETTLE, n};
+use super::signal_kit::{Peer, RESEND, group, sealed_to, signal_key};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -53,8 +58,8 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob", "/carol"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob", "/carol"]))
             .await?;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
@@ -66,7 +71,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (key_id, key) = signal_key(w, ALICE, &folder())?;
         let mine = signal::RunKey::from_seed([0xa1; 32]);
         let now = w.net().date(ALICE).0;
-        let header = w.gate(ALICE)?.signal_header(
+        let header = w.signal_header(
+            ALICE,
             &folder(),
             &mine.id(),
             &signal::header_content(&mine.public(), u64::MAX - 8, now + 3_600_000),
@@ -92,7 +98,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .insert((b"last".to_vec(), b"alice:last-sequence".to_vec()));
         for k in 0..PUSHES {
             let packet = signal::seal(&key_id, &key, &[0xa1 ^ k as u8; 24], &body);
-            face.send(signal::push(&group(&n("/carol")), &packet))
+            face.send(signal::push(&group(&folder()), &packet))
                 .await
                 .map_err(|e| Failure::new(format!("alice's node took no packet: {e}")))?;
             w.sleep(RESEND).await;

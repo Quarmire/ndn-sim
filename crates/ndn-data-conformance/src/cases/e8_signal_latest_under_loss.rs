@@ -1,6 +1,6 @@
 //! Signals, e8 — the newest per address, over a path that loses and reorders.
 //!
-//! Alice and Bob share Alice's sealed sketch folder. On the way into each device, one packet in
+//! Alice and Bob share Alice's sealed sketch space. On the way into each device, one packet in
 //! five is lost, one in ten arrives twice, and three in ten are held behind those after them.
 //! Alice drags her cursor for three seconds at 60 Hz and says what she is doing every half
 //! second; then she sends her last cursor and her last presence again and again until Bob has
@@ -12,10 +12,14 @@
 
 use std::time::Duration;
 
+use ndn_data::Name;
 use ndn_sim::Faults;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::n;
+use super::signal_kit::{FRAME, Peer, sealed_to, stats};
+use crate::case::{Case, CaseFuture};
+use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -60,8 +64,8 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;

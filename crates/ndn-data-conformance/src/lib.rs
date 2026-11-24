@@ -14,10 +14,11 @@
 //! neutral verbs of [`invite`] (offer, join, the grants a host is told of, the spaces a device
 //! joined, the calls its host's link layer was asked), whose recording core is
 //! [`host::IntroduceCore`]: they run on `ndn-data` through `old_invite` and on `ndn-heap`
-//! through `new_invite` over `ndn-invite`. The signals and the few cases that drive
-//! the old crate's own collections and audiences still use [`ndn_data::DataLayer`] and run on
-//! `ndn-data` alone until they are ported or retired. The durability and chain cases
-//! (`d9`–`d16`, `q1`–`q6`) run on `ndn-heap` alone.
+//! through `new_invite` over `ndn-invite`. The signal cases (`e1`–`e19`) are written over `Spaces`
+//! and `ndn-surface`'s signals, a space being a signal's scope, and run on `ndn-heap` alone,
+//! like the durability and chain cases (`d9`–`d16`, `q1`–`q6`); the few cases that drive the
+//! old crate's own collections and audiences still use [`ndn_data::DataLayer`] and run on
+//! `ndn-data` alone until they are retired.
 //!
 //! An implementation plugs in as a [`Provider`]; the runner
 //! (`cargo run --release -p ndn-data-conformance -- --provider ndn-data|ndn-heap --json <path>`)

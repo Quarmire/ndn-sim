@@ -1,26 +1,33 @@
-//! Signals, e2 — Carol, no member of Alice's folders, tries to take part in their signals.
+//! Signals, e2 — Carol, no member of Alice's spaces, tries to take part in their signals.
 //!
-//! Alice keeps two folders with Bob: a board open to anyone to read, which Alice and Bob write,
-//! and a sketch sealed to the two of them. Carol's device holds both folders' records — she was
-//! sent their links — but neither names her. Alice and Bob draw on the board.
+//! Alice keeps two spaces with Bob: a board open to anyone to read, which Alice and Bob write,
+//! and a sketch sealed to the two of them. Carol's device follows both spaces, but neither
+//! names her. Alice and Bob draw on the board.
 //!
 //! The guards:
-//! - Carol's `subscribe` and `open` on either folder are refused `NotMember`: her device is no
-//!   member by the record in force (a reader of an open folder is no member; only a writer the
-//!   record names is).
+//! - Carol's `open` of a run in either space is refused `NotMember`: her device is no member by
+//!   what it holds (a reader of an open space is no member; only a writer the members name is),
+//!   and her `subscribe` to the sealed sketch is refused `NotMember` too (she is in no audience
+//!   of it, so she holds no key to receive with; a reader may receive what members send).
 //! - Carol makes packets by hand: a run header for the board signed by her own device key, and
-//!   signals under it, pushed into Alice's and Bob's groups. Every member refuses them as from
+//!   signals under it, pushed into the board's group. Every member refuses them as from
 //!   a key no member's (`not_member`), and delivers none.
-//! - Carol routes Alice's and Bob's groups to her own signals, as an eavesdropper on her node
+//! - Carol routes the spaces' group to her own signals, as an eavesdropper on her node
 //!   would: the board's and the sketch's packets reach her signals, which deliver nothing, the
 //!   sketch's sealed under a key her device holds no copy of (`unknown_key`).
 
 use std::time::Duration;
 
+use ndn_data::Name;
 use ndn_packet::encode::DataBuilder;
+use ndn_surface::signal::SignalError;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{SETTLE, n, public};
+use super::signal_kit::{Peer, group, sealed_to, signal_again, stats, until_counted};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -29,11 +36,12 @@ pub(super) const CASE: Case = Case {
     slice: 7,
     needs: &[Feature::Seal, Feature::FolderMembers, Feature::Signals],
     model: &[],
-    guards: "A device no members record in force names is refused NotMember when it subscribes \
-             to or opens a run in a folder's signals; packets it makes by hand under a run header \
-             its own key signs are refused by every member as from no member's key and never \
-             delivered; and routing the members' groups to its own signals delivers it nothing, \
-             a sealed folder's packets sealed under a key it does not hold.",
+    guards: "A device no members record in force names as a writer is refused NotMember when it \
+             opens a run in a space's signals, and when it subscribes to a sealed space it is \
+             in no audience of; packets it makes by hand under a run header its own key signs \
+             are refused by every member as from no member's key and never delivered; and \
+             routing the space's group to its own signals delivers it nothing, a sealed space's \
+             packets sealed under a key it does not hold.",
     budget: Duration::from_secs(3600),
     plan,
     run,
@@ -103,51 +111,42 @@ async fn carols_packet(
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let alice_layer = w.at(ALICE);
+        let alice_spaces = w.spaces(ALICE);
         w.gesture();
-        alice_layer
-            .share_folder(
-                &board(),
-                members(Rule::Log, &["/alice", "/bob"], &[]).into(),
-            )
-            .await?;
+        alice_spaces.create(&board(), public(&["/bob"])).await?;
         w.gesture();
-        alice_layer
-            .share_folder(&sketch(), sealed_to(&["/alice", "/bob"]).into())
-            .await?;
+        alice_spaces.create(&sketch(), sealed_to(&["/bob"])).await?;
         let alice = Peer::join(w, ALICE, &board()).await?;
         let bob = Peer::join(w, BOB, &board()).await?;
         let alice_sketch = Peer::join(w, ALICE, &sketch()).await?;
         alice.send("cursor", "alice:cursor:0").await?;
         bob.send("cursor", "bob:cursor:0").await?;
 
-        // Carol's app opens the links she was sent; her device holds both records, which do
-        // not name her.
-        let carol = w.at(CAROL);
+        // Carol's app opens the spaces she was sent; her device follows both, and neither
+        // names her.
+        let carol = w.spaces(CAROL);
         let signals = w.signals(CAROL).await?;
-        let since = Frontier::new();
-        let mut follows = Vec::new();
-        for folder in [board(), sketch()] {
-            follows.push(w.again(|| carol.watch(&folder, &since)).await?);
-            w.again(|| carol.members(&folder)).await?;
-            let sub = signal_again(|| signals.subscribe(&folder)).await;
-            ensure!(
-                matches!(sub, Err(SignalError::NotMember { .. })),
-                "carol's subscribe to {folder} answered {:?}, not NotMember",
-                sub.as_ref().map(|_| "a subscription")
-            );
-            let opened = signal_again(|| signals.open(&folder)).await;
+        for space in [board(), sketch()] {
+            w.retry_later(|| carol.open(&space)).await?;
+            let opened = signal_again(|| signals.open(&space)).await;
             ensure!(
                 matches!(opened, Err(SignalError::NotMember { .. })),
-                "carol's open in {folder} answered {:?}, not NotMember",
+                "carol's open in {space} answered {:?}, not NotMember",
                 opened.as_ref().map(|_| "a run")
             );
         }
+        let sealed = sketch();
+        let sub = signal_again(|| signals.subscribe(&sealed)).await;
+        ensure!(
+            matches!(sub, Err(SignalError::NotMember { .. })),
+            "carol's subscribe to {sealed} answered {:?}, not NotMember",
+            sub.as_ref().map(|_| "a subscription")
+        );
 
         // Her packets made by hand, under her own device key's header.
         let face = w.net().app_face(CAROL);
         let key = signal::RunKey::from_seed([0xca; 32]);
-        let groups = [group(&n("/alice")), group(&n("/bob"))];
+        let groups = [group(&board())];
         let mut tries = 0;
         for (d, who) in [(ALICE, "alice"), (BOB, "bob")] {
             let before = stats(w, d).await?.not_member;
@@ -164,9 +163,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         }
 
-        // She routes their groups to her own signals.
-        for g in &groups {
-            w.listen(CAROL, g).await?;
+        // She routes the spaces' group to her own signals.
+        for space in [board(), sketch()] {
+            w.listen(CAROL, &group(&space)).await?;
         }
         let before = stats(w, CAROL).await?;
         let (board_run, sketch_run) = (&alice, &alice_sketch);

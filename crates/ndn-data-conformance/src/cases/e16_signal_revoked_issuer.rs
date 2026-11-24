@@ -2,8 +2,9 @@
 //!
 //! Alice made a recovery kit when she set up her namespace. Her root is compromised, and the
 //! attacker certifies with it a key of its own under her namespace, an "intruder" device (as in
-//! k10). Alice's board is open and names Alice and Bob by their person prefixes, so the intruder
-//! is a member. The intruder opens a run and draws; Alice's laptop holds its run. Alice recovers
+//! k10). Alice's board is public and names Alice and Bob as writers (persons, by their
+//! namespaces), so the intruder is a member. The intruder opens a run and draws; Alice's laptop
+//! holds its run. Alice recovers
 //! with the kit: the new trust-context version revokes the old root — the only issuer of the
 //! intruder's key — and her laptop renews with the new root. The intruder draws on.
 //!
@@ -13,8 +14,14 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+use ndn_surface::signal::SignalStats;
+
+use super::kit::{LIMIT, n, public};
+use super::signal_kit::{FRAME, Peer, RESEND, dropped, stats};
+use crate::case::{Case, CaseFuture};
+use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -58,12 +65,7 @@ fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.recovery_kit(LAPTOP).await?;
         w.gesture();
-        w.at(LAPTOP)
-            .share_folder(
-                &board(),
-                members(Rule::Log, &["/alice", "/bob"], &[]).into(),
-            )
-            .await?;
+        w.spaces(LAPTOP).create(&board(), public(&["/bob"])).await?;
         let laptop = Peer::join(w, LAPTOP, &board()).await?;
         let intruder = Peer::join(w, INTRUDER, &board()).await?;
         for i in 0..10 {
@@ -83,19 +85,37 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The intruder draws on for three seconds, so its header rides again. Its own device may
         // refuse to send once it learns of the recovery: its run ended there, which is no
-        // delivery either.
+        // delivery either. A header that rides again is judged once its certificate chain has
+        // been walked, which on a lossy network takes seconds more: the intruder draws on, one
+        // signal at a time, until the laptop counts the refusal.
+        let refusals = |s: &SignalStats| s.not_member + s.bad_signature;
         let before = stats(w, LAPTOP).await?;
-        let mut sent = 0;
+        let (mut sent, mut stopped) = (0u32, false);
         for i in 0..FRAMES {
             if intruder
                 .send("cursor", &format!("intruder:after:{i}"))
                 .await
                 .is_err()
             {
+                stopped = true;
                 break;
             }
             sent += 1;
             w.sleep(FRAME).await;
+        }
+        let start = tokio::time::Instant::now();
+        let mut now = stats(w, LAPTOP).await?;
+        while !stopped && refusals(&now) == refusals(&before) && start.elapsed() < LIMIT {
+            w.sleep(RESEND).await;
+            if intruder
+                .send("cursor", &format!("intruder:after:{sent}"))
+                .await
+                .is_err()
+            {
+                stopped = true;
+            }
+            sent += 1;
+            now = stats(w, LAPTOP).await?;
         }
         w.sleep(Duration::from_secs(2)).await;
         let delivered = laptop.delivered("intruder:after:");
@@ -105,12 +125,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             "alice's laptop, holding the recovery that revokes the intruder's issuer, delivered \
              {delivered} of the {sent} signals the intruder sent after it: its held run went on"
         );
-        let refused =
-            (now.not_member + now.bad_signature) - (before.not_member + before.bad_signature);
         ensure!(
-            sent < FRAMES || refused > 0,
+            stopped || refusals(&now) > refusals(&before),
             "alice's laptop never refused the intruder's header, which rode again while it sent \
-             {sent} signals over three seconds ({now:?})"
+             {sent} signals over three seconds and {:?} more ({now:?})",
+            start.elapsed()
         );
         w.measure(
             "intruder's packets the laptop dropped",

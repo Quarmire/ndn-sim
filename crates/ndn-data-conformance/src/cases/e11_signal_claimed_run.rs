@@ -1,10 +1,10 @@
 //! Signals, e11 — Bob, a member, claims Alice's run at a receiver that does not hold it yet.
 //!
-//! Alice, Bob and Carol share Alice's sealed sketch folder, all three writers. Alice draws while
-//! Bob listens; the relay carries her packets, and Bob, a member, holds the folder's signal key:
+//! Alice, Bob and Carol share Alice's sealed sketch space, all three writers. Alice draws while
+//! Bob listens; the relay carries her packets, and Bob, a member, holds the space's signal key:
 //! he opens one and reads her run's id and, from her run header, her run's public key. Alice
-//! pauses. Only then does Carol's app open the folder, so Carol holds no run of Alice's. Bob
-//! pushes into Carol's and Alice's groups, sealed under the folder's key, header-only packets for
+//! pauses. Only then does Carol's app open the space, so Carol holds no run of Alice's. Bob
+//! pushes into the space's group, sealed under the space's key, header-only packets for
 //! Alice's run id whose run header his own device key signs, each binding *Alice's* run key (so
 //! the run id hashes right) and each signed by a run key of his own, which is not Alice's:
 //! - her header's content as it is, re-signed by his device;
@@ -19,9 +19,16 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{SETTLE, n};
+use super::signal_kit::{
+    FRAME, Peer, RESEND, group, opened, pushes, sealed_to, sender_of, signal_key, stats,
+};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
+use ndn_data::Name;
 
 pub(super) const CASE: Case = Case {
     id: "e11",
@@ -61,10 +68,10 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob", "/carol"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob", "/carol"]))
             .await?;
-        let tap = w.net().tap(&n("/bob/32=sync/32=signal")).await;
+        let tap = w.net().tap(&pushes(&folder())).await;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
         for i in 0..10 {
@@ -94,21 +101,21 @@ fn run(w: &World) -> CaseFuture<'_> {
             .ok_or_else(|| Failure::new("alice's run header binds no run key"))?;
 
         // Alice has paused (her last push expired a second after it left); Carol opens the
-        // folder now, so she holds no run of Alice's.
+        // space now, so she holds no run of Alice's.
         w.sleep(Duration::from_secs(2)).await;
         let carol = Peer::join(w, CAROL, &folder()).await?;
 
-        let gate = w.gate(BOB)?;
         let not_after = w.net().date(BOB).0 + 3_600_000;
         let start = w.net().date(BOB).0 * 1000 + 1_000_000_000;
         let claims = [
             (
                 "her header re-signed by his device",
-                gate.signal_header(&folder(), &alice_run, &content)?,
+                w.signal_header(BOB, &folder(), &alice_run, &content)?,
             ),
             (
                 "her run key, a RunStart above her sequences",
-                gate.signal_header(
+                w.signal_header(
+                    BOB,
                     &folder(),
                     &alice_run,
                     &signal::header_content(&alice_key, start, not_after),
@@ -116,7 +123,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             ),
             (
                 "her run key, a LocalRing of his",
-                gate.signal_header(
+                w.signal_header(
+                    BOB,
                     &folder(),
                     &alice_run,
                     &signal::header_content_ring(&alice_key, start, not_after, &[0x5a; 32]),
@@ -124,7 +132,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             ),
         ];
         let face = w.net().app_face(BOB);
-        let groups = [group(&n("/carol")), group(&n("/alice"))];
+        let groups = [group(&folder())];
         let mine = signal::RunKey::from_seed([0xb1; 32]);
         let mut nonce = 0u8;
         let mut pushed = 0u64;

@@ -1,8 +1,8 @@
 //! The signal wire as the signals spec writes it (ndn-rs `docs/specs/signals.md` §4), written
-//! here from the spec alone so the signal cases (`e1`…`e17`) can make, capture and inspect
+//! here from the spec alone so the signal cases (`e1`…`e19`) can make, capture and inspect
 //! packets the way an attacker or a relay sees them: a run header signed by a device key, a
 //! SignalBody signed by a run key, a SignalSealed under a scope's signal key, and the unsigned
-//! push Interest that carries one into a namespace's sync group. It shares no code with
+//! push Interest that carries one into a space's sync group. It shares no code with
 //! `ndn-surface`'s hub, so a packet the hub refuses or accepts here is judged against the spec,
 //! not against the hub's own encoder.
 

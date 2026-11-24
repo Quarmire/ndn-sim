@@ -1,20 +1,27 @@
-//! Signals, e6 — what the relay sees of a sealed folder's signals.
+//! Signals, e6 — what the relay sees of a sealed space's signals.
 //!
-//! Alice and Bob plan a trip on a map in Alice's folder `trip-sketch`, sealed to the two of
+//! Alice and Bob plan a trip on a map in Alice's space `trip-sketch`, sealed to the two of
 //! them. Each moves a pointer over the map and says where they are looking. The hub between
 //! their devices is the relay that forwards every packet; it is tapped, and every signal packet
 //! it forwards is read the way the relay can read it.
 //!
-//! The guard: every one is an unsigned push Interest named by a member namespace's sync group,
-//! `32=signal` and its parameters digest, carrying exactly a SignalSealed — a key id of the
-//! folder's signal key, a nonce and a ciphertext — and nothing else: no scope name, no sender's
-//! key name or device, no run id, no address and no payload appears anywhere in it.
+//! The guard: every one is an unsigned push Interest named by the space's sync group (which
+//! names the space by its label: that is what a group is), `32=signal` and its parameters
+//! digest, carrying exactly a SignalSealed — a key id of the space's signal key, a nonce and a
+//! ciphertext — and nothing else: no scope name, no sender's key name or device, no run id, no
+//! address and no payload appears anywhere in it, and the space's label appears only in the
+//! group's name.
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::n;
+use super::signal_kit::{FRAME, Peer, contains, group, pushes, sealed_to};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
+use ndn_data::Name;
 
 pub(super) const CASE: Case = Case {
     id: "e6",
@@ -22,10 +29,9 @@ pub(super) const CASE: Case = Case {
     slice: 7,
     needs: &[Feature::Seal, Feature::FolderMembers, Feature::Signals],
     model: &[],
-    guards: "Every signal packet of a sealed scope a relay forwards is an unsigned push into a \
-             member namespace's sync group carrying only a SignalSealed: the relay reads the \
-             group, a key id, the size and the timing, and no scope name, sender, run, address or \
-             payload.",
+    guards: "Every signal packet of a sealed scope a relay forwards is an unsigned push into the \
+             space's sync group carrying only a SignalSealed: the relay reads the group, a key \
+             id, the size and the timing, and no scope name, sender, run, address or payload.",
     budget: Duration::from_secs(3600),
     plan,
     run,
@@ -60,19 +66,10 @@ fn looks(who: &str) -> Vec<(String, String)> {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
-        let signal = |ns: &str| {
-            group(&n(ns)).append_component(ndn_packet::NameComponent::new(
-                32,
-                bytes::Bytes::from_static(b"signal"),
-            ))
-        };
-        let taps = [
-            w.net().tap(&signal("/alice")).await,
-            w.net().tap(&signal("/bob")).await,
-        ];
+        let tap = w.net().tap(&pushes(&folder())).await;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
         for ((aa, ap), (ba, bp)) in looks("alice").into_iter().zip(looks("bob")) {
@@ -93,17 +90,16 @@ fn run(w: &World) -> CaseFuture<'_> {
             keys.push((w.net().spec(d), w.signer(d)?.key_name().clone()));
         }
         let held: Vec<[u8; 8]> = w
-            .gate(ALICE)?
-            .signal_scope(&folder())?
-            .keys
-            .iter()
-            .map(|k| k.id)
+            .signal_keys(ALICE, &folder())?
+            .into_iter()
+            .map(|(id, _)| id)
             .collect();
         let inspect = || -> Result<(u64, u64), Failure> {
-            let mut secret: Vec<(String, Vec<u8>)> = vec![
-                ("the scope name".into(), folder().encode_to_tlv().to_vec()),
-                ("the scope's label".into(), b"trip-sketch".to_vec()),
-            ];
+            let mut secret: Vec<(String, Vec<u8>)> =
+                vec![("the scope name".into(), folder().encode_to_tlv().to_vec())];
+            // The space's label names it in the group, which a push is named by; inside the
+            // packet it does not appear.
+            let label = ("the scope's label".to_string(), b"trip-sketch".to_vec());
             for (what, id) in &runs {
                 secret.push(((*what).into(), id.to_vec()));
             }
@@ -120,11 +116,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             }
             let mut seen = 0u64;
             let mut bytes = 0u64;
-            for (tap, ns) in taps.iter().zip(["/alice", "/bob"]) {
+            {
                 let interests = tap.interests();
                 ensure!(
                     !interests.is_empty(),
-                    "the relay forwarded no signal packet into {ns}'s group"
+                    "the relay forwarded no signal packet into the space's group"
                 );
                 for wire in interests {
                     seen += 1;
@@ -141,9 +137,10 @@ fn run(w: &World) -> CaseFuture<'_> {
                         Failure::new(format!("{} is no signal push", interest.name))
                     })?;
                     ensure!(
-                        pushed_to == group(&n(ns)) && interest.name.len() == pushed_to.len() + 2,
-                        "a signal push named {} is not <{ns}/32=sync>/32=signal/<digest>",
-                        interest.name
+                        pushed_to == group(&folder()) && interest.name.len() == pushed_to.len() + 2,
+                        "a signal push named {} is not <{}>/32=signal/<digest>",
+                        interest.name,
+                        group(&folder())
                     );
                     let sealed = signal::sealed(&packet).ok_or_else(|| {
                         Failure::new(format!(
@@ -165,6 +162,12 @@ fn run(w: &World) -> CaseFuture<'_> {
                             interest.name
                         );
                     }
+                    ensure!(
+                        !contains(&packet, &label.1),
+                        "a signal push the relay forwarded carries {} inside its packet: {}",
+                        label.0,
+                        interest.name
+                    );
                 }
             }
             Ok((seen, bytes))

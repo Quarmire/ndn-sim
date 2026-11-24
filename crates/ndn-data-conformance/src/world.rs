@@ -27,7 +27,7 @@ use crate::invite::{
     GrantLog, InviteCode, InviteFailure, InviteJoined, InviteOffer, InviteShort, InviteShortError,
     JoinedList, LinkCall,
 };
-use crate::provider::{Certs, DeviceSpec, Grants, Image, NodeRole, Provider, Tally};
+use crate::provider::{Certs, DeviceSpec, Grants, Image, NodeRole, Provider, SignalKeyPair, Tally};
 use crate::report::{Cost, Measure};
 use crate::spaces::{SpaceEntry, Spaces};
 
@@ -1368,12 +1368,32 @@ impl World {
             .map_err(|e| Failure::new(format!("cannot listen to {group}: {e:#}")))
     }
 
-    /// The `ndn-data` Device behind `d`'s data layer, for its signal gate (see
-    /// [`Provider::gate`]).
-    pub fn gate(&self, d: Dev) -> Result<ndn_data::Device, Failure> {
+    /// The signal keys `d` holds for `space` to seal with and open by, newest epoch's first, as
+    /// (id, key) (see [`Provider::signal_keys`]).
+    pub fn signal_keys(&self, d: Dev, space: &Name) -> Result<Vec<SignalKeyPair>, Failure> {
         self.provider
-            .gate(self.net.spec(d))
-            .map_err(|e| Failure::new(format!("no gate: {e:#}")))
+            .signal_keys(self.net.spec(d), space)
+            .map_err(|e| Failure::new(format!("no signal keys: {e:#}")))
+    }
+
+    /// A run header signed by `d`'s key for `space` (see [`Provider::signal_header`]).
+    pub fn signal_header(
+        &self,
+        d: Dev,
+        space: &Name,
+        run_id: &[u8; 16],
+        body: &[u8],
+    ) -> Result<Bytes, Failure> {
+        self.provider
+            .signal_header(self.net.spec(d), space, run_id, body)
+            .map_err(|e| Failure::new(format!("no run header: {e:#}")))
+    }
+
+    /// Whether `d` holds `key` a member of `space` now (see [`Provider::signal_member`]).
+    pub fn signal_member(&self, d: Dev, space: &Name, key: &Name) -> Result<bool, Failure> {
+        self.provider
+            .signal_member(self.net.spec(d), space, key)
+            .map_err(|e| Failure::new(format!("no member verdict: {e:#}")))
     }
 
     /// `d`'s own signing key, as a hostile program on it holds it (see [`Provider::signer`]).

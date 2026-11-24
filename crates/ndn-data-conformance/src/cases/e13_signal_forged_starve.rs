@@ -1,9 +1,9 @@
 //! Signals, e13 — forged packets of a held run do not starve its genuine packets.
 //!
-//! Alice, Bob and Carol share Alice's sealed sketch folder, all three writers, and Carol holds
-//! Alice's run. Bob, a member, holds the folder's signal key: he opens one of Alice's packets on
+//! Alice, Bob and Carol share Alice's sealed sketch space, all three writers, and Carol holds
+//! Alice's run. Bob, a member, holds the space's signal key: he opens one of Alice's packets on
 //! the relay and takes her run's id. Then, while Alice drags at 60 Hz for three seconds, he
-//! pushes into Carol's group four hundred packets a second sealed under the folder's key, each
+//! pushes into the space's group four hundred packets a second sealed under the space's key, each
 //! claiming Alice's run with a sequence no packet of hers carried and signed by a run key of his
 //! own — more than a receiver takes of one run (240 a second, spec §5).
 //!
@@ -15,10 +15,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use ndn_data::Name;
 use ndn_sim::Faults;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{SETTLE, n};
+use super::signal_kit::{FRAME, Peer, group, opened, pushes, sealed_to, signal_key, stats};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -60,10 +65,10 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob", "/carol"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob", "/carol"]))
             .await?;
-        let tap = w.net().tap(&n("/carol/32=sync/32=signal")).await;
+        let tap = w.net().tap(&pushes(&folder())).await;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
         let carol = Peer::join(w, CAROL, &folder()).await?;
@@ -83,7 +88,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .ok_or_else(|| Failure::new("the relay carried no packet of Alice's run"))?;
 
         let face = w.net().app_face(BOB);
-        let target = group(&n("/carol"));
+        let target = group(&folder());
         let mine = signal::RunKey::from_seed([0xb2; 32]);
         let before = stats(w, CAROL).await?;
         let done = AtomicBool::new(false);

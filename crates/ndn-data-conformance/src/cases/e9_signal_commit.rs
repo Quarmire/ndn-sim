@@ -1,19 +1,26 @@
 //! Signals, e9 — live edits, then one commit.
 //!
-//! Alice and Bob share Alice's sealed notes folder; Alice's draft, a collection in it, holds one
-//! version: "Dear Bob,". Alice types the rest of a sentence; each keystroke goes to Bob as a
+//! Alice and Bob share Alice's sealed notes space; Alice's draft, a path in it, holds one
+//! value: "Dear Bob,". Alice types the rest of a sentence; each keystroke goes to Bob as a
 //! live, unsigned edit — a signal carrying the text so far — and Bob watches it grow. When she
 //! is done, she sends her final text until Bob has seen it, then commits: one `put` of the final
 //! text.
 //!
-//! The guard: Bob reads exactly one new version of the draft, whose text is the final text — no
-//! signal became a version (the draft's versions grew by one, at Alice and at Bob) — and the
+//! The guard: Bob reads the draft as the final text — no signal became an entry (Alice's log
+//! in the space, at Alice and at Bob, grew by exactly the one entry of the commit) — and the
 //! last live edit Bob delivered is that same text.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+use ndn_heap::wire::parse_log_name;
+
+use super::kit::{LIMIT, SETTLE, n, octets, value_now};
+use super::signal_kit::{FINAL, FRAME, Peer, sealed_to};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -28,8 +35,8 @@ pub(super) const CASE: Case = Case {
     ],
     model: &[],
     guards: "Live edits sent as signals never become versions: after a stream of them ends in \
-             one put of the final text, the other member reads exactly one new version, whose \
-             value is the final text, and the collection's versions grew by one.",
+             one put of the final text, the other member reads the final text, and the writer's \
+             log gained exactly the one entry of the commit, at the writer and at the reader.",
     budget: Duration::from_secs(3600),
     plan,
     run,
@@ -53,70 +60,78 @@ fn folder() -> Name {
 }
 
 fn draft() -> Name {
-    folder().append("draft")
+    n("/draft")
 }
 
-/// The versions `d` lists of the draft, oldest first.
-async fn draft_versions(w: &World, d: Dev) -> Result<Vec<Version>, Failure> {
-    let changes = look(&*w.at(d), &draft(), &Frontier::new(), LOOK).await?;
-    Ok(versions(&changes).cloned().collect())
+/// The seqs of Alice's laptop's log in the space that `d`'s store holds an entry of.
+fn alices_log(w: &World, d: Dev) -> Result<BTreeSet<u64>, Failure> {
+    let alice = w.net().spec(ALICE).name();
+    Ok(w.stored_names(d)?
+        .iter()
+        .filter_map(parse_log_name)
+        .filter(|l| l.device == alice && l.space == folder())
+        .map(|l| l.seq)
+        .collect())
+}
+
+/// Whether `d` reads the draft as `text`.
+async fn reads(w: &World, d: Dev, text: &str) -> Result<bool, Failure> {
+    Ok(value_now(&*w.spaces(d), &folder(), &draft())
+        .await?
+        .is_some_and(|v| v == text.as_bytes()))
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
-        let first = w.put(ALICE, &draft(), text(FIRST), note(1)).await?;
-        w.until("bob reading the draft's first version", LIMIT, || async {
-            Ok(draft_versions(w, BOB).await?.iter().any(|v| v.id == first))
+        w.space_put(ALICE, &folder(), &draft(), octets(FIRST))
+            .await?;
+        w.until("bob reading the draft's first value", LIMIT, || {
+            reads(w, BOB, FIRST)
         })
         .await?;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
+        let before = [alices_log(w, ALICE)?, alices_log(w, BOB)?];
 
         // Each keystroke a live edit: the text so far.
-        let address = format!("text/{}", draft());
+        let address = "text/draft";
         let mut sent = 0u64;
         for end in FIRST.len() + 1..FINAL_TEXT.len() {
             alice
-                .send(&address, &format!("edit:{}", &FINAL_TEXT[..end]))
+                .send(address, &format!("edit:{}", &FINAL_TEXT[..end]))
                 .await?;
             sent += 1;
             w.sleep(FRAME).await;
         }
         // The last edit is a final, so Bob acknowledges it.
         let last_edit = format!("{FINAL}{FINAL_TEXT}");
-        alice.send_final(&address, &last_edit, &[&bob]).await?;
+        alice.send_final(address, &last_edit, &[&bob]).await?;
 
         // The commit: one put.
         w.gesture();
-        let commit = w.put(ALICE, &draft(), text(FINAL_TEXT), note(1)).await?;
-        w.until("bob reading the committed version", LIMIT, || async {
-            Ok(draft_versions(w, BOB).await?.iter().any(|v| v.id == commit))
+        let commit = w
+            .space_put(ALICE, &folder(), &draft(), octets(FINAL_TEXT))
+            .await?;
+        w.until("bob reading the committed value", LIMIT, || {
+            reads(w, BOB, FINAL_TEXT)
         })
         .await?;
         w.sleep(SETTLE).await;
-        for d in [ALICE, BOB] {
-            let listed = draft_versions(w, d).await?;
-            let ids: Vec<&VersionId> = listed.iter().map(|v| &v.id).collect();
+        for (d, held) in [ALICE, BOB].into_iter().zip(&before) {
+            let now = alices_log(w, d)?;
+            let gained: Vec<u64> = now.difference(held).copied().collect();
             ensure!(
-                ids.len() == 2 && ids.contains(&&first) && ids.contains(&&commit),
-                "{} lists the draft's versions {ids:?}, not its first and the one commit: \
-                 {sent} live edits were sent",
-                w.net().spec(d).name()
+                gained == [commit.seq],
+                "{}'s store holds alice's log entries {gained:?} that it did not before the live \
+                 edits, not the commit's alone ({}): {sent} live edits were sent",
+                w.net().spec(d).name(),
+                commit.seq
             );
         }
-        let committed = draft_versions(w, BOB).await?;
-        let text_read = committed
-            .iter()
-            .find(|v| v.id == commit)
-            .and_then(|v| field_of(v, "text"));
-        ensure!(
-            text_read == Some(FINAL_TEXT),
-            "bob reads the commit as {text_read:?}, not the final text"
-        );
         let edit = bob.latest(&alice, address.as_bytes());
         ensure!(
             edit.as_ref()
@@ -126,9 +141,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         bob.check(&[&alice, &bob])?;
         w.measure("live edits sent before the commit", sent, "signals");
         w.measure(
-            "versions the draft gained from them and the commit",
-            (committed.len() - 1) as u64,
-            "versions",
+            "entries alice's log gained from them and the commit",
+            (alices_log(w, ALICE)?.len() - before[0].len()) as u64,
+            "entries",
         );
         Ok(())
     })

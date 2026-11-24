@@ -1,9 +1,9 @@
 //! Signals, e3 — Bob, a member, forges signals as Alice's.
 //!
-//! Alice, Bob and Carol share Alice's sealed sketch folder, all three writers. Alice draws; the
-//! relay between the devices carries her packets, and Bob, a member, holds the folder's signal
+//! Alice, Bob and Carol share Alice's sealed sketch space, all three writers. Alice draws; the
+//! relay between the devices carries her packets, and Bob, a member, holds the space's signal
 //! key: he opens one of her packets and takes her run's id and her run header. He then pushes
-//! into Carol's and Alice's groups, sealed under the folder's key, packets that claim Alice's
+//! into the space's group, sealed under the space's key, packets that claim Alice's
 //! run:
 //! - signals under her run id, signed by a run key of his own;
 //! - her run header re-signed by his device key (it binds her run key), with signals signed by
@@ -16,9 +16,16 @@
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{SETTLE, n};
+use super::signal_kit::{
+    FRAME, Peer, group, opened, pushes, sealed_to, signal_key, stats, until_counted,
+};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
+use ndn_data::Name;
 
 pub(super) const CASE: Case = Case {
     id: "e3",
@@ -65,10 +72,10 @@ fn forged(w: &World, seq: u64, what: &str) -> signal::Signal {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob", "/carol"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob", "/carol"]))
             .await?;
-        let tap = w.net().tap(&n("/carol/32=sync/32=signal")).await;
+        let tap = w.net().tap(&pushes(&folder())).await;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;
         let carol = Peer::join(w, CAROL, &folder()).await?;
@@ -80,7 +87,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             .send_final("cursor", "final:alice:cursor:before", &[&bob, &carol])
             .await?;
 
-        // Bob opens Alice's packets with the folder's signal key he holds as a member.
+        // Bob opens Alice's packets with the space's signal key he holds as a member.
         let (key_id, key) = signal_key(w, BOB, &folder())?;
         let alice_run = alice.run_id().await;
         let theirs: Vec<signal::Body> = tap
@@ -105,11 +112,11 @@ fn run(w: &World) -> CaseFuture<'_> {
             .unwrap_or_default();
 
         let face = w.net().app_face(BOB);
-        let groups = [group(&n("/carol")), group(&n("/alice"))];
+        let groups = [group(&folder())];
         let mine = signal::RunKey::from_seed([0xb0; 32]);
-        let gate = w.gate(BOB)?;
-        let resigned = gate.signal_header(&folder(), &alice_run, &content)?;
-        let bound_to_mine = gate.signal_header(
+        let resigned = w.signal_header(BOB, &folder(), &alice_run, &content)?;
+        let bound_to_mine = w.signal_header(
+            BOB,
             &folder(),
             &alice_run,
             &signal::header_content(&mine.public(), last + 1, w.net().date(BOB).0 + 3_600_000),

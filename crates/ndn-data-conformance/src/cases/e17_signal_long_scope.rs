@@ -1,23 +1,30 @@
 //! Signals, e17 — a scope named in very many words still leaves a full signal its room.
 //!
-//! Alice names two folders as long as a scope may be named (`SCOPE_MAX` encoded octets, and one
-//! octet less): one sealed to her and Bob, one open to them, both writers. In each, Alice and Bob
+//! Alice names two spaces as long as a scope may be named (`SCOPE_MAX` encoded octets, and one
+//! octet less; four components after `32=data`, the most a space name has): one sealed to her and
+//! Bob, one public, both writers. In each, Alice and Bob
 //! subscribe, open a run and draw: every signal they send has a 64-octet address and a payload of
 //! 448, so 512 octets. They end by sending a last such signal until the other acknowledges it.
-//! In the open folder the relay between them is tapped.
+//! In the public space the relay between them is tapped.
 //!
-//! The guards: every member's last signal, whole, reaches the other, in both folders (a name that
-//! rode in every packet left none of the room: spec §4.1, §4.3); in the open folder every packet
+//! The guards: every member's last signal, whole, reaches the other, in both spaces (a name that
+//! rode in every packet left none of the room: spec §4.1, §4.3); in the public space every packet
 //! the relay forwarded names its scope by the 16-octet digest of its name and the scope's name
 //! rides only beside a run header, once in the header's own name; and a scope one octet longer is
 //! refused at `subscribe` and at `open`, with the limit stated.
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+use ndn_surface::signal::{SCOPE_MAX, SignalError, Signals};
+
+use super::kit::{n, public};
+use super::signal_kit::{FRAME, Peer, pushes, sealed_to};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
-use ndn_surface::signal::{SCOPE_MAX, Signals};
 
 pub(super) const CASE: Case = Case {
     id: "e17",
@@ -96,24 +103,15 @@ fn scope_components(scope: &Name) -> Vec<u8> {
 /// a last one the other acknowledged; the relay's taps, if any, are returned.
 async fn draw(w: &World, scope: &Name, sealed: bool) -> Result<Vec<bytes::Bytes>, Failure> {
     let share = if sealed {
-        sealed_to(&["/alice", "/bob"])
+        sealed_to(&["/bob"])
     } else {
-        members(Rule::Log, &["/alice", "/bob"], &[])
+        public(&["/bob"])
     };
-    w.at(ALICE).share_folder(scope, share.into()).await?;
+    w.spaces(ALICE).create(scope, share).await?;
     let taps = if sealed {
         Vec::new()
     } else {
-        let signal = |ns: &str| {
-            group(&n(ns)).append_component(ndn_packet::NameComponent::new(
-                32,
-                bytes::Bytes::from_static(b"signal"),
-            ))
-        };
-        vec![
-            w.net().tap(&signal("/alice")).await,
-            w.net().tap(&signal("/bob")).await,
-        ]
+        vec![w.net().tap(&pushes(scope)).await]
     };
     let alice = Peer::join(w, ALICE, scope).await?;
     let bob = Peer::join(w, BOB, scope).await?;

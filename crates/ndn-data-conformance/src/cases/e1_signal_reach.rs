@@ -1,8 +1,8 @@
-//! Signals, e1 — Alice and Bob draw together in a sealed folder; each one's live signals reach
+//! Signals, e1 — Alice and Bob draw together in a sealed space; each one's live signals reach
 //! the other over the network.
 //!
-//! Alice shares her sketch folder, sealed to her and Bob, both writers. Each device's host starts
-//! signals, subscribes to the folder and opens a run. Alice moves her cursor across the sketch at
+//! Alice creates her sketch space, sealed to her and Bob, both writers. Each device's host starts
+//! signals, subscribes to the space and opens a run. Alice moves her cursor across the sketch at
 //! 60 Hz for half a second and says she is here; Bob does the same. The hub between their
 //! devices is the relay every packet crosses. Each ends by sending its last cursor and its
 //! presence until the other acknowledges them, as a host re-sends its latest value until it is
@@ -10,14 +10,19 @@
 //!
 //! The guard: each member's last signal per address reaches the other member, from the
 //! network (no ring: every device is its own host), attributed to the device whose key vouched
-//! for the run, in the folder's scope; and whatever the network did, every delivered signal is
+//! for the run, in the space's scope; and whatever the network did, every delivered signal is
 //! one its sender sent, delivered once, never older than one delivered before it for the same
 //! sender and address.
 
 use std::time::Duration;
 
-use super::*;
-use crate::case::CaseFuture;
+use ndn_data::Name;
+
+use super::kit::n;
+use super::signal_kit::{FRAME, Peer, sealed_to, stats};
+use crate::case::{Case, CaseFuture};
+use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -56,8 +61,8 @@ fn folder() -> Name {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let bob = Peer::join(w, BOB, &folder()).await?;

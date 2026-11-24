@@ -1,10 +1,10 @@
 //! Signals, e12 — a flood of run headers whose keys no one can fetch does not shut a member's
 //! new run out.
 //!
-//! Alice's board is open: Alice and Bob write it, and it is not sealed, so anyone whose
-//! Interests reach a member's sync group can push packets of it. Bob has written a version of
+//! Alice's board is public: Alice and Bob write it, and it is not sealed, so anyone whose
+//! Interests reach the board's sync group can push packets of it. Bob has written a value of
 //! it, which Alice read. Carol, no member, knows only the board's name. From her node she pushes
-//! into Alice's group, twenty times a second, packets of fresh runs whose headers are named as
+//! into the board's group, twenty times a second, packets of fresh runs whose headers are named as
 //! Bob's phone's (`/bob/phone/32=signal/<board>/32=run/<id>`) and whose KeyLocators are keys of
 //! Bob's phone that do not exist (`/bob/phone/KEY/<random>`); each packet is signed by its own
 //! run key, so all a receiver can do with it is look for the key. Four seconds into the flood
@@ -18,11 +18,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use ndn_data::Name;
 use ndn_packet::encode::DataBuilder;
 use ndn_sim::Faults;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n, octets, public, value_now};
+use super::signal_kit::{FRAME, Peer, dropped, group, sender_of, stats};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
+use crate::signal;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -98,24 +103,14 @@ fn junk(w: &World, signer: &dyn ndn_security::Signer, i: u64) -> bytes::Bytes {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(
-                &board(),
-                members(Rule::Log, &["/alice", "/bob"], &[]).into(),
-            )
+        w.spaces(ALICE).create(&board(), public(&["/bob"])).await?;
+        let path = n("/plan");
+        w.space_put(BOB, &board(), &path, octets("Bob's plan"))
             .await?;
-        let first = w
-            .put(BOB, &board().append("plan"), text("Bob's plan"), note(1))
-            .await?;
-        w.until("alice reading bob's version", LIMIT, || async {
-            let changes = look(
-                &*w.at(ALICE),
-                &board().append("plan"),
-                &Frontier::new(),
-                LOOK,
-            )
-            .await?;
-            Ok(versions(&changes).any(|v| v.id == first))
+        w.until("alice reading bob's value", LIMIT, || async {
+            Ok(value_now(&*w.spaces(ALICE), &board(), &path)
+                .await?
+                .is_some_and(|v| v == "Bob's plan".as_bytes()))
         })
         .await?;
         let alice = Peer::join(w, ALICE, &board()).await?;
@@ -123,7 +118,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         let face = w.net().app_face(CAROL);
         let signer = w.signer(CAROL)?;
-        let target = group(&n("/alice"));
+        let target = group(&board());
         let done = AtomicBool::new(false);
         let mut junked = 0u64;
         let flood = async {

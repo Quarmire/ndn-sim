@@ -1,7 +1,7 @@
 //! Signals, e19 — a crash loop and a clock corrected after a forward step leave a member's
 //! clock at real time.
 //!
-//! Alice and Bob share Alice's sealed sketch folder, both writers. Both subscribe and open a
+//! Alice and Bob share Alice's sealed sketch space, both writers. Both subscribe and open a
 //! run. Bob's device then stops and starts again a dozen times in a row, each start opening a run
 //! and sending a cursor move. Then Bob's clock steps two hours forward while his device runs, he
 //! sends, and the clock is corrected; then it steps forward again, his device stops, the clock is
@@ -16,10 +16,14 @@
 
 use std::time::Duration;
 
+use ndn_data::Name;
 use ndn_sim::ClockSkew;
 
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::n;
+use super::signal_kit::{FRAME, Peer, sealed_to};
+use crate::case::{Case, CaseFuture, Failure};
+use crate::ensure;
+use crate::feature::Feature;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -73,8 +77,8 @@ fn dated_off(w: &World, alice: &Peer, bob: &Peer) -> Result<u64, Failure> {
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         w.gesture();
-        w.at(ALICE)
-            .share_folder(&folder(), sealed_to(&["/alice", "/bob"]).into())
+        w.spaces(ALICE)
+            .create(&folder(), sealed_to(&["/bob"]))
             .await?;
         let alice = Peer::join(w, ALICE, &folder()).await?;
         let mut bob = Peer::join(w, BOB, &folder()).await?;

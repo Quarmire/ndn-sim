@@ -11,13 +11,14 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::kit::{LIMIT, SETTLE, n, octets};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
-use crate::world::{Dev, World};
+use crate::feature::Feature;
+use crate::invite::InviteRole;
+use crate::spaces::SpaceChange;
+use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
     id: "i12",
@@ -52,64 +53,62 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
-        let code = w.offer(LAPTOP, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(LAPTOP, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &code.link).await?;
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
-        let page = n(&format!("{FOLDER}/page-bob"));
-        w.until("bob writes a page into the folder", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
+        let page = n("/page-bob");
+        writes(w, BOB, &space, &page, "a page by bob").await?;
 
         // Alice's phone, holding the record that added Bob, removes him.
-        let phone = w.at(PHONE);
-        let laptop = w.at(LAPTOP);
+        let phone = w.spaces(PHONE);
+        let laptop = w.spaces(LAPTOP);
         w.until("alice's phone reads bob's page", LIMIT, || {
-            reads(&*phone, &page, "a page by bob")
+            reads(&*phone, &space, &page, "a page by bob")
         })
         .await?;
         phone
-            .share_folder(
-                &folder,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
+            .change(
+                &space,
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         // The phone writes the cover in the epoch its record started: once the laptop reads it,
         // the laptop holds that record. It writes over the cover it reads: a version written
         // before the laptop's reached it would be concurrent with the laptop's (data-layer §15:
-        // its parents are the state it holds), and the log rule's newest of two concurrent
-        // versions is the greater key's.
+        // its parents are the state it holds), and the register's winner of two concurrent
+        // versions is the head with the greater signed digest.
         w.until("alice's phone reads alice's cover", LIMIT, || {
-            reads(&*phone, &cover, "cover by alice")
+            reads(&*phone, &space, &cover, "cover by alice")
         })
         .await?;
         phone
-            .put(&cover, text("cover by alice's phone"), note(1))
+            .put(&space, &cover, octets("cover by alice's phone"))
             .await?;
         w.until("alice's laptop reads the phone's cover", LIMIT, || {
-            reads(&*laptop, &cover, "cover by alice's phone")
+            reads(&*laptop, &space, &cover, "cover by alice's phone")
         })
         .await?;
 
         // Bob asks the laptop again with the code he holds: a fresh ask.
         let _ = w.join(BOB, &code.link).await?;
         laptop
-            .put(&cover, text("cover after bob asked again"), note(1))
+            .put(&space, &cover, octets("cover after bob asked again"))
             .await?;
         w.sleep(SETTLE).await;
         ensure!(
-            !reads(&*bob, &cover, "cover after bob asked again").await?,
+            !reads(&*bob, &space, &cover, "cover after bob asked again").await?,
             "bob, removed by alice's phone, asked the laptop again with the code and reads \
              alice's folder again"
         );

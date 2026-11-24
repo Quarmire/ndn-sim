@@ -16,14 +16,14 @@
 
 use std::time::Duration;
 
-use ndn_data::{NextStep, Role};
-
 use super::i1_join_by_code::{
     ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, plan,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{n, octets};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::InviteRole;
 use crate::world::World;
 
 pub(super) const CASE: Case = Case {
@@ -50,11 +50,13 @@ pub(super) const CASE: Case = Case {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
+        let space = n(FOLDER);
         alice_keeps_a_notebook(w).await?;
 
         // Bob joins and writes at once.
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         let start = tokio::time::Instant::now();
         let joined = joins(w, BOB, &code.link).await?;
         w.measure(
@@ -62,17 +64,19 @@ fn run(w: &World) -> CaseFuture<'_> {
             start.elapsed().as_millis() as u64,
             "ms",
         );
-        ensure!(joined.folder == folder, "bob joined {joined:?}");
-        let bob = w.at(BOB);
-        let page = n(&format!("{FOLDER}/page-bob"));
-        let put = bob.put(&page, text("a page by bob"), note(1)).await;
+        ensure!(joined.space == space, "bob joined {joined:?}");
+        let bob = w.spaces(BOB);
+        let page = n("/page-bob");
+        let put = bob.put(&space, &page, octets("a page by bob")).await;
         ensure!(
             put.is_ok(),
             "bob's first put, right after join returned, was refused: {put:?}"
         );
 
         // Carol joins with every route to Alice's grants cut off.
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         let grants = w
             .net()
             .spec(ALICE)
@@ -87,8 +91,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         let (first, took) = loop {
             let attempt = tokio::time::Instant::now();
             match w.join(CAROL, &code.link).await? {
-                Err(DataError::NotReady { why, .. })
-                    if !why.contains("key") && begun.elapsed() < crate::world::AGAIN_FOR =>
+                Err(e)
+                    if e.kind_is("NotReady")
+                        && !e.why.contains("key")
+                        && begun.elapsed() < crate::world::AGAIN_FOR =>
                 {
                     w.sleep(crate::world::AGAIN_PAUSE).await;
                 }
@@ -96,14 +102,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             }
         };
         match &first {
-            Err(e @ DataError::NotReady { why, .. }) => {
+            Err(e) if e.kind_is("NotReady") => {
                 ensure!(
-                    e.next() == NextStep::RetryLater,
+                    e.next_is("RetryLater"),
                     "the join says {:?}, not retry later: {e}",
-                    e.next()
+                    e.next
                 );
                 ensure!(
-                    why.contains("key"),
+                    e.why.contains("key"),
                     "the join does not name the key it waits for: {e}"
                 );
             }
@@ -120,14 +126,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             "ms",
         );
         // Admitted, the key not held: a put is NotReady, never AskOwner.
-        let carol = w.at(CAROL);
-        let mine = n(&format!("{FOLDER}/page-carol"));
-        let refused = carol.put(&mine, text("a page by carol"), note(1)).await;
+        let carol = w.spaces(CAROL);
+        let mine = n("/page-carol");
+        let refused = carol.put(&space, &mine, octets("a page by carol")).await;
         match &refused {
-            Err(e @ DataError::NotReady { why, .. }) => ensure!(
-                e.next() == NextStep::RetryLater && why.contains("key"),
+            Err(e) if e.kind_is("NotReady") => ensure!(
+                e.retry_later() && e.detail.contains("key"),
                 "carol's put says {e} (next {:?}), not retry later naming the key",
-                e.next()
+                e.next
             ),
             other => {
                 return Err(Failure::new(format!(
@@ -141,10 +147,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         drop(away);
         let joined = joins(w, CAROL, &code.link).await?;
         ensure!(
-            joined.folder == folder && joined.role == Role::Writer,
+            joined.space == space && joined.role == InviteRole::Writer,
             "carol's second join says {joined:?}, not the notebook as a writer"
         );
-        let put = carol.put(&mine, text("a page by carol"), note(1)).await;
+        let put = carol.put(&space, &mine, octets("a page by carol")).await;
         ensure!(
             put.is_ok(),
             "carol's first put, right after her second join returned, was refused: {put:?}"

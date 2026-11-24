@@ -10,15 +10,15 @@
 
 use std::time::Duration;
 
-use ndn_data::{IntroRefusal, Role};
-
 use super::i1_join_by_code::{
     ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, forged, joins, offer, plan, reads, refused,
     shut_out,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteRefusal, InviteRole};
 use crate::world::World;
 
 pub(super) const CASE: Case = Case {
@@ -41,53 +41,50 @@ pub(super) const CASE: Case = Case {
     run,
 };
 
-fn refusal(e: &DataError) -> Option<&IntroRefusal> {
-    match e {
-        DataError::Introduction { why, .. } => Some(why),
-        _ => None,
-    }
-}
-
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
 
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 2)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 2))
+            .await?;
         let mut last = None;
         for guess in [0xC1, 0xC2, 0xC3] {
             last = Some(refused(w, CAROL, &forged(&code, guess)).await?);
         }
         let e = last.expect("three guesses");
         ensure!(
-            refusal(&e) == Some(&IntroRefusal::Closed),
+            e.refusal == Some(InviteRefusal::Closed),
             "carol's third guess, her tries spent, answered {e:?}, not 'closed'"
         );
         joins(w, BOB, &code.link).await?;
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
 
-        let second = w.offer(ALICE, &folder, offer(w, Role::Writer, 1)).await?;
+        let second = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 1))
+            .await?;
         joins(w, BOB, &second.link).await?;
         for guess in [0xD1, 0xD2] {
             let e = refused(w, CAROL, &forged(&second, guess)).await?;
             ensure!(
-                refusal(&e) == Some(&IntroRefusal::Used),
+                e.refusal == Some(InviteRefusal::Used),
                 "carol's guess at a used offer answered {e:?}, not 'used'"
             );
         }
         let again = joins(w, BOB, &second.link).await?;
         ensure!(
-            again.folder == folder,
+            again.space == space,
             "bob asking again on his used offer was answered {again:?}"
         );
         w.sleep(SETTLE).await;
         ensure!(
-            shut_out(&*w.at(CAROL), &cover).await?,
+            shut_out(&*w.spaces(CAROL), &space, &cover).await?,
             "carol reads alice's folder after her refused asks"
         );
         Ok(())

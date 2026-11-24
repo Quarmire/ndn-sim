@@ -10,14 +10,15 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
 use super::i1_join_by_code::{
     ALICE, BOB, FOLDER, alice_keeps_a_notebook, joins, offer, plan, reads,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n, octets};
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteFailure, InviteJoined, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::World;
 
 pub(super) const CASE: Case = Case {
@@ -43,27 +44,32 @@ pub(super) const CASE: Case = Case {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         alice_keeps_a_notebook(w).await?;
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &code.link).await?;
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
 
         // Alice removes Bob.
-        let alice = w.at(ALICE);
+        let alice = w.spaces(ALICE);
         alice
-            .share_folder(
-                &folder,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
+            .change(
+                &space,
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         alice
-            .put(&cover, text("cover after bob left"), note(1))
+            .put(&space, &cover, octets("cover after bob left"))
             .await?;
 
         // Bob asks again with the code he holds: a fresh ask.
@@ -74,18 +80,17 @@ fn run(w: &World) -> CaseFuture<'_> {
              given"
         );
         alice
-            .put(&cover, text("cover after bob asked again"), note(1))
+            .put(&space, &cover, octets("cover after bob asked again"))
             .await?;
         w.sleep(SETTLE).await;
         ensure!(
-            !reads(&*bob, &cover, "cover after bob asked again").await?,
+            !reads(&*bob, &space, &cover, "cover after bob asked again").await?,
             "bob, removed, asked again with the code and reads alice's folder again"
         );
 
         // Alice's laptop restarts: what it kept in memory is gone.
         w.stop(ALICE).await?;
-        w.restart(ALICE).await?;
-        let alice = w.at(ALICE);
+        let alice = w.restart(ALICE).await?;
         let again = w.join(BOB, &code.words).await?;
         ensure!(
             answered(&again),
@@ -93,11 +98,11 @@ fn run(w: &World) -> CaseFuture<'_> {
              he was given"
         );
         alice
-            .put(&cover, text("cover after alice restarted"), note(1))
+            .put(&space, &cover, octets("cover after alice restarted"))
             .await?;
         w.sleep(SETTLE).await;
         ensure!(
-            !reads(&*bob, &cover, "cover after alice restarted").await?,
+            !reads(&*bob, &space, &cover, "cover after alice restarted").await?,
             "bob, removed, asked again after alice's restart and reads alice's folder again"
         );
         Ok(())
@@ -107,6 +112,9 @@ fn run(w: &World) -> CaseFuture<'_> {
 /// Whether a join was answered as the member the offer admitted: it carried on (`Ok`), or its
 /// readiness wait ended for want of the records a removed member never gets (`NotReady`) —
 /// never a refusal of the introduction: the closed offer still answers its user.
-fn answered(join: &Result<ndn_data::Joined, DataError>) -> bool {
-    matches!(join, Ok(_) | Err(DataError::NotReady { .. }))
+fn answered(join: &Result<InviteJoined, InviteFailure>) -> bool {
+    match join {
+        Ok(_) => true,
+        Err(e) => e.kind_is("NotReady"),
+    }
 }

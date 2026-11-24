@@ -86,14 +86,16 @@ fn run(w: &World) -> CaseFuture<'_> {
                 bytes::Bytes::from_static(b"grant"),
             ));
         let away = w.net().cut_off(CAROL, &grants).await;
-        // A lost exchange is asked again as a host does; the answer judged is the layer's own.
+        // A lost or damaged exchange is asked again as a host does (the refusal's next step is
+        // retry later: not reached, or an answer damaged in flight); the answer judged is the
+        // layer's own: the one naming the key it waits for.
         let begun = tokio::time::Instant::now();
         let (first, took) = loop {
             let attempt = tokio::time::Instant::now();
             match w.join(CAROL, &code.link).await? {
                 Err(e)
-                    if e.kind_is("NotReady")
-                        && !e.why.contains("key")
+                    if e.retry_later()
+                        && !(e.kind_is("NotReady") && e.why.contains("key"))
                         && begun.elapsed() < crate::world::AGAIN_FOR =>
                 {
                     w.sleep(crate::world::AGAIN_PAUSE).await;

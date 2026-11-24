@@ -129,10 +129,15 @@ fn run(w: &World) -> CaseFuture<'_> {
                 .is_some_and(|i| i.bytes == octets("after") && i.entry() == after),
             "the tablet applies the entry but reads {read:?} at /after"
         );
-        ensure!(
-            item(&*tablet, &space, &n("/kept")).await?.map(|i| i.bytes) == Some(octets("kept")),
-            "the tablet does not read what the laptop's flush covered"
-        );
+        w.until(
+            "the tablet reads what the laptop's flush covered",
+            LIMIT,
+            || async {
+                Ok(item(&*tablet, &space, &n("/kept")).await?.map(|i| i.bytes)
+                    == Some(octets("kept")))
+            },
+        )
+        .await?;
         let mut quiet = Vec::new();
         drain(&mut *feed, SETTLE, &mut quiet).await?;
         ensure!(

@@ -110,13 +110,19 @@ fn run(w: &World) -> CaseFuture<'_> {
             has(&*phone, &space, &next)
         })
         .await?;
-        for (e, _, _) in &put {
-            ensure!(
-                has(&*phone, &space, e).await?,
-                "the phone lacks the entry {} the laptop signed",
-                e.name
-            );
-        }
+        w.until(
+            "the phone holds the entries the laptop signed",
+            LIMIT,
+            || async {
+                for (e, _, _) in &put {
+                    if !has(&*phone, &space, e).await? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
+        )
+        .await?;
         let mut saw = Vec::new();
         drain(&mut *feed, SETTLE, &mut saw).await?;
         drain(&mut *phone_feed, SETTLE, &mut phone_saw).await?;

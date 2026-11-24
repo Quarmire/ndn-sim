@@ -10,12 +10,11 @@
 
 use std::time::Duration;
 
-use super::kit::{
-    LIMIT, LOOK, agree, equivocation, has, item_of, look, n, octets, private, winning,
-};
+use super::kit::{LIMIT, LOOK, agree, equivocation, has, look, n, octets, public, winning};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
 use crate::feature::Feature;
+use crate::spaces::EntryRead;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -47,7 +46,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let space = n("/home/bob/32=data/notes");
         let doc = n("/trip/day1");
         let (laptop, phone) = (w.spaces(LAPTOP), w.spaces(PHONE));
-        laptop.create(&space, private(&[], &[])).await?;
+        // A public space: an entry that lost the register is no longer a head, and a sealed one
+        // would then open only through the head. The invariant is about writers, not secrecy.
+        laptop.create(&space, public(&[])).await?;
         w.retry_later(|| phone.open(&space)).await?;
         let v17 = laptop.put(&space, &doc, octets("day 1")).await?;
         w.until("the phone holds the shared version", LIMIT, || {
@@ -88,14 +89,19 @@ fn run(w: &World) -> CaseFuture<'_> {
                 "an ordinary offline edit was reported as equivocation"
             );
             for entry in [&plane, &taxi] {
-                let listed = item_of(&changes, &entry.key())
-                    .ok_or_else(|| Failure::new(format!("watch does not list {}", entry.name)))?;
+                let read = device.entry(&space, &entry.name).await?;
+                let EntryRead::Read(written) = read else {
+                    return Err(Failure::new(format!(
+                        "reading {} by its name answered {read:?}",
+                        entry.name
+                    )));
+                };
                 ensure!(
-                    listed.after.iter().any(|a| a.covers(&v17.key())),
+                    written.after.iter().any(|a| a.covers(&v17.key())),
                     "{} does not supersede the shared write {}: it lists {:?}",
                     entry.name,
                     v17.name,
-                    listed.after
+                    written.after
                 );
             }
         }

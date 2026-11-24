@@ -8,13 +8,16 @@
 //! inviter's own link). A record that leaves Bob out of the notebook, which his device takes as
 //! `i19` and `i21` do, tells it `Introducer::revoke_grant` with Alice's key and the notebook,
 //! once; `Device::grants` lists the diary's grant alone, and still no departure. After a restart
-//! of Bob's device the entries are the same set less the ended, and nothing is told again. A
+//! of Bob's device the entries are the same set less the ended, and the host is told nothing but
+//! the entries in force (it may be told them again). A
 //! second join of the notebook — Alice invites him again — makes the entry again (round 9: the
 //! mirror grant, spec data-layer §19.8).
 
 use std::time::Duration;
 
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::i1_join_by_code::{
+    FOLDER, alice_keeps_a_notebook, joins, offer, reads, restarted_told, writes,
+};
 use super::kit::{LIMIT, SETTLE, n, private};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
@@ -37,8 +40,9 @@ pub(super) const CASE: Case = Case {
     guards: "A join tells the joiner's host exactly one grant for the inviter's key, her \
              namespace, the folder and her role as the record gives it, and never a departure; \
              Device::grants lists it; a record that leaves the joiner out tells revoke_grant \
-             once and Device::grants drops it; a restart keeps the rest and tells nothing; a \
-             second join of the folder makes the entry again; clean or faulty.",
+             once and Device::grants drops it; a restart keeps the rest and tells nothing but \
+             what is in force; a second join of the folder makes the entry again; clean or \
+             faulty.",
     budget: Duration::from_secs(4 * 3600),
     plan,
     run,
@@ -254,19 +258,12 @@ fn run(w: &World) -> CaseFuture<'_> {
             listed.spaces
         );
 
-        // A restart of Bob's device: the same entries less the ended, nothing told again.
+        // A restart of Bob's device: the same entries less the ended, and the host told nothing
+        // but the entries in force (it may be told them again).
         w.stop(BOB).await?;
         w.restart(BOB).await?;
         let restarted = w.link_grants(BOB).await?;
-        ensure!(
-            restarted == ended,
-            "after bob's device restarted his host was told {:?} and his layer lists {:?}; \
-             expected {:?} and {:?}: the same entries less the ended, nothing told again",
-            restarted.told,
-            restarted.now,
-            ended.told,
-            ended.now
-        );
+        restarted_told(&ended, &restarted)?;
 
         // Invited again: a new offer, joined again, makes the notebook's entry again.
         let again = w
@@ -274,17 +271,18 @@ fn run(w: &World) -> CaseFuture<'_> {
             .await?;
         joins(w, BOB, &again.link).await?;
         let rejoined = w.link_grants(BOB).await?;
+        let told = restarted.told.len();
         ensure!(
-            rejoined.told.len() == 4 && rejoined.told[..3] == ended.told[..],
+            rejoined.told.len() == told + 1 && rejoined.told[..told] == restarted.told[..],
             "bob joined the notebook again and his host was told {:?}; expected what it was told \
              before, then one grant",
             rejoined.told
         );
-        let GrantEvent::Granted(remade) = &rejoined.told[3] else {
+        let GrantEvent::Granted(remade) = &rejoined.told[told] else {
             return Err(Failure::new(format!(
                 "bob joined the notebook again and his host was told {:?} last; it must be told \
                  the grant",
-                rejoined.told[3]
+                rejoined.told[told]
             )));
         };
         ensure!(

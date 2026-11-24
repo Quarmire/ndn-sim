@@ -6,12 +6,14 @@
 //! offer — reads the page and signs a members record that demotes Carol to a reader. Once the
 //! laptop holds it, `Device::grants` lists Carol's grant as a reader's, and its host is told the
 //! grant again, with the reader's role and nothing else changed — never that it has ended. The
-//! laptop stops and starts again on what it stored: its host is told nothing more, and the
-//! grant its layer lists is the reader's.
+//! laptop stops and starts again on what it stored: its host is told nothing but the grant in
+//! force (it may be told it again), and the grant its layer lists is the reader's.
 
 use std::time::Duration;
 
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::i1_join_by_code::{
+    FOLDER, alice_keeps_a_notebook, joins, offer, reads, restarted_told, writes,
+};
 use super::kit::{LIMIT, SETTLE, n};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
@@ -34,8 +36,8 @@ pub(super) const CASE: Case = Case {
     guards: "A members record held that changes a granted person's role — signed by another \
              device of the inviter's person too — changes the grant: Device::grants lists it in \
              the role the record in force gives, and the host is told the grant again with that \
-             role (never revoked); after a restart the layer lists the same grant and tells the \
-             host nothing again; clean or faulty.",
+             role (never revoked); after a restart the layer lists the same grant and the host is \
+             told nothing but the grant in force; clean or faulty.",
     budget: Duration::from_secs(4 * 3600),
     plan,
     run,
@@ -130,19 +132,12 @@ fn run(w: &World) -> CaseFuture<'_> {
             demoted.now
         );
 
-        // A restart: the same grant, in the role the record gives, and the host told nothing more.
+        // A restart: the same grant, in the role the record gives, and the host told nothing but
+        // the grant in force (it may be told it again).
         w.stop(LAPTOP).await?;
         w.restart(LAPTOP).await?;
         let restarted = w.link_grants(LAPTOP).await?;
-        ensure!(
-            restarted == demoted,
-            "after alice's laptop restarted its host was told {:?} and its layer lists {:?}; \
-             expected {:?} and {:?}: the reader's grant, nothing told again",
-            restarted.told,
-            restarted.now,
-            demoted.told,
-            demoted.now
-        );
+        restarted_told(&demoted, &restarted)?;
         Ok(())
     })
 }

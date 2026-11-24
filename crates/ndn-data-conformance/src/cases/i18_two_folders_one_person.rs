@@ -10,11 +10,14 @@
 //! (`Introducer::revoke_grant`, naming the key and the notebook): once, and never for the diary,
 //! whose grant `Device::grants` still lists. A record that then lets him go of the diary tells
 //! the host of that one, naming the diary. A restart keeps the marks and tells the host nothing
-//! more (REPLY-17 item 3, G9: a second folder for the same person must not end the first).
+//! but the marks in force (REPLY-17 item 3, G9: a second folder for the same person must not end
+//! the first).
 
 use std::time::Duration;
 
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::i1_join_by_code::{
+    FOLDER, alice_keeps_a_notebook, joins, offer, reads, restarted_told, writes,
+};
 use super::kit::{LIMIT, SETTLE, n, private};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
@@ -234,21 +237,12 @@ fn run(w: &World) -> CaseFuture<'_> {
             ended.departures
         );
 
-        // A restart: the same departures and nothing told again.
+        // A restart: the same departures, and the host told nothing but the ones in force (it
+        // may be told them again).
         w.stop(LAPTOP).await?;
         w.restart(LAPTOP).await?;
         let restarted = w.link_grants(LAPTOP).await?;
-        ensure!(
-            restarted == ended,
-            "after alice's laptop restarted its host was told {:?} and its layer lists {:?}, \
-             departures {:?}; expected {:?}, {:?}, {:?}",
-            restarted.told,
-            restarted.now,
-            restarted.departures,
-            ended.told,
-            ended.now,
-            ended.departures
-        );
+        restarted_told(&ended, &restarted)?;
         Ok(())
     })
 }

@@ -6,13 +6,16 @@
 //! made no offer — reads both pages and signs a members record that leaves Bob out. Once the
 //! laptop holds it, its host is told Bob was let go (`Introducer::departure`) and that his grant of
 //! the folder has ended (`Introducer::revoke_grant`, with his key and the folder), once, and
-//! `Device::grants` lists Carol's alone. The laptop stops and starts again on
-//! what it stored: its host is told nothing more, and the grants its layer lists are the same
-//! set, less the ended: Carol's, with the end it had.
+//! `Device::grants` lists Carol's alone. The laptop stops and starts again on what it stored: its
+//! host is told nothing that ended or was never in force (it may be told the grants and the
+//! departure in force again), and the grants its layer lists are the same set, less the ended:
+//! Carol's, with the end it had.
 
 use std::time::Duration;
 
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::i1_join_by_code::{
+    FOLDER, alice_keeps_a_notebook, joins, offer, reads, restarted_told, writes,
+};
 use super::kit::{LIMIT, SETTLE, n};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
@@ -34,8 +37,8 @@ pub(super) const CASE: Case = Case {
     model: &[],
     guards: "A members record held that leaves a granted person out — signed by another device of \
              the inviter's person too — ends the grant: the host is told once, Device::grants \
-             drops it; after a restart the layer lists the same grants less the ended, and tells \
-             the host nothing again; clean or faulty.",
+             drops it; after a restart the layer lists the same grants less the ended, and the \
+             host is told nothing but the grants and departures in force; clean or faulty.",
     budget: Duration::from_secs(4 * 3600),
     plan,
     run,
@@ -165,19 +168,12 @@ fn run(w: &World) -> CaseFuture<'_> {
             ended.departures
         );
 
-        // A restart: the same grants less the ended, and the host told nothing more.
+        // A restart: the same grants less the ended, and the host told nothing that ended or
+        // was never in force (it may be told the grants and the departure in force again).
         w.stop(LAPTOP).await?;
         w.restart(LAPTOP).await?;
         let restarted = w.link_grants(LAPTOP).await?;
-        ensure!(
-            restarted == ended,
-            "after alice's laptop restarted its host was told {:?} and its layer lists {:?}; \
-             expected {:?} and {:?}: the same grants less the ended, nothing told again",
-            restarted.told,
-            restarted.now,
-            ended.told,
-            ended.now
-        );
+        restarted_told(&ended, &restarted)?;
         Ok(())
     })
 }

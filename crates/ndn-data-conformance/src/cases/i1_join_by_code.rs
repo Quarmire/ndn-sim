@@ -21,7 +21,9 @@ pub(super) use super::n1_named_by_key::{reads, shut_out};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
 use crate::feature::Feature;
-use crate::invite::{InviteCode, InviteFailure, InviteJoined, InviteOffer, InviteRole};
+use crate::invite::{
+    GrantEvent, GrantLog, InviteCode, InviteFailure, InviteJoined, InviteOffer, InviteRole,
+};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -140,6 +142,49 @@ pub(super) fn forged(code: &InviteCode, secret: u8) -> String {
     };
     intro.secret = [secret; ndn_trust_envelope::INTRO_SECRET_LEN];
     TrustEnvelope::Intro(intro).to_uri()
+}
+
+/// What a device's host was told across a restart of its layer: what it was told before stays
+/// as it was, and the layer lists the same grants and departures. A layer may tell its host
+/// again, once each, the grants and departures it lists as in force (a host that lost its link
+/// state installs them again, as the old layer's host never needed to); it never tells anything
+/// else — no grant that ended, no end, no departure it does not list, no grant twice.
+pub(super) fn restarted_told(before: &GrantLog, after: &GrantLog) -> Result<(), Failure> {
+    let kept = after.told.get(..before.told.len());
+    ensure!(
+        kept == Some(&before.told[..]),
+        "after the restart the host was told {:?}, which does not begin with what it was told \
+         before, {:?}",
+        after.told,
+        before.told
+    );
+    let mut again: Vec<&GrantEvent> = Vec::new();
+    for event in &after.told[before.told.len()..] {
+        let in_force = match event {
+            GrantEvent::Granted(grant) => before.now.contains(grant),
+            GrantEvent::Departed(departure) => before.departures.contains(departure),
+            GrantEvent::Revoked { .. } => false,
+        };
+        ensure!(
+            in_force && !again.contains(&event),
+            "after the restart the host was told {event:?}, which is not a grant or a departure \
+             in force listed once ({:?} and {:?} were listed before the restart); it may be told \
+             those again, once each, and nothing else",
+            before.now,
+            before.departures
+        );
+        again.push(event);
+    }
+    ensure!(
+        after.now == before.now && after.departures == before.departures,
+        "after the restart the layer lists the grants {:?} and the departures {:?}; expected the \
+         same as before: {:?} and {:?}",
+        after.now,
+        after.departures,
+        before.now,
+        before.departures
+    );
+    Ok(())
 }
 
 fn run(w: &World) -> CaseFuture<'_> {

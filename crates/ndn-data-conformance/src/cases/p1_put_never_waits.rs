@@ -243,12 +243,29 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await;
         after?;
         judge("the put under a space created, once walked", took, LOCAL);
-        let (second, took) = timed(
-            w,
-            "put, the space whose look resolved: virtual ms",
-            laptop.put(&loose, &x, octets("two")),
-        )
-        .await;
+        // The key of the epoch in force may be on its way (another owner device's epoch took
+        // force after the laptop's earlier put): the put says retry later at once, and is put
+        // again; every answer, the last included, comes within [`LOCAL`].
+        let began = tokio::time::Instant::now();
+        let (second, took) = loop {
+            let (answer, took) = timed(
+                w,
+                "put, the space whose look resolved: virtual ms",
+                laptop.put(&loose, &x, octets("two")),
+            )
+            .await;
+            match answer {
+                Err(e) if e.retry_later() && began.elapsed() < crate::world::AGAIN_FOR => {
+                    ensure!(
+                        took <= LOCAL,
+                        "put, the space whose look resolved: a refusal to retry later took \
+                         {took:?}, over {LOCAL:?}"
+                    );
+                    w.sleep(crate::world::AGAIN_PAUSE).await;
+                }
+                answer => break (answer, took),
+            }
+        };
         second?;
         judge("the put after the look resolved", took, LOCAL);
 

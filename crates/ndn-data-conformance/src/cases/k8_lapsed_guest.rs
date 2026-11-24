@@ -81,8 +81,11 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The guest certificate reaches its NotAfter; Bob writes on with his key.
         w.expire(GUEST, Certs::All).await?;
-        let after = guest
-            .put(&space, &path, octets("written after the lapse"))
+        // The key of the epoch in force may still be on its way (a concurrent epoch signed by
+        // another owner device took force after the guest's first note): put again as the
+        // refusal says (RetryLater); the note is signed after the lapse either way.
+        let after = w
+            .space_put(GUEST, &space, &path, octets("written after the lapse"))
             .await?;
         ensure!(
             after.writer == before.writer && after.seq > before.seq,

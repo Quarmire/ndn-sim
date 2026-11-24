@@ -29,7 +29,7 @@
 use std::time::Duration;
 
 use super::kit::{
-    LIMIT, LOOK, alerted, drain, members_now, n, octets, private, public, withdrawn_as,
+    LIMIT, LOOK, SETTLE, alerted, drain, members_now, n, octets, private, public, withdrawn_as,
 };
 use super::n1_named_by_key::{adopts, by_name, reads, shut_out, under};
 use crate::case::{Case, CaseFuture, Failure};
@@ -223,11 +223,16 @@ fn run(w: &World) -> CaseFuture<'_> {
             )
             .await?;
         w.net().online(CAROL);
-        // Bob refuses it: his entry read answers a refusal, or his watch told him it is outside
-        // the removal's cut (withdrawn after he applied it before the record dropping Carol
-        // reached him, or refused outright after). A provider keeps the one reason or the other.
+        // Bob refuses it. Either he took the page and the record dropping Carol, and says it is
+        // outside the removal's cut (his entry read answers a refusal, or his watch told him: the
+        // page withdrawn after he applied it before the record reached him, or refused outright
+        // after) — a provider keeps the one reason or the other. Or the page never reached him:
+        // Carol, told of her removal before any peer fetched the page, withdrew her own and
+        // serves none (a layer does not serve what it refuses), and then Bob, who holds the
+        // record dropping her and has had time for the page to come, holds nothing of it.
         let key = lates.key();
         let start = tokio::time::Instant::now();
+        let mut dropped_known = None;
         loop {
             drain(&mut *bobs_feed, LOOK, &mut bobs_events).await?;
             if withdrawn_as(&bobs_events, &key, RefusalKind::OutsideCut)
@@ -239,10 +244,18 @@ fn run(w: &World) -> CaseFuture<'_> {
             {
                 break;
             }
+            if members_now(&*bob, &space)
+                .await?
+                .is_some_and(|m| !m.writers.contains(&carol_ns))
+            {
+                let since = *dropped_known.get_or_insert_with(tokio::time::Instant::now);
+                if since.elapsed() >= SETTLE {
+                    break;
+                }
+            }
             ensure!(
-                start.elapsed() < LIMIT,
-                "bob refuses carol's page written after her removal: not reached within \
-                 {LIMIT:?} of virtual time"
+                dropped_known.is_some() || start.elapsed() < LIMIT,
+                "bob holds the record dropping carol: not reached within {LIMIT:?} of virtual time"
             );
         }
         ensure!(

@@ -83,6 +83,23 @@ fn run(w: &World) -> CaseFuture<'_> {
             Ok(known(&*phone, &garden).await? && known(&*phone, &kitchen).await?)
         })
         .await?;
+        // The phone reads a note the owner wrote in each space before the key leaks: it then
+        // holds the key of the epoch in force of both, and what the thief's copy of its storage
+        // holds with it. A key not held by then never comes: the owner refuses the revoked key's
+        // seal key, so no grant is made to it.
+        let hello = n("/hello");
+        let mut greetings = Vec::new();
+        for space in [&garden, &kitchen] {
+            greetings.push(
+                w.space_put(LAPTOP, space, &hello, octets("welcome, phone"))
+                    .await?,
+            );
+        }
+        w.until("the phone reads the owner's notes", LIMIT, || async {
+            Ok(has(&*phone, &garden, &greetings[0]).await?
+                && has(&*phone, &kitchen, &greetings[1]).await?)
+        })
+        .await?;
         // The garden is sealed: the phone's first put races its epoch key's grant, and is put
         // again while refused RetryLater (spec §18.1).
         let seen = w

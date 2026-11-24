@@ -17,14 +17,16 @@
 
 use std::time::Duration;
 
-use ndn_data::{JoinedFolder, Role};
+use ndn_data::Name;
 
-use super::i1_join_by_code::{joins, offer, reads};
-use super::i20_writers_who_never_met::{under, writes};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{joins, offer, reads, writes};
+use super::kit::{LIMIT, RELAYED, members_now, n, octets, private};
+use super::n1_named_by_key::under;
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::JoinedList;
+use crate::feature::Feature;
+use crate::invite::{InviteJoinedSpace, InviteRole, JoinedList};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World, self_certifying_person};
 
 pub(super) const CASE: Case = Case {
@@ -72,23 +74,11 @@ fn plan() -> Plan {
     p
 }
 
-/// A members record of the folder: `writers` write, `readers` read, as a log.
-fn record(writers: &[&Name], readers: &[&Name]) -> Share {
-    Share {
-        rule: Rule::Log,
-        writers: writers.iter().map(|w| (*w).clone()).collect(),
-        readers: readers
-            .iter()
-            .map(|r| Audience::Person((*r).clone()))
-            .collect(),
-    }
-}
-
 /// What Bob's device must list for the folder, who and what it is the joiner of.
 struct Expected {
     inviter: [u8; 32],
     owner: Name,
-    folder: Name,
+    space: Name,
 }
 
 impl Expected {
@@ -103,19 +93,19 @@ impl Expected {
     ) -> Result<(), Failure> {
         let mut sorted = writers.to_vec();
         sorted.sort();
-        let wanted = JoinedFolder {
+        let wanted = InviteJoinedSpace {
             inviter: self.inviter,
             owner: self.owner.clone(),
-            folder: self.folder.clone(),
-            role: Role::Writer,
+            space: self.space.clone(),
+            role: InviteRole::Writer,
             writers: sorted,
         };
         ensure!(
-            list.folders == [wanted.clone()],
+            list.spaces == [wanted.clone()],
             "{when}: bob's device lists {:?}; it must list the notebook once, with alice's key \
              as inviter, her namespace as owner, bob as a writer and as writers {:?} (never \
              bob's own namespace nor alice's)",
-            list.folders,
+            list.spaces,
             wanted.writers
         );
         ensure!(
@@ -135,11 +125,11 @@ async fn lists(w: &World, what: &str, writers: &[Name]) -> Result<JoinedList, Fa
     let waited = w
         .until(what, LIMIT, || async {
             let now = w.joined_folders(BOB).await?;
-            Ok(now.folders.len() == 1 && now.folders[0].writers == sorted)
+            Ok(now.spaces.len() == 1 && now.spaces[0].writers == sorted)
         })
         .await;
     let last = w.joined_folders(BOB).await?;
-    waited.map_err(|e| Failure::new(format!("{e}; bob's device lists {:?}", last.folders)))?;
+    waited.map_err(|e| Failure::new(format!("{e}; bob's device lists {:?}", last.spaces)))?;
     Ok(last)
 }
 
@@ -149,38 +139,40 @@ fn run(w: &World) -> CaseFuture<'_> {
         let bob_ns = w.net().spec(BOB).person.clone();
         let carol_ns = w.net().spec(CAROL).person.clone();
         let dave_ns = self_certifying_person(&DAVE_KEY);
-        let folder = under(&alice_ns, "/32=data/notebook");
-        let (alice, phone) = (w.at(ALICE), w.at(PHONE));
+        let space = under(&alice_ns, "/32=data/notebook");
+        let (alice, phone) = (w.spaces(ALICE), w.spaces(PHONE));
+        alice.create(&space, private(&[], &[])).await?;
         alice
-            .share_folder(&folder, record(&[&alice_ns], &[&alice_ns]).into())
-            .await?;
-        alice
-            .put(&under(&folder, "/cover"), text("cover by alice"), note(1))
+            .put(&space, &n("/cover"), octets("cover by alice"))
             .await?;
         let expected = Expected {
             inviter: w.link_key(ALICE).await?,
             owner: alice_ns.clone(),
-            folder: folder.clone(),
+            space: space.clone(),
         };
 
         // Before any join Bob's device lists no folder.
         let before = w.joined_folders(BOB).await?;
         ensure!(
-            before.folders.is_empty(),
+            before.spaces.is_empty(),
             "bob's device lists {:?} before it joined anything",
-            before.folders
+            before.spaces
         );
         let mut seen = vec![before.generation];
 
         // Bob joins: the folder, with no other writer yet.
-        let for_bob = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let for_bob = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &for_bob.link).await?;
         let joined = w.joined_folders(BOB).await?;
         expected.check(&joined, &[], &mut seen, "after bob joined")?;
 
         // Carol joins by a second code of her own: the record that lists her reaches Bob, and
         // his list names her namespace alone.
-        let for_carol = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let for_carol = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, CAROL, &for_carol.link).await?;
         let with_carol = lists(
             w,
@@ -212,18 +204,18 @@ fn run(w: &World) -> CaseFuture<'_> {
                 .cut_off(CAROL, &under(&bobs_device, "/32=summary"))
                 .await,
         ];
-        let (by_bob, by_carol) = (under(&folder, "/page-bob"), under(&folder, "/page-carol"));
-        writes(w, BOB, &by_bob, "a page by bob").await?;
-        writes(w, CAROL, &by_carol, "a page by carol").await?;
-        let bob = w.at(BOB);
+        let (by_bob, by_carol) = (n("/page-bob"), n("/page-carol"));
+        writes(w, BOB, &space, &by_bob, "a page by bob").await?;
+        writes(w, CAROL, &space, &by_carol, "a page by carol").await?;
+        let bob = w.spaces(BOB);
         w.until("bob reads carol's page through alice", RELAYED, || {
-            reads(&*bob, &by_carol, "a page by carol")
+            reads(&*bob, &space, &by_carol, "a page by carol")
         })
         .await?;
         // Alice's phone reads both pages: it holds the records that admit them.
         for (at, words) in [(&by_bob, "a page by bob"), (&by_carol, "a page by carol")] {
             w.until("alice's phone reads the page", LIMIT, || {
-                reads(&*phone, at, words)
+                reads(&*phone, &space, at, words)
             })
             .await?;
         }
@@ -237,9 +229,12 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // A record from Alice's phone, which made no offer, leaves Carol out of the writers.
         phone
-            .share_folder(
-                &folder,
-                record(&[&alice_ns, &bob_ns], &[&alice_ns, &bob_ns]).into(),
+            .change(
+                &space,
+                SpaceChange {
+                    remove: vec![carol_ns.clone()],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         let without_carol = lists(
@@ -254,19 +249,22 @@ fn run(w: &World) -> CaseFuture<'_> {
         // record lists a writer under Bob's own namespace, which never appears.
         let bobs_team = under(&bob_ns, "/team");
         phone
-            .share_folder(
-                &folder,
-                record(
-                    &[&alice_ns, &bob_ns, &bobs_team, &dave_ns],
-                    &[&alice_ns, &bob_ns],
-                )
-                .into(),
+            .change(
+                &space,
+                SpaceChange {
+                    add_writers: vec![bobs_team.clone(), dave_ns.clone()],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.until(
             "bob's device takes the record that adds dave",
             LIMIT,
-            || async { Ok(bob.members(&folder).await?.writers.contains(&dave_ns)) },
+            || async {
+                Ok(members_now(&*bob, &space)
+                    .await?
+                    .is_some_and(|m| m.writers.contains(&dave_ns)))
+            },
         )
         .await?;
         let with_dave = lists(
@@ -281,7 +279,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             &mut seen,
             "after dave was added",
         )?;
-        let held = bob.members(&folder).await?;
+        let held = bob.members(&space).await?;
         ensure!(
             held.writers.contains(&bobs_team),
             "bob's device took the record that adds dave, and does not hold the writer {bobs_team} \

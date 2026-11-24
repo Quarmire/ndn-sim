@@ -16,17 +16,16 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use ndn_data::intro::{Contact, ShortCode, hint_name, hint_token};
-use ndn_data::{Code, Role};
-use ndn_trust_envelope::TrustEnvelope;
+use ndn_data::Name;
 
 use super::i1_join_by_code::{
-    ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, reads, shut_out,
+    ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, reads, shut_out, writes,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, n, octets};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::LinkCall;
+use crate::feature::Feature;
+use crate::invite::{InviteCode, InviteRole, InviteShort, LinkCall};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -115,11 +114,11 @@ pub(super) async fn dials(w: &World, d: Dev) -> Result<Dials, Failure> {
 }
 
 /// The short line of `code`, read back: made, one line of at most [`SHORT_WIDTH`] columns,
-/// the device name, one dialable address and twenty words; `Code::share` shows it.
+/// the device name, one dialable address and twenty words; `InviteCode::share` shows it.
 pub(super) fn short_line(
     w: &World,
-    code: &Code,
-) -> Result<(String, ShortCode, SocketAddr), Failure> {
+    code: &InviteCode,
+) -> Result<(String, InviteShort, SocketAddr), Failure> {
     let Some(short) = code.short.clone() else {
         return Err(Failure::new(format!(
             "the offer made no short code (why: {:?})",
@@ -138,7 +137,7 @@ pub(super) fn short_line(
     );
     ensure!(
         code.share() == short,
-        "Code::share shows {:?}, not the short code",
+        "InviteCode::share shows {:?}, not the short code",
         code.share()
     );
     let laptop = w.net().spec(ALICE).name();
@@ -160,48 +159,40 @@ pub(super) fn short_line(
     );
     // Read as a device reads it: every word on the list, the checksum over the name and the
     // address matching.
-    let read = ShortCode::parse(&short, false)
+    let read = w
+        .short_read(&short)
         .map_err(|e| Failure::new(format!("the short code does not read: {e}")))?;
     ensure!(
-        read.device == laptop && read.contact == Some(Contact::Address(addr)),
+        read.device == laptop && read.address == Some(addr),
         "the short code reads as {read:?}, not the laptop at {addr}"
     );
     Ok((short, read, addr))
 }
 
 /// How many hint records (`<device>/32=hint/…`) reached `d`'s links: the Data packets of the
-/// hint name of `read`'s secret.
-pub(super) fn hint_records_at(w: &World, d: Dev, device: &Name, secret: &[u8; 16]) -> u64 {
-    w.net().received(d, &hint_name(device, &hint_token(secret)))
-}
-
-/// The secret of a compact full link.
-fn secret_of(link: &str) -> Result<[u8; 16], Failure> {
-    match TrustEnvelope::from_uri(link) {
-        Ok(TrustEnvelope::Intro(intro)) => Ok(intro.secret),
-        other => Err(Failure::new(format!(
-            "an offer's link is not an introduction link: {other:?}"
-        ))),
-    }
+/// hint record `hint` a code names.
+pub(super) fn hint_records_at(w: &World, d: Dev, hint: &Name) -> u64 {
+    w.net().received(d, hint)
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
-        let laptop = w.net().spec(ALICE).name();
+        let space = n(FOLDER);
+        let cover = n("/cover");
         let clean = w.net().faults().is_none();
         alice_keeps_a_notebook(w).await?;
         let alice_key = w.link_key(ALICE).await?;
 
         ensure!(
-            shut_out(&*w.at(BOB), &cover).await?,
+            shut_out(&*w.spaces(BOB), &space, &cover).await?,
             "bob reads alice's folder before any introduction"
         );
 
         // The short code: one line, and all Bob is given.
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
-        let (short, read, addr) = short_line(w, &code)?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
+        let (short, _read, addr) = short_line(w, &code)?;
         ensure!(
             short.chars().count() < code.link.chars().count(),
             "the short code ({} columns) is not shorter than the full link ({})",
@@ -223,7 +214,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let joined = joins(w, BOB, &short).await?;
         let took = start.elapsed();
         ensure!(
-            joined.folder == folder && joined.role == Role::Writer && joined.inviter == n("/alice"),
+            joined.space == space
+                && joined.role == InviteRole::Writer
+                && joined.inviter == n("/alice"),
             "bob's join says {joined:?}, not alice's notebook as a writer"
         );
         w.measure(
@@ -262,47 +255,42 @@ fn run(w: &World) -> CaseFuture<'_> {
             bob_dials.undial
         );
         // The hint record was fetched: it reached Bob (once, on a clean network).
-        let records = hint_records_at(w, BOB, &laptop, &read.secret);
+        let records = hint_records_at(w, BOB, &code.hint);
         ensure!(
             records >= 1 && (!clean || records == 1),
             "{records} hint records reached bob, not the one he fetched"
         );
 
         // Each reads what the other writes, with no further gesture.
-        let bob = w.at(BOB);
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
-        let page = n(&format!("{FOLDER}/page-bob"));
-        w.until("bob writes a page into the folder", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
-        let alice = w.at(ALICE);
+        let page = n("/page-bob");
+        writes(w, BOB, &space, &page, "a page by bob").await?;
+        let alice = w.spaces(ALICE);
         w.until("alice reads bob's page", LIMIT, || {
-            reads(&*alice, &page, "a page by bob")
+            reads(&*alice, &space, &page, "a page by bob")
         })
         .await?;
         alice
-            .put(&cover, text("cover, second by alice"), note(1))
+            .put(&space, &cover, octets("cover, second by alice"))
             .await?;
         w.until("bob reads alice's second cover", LIMIT, || {
-            reads(&*bob, &cover, "cover, second by alice")
+            reads(&*bob, &space, &cover, "cover, second by alice")
         })
         .await?;
 
         // The compact full link of a second offer joins Carol, a reader: no first contact is
         // dialled and no hint record is fetched; the link's own hint is dialled, by the laptop's
         // key, at the address the short code named.
-        let full = w.offer(ALICE, &folder, offer(w, Role::Reader, 3)).await?;
+        let full = w
+            .offer(ALICE, &space, offer(w, InviteRole::Reader, 3))
+            .await?;
         let joined = joins(w, CAROL, &full.link).await?;
         ensure!(
-            joined.folder == folder && joined.role == Role::Reader,
+            joined.space == space && joined.role == InviteRole::Reader,
             "carol's join by the full link says {joined:?}, not the notebook as a reader"
         );
         let carol_dials = dials(w, CAROL).await?;
@@ -323,22 +311,24 @@ fn run(w: &World) -> CaseFuture<'_> {
             carol_dials.dial,
             carol_dials.undial
         );
-        let records = hint_records_at(w, CAROL, &laptop, &secret_of(&full.link)?);
+        let records = hint_records_at(w, CAROL, &full.hint);
         ensure!(
             records == 0,
             "{records} hint records reached carol, who joined by a full link and fetches none"
         );
-        let carol = w.at(CAROL);
+        let carol = w.spaces(CAROL);
         w.until("carol reads alice's cover", LIMIT, || {
-            reads(&*carol, &cover, "cover, second by alice")
+            reads(&*carol, &space, &cover, "cover, second by alice")
         })
         .await?;
 
         // The old words of a third offer join Dave: no dial, nothing fetched.
-        let words = w.offer(ALICE, &folder, offer(w, Role::Reader, 3)).await?;
+        let words = w
+            .offer(ALICE, &space, offer(w, InviteRole::Reader, 3))
+            .await?;
         let joined = joins(w, DAVE, &words.words).await?;
         ensure!(
-            joined.folder == folder && joined.role == Role::Reader,
+            joined.space == space && joined.role == InviteRole::Reader,
             "dave's join by the words says {joined:?}, not the notebook as a reader"
         );
         let dave_calls = w.link_calls(DAVE).await?;
@@ -346,14 +336,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             dave_calls.is_empty(),
             "dave's host was asked of its link layer by the words: {dave_calls:?}"
         );
-        let records = hint_records_at(w, DAVE, &laptop, &secret_of(&words.link)?);
+        let records = hint_records_at(w, DAVE, &words.hint);
         ensure!(
             records == 0,
             "{records} hint records reached dave, who joined by the words and fetches none"
         );
-        let dave = w.at(DAVE);
+        let dave = w.spaces(DAVE);
         w.until("dave reads alice's cover", LIMIT, || {
-            reads(&*dave, &cover, "cover, second by alice")
+            reads(&*dave, &space, &cover, "cover, second by alice")
         })
         .await?;
         w.converged(took);

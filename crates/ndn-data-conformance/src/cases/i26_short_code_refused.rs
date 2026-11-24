@@ -20,16 +20,15 @@
 
 use std::time::Duration;
 
-use ndn_data::intro::{Contact, ShortCode, ShortError};
-use ndn_data::{IntroRefusal, NextStep, Offer, Role};
-
 use super::i1_join_by_code::{
     ALICE, BOB, FOLDER, alice_keeps_a_notebook, joins, offer, reads, refused, shut_out,
 };
 use super::i25_short_code_joins::{dials, short_line};
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::{InviteOffer, InviteRefusal, InviteRole, InviteShort, ShortFault};
 use crate::world::{Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -87,23 +86,35 @@ async fn nothing_sent(
     Ok(())
 }
 
-/// `line` is refused as a bad request with `expected`'s text, before anything is dialled or sent.
+/// `line` does not read, for the `expected` fault, and is refused as a bad request saying what
+/// reading it says, before anything is dialled or sent.
 async fn does_not_read(
     w: &World,
     line: &str,
-    expected: ShortError,
+    expected: ShortFault,
     what: &str,
 ) -> Result<(), Failure> {
+    let said = match w.short_read(line) {
+        Ok(read) => {
+            return Err(Failure::new(format!(
+                "the line for {what} reads as {read:?}; the case meant it not to read"
+            )));
+        }
+        Err(said) => said,
+    };
+    ensure!(
+        said.fault == expected,
+        "the line for {what} does not read for the reason {:?}, not {expected:?}: {said}",
+        said.fault
+    );
     let before = w.net().device_wire(BOB);
     let e = refused(w, BOB, line).await?;
     ensure!(
-        matches!(&e, DataError::BadRequest { why, .. } if *why == expected.to_string())
-            && e.next() == NextStep::FixRequest
-            && !e.retry(),
-        "bob's join by {what} answered {e:?} (next: {:?}), not the bad request {:?} (next: fix \
+        e.kind_is("BadRequest") && e.why == said.text && e.next_is("FixRequest") && !e.retry,
+        "bob's join by {what} answered {e:?} (next: {}), not the bad request {:?} (next: fix \
          the request)",
-        e.next(),
-        expected.to_string()
+        e.next,
+        said.text
     );
     nothing_sent(w, before, what).await
 }
@@ -113,9 +124,7 @@ async fn does_not_read(
 async fn not_ready(w: &World, line: &str, text: &str, what: &str) -> Result<(), Failure> {
     let e = refused(w, BOB, line).await?;
     ensure!(
-        matches!(&e, DataError::NotReady { why, .. } if why.starts_with(text))
-            && e.retry()
-            && e.next() == NextStep::RetryLater,
+        e.kind_is("NotReady") && e.why.starts_with(text) && e.retry && e.next_is("RetryLater"),
         "bob's join by {what} answered {e:?}, not 'not ready: retry' saying {text:?}"
     );
     no_link_kept(w, what).await
@@ -134,26 +143,26 @@ async fn no_link_kept(w: &World, what: &str) -> Result<(), Failure> {
 
 /// `line` is refused by the inviter's own answer, as `why`, next step ask the inviter, and the
 /// links the host made for it are taken down.
-async fn told(w: &World, line: &str, why: IntroRefusal, what: &str) -> Result<(), Failure> {
+async fn told(w: &World, line: &str, why: InviteRefusal, what: &str) -> Result<(), Failure> {
     let e = refused(w, BOB, line).await?;
     ensure!(
-        matches!(&e, DataError::Introduction { why: got, .. } if *got == why)
-            && e.next() == NextStep::AskOwner
-            && !e.retry(),
-        "bob's join by {what} answered {e:?}, not '{why}' (next: ask the inviter)"
+        e.refusal.as_ref() == Some(&why) && e.next_is("AskOwner") && !e.retry,
+        "bob's join by {what} answered {e:?}, not '{why:?}' (next: ask the inviter)"
     );
     no_link_kept(w, what).await
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
-        let cover = n(&format!("{FOLDER}/cover"));
+        let space = n(FOLDER);
+        let cover = n("/cover");
         let laptop = w.net().spec(ALICE).name();
         alice_keeps_a_notebook(w).await?;
 
         // Typos: a line that does not read is refused before anything is dialled or sent.
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         let (short, read, addr) = short_line(w, &code)?;
         let tokens: Vec<&str> = short.split_whitespace().collect();
         let words = &tokens[2..];
@@ -167,18 +176,17 @@ fn run(w: &World) -> CaseFuture<'_> {
             changed[2 + i] = word;
             changed.join(" ")
         };
-        let checksum = ShortError::Checksum;
         does_not_read(
             w,
             &with_word(3, other),
-            checksum.clone(),
+            ShortFault::Checksum,
             "one word changed",
         )
         .await?;
         does_not_read(
             w,
             &short.replacen(&laptop.to_string(), "/alice/laptoq", 1),
-            checksum.clone(),
+            ShortFault::Checksum,
             "the device's name changed by a letter",
         )
         .await?;
@@ -189,40 +197,42 @@ fn run(w: &World) -> CaseFuture<'_> {
                 &format!("{}:{}", addr.ip(), addr.port() + 1),
                 1,
             ),
-            checksum,
+            ShortFault::Checksum,
             "the address's port changed",
         )
         .await?;
         does_not_read(
             w,
             &with_word(3, "zzzz"),
-            ShortError::UnknownWord(4),
+            ShortFault::UnknownWord(4),
             "a word that is on no list",
         )
         .await?;
         does_not_read(
             w,
             &tokens[..tokens.len() - 1].join(" "),
-            ShortError::Words(19),
+            ShortFault::Words(19),
             "nineteen words",
         )
         .await?;
         does_not_read(
             w,
             &format!("{short} {}", words[0]),
-            ShortError::Words(21),
+            ShortFault::Words(21),
             "twenty-one words",
         )
         .await?;
 
         // A line that reads, of an offer the laptop never made: its token is no token it
         // holds, so nothing answers, and the first contact's link is taken down.
-        let stranger = ShortCode {
+        let written = |changed: &InviteShort| {
+            w.short_write(changed)
+                .map_err(|e| Failure::new(format!("a short code could not be written: {e}")))
+        };
+        let stranger = written(&InviteShort {
             secret: [0x5a; 16],
             ..read.clone()
-        }
-        .encode()
-        .map_err(|e| Failure::new(format!("a short code could not be written: {e}")))?;
+        })?;
         not_ready(
             w,
             &stranger,
@@ -231,14 +241,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         )
         .await?;
         // An address nobody answers at: the dial fails and no offer is touched.
-        let nowhere = ShortCode {
-            contact: Some(Contact::Address(
-                "192.0.2.200:4433".parse().expect("an address"),
-            )),
+        let nowhere = written(&InviteShort {
+            address: Some("192.0.2.200:4433".parse().expect("an address")),
             ..read.clone()
-        }
-        .encode()
-        .map_err(|e| Failure::new(format!("a short code could not be written: {e}")))?;
+        })?;
         not_ready(
             w,
             &nowhere,
@@ -250,60 +256,63 @@ fn run(w: &World) -> CaseFuture<'_> {
         // A hint record altered at the first contact: whoever answers at the address serves
         // what it likes. Bob's own node answers the record's name with the record it fetched
         // from the laptop, its signature's last octet flipped.
-        let altered = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
-        let (altered_line, altered_read, _) = short_line(w, &altered)?;
-        let record =
-            ndn_data::intro::hint_name(&laptop, &ndn_data::intro::hint_token(&altered_read.secret));
-        w.replay_altered(BOB, &record).await?;
+        let altered = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
+        let (altered_line, _, _) = short_line(w, &altered)?;
+        w.replay_altered(BOB, &altered.hint).await?;
         // Let the altered copy and any duplicated or held-back copies of the genuine record
         // reach Bob's node before he joins, as the other cases settle after an act of the wire.
         w.sleep(SETTLE).await;
         let e = refused(w, BOB, &altered_line).await?;
         ensure!(
-            matches!(
-                &e,
-                DataError::Introduction {
-                    why: IntroRefusal::Hint { why },
-                    ..
-                } if why.starts_with("signer:")
-            ) && e.next() == NextStep::RetryLater
-                && e.to_string()
+            matches!(&e.refusal, Some(InviteRefusal::Hint { why }) if why.starts_with("signer:"))
+                && e.next_is("RetryLater")
+                && e.detail
                     .contains("retry at most 3 times; if it is refused every time, do not use"),
-            "bob's join by a code whose hint record was altered answered {e:?} (next: {:?}), not \
+            "bob's join by a code whose hint record was altered answered {e:?} (next: {}), not \
              'what answered does not prove the inviter's (signer): retry at most 3 times, and if \
              refused every time do not use this code'",
-            e.next()
+            e.next
         );
         no_link_kept(w, "an altered hint record").await?;
 
         // A closed offer is told closed: the laptop answers its token with a signed gone mark.
-        let closed = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let closed = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         let (closed_line, _, _) = short_line(w, &closed)?;
         w.close_offer(ALICE, &closed.offer).await?;
-        told(w, &closed_line, IntroRefusal::Closed, "a closed offer").await?;
+        told(w, &closed_line, InviteRefusal::Closed, "a closed offer").await?;
 
         // An expired offer is told expired.
-        let short_lived = Offer {
-            role: Role::Writer,
-            until: Timestamp(w.net().date(ALICE).0 + 10 * 60 * 1000),
+        let short_lived = InviteOffer {
+            role: InviteRole::Writer,
+            until: w.net().date(ALICE).0 + 10 * 60 * 1000,
             tries: 3,
         };
-        let expiring = w.offer(ALICE, &folder, short_lived).await?;
+        let expiring = w.offer(ALICE, &space, short_lived).await?;
         let (expiring_line, _, _) = short_line(w, &expiring)?;
         w.sleep(Duration::from_secs(30 * 60)).await;
-        told(w, &expiring_line, IntroRefusal::Expired, "an expired offer").await?;
+        told(
+            w,
+            &expiring_line,
+            InviteRefusal::Expired,
+            "an expired offer",
+        )
+        .await?;
 
         // None of it joined anything, told the laptop of a grant, or left a link up.
         w.sleep(SETTLE).await;
         ensure!(
-            shut_out(&*w.at(BOB), &cover).await?,
+            shut_out(&*w.spaces(BOB), &space, &cover).await?,
             "bob reads alice's folder after refused joins"
         );
         let joined = w.joined_folders(BOB).await?;
         ensure!(
-            joined.folders.is_empty(),
+            joined.spaces.is_empty(),
             "bob's layer lists {:?} as joined after refused joins",
-            joined.folders
+            joined.spaces
         );
         ensure!(
             w.link_grants(ALICE).await?.told.is_empty(),
@@ -313,24 +322,28 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The laptop offline: retry later. The offer waits, and the same line admits him
         // once the laptop is back.
-        let waiting = w.offer(ALICE, &folder, offer(w, Role::Writer, 1)).await?;
+        let waiting = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 1))
+            .await?;
         let (waiting_line, _, _) = short_line(w, &waiting)?;
         w.net().offline(ALICE);
         let e = refused(w, BOB, &waiting_line).await?;
         w.net().online(ALICE);
         ensure!(
-            matches!(&e, DataError::NotReady { why, .. }
-                if why.starts_with("the inviter's hint for this offer was not fetched from the first contact"))
-                && e.retry()
-                && e.next() == NextStep::RetryLater,
+            e.kind_is("NotReady")
+                && e.why.starts_with(
+                    "the inviter's hint for this offer was not fetched from the first contact"
+                )
+                && e.retry
+                && e.next_is("RetryLater"),
             "bob's join while alice's laptop is offline answered {e:?}, not 'not ready: retry'"
         );
         no_link_kept(w, "the laptop offline").await?;
         let joined = joins(w, BOB, &waiting_line).await?;
-        ensure!(joined.folder == folder, "bob joined {joined:?}");
-        let bob = w.at(BOB);
+        ensure!(joined.space == space, "bob joined {joined:?}");
+        let bob = w.spaces(BOB);
         w.until("bob reads alice's cover", LIMIT, || {
-            reads(&*bob, &cover, "cover by alice")
+            reads(&*bob, &space, &cover, "cover by alice")
         })
         .await?;
         Ok(())

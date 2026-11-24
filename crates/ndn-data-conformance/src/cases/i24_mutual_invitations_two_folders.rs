@@ -16,14 +16,16 @@
 
 use std::time::Duration;
 
-use ndn_data::{Grant, Role};
+use ndn_data::Name;
 
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
 use super::i23_joiner_holds_a_grant_for_the_inviter::{no_departure, same_set};
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{LIMIT, SETTLE, n, octets, private};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::GrantEvent;
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, InviteGrant, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -65,13 +67,13 @@ fn plan() -> Plan {
     p
 }
 
-/// A grant of `folder` to `key`, in the namespace `ns`, as a writer, with no date.
-fn grant(key: [u8; 32], ns: &str, folder: &Name) -> Grant {
-    Grant {
+/// A grant of `space` to `key`, in the namespace `ns`, as a writer, with no date.
+fn grant(key: [u8; 32], ns: &str, space: &Name) -> InviteGrant {
+    InviteGrant {
         key,
         namespaces: vec![n(ns)],
-        folder: folder.clone(),
-        role: Role::Writer,
+        space: space.clone(),
+        role: InviteRole::Writer,
         until: None,
     }
 }
@@ -80,13 +82,9 @@ fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let (notebook, diary) = (n(FOLDER), n(DIARY));
         alice_keeps_a_notebook(w).await?;
-        let bob = w.at(BOB);
-        bob.share_folder(
-            &diary,
-            members(Rule::Log, &["/bob"], &[person("/bob")]).into(),
-        )
-        .await?;
-        bob.put(&n(&format!("{DIARY}/cover")), text("cover by bob"), note(1))
+        let bob = w.spaces(BOB);
+        bob.create(&diary, private(&[], &[])).await?;
+        bob.put(&diary, &n("/cover"), octets("cover by bob"))
             .await?;
         let (alices_key, bobs_key) = (w.link_key(LAPTOP).await?, w.link_key(BOB).await?);
 
@@ -99,42 +97,40 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Alice invites Bob to the notebook; Bob invites Alice to the diary.
         let for_bob = w
-            .offer(LAPTOP, &notebook, offer(w, Role::Writer, 3))
+            .offer(LAPTOP, &notebook, offer(w, InviteRole::Writer, 3))
             .await?;
         joins(w, BOB, &for_bob.link).await?;
-        let for_alice = w.offer(BOB, &diary, offer(w, Role::Writer, 3)).await?;
+        let for_alice = w
+            .offer(BOB, &diary, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, LAPTOP, &for_alice.link).await?;
         both_entries(w, &alice_inviter, &alice_mirror, &bob_mirror, &bob_inviter).await?;
 
         // Bob writes into the notebook; Alice's phone reads it, so it holds the records that
         // admit him and may sign the one that lets him go.
-        let page = notebook.clone().append("page");
-        w.until("bob writes a page into the notebook", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
-        let phone = w.at(PHONE);
+        let page = n("/page");
+        writes(w, BOB, &notebook, &page, "a page by bob").await?;
+        let phone = w.spaces(PHONE);
         w.until("alice's phone reads bob's page", LIMIT, || {
-            reads(&*phone, &page, "a page by bob")
+            reads(&*phone, &notebook, &page, "a page by bob")
         })
         .await?;
 
         // Alice's phone leaves Bob out of the notebook: Alice's laptop is told he was let go,
         // and his device takes the record that lets him go.
         phone
-            .share_folder(
+            .change(
                 &notebook,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.until("alice's laptop ends bob's grant", LIMIT, || async {
             Ok(w.link_grants(LAPTOP).await?.told.iter().any(|e| {
-                matches!(e, GrantEvent::Revoked { key, folder }
-                    if *key == bobs_key && *folder == notebook)
+                matches!(e, GrantEvent::Revoked { key, space }
+                    if *key == bobs_key && *space == notebook)
             }))
         })
         .await?;
@@ -159,7 +155,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                     .await?
                 {
                     Ok(()) => Ok(true),
-                    Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
+                    Err(e) if e.retry_later() => Ok(false),
                     Err(e) => Err(e.into()),
                 }
             },
@@ -170,8 +166,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             LIMIT,
             || async {
                 Ok(w.link_grants(BOB).await?.told.iter().any(|e| {
-                    matches!(e, GrantEvent::Revoked { key, folder }
-                        if *key == alices_key && *folder == notebook)
+                    matches!(e, GrantEvent::Revoked { key, space }
+                        if *key == alices_key && *space == notebook)
                 }))
             },
         )
@@ -188,7 +184,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                     GrantEvent::Departed(left.clone()),
                     GrantEvent::Revoked {
                         key: bobs_key,
-                        folder: notebook.clone(),
+                        space: notebook.clone(),
                     },
                 ]
                 && alice_ended.now == [alice_mirror.clone()],
@@ -206,7 +202,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                     GrantEvent::Granted(bob_inviter.clone()),
                     GrantEvent::Revoked {
                         key: alices_key,
-                        folder: notebook.clone(),
+                        space: notebook.clone(),
                     },
                 ]
                 && bob_ended.now == [bob_inviter.clone()],
@@ -219,22 +215,22 @@ fn run(w: &World) -> CaseFuture<'_> {
         no_departure(&bob_ended, "after the record that leaves bob out")?;
         let alice_joined = w.joined_folders(LAPTOP).await?;
         ensure!(
-            alice_joined.folders.len() == 1 && alice_joined.folders[0].folder == diary,
+            alice_joined.spaces.len() == 1 && alice_joined.spaces[0].space == diary,
             "alice's device lists {:?} as joined after the record that leaves bob out of the \
              notebook; the diary stands",
-            alice_joined.folders
+            alice_joined.spaces
         );
         let bob_joined = w.joined_folders(BOB).await?;
         ensure!(
-            bob_joined.folders.is_empty(),
+            bob_joined.spaces.is_empty(),
             "bob's device lists {:?} as joined after the record that leaves him out of the \
              notebook; he joined nothing else",
-            bob_joined.folders
+            bob_joined.spaces
         );
 
         // Invited again, each device holds both once more.
         let again = w
-            .offer(LAPTOP, &notebook, offer(w, Role::Writer, 3))
+            .offer(LAPTOP, &notebook, offer(w, InviteRole::Writer, 3))
             .await?;
         joins(w, BOB, &again.link).await?;
         let alice_back = w.link_grants(LAPTOP).await?;
@@ -252,9 +248,8 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // The host's ends tell nothing and touch the other device alone not at all. Alice's
         // `end_grant_in` of the notebook ends her inviter's entry and leaves the mirror's.
-        let alice = w.gate(LAPTOP)?;
         ensure!(
-            alice.end_grant_in(&bobs_key, &notebook).await?,
+            w.end_grant_in(LAPTOP, &bobs_key, &notebook).await?,
             "alice's host ended bob's grants of the notebook and her layer says there was none"
         );
         let after_one = w.link_grants(LAPTOP).await?;
@@ -269,13 +264,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         let joined = w.joined_folders(LAPTOP).await?;
         ensure!(
-            joined.folders.len() == 1 && joined.folders[0].folder == diary,
+            joined.spaces.len() == 1 && joined.spaces[0].space == diary,
             "alice's device lists {:?} as joined after her host ended the notebook's grant; the \
              diary stands",
-            joined.folders
+            joined.spaces
         );
         ensure!(
-            !alice.end_grant_in(&bobs_key, &notebook).await?,
+            !w.end_grant_in(LAPTOP, &bobs_key, &notebook).await?,
             "alice's host ended bob's grant of the notebook twice"
         );
         ensure!(
@@ -284,7 +279,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         // `end_grant` of the key ends what is left of it, mirror entries too.
         ensure!(
-            alice.end_grant(&bobs_key).await?,
+            w.end_grant(LAPTOP, &bobs_key).await?,
             "alice's host ended bob's key and her layer says there was no grant of it"
         );
         let alice_none = w.link_grants(LAPTOP).await?;
@@ -296,19 +291,18 @@ fn run(w: &World) -> CaseFuture<'_> {
             alice_none.told
         );
         ensure!(
-            w.joined_folders(LAPTOP).await?.folders.is_empty(),
+            w.joined_folders(LAPTOP).await?.spaces.is_empty(),
             "alice's device lists a joined folder after her host ended bob's key"
         );
         ensure!(
-            !alice.end_grant(&bobs_key).await?,
+            !w.end_grant(LAPTOP, &bobs_key).await?,
             "alice's host ended bob's key twice"
         );
 
         // Bob's host ends alice's key with both entries standing: the inviter's and the
         // mirror's end together.
-        let bob_device = w.gate(BOB)?;
         ensure!(
-            bob_device.end_grant(&alices_key).await?,
+            w.end_grant(BOB, &alices_key).await?,
             "bob's host ended alice's key and his layer says there was no grant of it"
         );
         let bob_none = w.link_grants(BOB).await?;
@@ -320,7 +314,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             bob_none.told
         );
         ensure!(
-            w.joined_folders(BOB).await?.folders.is_empty(),
+            w.joined_folders(BOB).await?.spaces.is_empty(),
             "bob's device lists a joined folder after his host ended alice's key"
         );
         no_departure(&bob_none, "after bob's host ended alice's key")?;
@@ -332,10 +326,10 @@ fn run(w: &World) -> CaseFuture<'_> {
 /// joined alone as joined.
 async fn both_entries(
     w: &World,
-    alice_inviter: &Grant,
-    alice_mirror: &Grant,
-    bob_mirror: &Grant,
-    bob_inviter: &Grant,
+    alice_inviter: &InviteGrant,
+    alice_mirror: &InviteGrant,
+    bob_mirror: &InviteGrant,
+    bob_inviter: &InviteGrant,
 ) -> Result<(), Failure> {
     let alice = w.link_grants(LAPTOP).await?;
     ensure!(
@@ -366,28 +360,28 @@ async fn both_entries(
         bob.now
     );
     no_departure(&bob, "after the invitations")?;
-    for (d, who, folder, owner, inviter) in [
+    for (d, who, space, owner, inviter) in [
         (
             LAPTOP,
             "alice",
-            &alice_mirror.folder,
+            &alice_mirror.space,
             "/bob",
             alice_mirror.key,
         ),
-        (BOB, "bob", &bob_mirror.folder, "/alice", bob_mirror.key),
+        (BOB, "bob", &bob_mirror.space, "/alice", bob_mirror.key),
     ] {
         let listed = w.joined_folders(d).await?;
         ensure!(
-            listed.folders.len() == 1
-                && listed.folders[0].folder == *folder
-                && listed.folders[0].owner == n(owner)
-                && listed.folders[0].inviter == inviter
-                && listed.folders[0].role == Role::Writer
-                && listed.folders[0].writers.is_empty(),
-            "{who}'s device lists {:?} as joined; expected the one folder she or he joined, {folder}, \
+            listed.spaces.len() == 1
+                && listed.spaces[0].space == *space
+                && listed.spaces[0].owner == n(owner)
+                && listed.spaces[0].inviter == inviter
+                && listed.spaces[0].role == InviteRole::Writer
+                && listed.spaces[0].writers.is_empty(),
+            "{who}'s device lists {:?} as joined; expected the one folder she or he joined, {space}, \
              owned by {owner}, as a writer, with no other writer (the folder she or he invited \
              the other to is no joined folder)",
-            listed.folders
+            listed.spaces
         );
     }
     Ok(())

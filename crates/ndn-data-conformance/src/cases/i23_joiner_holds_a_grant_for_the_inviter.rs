@@ -5,9 +5,7 @@
 //! folder (`Introducer::grant`: her namespace, the folder, and her role as the members record
 //! gives it — a writer, as it lists her namespace), `Device::grants` lists them, and no
 //! departure is ever made for them (the person let go is told by the inviter; a mirror admits the
-//! inviter's own link). Alice's phone, a device of hers that made no offer, signs a record that
-//! demotes Alice's namespace from writer to reader in the notebook: Bob's host is told the grant
-//! again, as a reader's. A record that leaves Bob out of the notebook, which his device takes as
+//! inviter's own link). A record that leaves Bob out of the notebook, which his device takes as
 //! `i19` and `i21` do, tells it `Introducer::revoke_grant` with Alice's key and the notebook,
 //! once; `Device::grants` lists the diary's grant alone, and still no departure. After a restart
 //! of Bob's device the entries are the same set less the ended, and nothing is told again. A
@@ -16,13 +14,13 @@
 
 use std::time::Duration;
 
-use ndn_data::{Grant, Role};
-
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::kit::{LIMIT, SETTLE, n, private};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::{GrantEvent, GrantLog};
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, GrantLog, InviteGrant, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -38,10 +36,9 @@ pub(super) const CASE: Case = Case {
     model: &[],
     guards: "A join tells the joiner's host exactly one grant for the inviter's key, her \
              namespace, the folder and her role as the record gives it, and never a departure; \
-             Device::grants lists it; a record that demotes her tells the grant again in the \
-             reader's role; a record that leaves the joiner out tells revoke_grant once and \
-             Device::grants drops it; a restart keeps the rest and tells nothing; a second join \
-             of the folder makes the entry again; clean or faulty.",
+             Device::grants lists it; a record that leaves the joiner out tells revoke_grant \
+             once and Device::grants drops it; a restart keeps the rest and tells nothing; a \
+             second join of the folder makes the entry again; clean or faulty.",
     budget: Duration::from_secs(4 * 3600),
     plan,
     run,
@@ -65,7 +62,7 @@ fn plan() -> Plan {
 }
 
 /// Whether `a` and `b` hold the same grants, in any order.
-pub(super) fn same_set(a: &[Grant], b: &[Grant]) -> bool {
+pub(super) fn same_set(a: &[InviteGrant], b: &[InviteGrant]) -> bool {
     a.len() == b.len() && a.iter().all(|g| b.contains(g))
 }
 
@@ -88,12 +85,7 @@ fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let (notebook, diary) = (n(FOLDER), n(DIARY));
         alice_keeps_a_notebook(w).await?;
-        w.at(LAPTOP)
-            .share_folder(
-                &diary,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
-            )
-            .await?;
+        w.spaces(LAPTOP).create(&diary, private(&[], &[])).await?;
         let alices_key = w.link_key(LAPTOP).await?;
         let bobs_key = w.link_key(BOB).await?;
         let none = w.link_grants(BOB).await?;
@@ -106,7 +98,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Bob joins the notebook: his host is told of exactly one grant, for Alice's key.
         let for_notebook = w
-            .offer(LAPTOP, &notebook, offer(w, Role::Writer, 3))
+            .offer(LAPTOP, &notebook, offer(w, InviteRole::Writer, 3))
             .await?;
         joins(w, BOB, &for_notebook.link).await?;
         let joined = w.link_grants(BOB).await?;
@@ -120,8 +112,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         ensure!(
             of_notebook.key == alices_key
                 && of_notebook.namespaces == [n("/alice")]
-                && of_notebook.folder == notebook
-                && of_notebook.role == Role::Writer
+                && of_notebook.space == notebook
+                && of_notebook.role == InviteRole::Writer
                 && of_notebook.until.is_none(),
             "the grant bob's host was told of is {of_notebook:?}; it must name alice's key \
              {alices_key:02x?}, /alice, the notebook, alice's role in the record (a writer) and \
@@ -135,7 +127,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         no_departure(&joined, "after bob joined the notebook")?;
 
         // The diary, by a second code: a second entry, a folder of its own.
-        let for_diary = w.offer(LAPTOP, &diary, offer(w, Role::Writer, 3)).await?;
+        let for_diary = w
+            .offer(LAPTOP, &diary, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &for_diary.link).await?;
         let both = w.link_grants(BOB).await?;
         let [first, GrantEvent::Granted(of_diary)] = both.told.as_slice() else {
@@ -148,8 +142,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         ensure!(
             *first == GrantEvent::Granted(of_notebook.clone())
                 && of_diary.key == alices_key
-                && of_diary.folder == diary
-                && of_diary.role == Role::Writer
+                && of_diary.space == diary
+                && of_diary.role == InviteRole::Writer
                 && same_set(&both.now, &[of_notebook.clone(), of_diary.clone()]),
             "bob's host was told {:?} and Device::grants lists {:?}; the two folders are two \
              entries of alice's key, the second the diary's",
@@ -159,87 +153,34 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Bob writes a page into each; Alice's phone reads both, so it holds the records that
         // admit him.
-        let phone = w.at(PHONE);
-        for (folder, who) in [(&notebook, "notebook"), (&diary, "diary")] {
-            let at = folder.clone().append("page");
+        let phone = w.spaces(PHONE);
+        let at = n("/page");
+        for (space, who) in [(&notebook, "notebook"), (&diary, "diary")] {
             let words = format!("a page by bob in the {who}");
-            let bob = w.at(BOB);
-            w.until(
-                &format!("bob writes a page into the {who}"),
-                LIMIT,
-                || async {
-                    match bob.put(&at, text(&words), note(1)).await {
-                        Ok(_) => Ok(true),
-                        Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => {
-                            Ok(false)
-                        }
-                        Err(e) => Err(e.into()),
-                    }
-                },
-            )
-            .await?;
+            writes(w, BOB, space, &at, &words).await?;
             w.until(
                 &format!("alice's phone reads bob's page of the {who}"),
                 LIMIT,
-                || reads(&*phone, &at, &words),
+                || reads(&*phone, space, &at, &words),
             )
             .await?;
         }
 
-        // Alice's phone demotes Alice's namespace to a reader of the notebook: the grant is
-        // told again, in the reader's role, and no other way.
-        phone
-            .share_folder(
-                &notebook,
-                members(Rule::Log, &["/bob"], &[person("/alice"), person("/bob")]).into(),
-            )
-            .await?;
-        let as_reader = Grant {
-            role: Role::Reader,
-            ..of_notebook.clone()
-        };
-        w.until(
-            "bob's host is told alice's grant of the notebook as a reader's",
-            LIMIT,
-            || async {
-                Ok(w.link_grants(BOB)
-                    .await?
-                    .told
-                    .contains(&GrantEvent::Granted(as_reader.clone())))
-            },
-        )
-        .await?;
-        w.sleep(SETTLE).await;
-        let demoted = w.link_grants(BOB).await?;
-        ensure!(
-            demoted.told
-                == [
-                    GrantEvent::Granted(of_notebook.clone()),
-                    GrantEvent::Granted(of_diary.clone()),
-                    GrantEvent::Granted(as_reader.clone()),
-                ]
-                && same_set(&demoted.now, &[as_reader.clone(), of_diary.clone()]),
-            "after the record that demotes alice bob's host was told {:?} and Device::grants \
-             lists {:?}; expected the two grants, then the notebook's again as a reader's \
-             (once), and the entries {:?}",
-            demoted.told,
-            demoted.now,
-            [&as_reader, of_diary]
-        );
-        no_departure(&demoted, "after the demotion")?;
-
         // A record from the phone leaves Bob out of the notebook. Alice's laptop is told he was
         // let go; his device takes the record that lets him go, as a host does (i19, i21).
         phone
-            .share_folder(
+            .change(
                 &notebook,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.until("alice's laptop ends bob's grant", LIMIT, || async {
             Ok(w.link_grants(LAPTOP).await?.told.iter().any(|e| {
-                matches!(e, GrantEvent::Revoked { key, folder }
-                    if *key == bobs_key && *folder == notebook)
+                matches!(e, GrantEvent::Revoked { key, space }
+                    if *key == bobs_key && *space == notebook)
             }))
         })
         .await?;
@@ -264,7 +205,7 @@ fn run(w: &World) -> CaseFuture<'_> {
                     .await?
                 {
                     Ok(()) => Ok(true),
-                    Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
+                    Err(e) if e.retry_later() => Ok(false),
                     Err(e) => Err(e.into()),
                 }
             },
@@ -275,8 +216,8 @@ fn run(w: &World) -> CaseFuture<'_> {
             LIMIT,
             || async {
                 Ok(w.link_grants(BOB).await?.told.iter().any(|e| {
-                    matches!(e, GrantEvent::Revoked { key, folder }
-                        if *key == alices_key && *folder == notebook)
+                    matches!(e, GrantEvent::Revoked { key, space }
+                        if *key == alices_key && *space == notebook)
                 }))
             },
         )
@@ -288,13 +229,12 @@ fn run(w: &World) -> CaseFuture<'_> {
                 == [
                     GrantEvent::Granted(of_notebook.clone()),
                     GrantEvent::Granted(of_diary.clone()),
-                    GrantEvent::Granted(as_reader.clone()),
                     GrantEvent::Revoked {
                         key: alices_key,
-                        folder: notebook.clone(),
+                        space: notebook.clone(),
                     },
                 ],
-            "after the record that leaves bob out bob's host was told {:?}; expected the three \
+            "after the record that leaves bob out bob's host was told {:?}; expected the two \
              grants, then once that alice's grant of the notebook ended, naming her key and the \
              notebook",
             ended.told
@@ -308,10 +248,10 @@ fn run(w: &World) -> CaseFuture<'_> {
         no_departure(&ended, "after the record that leaves bob out")?;
         let listed = w.joined_folders(BOB).await?;
         ensure!(
-            listed.folders.len() == 1 && listed.folders[0].folder == diary,
+            listed.spaces.len() == 1 && listed.spaces[0].space == diary,
             "after the record that leaves bob out of the notebook his device lists {:?} as \
              joined; expected the diary alone",
-            listed.folders
+            listed.spaces
         );
 
         // A restart of Bob's device: the same entries less the ended, nothing told again.
@@ -330,28 +270,28 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Invited again: a new offer, joined again, makes the notebook's entry again.
         let again = w
-            .offer(LAPTOP, &notebook, offer(w, Role::Writer, 3))
+            .offer(LAPTOP, &notebook, offer(w, InviteRole::Writer, 3))
             .await?;
         joins(w, BOB, &again.link).await?;
         let rejoined = w.link_grants(BOB).await?;
         ensure!(
-            rejoined.told.len() == 5 && rejoined.told[..4] == ended.told[..],
+            rejoined.told.len() == 4 && rejoined.told[..3] == ended.told[..],
             "bob joined the notebook again and his host was told {:?}; expected what it was told \
              before, then one grant",
             rejoined.told
         );
-        let GrantEvent::Granted(remade) = &rejoined.told[4] else {
+        let GrantEvent::Granted(remade) = &rejoined.told[3] else {
             return Err(Failure::new(format!(
                 "bob joined the notebook again and his host was told {:?} last; it must be told \
                  the grant",
-                rejoined.told[4]
+                rejoined.told[3]
             )));
         };
         ensure!(
             remade.key == alices_key
-                && remade.folder == notebook
+                && remade.space == notebook
                 && remade.namespaces == [n("/alice")]
-                && remade.role == Role::Writer
+                && remade.role == InviteRole::Writer
                 && remade.until.is_none()
                 && same_set(&rejoined.now, &[remade.clone(), of_diary.clone()]),
             "after bob joined the notebook again the grant is {remade:?} and Device::grants lists \

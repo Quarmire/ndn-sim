@@ -14,12 +14,13 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
-use super::i1_join_by_code::{joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{joins, offer, reads, writes};
+use super::kit::{RELAYED, n, octets, private};
+use super::n1_named_by_key::under;
+use crate::case::{Case, CaseFuture};
 use crate::ensure;
+use crate::feature::Feature;
+use crate::invite::InviteRole;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -62,59 +63,20 @@ fn plan() -> Plan {
     p
 }
 
-/// `ns` followed by the components of `rest`.
-pub(super) fn under(ns: &Name, rest: &str) -> Name {
-    Name::from_components(
-        ns.components()
-            .iter()
-            .chain(n(rest).components().iter())
-            .cloned(),
-    )
-}
-
-/// `d` writes `words` as a note into `page`, once its device can (it may first wait for the
-/// folder's record and epoch key).
-pub(super) async fn writes(w: &World, d: Dev, page: &Name, words: &str) -> Result<(), Failure> {
-    let layer = w.at(d);
-    w.until(
-        &format!("{} writes {page}", w.net().spec(d).name()),
-        LIMIT,
-        || async {
-            match layer.put(page, text(words), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        },
-    )
-    .await
-    .map(|_| ())
-}
-
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let alice_ns = w.net().spec(ALICE).person.clone();
-        let folder = under(&alice_ns, "/32=data/notebook");
-        let cover = under(&folder, "/cover");
-        let (alice, bob, carol) = (w.at(ALICE), w.at(BOB), w.at(CAROL));
-        alice
-            .share_folder(
-                &folder,
-                Share {
-                    rule: Rule::Log,
-                    writers: vec![alice_ns.clone()],
-                    readers: vec![Audience::Person(alice_ns.clone())],
-                }
-                .into(),
-            )
-            .await?;
-        alice.put(&cover, text("cover by alice"), note(1)).await?;
+        let space = under(&alice_ns, "/32=data/notebook");
+        let cover = n("/cover");
+        let (alice, bob, carol) = (w.spaces(ALICE), w.spaces(BOB), w.spaces(CAROL));
+        alice.create(&space, private(&[], &[])).await?;
+        alice.put(&space, &cover, octets("cover by alice")).await?;
 
         // Alice invites Bob, then Carol, each by a code of their own.
-        let offer_for = |w: &World| offer(w, Role::Writer, 3);
-        let for_bob = w.offer(ALICE, &folder, offer_for(w)).await?;
+        let offer_for = |w: &World| offer(w, InviteRole::Writer, 3);
+        let for_bob = w.offer(ALICE, &space, offer_for(w)).await?;
         joins(w, BOB, &for_bob.link).await?;
-        let for_carol = w.offer(ALICE, &folder, offer_for(w)).await?;
+        let for_carol = w.offer(ALICE, &space, offer_for(w)).await?;
         joins(w, CAROL, &for_carol.link).await?;
 
         // Neither reaches the other's logs and summaries: only Alice's copy joins them.
@@ -135,9 +97,9 @@ fn run(w: &World) -> CaseFuture<'_> {
                 .await,
         ];
 
-        let (by_bob, by_carol) = (under(&folder, "/page-bob"), under(&folder, "/page-carol"));
-        writes(w, BOB, &by_bob, "a page by bob").await?;
-        writes(w, CAROL, &by_carol, "a page by carol").await?;
+        let (by_bob, by_carol) = (n("/page-bob"), n("/page-carol"));
+        writes(w, BOB, &space, &by_bob, "a page by bob").await?;
+        writes(w, CAROL, &space, &by_carol, "a page by carol").await?;
         for (reader, name, at, expected) in [
             (&alice, "alice", &by_bob, "a page by bob"),
             (&alice, "alice", &by_carol, "a page by carol"),
@@ -145,13 +107,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             (&carol, "carol", &by_bob, "a page by bob"),
         ] {
             w.until(&format!("{name} reads {at}"), RELAYED, || {
-                reads(&**reader, at, expected)
+                reads(&**reader, &space, at, expected)
             })
             .await?;
         }
         ensure!(
-            reads(&*bob, &by_carol, "a page by carol").await?
-                && reads(&*carol, &by_bob, "a page by bob").await?,
+            reads(&*bob, &space, &by_carol, "a page by carol").await?
+                && reads(&*carol, &space, &by_bob, "a page by bob").await?,
             "bob and carol, invited apart and cut off from each other, do not read each other's \
              pages through alice's copy"
         );

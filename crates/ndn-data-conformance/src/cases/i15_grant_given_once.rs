@@ -12,15 +12,14 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
 use super::i1_join_by_code::{
     ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, forged, joins, offer, refused,
 };
-use super::*;
-use crate::case::CaseFuture;
+use super::kit::{SETTLE, n, octets, private};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::GrantEvent;
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, InviteRole};
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -63,12 +62,14 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
+        let space = n(FOLDER);
         alice_keeps_a_notebook(w).await?;
         let (bob_key, carol_key) = (w.link_key(BOB).await?, w.link_key(CAROL).await?);
 
         // Bob joins as a writer: one grant, for his key.
-        let code = w.offer(ALICE, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(ALICE, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &code.link).await?;
         let log = w.link_grants(ALICE).await?;
         let [GrantEvent::Granted(bobs)] = log.told.as_slice() else {
@@ -88,9 +89,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             bobs.namespaces
         );
         ensure!(
-            bobs.folder == folder && bobs.role == Role::Writer,
+            bobs.space == space && bobs.role == InviteRole::Writer,
             "the grant names {} as {:?}, not the notebook as a writer",
-            bobs.folder,
+            bobs.space,
             bobs.role
         );
         ensure!(
@@ -129,7 +130,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
 
         // A code forged without its secret is refused and grants nothing.
-        let second = w.offer(ALICE, &folder, offer(w, Role::Reader, 3)).await?;
+        let second = w
+            .offer(ALICE, &space, offer(w, InviteRole::Reader, 3))
+            .await?;
         refused(w, CAROL, &forged(&second, 9)).await?;
         ensure!(
             w.link_grants(ALICE).await? == log,
@@ -153,8 +156,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         ensure!(
             carols.key == carol_key
                 && carols.namespaces == [n("/carol")]
-                && carols.folder == folder
-                && carols.role == Role::Reader,
+                && carols.space == space
+                && carols.role == InviteRole::Reader,
             "carol's grant is {carols:?}, not her key, /carol, the notebook and the reader's role"
         );
         ensure!(
@@ -165,19 +168,13 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // A host whose policy makes no grants admits all the same, and is told nothing.
         let dinas = n("/dina/32=data/notebook");
-        let dina = w.at(DINA);
-        dina.share_folder(
-            &dinas,
-            members(Rule::Log, &["/dina"], &[person("/dina")]).into(),
-        )
-        .await?;
-        dina.put(
-            &n("/dina/32=data/notebook/cover"),
-            text("cover by dina"),
-            note(1),
-        )
-        .await?;
-        let code = w.offer(DINA, &dinas, offer(w, Role::Writer, 3)).await?;
+        let dina = w.spaces(DINA);
+        dina.create(&dinas, private(&[], &[])).await?;
+        dina.put(&dinas, &n("/cover"), octets("cover by dina"))
+            .await?;
+        let code = w
+            .offer(DINA, &dinas, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, EVE, &code.link).await?;
         let none = w.link_grants(DINA).await?;
         ensure!(

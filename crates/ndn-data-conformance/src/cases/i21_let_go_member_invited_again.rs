@@ -11,13 +11,13 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::kit::{LIMIT, n};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::GrantEvent;
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -56,38 +56,36 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
+        let space = n(FOLDER);
         alice_keeps_a_notebook(w).await?;
         let bobs_key = w.link_key(BOB).await?;
-        let code = w.offer(LAPTOP, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(LAPTOP, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &code.link).await?;
-        let bob = w.at(BOB);
-        let phone = w.at(PHONE);
-        let page = n(&format!("{FOLDER}/page-bob"));
-        w.until("bob writes a page into the folder", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
+        let bob = w.spaces(BOB);
+        let phone = w.spaces(PHONE);
+        let page = n("/page-bob");
+        writes(w, BOB, &space, &page, "a page by bob").await?;
         w.until("alice's phone reads bob's page", LIMIT, || {
-            reads(&*phone, &page, "a page by bob")
+            reads(&*phone, &space, &page, "a page by bob")
         })
         .await?;
 
         // Alice's phone lets Bob go; his device takes the record that does.
         phone
-            .share_folder(
-                &folder,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
+            .change(
+                &space,
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.until("alice's laptop is told bob was let go", LIMIT, || async {
             Ok(w.link_grants(LAPTOP).await?.told.iter().any(|e| {
-                matches!(e, GrantEvent::Revoked { key, folder: f }
-                    if *key == bobs_key && *f == folder)
+                matches!(e, GrantEvent::Revoked { key, space: s }
+                    if *key == bobs_key && *s == space)
             }))
         })
         .await?;
@@ -107,48 +105,40 @@ fn run(w: &World) -> CaseFuture<'_> {
             "bob's device takes the record that lets him go",
             LIMIT,
             || async {
-                match w.take_departure(BOB, LAPTOP, &folder, &left.record).await? {
+                match w.take_departure(BOB, LAPTOP, &space, &left.record).await? {
                     Ok(()) => Ok(true),
-                    Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
+                    Err(e) if e.retry_later() => Ok(false),
                     Err(e) => Err(e.into()),
                 }
             },
         )
         .await?;
         let bob_no_more = n("/bob");
-        let share = bob.members(&folder).await?;
+        let members = bob.members(&space).await?;
         ensure!(
-            !share.writers.contains(&bob_no_more),
+            !members.writers.contains(&bob_no_more),
             "bob's device took the record that lets him go and still lists him as a writer"
         );
 
         // Invited again: a new offer, which Bob joins. Bob holds the record that admitted him
         // and the one that let him go; the record that admits him now is still to be fetched.
-        let again = w.offer(LAPTOP, &folder, offer(w, Role::Writer, 3)).await?;
+        let again = w
+            .offer(LAPTOP, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         let joined = joins(w, BOB, &again.link).await?;
         ensure!(
-            joined.folder == folder && joined.role == Role::Writer,
+            joined.space == space && joined.role == InviteRole::Writer,
             "bob's second join says {joined:?}, not the notebook as a writer"
         );
-        let share = bob.members(&folder).await?;
+        let members = bob.members(&space).await?;
         ensure!(
-            share.writers.contains(&bob_no_more),
+            members.writers.contains(&bob_no_more),
             "bob joined again and his device does not list him among the folder's writers"
         );
-        let second = n(&format!("{FOLDER}/page-bob-again"));
-        w.until("bob writes a page again", LIMIT, || async {
-            match bob
-                .put(&second, text("a page by bob, again"), note(1))
-                .await
-            {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
+        let second = n("/page-bob-again");
+        writes(w, BOB, &space, &second, "a page by bob, again").await?;
         w.until("alice's phone reads bob's second page", LIMIT, || {
-            reads(&*phone, &second, "a page by bob, again")
+            reads(&*phone, &space, &second, "a page by bob, again")
         })
         .await?;
         Ok(())

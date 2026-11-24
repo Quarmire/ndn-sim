@@ -12,13 +12,16 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
+use ndn_data::Name;
+use ndn_data::wire::{log_name, parse_log_name};
 
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::kit::{LIMIT, n, octets};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::GrantEvent;
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -55,52 +58,50 @@ fn plan() -> Plan {
     p
 }
 
-/// Whether the folder's members at `d`'s device list Bob's namespace as a writer or a reader.
-async fn lists_bob(w: &World, d: Dev, folder: &Name) -> Result<bool, Failure> {
+/// Whether the space's members at `d`'s device list Bob's namespace as a writer or a reader.
+async fn lists_bob(w: &World, d: Dev, space: &Name) -> Result<bool, Failure> {
     let bob = n("/bob");
-    let share = w.at(d).members(folder).await?;
-    Ok(share.writers.contains(&bob) || share.readers.contains(&person("/bob")))
+    let members = w.spaces(d).members(space).await?;
+    Ok(members.writers.contains(&bob) || members.readers.contains(&bob))
 }
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
+        let space = n(FOLDER);
         alice_keeps_a_notebook(w).await?;
         let bobs_key = w.link_key(BOB).await?;
-        let code = w.offer(LAPTOP, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(LAPTOP, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &code.link).await?;
-        let bob = w.at(BOB);
-        let page = n(&format!("{FOLDER}/page-bob"));
-        w.until("bob writes a page into the folder", LIMIT, || async {
-            match bob.put(&page, text("a page by bob"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
-        let phone = w.at(PHONE);
+        let bob = w.spaces(BOB);
+        let page = n("/page-bob");
+        writes(w, BOB, &space, &page, "a page by bob").await?;
+        let phone = w.spaces(PHONE);
         w.until("alice's phone reads bob's page", LIMIT, || {
-            reads(&*phone, &page, "a page by bob")
+            reads(&*phone, &space, &page, "a page by bob")
         })
         .await?;
         ensure!(
-            lists_bob(w, BOB, &folder).await?,
+            lists_bob(w, BOB, &space).await?,
             "the folder's members at bob's device do not list him before he is let go"
         );
 
         // Bob's phone is away while Alice's phone lets him go.
         w.net().offline(BOB);
         phone
-            .share_folder(
-                &folder,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
+            .change(
+                &space,
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.until("alice's laptop is told bob was let go", LIMIT, || async {
             Ok(w.link_grants(LAPTOP).await?.told.iter().any(|e| {
-                matches!(e, GrantEvent::Revoked { key, folder: f }
-                    if *key == bobs_key && *f == folder)
+                matches!(e, GrantEvent::Revoked { key, space: s }
+                    if *key == bobs_key && *s == space)
             }))
         })
         .await?;
@@ -117,17 +118,17 @@ fn run(w: &World) -> CaseFuture<'_> {
             )));
         };
         ensure!(
-            left.key == bobs_key && left.folder == folder && told.departures == [left.clone()],
+            left.key == bobs_key && left.space == space && told.departures == [left.clone()],
             "the departure {left:?} (listed: {:?}) does not name bob's key and the notebook",
             told.departures
         );
         ensure!(
-            ndn_data::departure_carries(&left.record, &left.record),
-            "the departure's record {} is no log entry of a collection",
+            parse_log_name(&left.record).is_some(),
+            "the departure's record {} is no log entry",
             left.record
         );
         ensure!(
-            lists_bob(w, BOB, &folder).await?,
+            lists_bob(w, BOB, &space).await?,
             "bob's device, away, already lists him no more: it cannot have heard of the record"
         );
 
@@ -137,9 +138,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             "bob's device takes the record that lets him go",
             LIMIT,
             || async {
-                match w.take_departure(BOB, LAPTOP, &folder, &left.record).await? {
+                match w.take_departure(BOB, LAPTOP, &space, &left.record).await? {
                     Ok(()) => Ok(true),
-                    Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
+                    Err(e) if e.retry_later() => Ok(false),
                     Err(e) => Err(e.into()),
                 }
             },
@@ -147,39 +148,41 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
         // At once: the record is held, so the members it names are the ones bob's device lists.
         ensure!(
-            !lists_bob(w, BOB, &folder).await?,
+            !lists_bob(w, BOB, &space).await?,
             "bob's device took the record that lets him go and still lists him among the \
              folder's members"
         );
         // His writing is refused: a put into a collection new under the folder is "not ready"
         // while his device walks the devices of Alice's namespace (asked again), and then it
         // says it is no member — never that it takes the write.
-        let after = n(&format!("{FOLDER}/page-after"));
+        let after = n("/page-after");
         w.until("bob's device refuses his writing", LIMIT, || async {
-            match bob.put(&after, text("a page after the cut"), note(1)).await {
-                Err(DataError::NotAllowed { .. } | DataError::Sealed { .. }) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
+            match bob
+                .put(&space, &after, octets("a page after the cut"))
+                .await
+            {
+                Err(e) if e.kind_is("NotAllowed") || e.kind_is("Sealed") => Ok(true),
+                Err(e) if e.retry_later() => Ok(false),
                 Ok(_) => Err(Failure::new(
                     "bob's device took the record that lets him go and still takes his writing",
                 )),
-                Err(e) => Err(e.into()),
+                Err(e) => Err(e),
             }
         })
         .await?;
 
         // A name that is no members record of the folder is no departure.
-        let other =
-            ndn_data::wire::log_name(&n("/alice/laptop"), Some(&n("/alice/32=data/diary")), 1);
-        let not_a_record = w.take_departure(BOB, LAPTOP, &folder, &other).await?;
+        let other = log_name(&n("/alice/laptop"), Some(&n("/alice/32=data/diary")), 1);
+        let not_a_record = w.take_departure(BOB, LAPTOP, &space, &other).await?;
         ensure!(
-            matches!(not_a_record, Err(DataError::BadRequest { .. })),
+            matches!(&not_a_record, Err(e) if e.kind_is("BadRequest")),
             "a hint naming another folder's entry was answered {not_a_record:?}, not refused"
         );
         // A notice from a device that is not under the folder's namespace (Bob's own phone
         // naming Alice's folder) is refused, whatever it names.
-        let stranger = w.take_departure(BOB, BOB, &folder, &left.record).await?;
+        let stranger = w.take_departure(BOB, BOB, &space, &left.record).await?;
         ensure!(
-            matches!(&stranger, Err(DataError::BadRequest { why, .. }) if why.contains("lies under no namespace")),
+            matches!(&stranger, Err(e) if e.kind_is("BadRequest") && e.why.contains("lies under no namespace")),
             "a departure told by a device outside the folder's namespace was answered \
              {stranger:?}, not refused saying so"
         );

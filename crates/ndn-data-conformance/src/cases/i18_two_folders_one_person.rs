@@ -14,13 +14,13 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::kit::{LIMIT, SETTLE, n, private};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::GrantEvent;
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -61,50 +61,41 @@ fn plan() -> Plan {
     p
 }
 
+/// A change that leaves Bob out of a space.
+fn leaves_bob_out() -> SpaceChange {
+    SpaceChange {
+        remove: vec![n("/bob")],
+        ..SpaceChange::default()
+    }
+}
+
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
         let notebook = n(FOLDER);
         let diary = n(DIARY);
         alice_keeps_a_notebook(w).await?;
-        w.at(LAPTOP)
-            .share_folder(
-                &diary,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
-            )
-            .await?;
+        w.spaces(LAPTOP).create(&diary, private(&[], &[])).await?;
         let bobs_key = w.link_key(BOB).await?;
         let for_notebook = w
-            .offer(LAPTOP, &notebook, offer(w, Role::Writer, 3))
+            .offer(LAPTOP, &notebook, offer(w, InviteRole::Writer, 3))
             .await?;
         joins(w, BOB, &for_notebook.link).await?;
-        let for_diary = w.offer(LAPTOP, &diary, offer(w, Role::Writer, 3)).await?;
+        let for_diary = w
+            .offer(LAPTOP, &diary, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &for_diary.link).await?;
 
         // Bob writes a page into each; Alice's phone reads both, so it holds the records that
         // admit him to each.
-        let phone = w.at(PHONE);
-        for (folder, who) in [(&notebook, "notebook"), (&diary, "diary")] {
-            let at = folder.clone().append("page");
-            let bob = w.at(BOB);
+        let phone = w.spaces(PHONE);
+        let at = n("/page");
+        for (space, who) in [(&notebook, "notebook"), (&diary, "diary")] {
             let words = format!("a page by bob in the {who}");
-            w.until(
-                &format!("bob writes a page into the {who}"),
-                LIMIT,
-                || async {
-                    match bob.put(&at, text(&words), note(1)).await {
-                        Ok(_) => Ok(true),
-                        Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => {
-                            Ok(false)
-                        }
-                        Err(e) => Err(e.into()),
-                    }
-                },
-            )
-            .await?;
+            writes(w, BOB, space, &at, &words).await?;
             w.until(
                 &format!("alice's phone reads bob's page of the {who}"),
                 LIMIT,
-                || reads(&*phone, &at, &words),
+                || reads(&*phone, space, &at, &words),
             )
             .await?;
         }
@@ -123,8 +114,8 @@ fn run(w: &World) -> CaseFuture<'_> {
         ensure!(
             of_notebook.key == bobs_key
                 && of_diary.key == bobs_key
-                && of_notebook.folder == notebook
-                && of_diary.folder == diary
+                && of_notebook.space == notebook
+                && of_diary.space == diary
                 && granted.now.len() == 2
                 && granted.now.contains(of_notebook)
                 && granted.now.contains(of_diary),
@@ -135,19 +126,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
 
         // Alice's phone lets Bob go of the notebook alone: the diary's record still lists him.
-        phone
-            .share_folder(
-                &notebook,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
-            )
-            .await?;
+        phone.change(&notebook, leaves_bob_out()).await?;
         w.until(
             "alice's laptop ends bob's grant of the notebook",
             LIMIT,
             || async {
                 Ok(w.link_grants(LAPTOP).await?.told.iter().any(|e| {
-                    matches!(e, GrantEvent::Revoked { key, folder }
-                    if *key == bobs_key && *folder == notebook)
+                    matches!(e, GrantEvent::Revoked { key, space }
+                    if *key == bobs_key && *space == notebook)
                 }))
             },
         )
@@ -161,7 +147,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             GrantEvent::Departed(left_notebook),
             GrantEvent::Revoked {
                 key,
-                folder: revoked,
+                space: revoked,
             },
         ] = first.told.as_slice()
         else {
@@ -174,7 +160,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         };
         ensure!(
             left_notebook.key == bobs_key
-                && left_notebook.folder == notebook
+                && left_notebook.space == notebook
                 && *key == bobs_key
                 && *revoked == notebook,
             "the departure and the end after the notebook's record are {:?}; both must name \
@@ -194,19 +180,14 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
 
         // The diary next: one more end, naming the diary.
-        phone
-            .share_folder(
-                &diary,
-                members(Rule::Log, &["/alice"], &[person("/alice")]).into(),
-            )
-            .await?;
+        phone.change(&diary, leaves_bob_out()).await?;
         w.until(
             "alice's laptop ends bob's grant of the diary",
             LIMIT,
             || async {
                 Ok(w.link_grants(LAPTOP).await?.told.iter().any(|e| {
-                    matches!(e, GrantEvent::Revoked { key, folder }
-                    if *key == bobs_key && *folder == diary)
+                    matches!(e, GrantEvent::Revoked { key, space }
+                    if *key == bobs_key && *space == diary)
                 }))
             },
         )
@@ -221,7 +202,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             GrantEvent::Departed(left_diary),
             GrantEvent::Revoked {
                 key: last_key,
-                folder: last_folder,
+                space: last_space,
             },
         ] = ended.told.as_slice()
         else {
@@ -232,10 +213,10 @@ fn run(w: &World) -> CaseFuture<'_> {
             )));
         };
         ensure!(
-            left_diary.folder == diary
+            left_diary.space == diary
                 && left_diary.key == bobs_key
                 && *last_key == bobs_key
-                && *last_folder == diary
+                && *last_space == diary
                 && ended.told[..4] == first.told[..],
             "the last two told, {:?}, must name bob's key and the diary after the four before \
              them: {:?}",

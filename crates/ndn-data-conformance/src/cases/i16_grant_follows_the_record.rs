@@ -12,13 +12,13 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::GrantEvent;
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -59,37 +59,29 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
+        let space = n(FOLDER);
         alice_keeps_a_notebook(w).await?;
         let bobs_key = w.link_key(BOB).await?;
-        let for_bob = w.offer(LAPTOP, &folder, offer(w, Role::Writer, 3)).await?;
+        let for_bob = w
+            .offer(LAPTOP, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, BOB, &for_bob.link).await?;
-        let for_carol = w.offer(LAPTOP, &folder, offer(w, Role::Writer, 3)).await?;
+        let for_carol = w
+            .offer(LAPTOP, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, CAROL, &for_carol.link).await?;
 
         // Both write a page; Alice's phone reads them, so it holds the records that admit them.
-        let page = |who: &str| n(&format!("{FOLDER}/page-{who}"));
+        let page = |who: &str| n(&format!("/page-{who}"));
         for (d, who) in [(BOB, "bob"), (CAROL, "carol")] {
-            let layer = w.at(d);
-            let at = page(who);
-            w.until("a joiner writes a page into the folder", LIMIT, || async {
-                match layer
-                    .put(&at, text(&format!("a page by {who}")), note(1))
-                    .await
-                {
-                    Ok(_) => Ok(true),
-                    Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                    Err(e) => Err(e.into()),
-                }
-            })
-            .await?;
+            writes(w, d, &space, &page(who), &format!("a page by {who}")).await?;
         }
-        let phone = w.at(PHONE);
+        let phone = w.spaces(PHONE);
         for who in ["bob", "carol"] {
             let at = page(who);
             let expected = format!("a page by {who}");
             w.until("alice's phone reads the page", LIMIT, || {
-                reads(&*phone, &at, &expected)
+                reads(&*phone, &space, &at, &expected)
             })
             .await?;
         }
@@ -111,14 +103,12 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // Alice's phone removes Bob. The laptop signs nothing for it: it holds the phone's record.
         phone
-            .share_folder(
-                &folder,
-                members(
-                    Rule::Log,
-                    &["/alice", "/carol"],
-                    &[person("/alice"), person("/carol")],
-                )
-                .into(),
+            .change(
+                &space,
+                SpaceChange {
+                    remove: vec![n("/bob")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         w.until("alice's laptop ends bob's grant", LIMIT, || async {
@@ -140,7 +130,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             GrantEvent::Departed(left),
             GrantEvent::Revoked {
                 key: revoked,
-                folder: revoked_in,
+                space: revoked_in,
             },
         ] = ended.told.as_slice()
         else {
@@ -154,10 +144,10 @@ fn run(w: &World) -> CaseFuture<'_> {
             *first == GrantEvent::Granted(bobs.clone())
                 && *second == GrantEvent::Granted(carols.clone())
                 && left.key == bobs_key
-                && left.folder == folder
+                && left.space == space
                 && left.namespaces == [n("/bob")]
                 && *revoked == bobs_key
-                && *revoked_in == folder,
+                && *revoked_in == space,
             "alice's host was told {:?}; the departure and the end must name bob's key, /bob and \
              the notebook",
             ended.told

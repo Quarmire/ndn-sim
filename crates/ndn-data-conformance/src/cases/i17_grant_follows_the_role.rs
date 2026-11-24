@@ -11,13 +11,13 @@
 
 use std::time::Duration;
 
-use ndn_data::Role;
-
-use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads};
-use super::*;
-use crate::case::CaseFuture;
+use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
+use super::kit::{LIMIT, SETTLE, n};
+use crate::case::{Case, CaseFuture, Failure};
 use crate::ensure;
-use crate::provider::GrantEvent;
+use crate::feature::Feature;
+use crate::invite::{GrantEvent, InviteRole};
+use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
 
 pub(super) const CASE: Case = Case {
@@ -57,26 +57,20 @@ fn plan() -> Plan {
 
 fn run(w: &World) -> CaseFuture<'_> {
     Box::pin(async move {
-        let folder = n(FOLDER);
+        let space = n(FOLDER);
         alice_keeps_a_notebook(w).await?;
         let carols_key = w.link_key(CAROL).await?;
-        let code = w.offer(LAPTOP, &folder, offer(w, Role::Writer, 3)).await?;
+        let code = w
+            .offer(LAPTOP, &space, offer(w, InviteRole::Writer, 3))
+            .await?;
         joins(w, CAROL, &code.link).await?;
 
         // Carol writes a page; Alice's phone reads it, so it holds the record that admits her.
-        let at = n(&format!("{FOLDER}/page-carol"));
-        let layer = w.at(CAROL);
-        w.until("carol writes a page into the folder", LIMIT, || async {
-            match layer.put(&at, text("a page by carol"), note(1)).await {
-                Ok(_) => Ok(true),
-                Err(DataError::NotReady { .. } | DataError::Unavailable { .. }) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .await?;
-        let phone = w.at(PHONE);
+        let at = n("/page-carol");
+        writes(w, CAROL, &space, &at, "a page by carol").await?;
+        let phone = w.spaces(PHONE);
         w.until("alice's phone reads the page", LIMIT, || {
-            reads(&*phone, &at, "a page by carol")
+            reads(&*phone, &space, &at, "a page by carol")
         })
         .await?;
         let before = w.link_grants(LAPTOP).await?;
@@ -88,24 +82,23 @@ fn run(w: &World) -> CaseFuture<'_> {
             )));
         };
         ensure!(
-            writers.key == carols_key && writers.role == Role::Writer,
+            writers.key == carols_key && writers.role == InviteRole::Writer,
             "the grant before the demotion is {writers:?}, not carol's key as a writer"
         );
 
         // Alice's phone demotes Carol to a reader. The laptop signs nothing for it.
         phone
-            .share_folder(
-                &folder,
-                members(
-                    Rule::Log,
-                    &["/alice"],
-                    &[person("/alice"), person("/carol")],
-                )
-                .into(),
+            .change(
+                &space,
+                SpaceChange {
+                    add_readers: vec![n("/carol")],
+                    remove: vec![n("/carol")],
+                    ..SpaceChange::default()
+                },
             )
             .await?;
         let mut reader = writers.clone();
-        reader.role = Role::Reader;
+        reader.role = InviteRole::Reader;
         w.until(
             "alice's laptop tells its host the new role",
             LIMIT,

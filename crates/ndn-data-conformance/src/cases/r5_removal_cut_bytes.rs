@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{
     LIMIT, LOOK, SETTLE, has, item, items, known, look, n, octets, op_is, public, value_now,

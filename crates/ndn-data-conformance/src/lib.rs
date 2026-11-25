@@ -1,4 +1,4 @@
-//! Conformance cases for the data-layer contract, run on two implementations.
+//! Conformance cases for the data-layer contract, run on `ndn-heap` and `ndn-invite`.
 //!
 //! The data-layer study played twelve use cases through its model and left three items open; a
 //! fourth (a reader keeping up with a writer that never pauses) came out of slice 1. Each
@@ -7,25 +7,22 @@
 //! lie ([`ndn_sim::ClockSkew`]), and a thief holding a copy of a stolen device's key. Every case
 //! asserts the invariant it guards — the "fix" of its use case — not wording or exact counts.
 //!
-//! The cases of the core suite are written once against the neutral [`Spaces`] trait (a space,
-//! paths in it, plain data types) and run unchanged on both implementations: `ndn-data`'s own
-//! [`Device`](ndn_data::Device) ([`Reference`], through `OldSpaces`) and `ndn-heap`'s `Node`
-//! ([`NewReference`]). The introduction cases (`i1`–`i26`) are written over `Spaces` and the
-//! neutral verbs of [`invite`] (offer, join, the grants a host is told of, the spaces a device
-//! joined, the calls its host's link layer was asked), whose recording core is
-//! [`host::IntroduceCore`]: they run on `ndn-data` through `old_invite` and on `ndn-heap`
-//! through `new_invite` over `ndn-invite`. The signal cases (`e1`–`e19`) are written over `Spaces`
-//! and `ndn-surface`'s signals, a space being a signal's scope, and run on `ndn-heap` alone,
-//! like the durability and chain cases (`d9`–`d16`, `q1`–`q6`); the few cases that drive the
-//! old crate's own collections and audiences still use [`ndn_data::DataLayer`] and run on
-//! `ndn-data` alone until they are retired.
+//! The cases are written once against the neutral [`Spaces`] trait (a space, paths in it, plain
+//! data types) and the neutral verbs of [`invite`] (offer, join, the grants a host is told of, the
+//! spaces a device joined, the calls its host's link layer was asked), whose recording core is
+//! [`host::IntroduceCore`]. One implementation runs them: `ndn-heap`'s `Node`
+//! ([`NewReference`]) and `ndn-invite`'s host (through `new_invite`). The signal cases
+//! (`e1`–`e19`) are written over `Spaces` and `ndn-surface`'s signals, a space being a signal's
+//! scope, like the durability and chain cases (`d9`–`d16`, `q1`–`q6`). The suite once ran on a
+//! second implementation, the `ndn-data` crate; that crate is removed (see
+//! `ndn-rs/docs/specs/history/`) and so are the six cases that only it could run.
 //!
 //! An implementation plugs in as a [`Provider`]; the runner
-//! (`cargo run --release -p ndn-data-conformance -- --provider ndn-data|ndn-heap --json <path>`)
-//! knows both and needs `--provider` to choose. A case runs when its provider supports every
-//! [`Feature`] it needs and is otherwise reported [`Status::NotImplemented`], naming what is
-//! missing. The cases are not `#[test]`s: they run only from the runner, so a plain `cargo test`
-//! checks the harness itself (devices going offline, clock skew, the report).
+//! (`cargo run --release -p ndn-data-conformance -- --json <path>`) runs the one provider,
+//! `ndn-heap`, with no flag (`--provider ndn-heap` is accepted). A case runs when its provider
+//! supports every [`Feature`] it needs and is otherwise reported [`Status::NotImplemented`],
+//! naming what is missing. The cases are not `#[test]`s: they run only from the runner, so a plain
+//! `cargo test` checks the harness itself (devices going offline, clock skew, the report).
 //!
 //! Each run also records cost — round trips, bytes, signatures, copies, time to converge and
 //! person gestures ([`Cost`]) — so the Results page can show what each slice pays.
@@ -39,7 +36,7 @@
 //! forge 0.05, delay 400 ms, reorder 0.1, blocks 1500 ms), `--faults SPEC` on another profile and
 //! `--fault-seed N` with another seed ([`Network`]): every packet arriving at a device from its
 //! link meets the profile, seeded per link, so a faulty run is as deterministic as a clean one.
-//! Every case must pass on it (spec data-layer.md §18).
+//! Every case must pass on it (spec `docs/specs/history/data-layer-remainder.md` §18).
 
 pub mod case;
 pub mod cases;
@@ -49,10 +46,7 @@ pub mod host;
 pub mod invite;
 pub mod new_invite;
 pub mod new_reference;
-pub mod old_invite;
-pub mod old_spaces;
 pub mod provider;
-pub mod reference;
 pub mod report;
 pub mod runner;
 pub mod signal;
@@ -65,7 +59,6 @@ pub use feature::Feature;
 pub use invite::{GrantEvent, GrantLog, JoinedList};
 pub use new_reference::NewReference;
 pub use provider::{Certs, DeviceSpec, Grants, Image, NodeRole, Provider, Tally};
-pub use reference::Reference;
 pub use report::{CaseResult, Cost, NetworkReport, Report, Status};
 pub use runner::{Network, differences, run_all, run_case, run_only};
 pub use spaces::{

@@ -6,14 +6,14 @@
 //! into the branches that changed. Over spaces the notes are the paths `/n0`…`/n9999` of Alice's
 //! space `/alice/32=data/notes`, and the laptop's watch of the space, held open across the
 //! absence, reports what changed and nothing else. (The summaries themselves, and a watch that
-//! starts from a frontier, are the old provider's own structure; the neutral surface has
-//! neither: what it holds of the guard is that a device that comes back is told exactly what
+//! starts from a frontier, were the removed `ndn-data` crate's own structure; the neutral surface
+//! has neither: what it holds of the guard is that a device that comes back is told exactly what
 //! changed, at a cost far below one round trip per note.)
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{DAY, LIMIT, drain_until, items, n, octets, op_is, private};
 use crate::case::{Case, CaseFuture};

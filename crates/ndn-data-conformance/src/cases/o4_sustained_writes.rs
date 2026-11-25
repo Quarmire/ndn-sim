@@ -22,7 +22,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{LIMIT, item, n, octets, private};
 use crate::case::{Case, CaseFuture, Failure};
@@ -74,7 +74,7 @@ fn pace(w: &World) -> Duration {
     let Some(per_packet) = packet_time(w) else {
         return PACE;
     };
-    let in_flight = ndn_data::Config::new().in_flight as f64;
+    let in_flight = ndn_heap::Config::new().in_flight as f64;
     let ms = per_packet * VERSION_PACKETS / (in_flight * WRITER_SHARE);
     Duration::from_micros((ms * 1000.0) as u64).max(PACE)
 }
@@ -86,7 +86,7 @@ fn packet_time(w: &World) -> Option<f64> {
     let delay = f.delay_ms as f64;
     let round_trip = delay + f.blocks_ms as f64 / 2.0 + 2.0 * f.reorder * delay.max(50.0);
     let answered = (1.0 - f.drop).powi(2) * (1.0 - f.forge);
-    let miss = ndn_data::Config::new().lifetime.as_secs_f64() * 1000.0 + REPLY_SLACK_MS;
+    let miss = ndn_heap::Config::new().lifetime.as_secs_f64() * 1000.0 + REPLY_SLACK_MS;
     Some(round_trip + (1.0 / answered - 1.0) * miss)
 }
 

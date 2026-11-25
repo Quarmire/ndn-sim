@@ -28,7 +28,7 @@ use crate::ensure;
 use crate::feature::Feature;
 use crate::signal;
 use crate::world::{Dev, Plan, World};
-use ndn_data::Name;
+use ndn_heap::Name;
 
 pub(super) const CASE: Case = Case {
     id: "e11",

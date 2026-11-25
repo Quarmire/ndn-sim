@@ -54,7 +54,7 @@ fn plan() -> Plan {
 /// Whether every device holds exactly `want` over `space`.
 async fn hold(
     spaces: &[&dyn Spaces],
-    space: &ndn_data::Name,
+    space: &ndn_heap::Name,
     want: &SpaceMembers,
 ) -> Result<bool, Failure> {
     let mut all = true;

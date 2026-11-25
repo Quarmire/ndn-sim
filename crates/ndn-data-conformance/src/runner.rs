@@ -12,7 +12,7 @@ use crate::report::{CaseResult, Cost, NetworkReport, Report, Status};
 use crate::world::{Plan, World};
 
 /// The network the runner runs the cases on: clean, or faulty under a profile (spec
-/// data-layer.md §18). Faulty, every packet arriving at a device from its link meets the profile
+/// history/data-layer-remainder.md §18). Faulty, every packet arriving at a device from its link meets the profile
 /// ([`Plan::faults`]), seeded per link so a case replays identically alone and in a suite.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Network {
@@ -103,11 +103,8 @@ impl Network {
     }
 }
 
-/// The implementations the runner knows, by constructor.
-pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[
-    crate::reference::Reference::provider,
-    crate::new_reference::NewReference::provider,
-];
+/// The implementations the runner knows, by constructor: `ndn-heap` alone.
+pub const PROVIDERS: &[fn() -> Arc<dyn Provider>] = &[crate::new_reference::NewReference::provider];
 
 /// The seed of the thread-local RNG `ndn-sync` draws its jitter from (the periodic sync interval
 /// and the suppression delay), set before each case. Unseeded, it is seeded per process from the
@@ -144,7 +141,7 @@ pub fn run_case(
         return result(
             Status::NotImplemented,
             format!(
-                "no ndn-data implementation is registered; slice {} provides what this case needs",
+                "no provider was given; slice {} provides what this case needs",
                 case.slice
             ),
             Cost::default(),

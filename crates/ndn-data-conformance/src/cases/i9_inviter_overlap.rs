@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::i1_join_by_code::{joins, reads, refused, shut_out};
 use super::kit::{DAY, LIMIT, SETTLE, n, octets, private};

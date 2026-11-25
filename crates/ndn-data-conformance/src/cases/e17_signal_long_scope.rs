@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_surface::signal::{SCOPE_MAX, SignalError, Signals};
 
 use super::kit::{n, public};

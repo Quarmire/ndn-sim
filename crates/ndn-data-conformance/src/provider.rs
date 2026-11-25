@@ -1,10 +1,10 @@
-//! How an implementation of the `ndn-data` contract plugs into the cases.
+//! How an implementation of the data-layer contract plugs into the cases.
 
 use std::any::Any;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ndn_data::{DataLayer, Name, Timestamp, VersionId};
+use ndn_heap::{Name, Timestamp};
 use ndn_security::Signer;
 use ndn_sim::{Fabric, NodeId, NodeProfile};
 use ndn_surface::signal::Signals;
@@ -159,13 +159,6 @@ pub trait Provider: Send + Sync {
     async fn attach(&self, fabric: &Fabric, device: &DeviceSpec)
     -> anyhow::Result<Arc<dyn Spaces>>;
 
-    /// The `ndn-data` [`DataLayer`] of `device`'s current run (its [`attach`](Self::attach), or
-    /// the [`restart`](Self::restart) or [`steal`](Self::steal) after it), for the cases not yet
-    /// written over [`Spaces`]. A provider that is no `ndn-data` layer says so.
-    fn layer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn DataLayer>> {
-        anyhow::bail!("this provider has no ndn-data layer on {}", device.name())
-    }
-
     /// The owner reports `device` lost, and `by`, the namespace's root device, marks its key
     /// suspected since `since` (by `by`'s own clock): from now on `by`'s data layer takes no new
     /// log entry of that key — neither fetched, applied nor stored — while it keeps what it
@@ -213,28 +206,8 @@ pub trait Provider: Send + Sync {
         anyhow::bail!("this provider cannot bring new trust-context versions to node {node}")
     }
 
-    /// `by`, holding its namespace's authority, re-admits the version `id` of `collection`
-    /// exactly: by its name and the implicit digest of the packet `from` holds refused by the
-    /// revocation of its key. It signs the next context version adding that one name to the
-    /// key's cut, and `by`'s node adopts it ([`spread`](Self::spread) brings it to the others).
-    /// A provider that cannot re-admit says so.
-    async fn readmit(
-        &self,
-        fabric: &Fabric,
-        by: &DeviceSpec,
-        from: &DeviceSpec,
-        collection: &Name,
-        id: &VersionId,
-    ) -> anyhow::Result<()> {
-        let _ = (fabric, from, id);
-        anyhow::bail!(
-            "this provider cannot make {} re-admit a version of {collection}",
-            by.name()
-        )
-    }
-
-    /// [`readmit`](Self::readmit) over the neutral surface: `by`, holding its namespace's
-    /// authority, re-admits the entry `entry` of `from`'s log exactly, the one a revocation of
+    /// `by`, holding its namespace's authority, re-admits the entry `entry` of `from`'s log
+    /// exactly, the one a revocation of
     /// `from`'s key left out of its cut. A provider that cannot re-admit says so.
     async fn readmit_entry(
         &self,
@@ -382,22 +355,8 @@ pub trait Provider: Send + Sync {
     /// log entry) `device` stores: whether it fetched the payload, not just the signed record.
     fn pieces_stored(&self, device: &DeviceSpec, version: &Name) -> u64;
 
-    /// An older build: `device`'s data layer, stopped ([`stop`](Self::stop)), finds in its store
-    /// its newest members record of `subject` (a collection or folder) as a build from before
-    /// removal cuts bound bytes signed it — the same record, its cuts keeping the same seqs
-    /// without `CutBytes`, no cut manifest stored — signed with the device's key in place of
-    /// what it signed. [`restart`](Self::restart) then starts the current build on that store:
-    /// the upgrade. Returns the record's name. A provider that cannot says so.
-    fn sign_unbound(&self, device: &DeviceSpec, subject: &Name) -> anyhow::Result<Name> {
-        anyhow::bail!(
-            "this provider cannot make {} hold its record of {subject} as an older build signed \
-             it",
-            device.name()
-        )
-    }
-
     /// `by`, a device of the space's owner that signs its members records, makes a one-use
-    /// offer of `space` (`Device::offer`) and returns its code. A refusal carries an
+    /// offer of `space` (`offer`) and returns its code. A refusal carries an
     /// [`InviteFailure`](crate::invite::InviteFailure) as its source. A provider without
     /// introductions says so.
     async fn offer(
@@ -414,7 +373,7 @@ pub trait Provider: Send + Sync {
         )
     }
 
-    /// `by`, the device that made the offer `offer`, closes it (`Device::close_offer`): the
+    /// `by`, the device that made the offer `offer`, closes it (`close_offer`): the
     /// offer admits no one new afterwards, and still answers a retry of the writer it admitted
     /// until it expires. A refusal carries an [`InviteFailure`](crate::invite::InviteFailure)
     /// as its source. A provider without introductions says so.
@@ -492,7 +451,7 @@ pub trait Provider: Send + Sync {
     }
 
     /// `device`, a person let go of `space`, takes the members record `record` its inviter's
-    /// link layer named to it (`Device::take_departure`): fetched and taken as any held record,
+    /// link layer named to it (`take_departure`): fetched and taken as any held record,
     /// so `device`'s own members of the space no longer list it. `from` is the device that told
     /// it: the peer of the link the notice came over, whose certificate the link layer
     /// validated; only a device under the space's namespace lets a member go of it, so a notice
@@ -696,8 +655,7 @@ pub trait Provider: Send + Sync {
     /// of an entry another copy of the key signed. Returns the signed entry. A provider whose
     /// device writes at its own next seq answers an error when that is not `seq`.
     ///
-    /// `ndn-data`: the device's own [`put`](Spaces::put); it fails unless the entry it signed is
-    /// number `seq`. `ndn-heap`: the entry is encoded and signed with the device's key at
+    /// The entry is encoded and signed with the device's key at
     /// `seq` (the public `wire` module) and applied by the device as its own, bypassing the
     /// head it holds.
     async fn sign_at(
@@ -719,7 +677,7 @@ pub trait Provider: Send + Sync {
     /// returns the new spaces.
     ///
     /// `ndn-heap`: takes the crash store's image at the last returned `sync`, drops the node,
-    /// starts a node on the image. `ndn-data`: not supported ([`Feature::Crash`]).
+    /// starts a node on the image.
     async fn crash(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Spaces>> {
         let _ = fabric;
         anyhow::bail!("this provider cannot crash {}", device.name())
@@ -728,7 +686,7 @@ pub trait Provider: Send + Sync {
     /// A copy of what `device`'s store holds now (what a backup or a cloned disk would hold), for
     /// [`restore`](Self::restore) to put back later.
     ///
-    /// `ndn-heap`: the crash store's durable contents. `ndn-data`: not supported.
+    /// `ndn-heap`: the crash store's durable contents.
     async fn image(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Image> {
         let _ = fabric;
         anyhow::bail!("this provider cannot image {}'s store", device.name())
@@ -737,8 +695,7 @@ pub trait Provider: Send + Sync {
     /// `device` stops and starts again on `image` in place of its store (restored from a backup,
     /// offline): it holds less of its own log than it signed. Returns the new spaces.
     ///
-    /// `ndn-heap`: drops the node, starts one on a store holding `image`. `ndn-data`: not
-    /// supported.
+    /// `ndn-heap`: drops the node, starts one on a store holding `image`.
     async fn restore(
         &self,
         fabric: &Fabric,
@@ -753,7 +710,7 @@ pub trait Provider: Send + Sync {
     /// called again with `on == false` (a disk that is slow or full): what the device wrote since
     /// is in memory only. Lets a case hold the moment between a write and its flush open.
     ///
-    /// `ndn-heap`: the `Held` store gate. `ndn-data`: not supported.
+    /// `ndn-heap`: the `Held` store gate.
     async fn block_flush(
         &self,
         fabric: &Fabric,
@@ -771,7 +728,7 @@ pub trait Provider: Send + Sync {
     /// flush covered.
     ///
     /// `ndn-heap`: drops the node with no close and starts a node on the crash store's live
-    /// contents. `ndn-data`: not supported ([`Feature::Crash`]).
+    /// contents.
     async fn kill(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Spaces>> {
         let _ = fabric;
         anyhow::bail!("this provider cannot kill {}", device.name())
@@ -782,7 +739,7 @@ pub trait Provider: Send + Sync {
     /// again. What the device wrote is accepted by the store as before. The failing disk, where
     /// [`block_flush`](Self::block_flush) is a slow one.
     ///
-    /// `ndn-heap`: the crash store's `fail_syncs`. `ndn-data`: not supported.
+    /// `ndn-heap`: the crash store's `fail_syncs`.
     async fn fail_flush(
         &self,
         fabric: &Fabric,

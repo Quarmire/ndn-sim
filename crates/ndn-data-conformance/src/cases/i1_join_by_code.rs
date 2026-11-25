@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_trust_envelope::TrustEnvelope;
 
 use super::kit::{DAY, LIMIT, n, octets, private};
@@ -147,7 +147,7 @@ pub(super) fn forged(code: &InviteCode, secret: u8) -> String {
 /// What a device's host was told across a restart of its layer: what it was told before stays
 /// as it was, and the layer lists the same grants and departures. A layer may tell its host
 /// again, once each, the grants and departures it lists as in force (a host that lost its link
-/// state installs them again, as the old layer's host never needed to); it never tells anything
+/// state installs them again); it never tells anything
 /// else — no grant that ended, no end, no departure it does not list, no grant twice.
 pub(super) fn restarted_told(before: &GrantLog, after: &GrantLog) -> Result<(), Failure> {
     let kept = after.told.get(..before.told.len());

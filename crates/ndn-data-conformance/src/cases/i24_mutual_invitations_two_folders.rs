@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
 use super::i23_joiner_holds_a_grant_for_the_inviter::{no_departure, same_set};

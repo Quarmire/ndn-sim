@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::n;
 use super::signal_kit::{FRAME, Peer, sealed_to, stats};

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_sync::{DataStore, MemoryStore, StoreOp};
 
 /// What a disk holds: the durable image, and the writes made since the last sync that a power

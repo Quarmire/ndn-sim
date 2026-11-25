@@ -10,8 +10,7 @@
 //! [`IntroduceCore`] is that stand-in's memory and decision, in plain types
 //! ([`GrantEvent`](crate::invite::GrantEvent), [`LinkCall`](crate::invite::LinkCall)): what the
 //! host was told, in order, across restarts of its layer; what it was asked, in order; who
-//! listens where. Each provider wraps one core in its crate's host trait
-//! (`ndn_data::Introducer` for `ndn-data`, `ndn_invite::Host` for `ndn-invite`), converts that
+//! listens where. The provider wraps one core in `ndn_invite::Host`, converts that
 //! crate's types at the edge, and adds what is the crate's own (the anchor, adopting a person,
 //! routing what a first contact's link carries).
 
@@ -20,7 +19,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_sim::NodeId;
 
 use crate::invite::{GrantEvent, InviteDeparture, InviteGrant, LinkCall};

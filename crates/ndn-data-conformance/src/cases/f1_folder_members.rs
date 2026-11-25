@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{LIMIT, n, octets, private};
 use crate::case::{Case, CaseFuture, Failure};

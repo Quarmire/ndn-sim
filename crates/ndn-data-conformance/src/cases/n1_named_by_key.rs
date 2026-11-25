@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_security::{SecurityManager, SignedTrustContext};
 use ndn_trust_envelope::TrustEnvelope;
 

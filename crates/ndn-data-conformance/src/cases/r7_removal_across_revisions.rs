@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{
     LIMIT, LOOK, SETTLE, has, item_of, look, members_now, n, octets, private, reads_entry, winning,

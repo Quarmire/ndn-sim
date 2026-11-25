@@ -11,7 +11,7 @@
 //! before any peer is there.
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{LIMIT, has, known, n, octets, public};
 use crate::case::Failure;

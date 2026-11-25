@@ -13,7 +13,7 @@
 //! answers is a [`Failure`], whose `next` names the next step (`"RetryLater"`, …) by kind.
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use crate::case::Failure;
 

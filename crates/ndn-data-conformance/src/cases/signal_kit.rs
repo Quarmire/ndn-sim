@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_heap::NextStep;
 use ndn_packet::NameComponent;
 use ndn_surface::signal::{Signal, SignalError, SignalRun, SignalStats};

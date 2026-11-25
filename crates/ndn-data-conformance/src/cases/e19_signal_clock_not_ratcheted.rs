@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_sim::ClockSkew;
 
 use super::kit::n;

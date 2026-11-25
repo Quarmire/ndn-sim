@@ -1,15 +1,15 @@
 //! `ndn-invite`'s introductions as the neutral surface of [`crate::invite`]: the conversions that
-//! let the neutral cases run on the second provider, and the stand-in host a device's
+//! let the neutral cases run on the provider, and the stand-in host a device's
 //! [`Invites`](ndn_invite::Invites) run against.
 //!
-//! The conversions mirror [`old_invite`](crate::old_invite): each turns an `ndn_invite` type into
+//! The conversions: each turns an `ndn_invite` type into
 //! the plain type of the same meaning (or, for the offer and the short code, the other way), a
 //! space being what `ndn-invite` still calls a folder in its grants, departures and joined
 //! spaces, and an [`InviteError`] being an [`InviteFailure`] with its next step and kind as
 //! strings, its reason apart and, for a refused introduction, why.
 //!
-//! [`Stand`] is the second provider's host: it wraps the same provider-independent
-//! [`IntroduceCore`] as the old one (what the host was told and asked, who listens where) in
+//! [`Stand`] is the provider's host: it wraps the provider-independent
+//! [`IntroduceCore`] (what the host was told and asked, who listens where) in
 //! `ndn_invite::Host`, and adds what is the crate's own: the anchor it gives, adopting a person
 //! through its node's engine, and carrying what a dialled link carries.
 
@@ -20,7 +20,7 @@ use std::time::Duration;
 use anyhow::Context;
 use bytes::Bytes;
 use ndn_cert::AnchorLink;
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_heap::{HeapError, NextStep, Timestamp};
 use ndn_invite::{
     Adopting, Code, Contact, Departure, Dialing, FirstDialing, Grant, Host, IntroRefusal,

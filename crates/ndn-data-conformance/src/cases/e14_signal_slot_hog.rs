@@ -20,7 +20,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_packet::encode::DataBuilder;
 use ndn_sim::Faults;
 use ndn_surface::signal::RUNS_PER_SCOPE;

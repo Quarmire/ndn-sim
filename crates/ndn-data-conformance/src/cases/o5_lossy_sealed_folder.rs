@@ -27,7 +27,7 @@ use crate::ensure;
 use crate::feature::Feature;
 use crate::spaces::SpaceEvent;
 use crate::world::{Dev, Plan, World};
-use ndn_data::Name;
+use ndn_heap::Name;
 
 pub(super) const CASE: Case = Case {
     id: "o5",

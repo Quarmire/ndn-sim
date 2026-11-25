@@ -18,7 +18,7 @@
 //! puts and the first record of a space are timed, and none waits. A last phase repeats them
 //! with the phone reachable all along: its walk takes a few round trips on a clean network and
 //! seconds under `--faulty` (drop, delay, reorder), which is what a put that waited for it paid;
-//! a put now costs the same on both once the walk resolved.
+//! a put now costs the same with or without the cut-off phone once the walk resolved.
 //!
 //! Every latency is virtual time. It is measured here for the report (`measured`) and judged
 //! against a bound a local operation never nears: the cut-off phone costs an operation that
@@ -26,7 +26,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{LIMIT, SETTLE, agree, has, n, octets, private};
 use crate::case::{Case, CaseFuture, Failure};

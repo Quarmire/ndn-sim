@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{SETTLE, n};
 use super::signal_kit::{Peer, RESEND, group, sealed_to, signal_key};

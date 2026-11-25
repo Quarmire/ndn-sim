@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_packet::{Interest, NameComponent};
 
 use super::kit::{LIMIT, RELAYED, SETTLE, has, known, n, octets, public, value_now};

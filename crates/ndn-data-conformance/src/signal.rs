@@ -10,7 +10,7 @@ use bytes::Bytes;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use ed25519_dalek::{Signer as _, SigningKey};
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_packet::Interest;
 use ndn_packet::encode::InterestBuilder;
 use sha2::{Digest, Sha256};

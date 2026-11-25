@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{LIMIT, item, octets};
 use crate::case::Failure;

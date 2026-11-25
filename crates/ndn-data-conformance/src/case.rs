@@ -3,8 +3,6 @@
 use std::pin::Pin;
 use std::time::Duration;
 
-use ndn_data::{DataError, NextStep};
-
 use crate::feature::Feature;
 use crate::world::{Plan, World};
 
@@ -94,42 +92,6 @@ impl Failure {
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.detail)
-    }
-}
-
-impl From<DataError> for Failure {
-    fn from(e: DataError) -> Self {
-        let next = match e.next() {
-            NextStep::None => "None",
-            NextStep::RetryLater => "RetryLater",
-            NextStep::AskOwner => "AskOwner",
-            NextStep::UseOwnerDevice => "UseOwnerDevice",
-            NextStep::EditInstead => "EditInstead",
-            NextStep::FixLocal => "FixLocal",
-            NextStep::FixName => "FixName",
-            NextStep::FixRequest => "FixRequest",
-            NextStep::UpdateProgram => "UpdateProgram",
-        };
-        let kind = match &e {
-            DataError::Unavailable { .. } => "Unavailable",
-            DataError::NotReady { .. } => "NotReady",
-            DataError::NotFound { .. } => "NotFound",
-            DataError::BadName { .. } => "BadName",
-            DataError::Refused { .. } => "Refused",
-            DataError::NotAllowed { .. } => "NotAllowed",
-            DataError::NotOwner { .. } => "NotOwner",
-            DataError::Sealed { .. } => "Sealed",
-            DataError::TooLarge { .. } => "TooLarge",
-            DataError::BadRequest { .. } => "BadRequest",
-            DataError::Local { .. } => "Local",
-            DataError::RuleUnknown { .. } => "RuleUnknown",
-            DataError::Introduction { .. } => "Introduction",
-        };
-        Failure::answered(
-            format!("verb failed: {e} (next step: {:?})", e.next()),
-            next,
-            kind,
-        )
     }
 }
 

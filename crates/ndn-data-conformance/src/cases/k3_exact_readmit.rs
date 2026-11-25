@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{
     LIMIT, LOOK, SETTLE, has, item_of, items, known, look, loss_time, n, octets, op_is, private,

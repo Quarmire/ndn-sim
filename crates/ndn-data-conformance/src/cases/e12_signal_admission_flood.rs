@@ -18,7 +18,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_packet::encode::DataBuilder;
 use ndn_sim::Faults;
 

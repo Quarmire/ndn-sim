@@ -12,8 +12,8 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
-use ndn_data::wire::{log_name, parse_log_name};
+use ndn_heap::Name;
+use ndn_heap::wire::{log_name, parse_log_name};
 
 use super::i1_join_by_code::{FOLDER, alice_keeps_a_notebook, joins, offer, reads, writes};
 use super::kit::{LIMIT, n, octets};
@@ -172,7 +172,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         .await?;
 
         // A name that is no members record of the folder is no departure.
-        let other = log_name(&n("/alice/laptop"), Some(&n("/alice/32=data/diary")), 1);
+        let other = log_name(&n("/alice/laptop"), &n("/alice/32=data/diary"), 1);
         let not_a_record = w.take_departure(BOB, LAPTOP, &space, &other).await?;
         ensure!(
             matches!(&not_a_record, Err(e) if e.kind_is("BadRequest")),

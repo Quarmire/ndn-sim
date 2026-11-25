@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::kit::{
     LIMIT, LOOK, agree, drain, drain_until, item_of, items, n, octets, private, winning,

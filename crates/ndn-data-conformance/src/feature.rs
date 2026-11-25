@@ -44,12 +44,8 @@ pub enum Feature {
     /// re-admission.
     BoundedCut,
     /// A cut binds its ranges to bytes (a root-signed manifest of each entry's digest): other
-    /// bytes at a name in the cut are refused, by data layers and forwarders.
+    /// bytes at a name in the cut are refused, by nodes and forwarders.
     CutManifest,
-    /// A removal cut signed before cuts bound bytes (seqs only, no `CutBytes`) stays in force
-    /// across an upgrade: the versions it keeps are refused but kept, and the owner's next record
-    /// binds them from the bytes it holds.
-    UnboundCut,
     /// A key's authority over data ends with its certificate, for every role (a guest's, a
     /// member's, a node's, an admin's): once lapsed without a renewal, its data is refused until
     /// the root's revoke-with-cut, which then decides alone.
@@ -57,13 +53,13 @@ pub enum Feature {
     /// A later trust-context version that revokes an issuer re-checks what a device holds
     /// through it, on adoption and on restart.
     IssuerRecheck,
-    /// A folder's members record (`share_folder`): one record, one seal epoch and one grant per
-    /// reader for every collection under it, each collection free to narrow it.
+    /// A folder's members record: one record, one seal epoch and one grant per
+    /// reader for every space under it, each space free to narrow it.
     FolderMembers,
     /// One `watch` of a folder: every collection under it, those created after the watch began
     /// included, every kind of change, each tagged with its collection.
     FolderWatch,
-    /// Joining a folder by a code (`Device::offer`, `Device::join`): a one-use offer, an ask
+    /// Joining a folder by a code (`ndn_invite`'s offer and join): a one-use offer, an ask
     /// sealed to the offering device and proving the code's secret, an answer bound to the
     /// asker's key; both sides adopt each other's anchor and the owner adds the joiner.
     Introduction,
@@ -84,11 +80,6 @@ pub enum Feature {
     /// A log is a chain: an entry names the entry before it, and a removal keeps exactly the
     /// chain's ancestors of its tip.
     Chain,
-    /// The old crate's own shapes, which the neutral `Spaces` trait does not carry:
-    /// collections with their own members records under a folder, device and group audiences
-    /// (`Audience::Device`, `Audience::Group`). A case that still drives `World::at` needs it;
-    /// only `ndn-data` supports it, and a case leaves it when it is ported (or at stage 9).
-    OldLayer,
 }
 
 impl Feature {
@@ -105,7 +96,6 @@ impl Feature {
             | Feature::Recovery
             | Feature::BoundedCut
             | Feature::CutManifest
-            | Feature::UnboundCut
             | Feature::GuestExpiry
             | Feature::IssuerRecheck => 5,
             Feature::FolderMembers
@@ -114,7 +104,6 @@ impl Feature {
             | Feature::SelfCertifying => 6,
             Feature::Signals => 7,
             Feature::Crash | Feature::Chain => 9,
-            Feature::OldLayer => 1,
         }
     }
 
@@ -135,7 +124,6 @@ impl Feature {
             Feature::Recovery => "recovery carries cuts",
             Feature::BoundedCut => "cut bounded by the loss",
             Feature::CutManifest => "cut binds bytes",
-            Feature::UnboundCut => "old-form removal cut kept",
             Feature::GuestExpiry => "lapsed key needs a cut",
             Feature::IssuerRecheck => "re-check on issuer revocation",
             Feature::FolderMembers => "folder members",
@@ -145,7 +133,6 @@ impl Feature {
             Feature::Signals => "signals",
             Feature::Crash => "crash durability",
             Feature::Chain => "chain tip",
-            Feature::OldLayer => "old crate's collections and audiences",
         }
     }
 }

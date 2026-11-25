@@ -1,7 +1,8 @@
-//! `ndn-data-conformance [--provider NAME] [--case ID]… [--json PATH] [--check-determinism]
-//! [--faulty | --faults SPEC] [--fault-seed N]` — run every case (or the named ones), print a
-//! table, and write the JSON report the Results page reads. Exits non-zero only if a case fails;
-//! cases with no implementation are reported as not implemented, not as failures.
+//! `ndn-data-conformance [--provider ndn-heap] [--case ID]… [--json PATH] [--check-determinism]
+//! [--faulty | --faults SPEC] [--fault-seed N]` — run every case (or the named ones) on `ndn-heap`
+//! (the one provider; `--provider` accepts its name and nothing else), print a table, and write
+//! the JSON report the Results page reads. Exits non-zero only if a case fails; cases with no
+//! implementation are reported as not implemented, not as failures.
 //!
 //! `--check-determinism` then runs each of those cases again alone, each in a fresh process of
 //! this runner on the same network, and fails naming every case whose status, faults, cost or
@@ -10,7 +11,7 @@
 //! `--faulty` runs every case on ndf's faulty network (`drop=0.2,dup=0.1,forge=0.05,delay=400,
 //! reorder=0.1,blocks=1500`); `--faults SPEC` on the profile SPEC names (`key=value,…`, keys
 //! `drop dup forge delay reorder blocks seed`); `--fault-seed N` replaces the seed of the profile
-//! each case runs under, the runner's or the case's own (spec data-layer.md §18).
+//! each case runs under, the runner's or the case's own (spec history/data-layer-remainder.md §18).
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
@@ -62,7 +63,7 @@ fn main() -> ExitCode {
             }
             "-h" | "--help" => {
                 println!(
-                    "usage: ndn-data-conformance [--provider NAME] [--case ID]... [--json PATH] \
+                    "usage: ndn-data-conformance [--provider ndn-heap] [--case ID]... [--json PATH] \
                      [--check-determinism] [--faulty | --faults SPEC] [--fault-seed N]"
                 );
                 return ExitCode::SUCCESS;
@@ -82,14 +83,10 @@ fn main() -> ExitCode {
         Some(name) => match providers.into_iter().find(|p| p.name() == name) {
             Some(p) => Some(p),
             None => {
-                eprintln!("no provider named {name:?} is registered");
+                eprintln!("no provider named {name:?}; the only one is \"ndn-heap\"");
                 return ExitCode::from(2);
             }
         },
-        None if providers.len() > 1 => {
-            eprintln!("several providers are registered; choose one with --provider");
-            return ExitCode::from(2);
-        }
         None => providers.into_iter().next(),
     };
 
@@ -127,7 +124,7 @@ fn check(report: &Report, network: &Network) -> Result<bool, String> {
     println!("determinism: each case alone, in a fresh process, against its run above");
     let mut differing = 0;
     for case in &report.cases {
-        let alone = run_alone(case.id, report.provider.as_deref(), network)?;
+        let alone = run_alone(case.id, network)?;
         let diffs = differences(&alone, case);
         if diffs.is_empty() {
             println!("  {:<4} same", case.id);
@@ -149,11 +146,7 @@ fn check(report: &Report, network: &Network) -> Result<bool, String> {
 }
 
 /// Case `id`'s entry in the JSON report of this runner run as a child on that case alone.
-fn run_alone(
-    id: &str,
-    provider: Option<&str>,
-    network: &Network,
-) -> Result<serde_json::Value, String> {
+fn run_alone(id: &str, network: &Network) -> Result<serde_json::Value, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find this runner: {e}"))?;
     let path: PathBuf = std::env::temp_dir().join(format!(
         "ndn-data-conformance-{}-{id}.json",
@@ -165,9 +158,6 @@ fn run_alone(
         .arg(&path)
         .args(network.args())
         .stdout(Stdio::null());
-    if let Some(p) = provider {
-        child.args(["--provider", p]);
-    }
     // A failing case exits non-zero having written its report; compare it all the same.
     let status = child
         .status()

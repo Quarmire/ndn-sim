@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ndn_app::{Connection, EngineAppExt, ForwarderEngine};
-use ndn_data::{Content, DataError, DataLayer, Name, NextStep, PutOptions, Timestamp, VersionId};
+use ndn_heap::{Name, Timestamp};
 use ndn_packet::encode::InterestBuilder;
 use ndn_security::Signer;
 use ndn_sim::{
@@ -35,11 +35,11 @@ use crate::spaces::{SpaceEntry, Spaces};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Dev(pub usize);
 
-/// How long [`World::again`] asks again while a verb answers [`NextStep::RetryLater`]: as long
-/// as a case waits for anything to arrive.
+/// How long [`World::retry_later`] asks again while a verb answers a `RetryLater` next step: as
+/// long as a case waits for anything to arrive.
 pub const AGAIN_FOR: Duration = Duration::from_secs(120);
 
-/// The virtual time [`World::again`] lets pass between two asks.
+/// The virtual time [`World::retry_later`] lets pass between two asks.
 pub const AGAIN_PAUSE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug)]
@@ -657,7 +657,7 @@ impl World {
         &self.net
     }
 
-    /// The device's spaces: the neutral surface every ported case drives.
+    /// The device's spaces: the neutral surface every case drives.
     ///
     /// # Panics
     ///
@@ -673,19 +673,6 @@ impl World {
             )
         });
         Arc::clone(attached)
-    }
-
-    /// The device's `ndn-data` data layer, for the cases not yet written over
-    /// [`spaces`](Self::spaces) (see [`Provider::layer`]).
-    ///
-    /// # Panics
-    ///
-    /// As [`spaces`](Self::spaces), and for a provider that has no `ndn-data` layer.
-    pub fn at(&self, d: Dev) -> Arc<dyn DataLayer> {
-        drop(self.spaces(d));
-        self.provider
-            .layer(self.net.spec(d))
-            .unwrap_or_else(|e| panic!("{e:#}"))
     }
 
     /// Record one person gesture: pointing at data, pointing at someone, throwing away.
@@ -764,29 +751,6 @@ impl World {
             .spread(&self.net.fabric, node)
             .await
             .map_err(|e| Failure::new(format!("a trust-context version did not spread: {e:#}")))
-    }
-
-    /// `by`, holding the namespace's authority, re-admits version `id` of `collection` exactly
-    /// as `from` holds it refused (see [`Provider::readmit`]), and the new trust-context version
-    /// reaches every node.
-    pub async fn readmit(
-        &self,
-        by: Dev,
-        from: Dev,
-        collection: &Name,
-        id: &VersionId,
-    ) -> Result<(), Failure> {
-        self.provider
-            .readmit(
-                &self.net.fabric,
-                self.net.spec(by),
-                self.net.spec(from),
-                collection,
-                id,
-            )
-            .await
-            .map_err(|e| Failure::new(format!("readmit failed: {e:#}")))?;
-        self.spread_all().await
     }
 
     /// `by`, holding the namespace's authority, re-admits exactly the packet `full` (see
@@ -1068,60 +1032,11 @@ impl World {
         }
     }
 
-    /// `verb`, done again while it is refused with next step [`NextStep::RetryLater`] — a host
-    /// does what the refusal says ("not ready", "no holder answered") — every [`AGAIN_PAUSE`]
-    /// for at most [`AGAIN_FOR`] of virtual time; then, or at any other error, the error as it
-    /// came. Asking again is liveness only: what the verb answers when it succeeds is judged by
-    /// the device as on a first try.
-    pub async fn again<T, F, Fut>(&self, mut verb: F) -> Result<T, DataError>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = Result<T, DataError>>,
-    {
-        let start = tokio::time::Instant::now();
-        loop {
-            match verb().await {
-                Err(e) if e.next() == NextStep::RetryLater && start.elapsed() < AGAIN_FOR => {
-                    tokio::time::sleep(AGAIN_PAUSE).await;
-                }
-                answer => return answer,
-            }
-        }
-    }
-
-    /// `d` puts `content` into `collection`, putting again while the device answers
-    /// [`NextStep::RetryLater`] ([`again`](Self::again)): a writer whose device has not yet
-    /// received the members record admitting it is told `NotReady`, and puts once it has.
-    pub async fn put(
-        &self,
-        d: Dev,
-        collection: &Name,
-        content: Content,
-        options: PutOptions,
-    ) -> Result<VersionId, DataError> {
-        let layer = self.at(d);
-        self.again(|| layer.put(collection, content.clone(), options.clone()))
-            .await
-    }
-
-    /// `d` writes `op` into the register `collection` (`put_op`), putting again while the device
-    /// answers [`NextStep::RetryLater`] ([`again`](Self::again)), as [`put`](Self::put) does.
-    pub async fn put_op(
-        &self,
-        d: Dev,
-        collection: &Name,
-        op: Bytes,
-        options: PutOptions,
-    ) -> Result<VersionId, DataError> {
-        let layer = self.at(d);
-        self.again(|| layer.put_op(collection, op.clone(), options.clone()))
-            .await
-    }
-
     /// `verb`, done again while it fails with next step `"RetryLater"`
     /// ([`Failure::retry_later`]) — a host does what the refusal says — every [`AGAIN_PAUSE`]
     /// for at most [`AGAIN_FOR`] of virtual time; then, or at any other failure, the failure as
-    /// it came. [`again`](Self::again) over [`Spaces`]' failures: asking again is liveness only.
+    /// it came. Asking again is liveness only: what the verb answers when it succeeds is judged
+    /// by the device as on a first try.
     pub async fn retry_later<T, F, Fut>(&self, mut verb: F) -> Result<T, Failure>
     where
         F: FnMut() -> Fut,
@@ -1322,14 +1237,6 @@ impl World {
     /// The line a short code is written as (see [`Provider::short_write`]).
     pub fn short_write(&self, short: &InviteShort) -> Result<String, InviteShortError> {
         self.provider.short_write(short)
-    }
-
-    /// `d`'s stopped data layer holds its newest members record of `subject` as a build from
-    /// before removal cuts bound bytes signed it (see [`Provider::sign_unbound`]); its name.
-    pub fn sign_unbound(&self, d: Dev, subject: &Name) -> Result<Name, Failure> {
-        self.provider
-            .sign_unbound(self.net.spec(d), subject)
-            .map_err(|e| Failure::new(format!("cannot sign as an older build: {e:#}")))
     }
 
     /// From now on `d`'s node answers Interests under `prefix` with the packet that answers it

@@ -13,7 +13,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_heap::wire::parse_log_name;
 
 use super::kit::{LIMIT, SETTLE, n, octets, value_now};

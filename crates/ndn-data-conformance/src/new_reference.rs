@@ -13,31 +13,31 @@
 //! one to one: `create` to `Node::create`, `change` to `Heap::change`, `put` to `Heap::put` (the
 //! default durability: durable at once while no peer is known), `get` to `Heap::get`, `watch` to
 //! `Heap::watch` from the empty frontier, `applied` to `Heap::applied`. A device follows a space
-//! from its first verb on it (`Node::open`), as the old adapter's device follows a collection
-//! from its first read.
+//! from its first verb on it (`Node::open`).
 //!
 //! The revocation cut the root flows sign is `Node::revocation_cut` of the root device's node
 //! ([`Cutter`]).
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
 use bytes::Bytes;
 use ndn_app::{Connection, EngineAppExt};
-use ndn_data::{Name, Timestamp};
 use ndn_heap::wire::{self, Body, Entry, Payload, PutBody};
 use ndn_heap::{
     Adopter, Alert, Change, Changes, Config, CutBound, EntryId, Frontier, Heap, HeapError, Item,
-    MembersChange, Node, PutOptions, Readers, Refusal, Scoping, Share, Transport,
+    MembersChange, Name, Node, PutOptions, Readers, Refusal, Scoping, Share, Timestamp, Transport,
 };
-use ndn_invite::{HintCandidate, HintKind, IntroPolicy, InviteConfig, Invites, LinkHint};
+use ndn_invite::{Entropy, HintCandidate, HintKind, IntroPolicy, InviteConfig, Invites, LinkHint};
 use ndn_packet::{Data, NameComponent};
 use ndn_security::{ScopedContext, SecurityManager, Signer, Validator, public_key_digest};
 use ndn_sim::{Fabric, NodeId};
 use ndn_surface::signal::{SignalOptions, Signals};
 use ndn_sync::DataStore;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
@@ -50,7 +50,6 @@ use crate::invite::{
 };
 use crate::new_invite::{self, Stand, heap_kind, next_name};
 use crate::provider::{Certs, DeviceSpec, Grants, Image, Provider, SignalKeyPair, Tally};
-use crate::reference::seeded;
 use crate::spaces::{
     AlertKind, EntryRead, RefusalKind, SpaceAlert, SpaceChange, SpaceChanges, SpaceEntry,
     SpaceEntryKey, SpaceEpoch, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
@@ -66,6 +65,28 @@ const FIRST_LOOK: Duration = Duration::from_millis(50);
 
 /// How long [`Provider::stop`] waits for the verbs in flight to let go of the node.
 const STOP_WAIT: Duration = Duration::from_secs(60);
+
+/// Randomness that replays: SHA-256 over the device's name and a counter, block after block, so
+/// the invitations' nonces are the same every run (`--check-determinism`). A node started again
+/// on its forwarder (its `run` past the first) seeds with the run too, so it does not draw its
+/// first run's numbers again.
+fn seeded(device: &Name, run: u64) -> Entropy {
+    let seed = match run {
+        1 => device.to_string(),
+        n => format!("{device}#{n}"),
+    };
+    let counter = AtomicU64::new(0);
+    Arc::new(move |buf: &mut [u8]| {
+        for block in buf.chunks_mut(32) {
+            let n = counter.fetch_add(1, Ordering::Relaxed);
+            let mut h = Sha256::new();
+            h.update(seed.as_bytes());
+            h.update(n.to_be_bytes());
+            let digest: [u8; 32] = h.finalize().into();
+            block.copy_from_slice(&digest[..block.len()]);
+        }
+    })
+}
 
 /// One run of a device's node and the store it runs on.
 struct Run {
@@ -1635,8 +1656,8 @@ mod tests {
     const LAPTOP: Dev = Dev(0);
     const PHONE: Dev = Dev(1);
 
-    /// The same flow as the kit's proof over the old provider, over `ndn-heap`: a space is
-    /// created by its owner, followed and written by a member's device, read alike on both,
+    /// The kit's flow over `ndn-heap`: a space is
+    /// created by its owner, followed and written by a member's device, read on both devices,
     /// watched, overwritten, removed, and its members changed, and `applied` says what each
     /// device holds.
     #[test]

@@ -16,7 +16,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::i1_join_by_code::{
     ALICE, BOB, CAROL, FOLDER, alice_keeps_a_notebook, joins, offer, reads, shut_out, writes,

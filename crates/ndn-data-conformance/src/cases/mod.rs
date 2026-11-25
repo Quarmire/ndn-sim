@@ -4,12 +4,11 @@
 //! recovery, and from its
 //! security review a cut bounded by the loss, a lapsed guest, other bytes at a name in the cut,
 //! a revoked issuer) beside theirs (c3), the items left open after the model's fixes
-//! (`o1`…`o5`), the slice-2 security review (`r1`…`r6`): the attacks it found, the concurrent
-//! share its merge must keep, other bytes at a seq a removal cut kept, and an old-form removal
-//! cut across an upgrade — with round 3's removal that outlasts a later revision signed without
-//! it (`r7`) —, and slice 6's
+//! (`o1`…`o5`), the slice-2 security review (`r1`, `r4`, `r5`, `r7`: the concurrent
+//! share its merge must keep, other bytes at a seq a removal cut kept — with round 3's removal
+//! that outlasts a later revision signed without it (`r7`) —, and slice 6's
 //! substrate for apps that write registers (the built-in newest-wins rule) in folders
-//! (`f1`, `f3`: a folder's members record, and a collection's first own record under it;
+//! (`f1`: a folder's members record;
 //! `i1`…`i13`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
 //! one folder reading each other), and slice 7's signals (`e1`…`e19`, over spaces and
@@ -38,27 +37,11 @@
 //! the epoch repair after two concurrent removals, and a new device's grant of the epoch key).
 //! Each file states the story, the devices, and the invariant it asserts.
 //!
-//! A register collection (`register()`) holds the bytes of the newest version, one value per
-//! path: every device converges to one value (`agree`), the value is the head with the highest
-//! digest (`winning`), and nothing a refused or removed writer signed after its cut appears
-//! (rule R).
+//! Six cases of the earlier two-implementation suite (`p2`, `r2`, `r3`, `r6`, `f3`, `f4`) drove
+//! the removed `ndn-data` crate's own collections and audiences, and left with it. The cases are
+//! written over the neutral `Spaces` trait and import their kit from [`kit`].
 
-//! The cases written over the neutral `Spaces` trait import their kit from [`kit`]; the cases not
-//! yet ported use the older kit below, over `ndn_data::DataLayer`, which leaves with them.
-
-use std::time::Duration;
-
-use futures::StreamExt;
-use ndn_data::merge::{NEWEST, winner};
-use ndn_data::{
-    Answer, Audience, Change, Changes, Content, DataError, DataLayer, Frontier, Got, Keep, Name,
-    NextStep, Payload, PutOptions, Rule, Share, State, TypeId, Version, VersionId,
-};
-
-use crate::case::{Case, Failure};
-use crate::ensure;
-use crate::feature::Feature;
-use crate::world::{Dev, World};
+use crate::case::Case;
 
 mod c01_offline_notes;
 mod c02_removed_offline;
@@ -97,8 +80,6 @@ mod e7_signal_no_store;
 mod e8_signal_latest_under_loss;
 mod e9_signal_commit;
 mod f1_folder_members;
-mod f3_first_own_record;
-mod f4_let_go_keeps_joined;
 mod h10_holder_serves_others;
 mod h1_large_photo;
 mod i10_removal_lasts;
@@ -146,7 +127,6 @@ mod o3_many_writers;
 mod o4_sustained_writes;
 mod o5_lossy_sealed_folder;
 mod p1_put_never_waits;
-mod p2_narrowed_audience;
 mod q1_equivocation_evidence;
 mod q2_chain_tip;
 mod q3_fold_order;
@@ -154,11 +134,8 @@ mod q4_declared_voids;
 mod q5_epoch_repair;
 mod q6_grant;
 mod r1_concurrent_shares;
-mod r2_group_removal;
-mod r3_own_device_removed;
 mod r4_concurrent_add_remove;
 mod r5_removal_cut_bytes;
-mod r6_unbound_cut_upgrade;
 mod r7_removal_across_revisions;
 mod signal_kit;
 mod w1_folder_watch;
@@ -189,16 +166,11 @@ pub const CASES: &[Case] = &[
     o4_sustained_writes::CASE,
     o5_lossy_sealed_folder::CASE,
     p1_put_never_waits::CASE,
-    p2_narrowed_audience::CASE,
     r1_concurrent_shares::CASE,
-    r2_group_removal::CASE,
-    r3_own_device_removed::CASE,
     r4_concurrent_add_remove::CASE,
     r5_removal_cut_bytes::CASE,
-    r6_unbound_cut_upgrade::CASE,
     r7_removal_across_revisions::CASE,
     f1_folder_members::CASE,
-    f3_first_own_record::CASE,
     w1_folder_watch::CASE,
     i1_join_by_code::CASE,
     i2_used_code::CASE,
@@ -226,7 +198,6 @@ pub const CASES: &[Case] = &[
     i24_mutual_invitations_two_folders::CASE,
     i25_short_code_joins::CASE,
     i26_short_code_refused::CASE,
-    f4_let_go_keeps_joined::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,
     e1_signal_reach::CASE,
@@ -264,249 +235,3 @@ pub const CASES: &[Case] = &[
     q5_epoch_repair::CASE,
     q6_grant::CASE,
 ];
-
-// ---- the kit the cases share ------------------------------------------------------------------
-
-/// How long devices that can reach each other get to agree.
-const LIMIT: Duration = Duration::from_secs(120);
-/// How long a case lets the network run before asserting that something did *not* happen.
-const SETTLE: Duration = Duration::from_secs(60);
-/// How long a watch is drained for one look at a collection.
-const LOOK: Duration = Duration::from_secs(5);
-
-fn n(s: &str) -> Name {
-    s.parse().expect("case names are valid NDN names")
-}
-
-fn person(s: &str) -> Audience {
-    Audience::Person(n(s))
-}
-
-/// The rule of the registers the cases write: the built-in newest-wins one.
-fn register() -> Rule {
-    Rule::Merge {
-        function: n(NEWEST),
-    }
-}
-
-/// The note type: revision 1 has `text`; revision 2 adds `tags`.
-fn note(revision: u64) -> PutOptions {
-    PutOptions {
-        type_id: TypeId {
-            name: n("/types/note"),
-            revision,
-        },
-        keep: Keep::Forever,
-    }
-}
-
-/// The version `id` of `collection` as `layer` lists it: a device lists its own writes at once.
-async fn listed(
-    layer: &dyn DataLayer,
-    collection: &Name,
-    id: &VersionId,
-) -> Result<Version, Failure> {
-    let seen = look(layer, collection, &Frontier::new(), LOOK).await?;
-    version(&seen, id).cloned().ok_or_else(|| {
-        Failure::new(format!(
-            "the writer's own watch of {collection} does not list version {} it wrote",
-            id.seq.0
-        ))
-    })
-}
-
-fn content(fields: &[(&str, &str)]) -> Content {
-    fields.iter().fold(Content::new(), |c, (k, v)| {
-        c.with(*k, bytes::Bytes::copy_from_slice(v.as_bytes()))
-    })
-}
-
-fn text(s: &str) -> Content {
-    content(&[("text", s)])
-}
-
-/// A members record: `writers` are key-name prefixes.
-fn members(rule: Rule, writers: &[&str], readers: &[Audience]) -> Share {
-    Share {
-        rule,
-        writers: writers.iter().map(|w| n(w)).collect(),
-        readers: readers.to_vec(),
-    }
-}
-
-/// The field `f` of `c` as text.
-fn field<'c>(c: &'c Content, f: &str) -> Option<&'c str> {
-    c.get(f).and_then(|v| std::str::from_utf8(v).ok())
-}
-
-/// The merged state of a merge collection as `layer` sees it now; `None` while it has nothing, or
-/// while the device answers [`NextStep::RetryLater`] (a record admitting it not received or
-/// walked to yet: read again).
-async fn state_now(layer: &dyn DataLayer, collection: &Name) -> Result<Option<State>, Failure> {
-    match layer.get(collection).await {
-        Ok(answer) => match answer.got {
-            Got::State(s) => Ok(Some(s)),
-            other => Err(Failure::new(format!(
-                "get on merge collection {collection} answered {other:?}; it must answer the \
-                 merged state at a frontier (M10)"
-            ))),
-        },
-        Err(DataError::Unavailable { .. } | DataError::NotFound { .. }) => Ok(None),
-        Err(e) if e.next() == NextStep::RetryLater => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// The field `f` of the entry a version carries inline (a large payload carries none: `get` of
-/// the version's name reads it).
-fn field_of<'v>(v: &'v Version, f: &str) -> Option<&'v str> {
-    match &v.payload {
-        Payload::Entry(c) => field(c, f),
-        Payload::Large { .. } => None,
-    }
-}
-
-/// The merged state, which must exist.
-async fn state(layer: &dyn DataLayer, collection: &Name) -> Result<State, Failure> {
-    state_now(layer, collection)
-        .await?
-        .ok_or_else(|| Failure::new(format!("no state of {collection} is held")))
-}
-
-/// Whether `layer`'s merged state of `collection` includes `id`.
-async fn has(layer: &dyn DataLayer, collection: &Name, id: &VersionId) -> Result<bool, Failure> {
-    Ok(state_now(layer, collection)
-        .await?
-        .is_some_and(|s| s.at.contains(id)))
-}
-
-/// The octets `s`'s register value holds after `by` (its first 32 octets): what the head that
-/// wins wrote. Empty while nothing is written, and for a removal.
-fn written(s: &State) -> &[u8] {
-    s.value
-        .bytes()
-        .and_then(|b| b.get(32..))
-        .unwrap_or_default()
-}
-
-/// The octets for a register write of `s`.
-fn octets(s: &str) -> bytes::Bytes {
-    bytes::Bytes::copy_from_slice(s.as_bytes())
-}
-
-/// Rule R (b): `layer`'s state of the register `collection` reads what the head with the highest
-/// signed digest (`Version::signed`) wrote. `heads` are the versions nothing supersedes, the ones
-/// the case made over no
-/// other, as `layer` lists them with the octets each wrote. Returns the state.
-async fn winning(
-    layer: &dyn DataLayer,
-    collection: &Name,
-    heads: &[&VersionId],
-) -> Result<State, Failure> {
-    let changes = look(layer, collection, &Frontier::new(), LOOK).await?;
-    let mut picks = Vec::with_capacity(heads.len());
-    for id in heads {
-        let v = version(&changes, id)
-            .ok_or_else(|| Failure::new(format!("the watch does not list head {id:?}")))?;
-        let op =
-            v.op.clone()
-                .ok_or_else(|| Failure::new(format!("head {id:?} lists no octets of its write")))?;
-        picks.push((&v.signed, op));
-    }
-    let want =
-        winner(picks).ok_or_else(|| Failure::new(format!("no head of {collection} was given")))?;
-    let s = state(layer, collection).await?;
-    ensure!(
-        written(&s) == &want[..],
-        "the register {collection} reads {:?}; the head with the highest signed digest wrote {:?}",
-        String::from_utf8_lossy(written(&s)),
-        String::from_utf8_lossy(&want)
-    );
-    Ok(s)
-}
-
-/// Whether `layer` holds a state of `collection` at all: it knows the collection's members
-/// record, so its writes go into the collection as shared.
-async fn known(layer: &dyn DataLayer, collection: &Name) -> Result<bool, Failure> {
-    Ok(state_now(layer, collection).await?.is_some())
-}
-
-/// Drain `stream` for `window` of virtual time.
-async fn drain(
-    stream: &mut Changes,
-    window: Duration,
-    into: &mut Vec<Change>,
-) -> Result<(), Failure> {
-    let deadline = tokio::time::Instant::now() + window;
-    loop {
-        match tokio::time::timeout_at(deadline, stream.next()).await {
-            Err(_) | Ok(None) => return Ok(()),
-            Ok(Some(item)) => into.push(item?),
-        }
-    }
-}
-
-/// Drain `stream` into `into` until `done` holds of everything received, for at most `limit` of
-/// virtual time; returns how long it took.
-async fn drain_until(
-    stream: &mut Changes,
-    into: &mut Vec<Change>,
-    what: &str,
-    limit: Duration,
-    mut done: impl FnMut(&[Change]) -> bool,
-) -> Result<Duration, Failure> {
-    let start = tokio::time::Instant::now();
-    loop {
-        if done(into) {
-            return Ok(start.elapsed());
-        }
-        let left = limit.saturating_sub(start.elapsed());
-        if left.is_zero() {
-            return Err(Failure::new(format!(
-                "{what}: not reached within {limit:?} of virtual time"
-            )));
-        }
-        drain(stream, LOOK.min(left), into).await?;
-    }
-}
-
-/// Everything `layer` reports for `collection` beyond `since`, within `window`.
-async fn look(
-    layer: &dyn DataLayer,
-    collection: &Name,
-    since: &Frontier,
-    window: Duration,
-) -> Result<Vec<Change>, Failure> {
-    let mut stream = layer.watch(collection, since).await?;
-    let mut out = Vec::new();
-    drain(&mut stream, window, &mut out).await?;
-    Ok(out)
-}
-
-/// The versions among `changes`.
-fn versions(changes: &[Change]) -> impl Iterator<Item = &Version> {
-    changes.iter().filter_map(|c| match c {
-        Change::Version(v) => Some(v),
-        _ => None,
-    })
-}
-
-/// The version `id` among `changes`.
-fn version<'c>(changes: &'c [Change], id: &VersionId) -> Option<&'c Version> {
-    versions(changes).find(|v| v.id == *id)
-}
-
-// ---- the keys-over-time kit (c3, k1–k10, o2) -----------------------------------------------
-
-/// The log entry name of version `id` of `collection`, which device `writer` wrote
-/// (`<writer>/32=log/<collection>/seq=<n>`): the name a cut and a re-admission speak of.
-fn log_entry(w: &World, writer: Dev, collection: &Name, id: &VersionId) -> Name {
-    ndn_data::wire::log_name(&w.net().spec(writer).name(), Some(collection), id.seq.0)
-}
-
-/// Whether `changes` report version `id` withdrawn.
-fn withdrawn(changes: &[Change], id: &VersionId) -> bool {
-    changes
-        .iter()
-        .any(|c| matches!(c, Change::Withdrawn { id: w, .. } if w == id))
-}

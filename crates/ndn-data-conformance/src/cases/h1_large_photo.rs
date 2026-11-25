@@ -111,8 +111,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         // The photo travelled in pieces: what the laptop stores under the entry's name is at
         // least the octets written, in more pieces than one packet carries (`pieces_stored` counts
         // the packets that carry the value under the entry, apart from the signed entry itself:
-        // chunks and manifest nodes for `ndn-data`, the pieces of a blob for `ndn-heap`; `stored`
-        // counts the octets of the entry and its pieces).
+        // the pieces of a blob; `stored` counts the octets of the entry and its pieces).
         let pieces = w.pieces_stored(LAPTOP, &written.name);
         ensure!(
             pieces >= IMAGE.div_ceil(PACKET_MAX) as u64,

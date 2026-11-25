@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use super::i1_join_by_code::{joins, offer, reads, writes};
 use super::kit::{LIMIT, RELAYED, members_now, n, octets, private};

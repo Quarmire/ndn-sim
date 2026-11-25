@@ -3,9 +3,7 @@
 //! keys-over-time cases. Everything here speaks the neutral types of [`crate::spaces`], so a
 //! case that imports only from here runs on every provider.
 //!
-//! The cases not yet ported keep the older kit of [`super`] over `ndn_data::DataLayer`; a ported
-//! case imports from this module explicitly (`use super::kit::{...}`) and not through
-//! `use super::*`, whose names of the same spelling are the old ones.
+//! The cases import their kit from this module explicitly (`use super::kit::{...}`).
 //!
 //! A register path holds the bytes of the head with the highest signed digest
 //! ([`SpaceItem::signed`]) among the heads (the entries no other entry's `after` supersedes):
@@ -16,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use crate::case::Failure;
 use crate::ensure;
@@ -462,7 +460,7 @@ pub fn withdrawn_as(events: &[SpaceEvent], key: &SpaceEntryKey, because: Refusal
 /// The time the owner says a device was lost, by the clock of `root` (the namespace's root
 /// device, which bounds the revocation's cut by what it first verified before then): a second
 /// after everything the case saw so far, so what `root` held by now came strictly before it.
-pub async fn loss_time(w: &World, root: Dev) -> ndn_data::Timestamp {
+pub async fn loss_time(w: &World, root: Dev) -> ndn_heap::Timestamp {
     w.sleep(Duration::from_secs(1)).await;
     w.net().date(root)
 }
@@ -501,162 +499,4 @@ pub async fn stolen(
     )
     .await?;
     Ok(spaces)
-}
-
-#[cfg(test)]
-mod tests {
-    use ndn_sim::VirtualKernel;
-
-    use super::*;
-    use crate::reference::Reference;
-    use crate::spaces::{EntryRead, SpaceChange};
-    use crate::world::Plan;
-
-    const LAPTOP: Dev = Dev(0);
-    const PHONE: Dev = Dev(1);
-
-    /// The kit and the old provider's adapter carry a space through its life: created by its owner,
-    /// followed and written by a member's device, read alike on both, watched, overwritten,
-    /// removed, and its members changed.
-    #[test]
-    fn a_space_over_the_old_provider_is_created_written_read_watched_and_changed() {
-        VirtualKernel::new().run(|k| async move {
-            let mut plan = Plan::new();
-            plan.device("alice", "laptop");
-            plan.device("bob", "phone");
-            let w = World::build(k, &plan, Reference::provider())
-                .await
-                .expect("the world builds");
-            let space = n("/alice/32=data/notes");
-            let path = n("/shopping");
-            let (laptop, phone) = (w.spaces(LAPTOP), w.spaces(PHONE));
-
-            laptop
-                .create(&space, private(&["/bob"], &["/bob"]))
-                .await
-                .expect("the owner creates the space");
-            w.retry_later(|| phone.open(&space))
-                .await
-                .expect("bob's phone follows the space");
-            let owner = n("/alice");
-            let both = SpaceMembers::new(&owner, people(&["/bob"]), people(&["/bob"]), false);
-            let seen = w
-                .retry_later(|| phone.members(&space))
-                .await
-                .expect("bob's phone receives the record");
-            assert_eq!(
-                seen, both,
-                "the owner is a writer and a reader, listed once"
-            );
-
-            // Bob writes; the owner's device converges on the same item.
-            let first = w
-                .space_put(PHONE, &space, &path, octets("milk"))
-                .await
-                .expect("bob writes");
-            assert_eq!(first.writer, n("/bob/phone"));
-            assert_eq!(first.seq, 1);
-            assert!(first.name.has_prefix(&first.writer), "{}", first.name);
-            w.until("both devices agree on bob's write", LIMIT, || async {
-                agree(&[&*laptop, &*phone], &space, &path, &[&first]).await
-            })
-            .await
-            .expect("the devices agree");
-            let read = required(&*laptop, &space, &path).await.unwrap();
-            assert_eq!(read.bytes, octets("milk"));
-            assert_eq!(read.by, n("/bob"), "the writer's person");
-            assert_eq!(read.entry(), first, "the item names the entry bob signed");
-            assert!(read.after.is_empty(), "the first write supersedes nothing");
-            assert_eq!(read.path, path);
-
-            // A watch lists the write and the record in force.
-            let listing = look(&*laptop, &space, LOOK).await.unwrap();
-            let listed = item_of(&listing, &first.key()).expect("the listing has bob's entry");
-            assert_eq!(listed.bytes, octets("milk"));
-            assert_eq!(heads(&listing, &path).len(), 1);
-            assert!(
-                listing
-                    .iter()
-                    .any(|e| matches!(e, SpaceEvent::Members(m) if *m == both)),
-                "the listing starts with the members in force: {listing:?}"
-            );
-
-            // The owner overwrites it, knowing bob's write: it supersedes it, and wins.
-            let second = w
-                .space_put(LAPTOP, &space, &path, octets("eggs"))
-                .await
-                .expect("the owner writes");
-            w.until("bob's phone applies the owner's write", LIMIT, || {
-                has(&*phone, &space, &second)
-            })
-            .await
-            .expect("the phone applies it");
-            let over = winning(&*phone, &space, &path, &[&second]).await.unwrap();
-            assert_eq!(over.bytes, octets("eggs"));
-            assert!(
-                over.after.iter().any(|a| a.covers(&first.key())),
-                "the later write lists the earlier among what it superseded: {:?}",
-                over.after
-            );
-            let listing = look(&*phone, &space, LOOK).await.unwrap();
-            assert_eq!(
-                heads(&listing, &path)
-                    .iter()
-                    .map(|i| i.key())
-                    .collect::<Vec<_>>(),
-                [second.key()],
-                "only the later write is a head"
-            );
-
-            // The log entry read by its name.
-            match laptop.entry(&space, &first.name).await.unwrap() {
-                EntryRead::Read(i) => assert_eq!(i.bytes, octets("milk")),
-                other => panic!("the entry was read as {other:?}"),
-            }
-
-            // A removal is an empty write: the path holds nothing, and the watch reports it.
-            let mut feed = laptop.watch(&space).await.unwrap();
-            let gone = w
-                .space_put(LAPTOP, &space, &path, Bytes::new())
-                .await
-                .expect("the owner removes the path");
-            let mut events = Vec::new();
-            drain_until(
-                &mut *feed,
-                &mut events,
-                "the watch reports the removal",
-                LIMIT,
-                |seen| {
-                    seen.iter()
-                        .any(|e| matches!(e, SpaceEvent::Removed(i) if i.key() == gone.key()))
-                },
-            )
-            .await
-            .expect("the removal is reported");
-            w.until("bob's phone sees the path removed", LIMIT, || async {
-                Ok(has(&*phone, &space, &gone).await?
-                    && item(&*phone, &space, &path).await?.is_none())
-            })
-            .await
-            .expect("the removal arrives");
-
-            // The owner removes bob from both roles.
-            laptop
-                .change(
-                    &space,
-                    SpaceChange {
-                        remove: people(&["/bob"]),
-                        ..SpaceChange::default()
-                    },
-                )
-                .await
-                .expect("the owner removes bob");
-            let after = members_now(&*laptop, &space).await.unwrap().unwrap();
-            assert_eq!(
-                after,
-                SpaceMembers::new(&owner, Vec::new(), Vec::new(), false)
-            );
-            w.shutdown().await;
-        });
-    }
 }

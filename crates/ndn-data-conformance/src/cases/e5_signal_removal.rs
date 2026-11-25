@@ -31,7 +31,7 @@ use crate::feature::Feature;
 use crate::signal;
 use crate::spaces::SpaceChange;
 use crate::world::{Dev, Plan, World};
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_surface::signal::{SignalError, SignalStats};
 
 pub(super) const CASE: Case = Case {

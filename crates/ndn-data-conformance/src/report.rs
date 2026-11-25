@@ -58,7 +58,7 @@ pub struct CaseResult {
     pub faults: Option<String>,
 }
 
-/// The network a run ran its cases on (spec data-layer.md §18).
+/// The network a run ran its cases on (spec history/data-layer-remainder.md §18).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NetworkReport {
     /// `clean`, `faulty` (ndf's profile, `--faulty`) or `faults` (another, `--faults`).

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Conformance cases for the ndn-data contract: the data-layer study's use cases as deterministic ndn-sim scenarios"
+description = "Conformance cases for the data-layer contract: the data-layer study's use cases as deterministic ndn-sim scenarios over ndn-heap and ndn-invite"
 publish = false
 
 [package.metadata.scope]
@@ -16,24 +16,23 @@ path = "src/main.rs"
 
 [dependencies]
 ndn-sim     = { path = "../ndn-sim" }
-ndn-data    = { workspace = true }
 ndn-app     = { workspace = true }
 ndn-security = { workspace = true }
 ndn-sync    = { workspace = true }
-# Introduction codes the cases alter; anchor links the reference provider adopts.
+# Introduction codes the cases alter; anchor links the provider adopts.
 ndn-trust-envelope = { workspace = true }
-# The second provider (`new_reference`): the re-founded data layer on every device.
+# The data layer on every device (`new_reference`).
 ndn-heap    = { workspace = true }
-# The introductions the second provider runs over (`new_reference`, `new_invite`).
+# The introductions the cases run over (`new_reference`, `new_invite`).
 ndn-invite  = { workspace = true }
-# A device's sync groups set up as a daemon's libraries set them up (`reference`).
+# A device's sync groups set up as a daemon's libraries set them up (`new_reference`).
 ndn-namespace = { workspace = true }
 ndn-link    = { workspace = true }
 # Trust-context versions signed as the root flow signs them: revocations with cuts,
-# re-admissions, recovery kits and recovery (`reference`).
+# re-admissions, recovery kits and recovery (`new_reference`).
 ndn-cert    = { workspace = true }
 # An anchor link adopted through a node's engine, as the daemon adopts one: a self-certifying
-# namespace fetched by its name alone (`reference`).
+# namespace fetched by its name alone (`new_reference`).
 ndn-identity = { workspace = true }
 tokio-util  = { workspace = true }
 anyhow      = { workspace = true }
@@ -45,17 +44,17 @@ serde_json  = { workspace = true }
 tokio       = { workspace = true, features = ["rt", "time", "macros", "test-util"] }
 # Seeds ndn-sync's thread-local jitter before each case, so a case replays identically (`runner`).
 fastrand    = "2"
-# The reference provider's seeded audit randomness: SHA-256 over the device name and a counter.
+# The provider's seeded invitation randomness: SHA-256 over the device name and a counter.
 sha2        = "0.11"
-# The runner's diagnostics: `RUST_LOG=ndn_data=debug` shows why a case's devices refused or
+# The runner's diagnostics: `RUST_LOG=ndn_heap=debug` shows why a case's devices refused or
 # missed something.
 tracing-subscriber = { workspace = true }
-# The audit relay the reference provider injects signs and asks with packets of its own.
+# The audit relay a case injects signs and asks with packets of its own.
 ndn-packet = { workspace = true }
 # The faulty fabric's device links wired permanent, as the clean fabric's are (`world`).
 ndn-transport = { workspace = true }
-# Signals (spec signals.md): the hub a host starts on each device (`reference`), driven by the
-# signal cases (`e1`…`e10`).
+# Signals (spec signals.md): the hub a host starts on each device (`new_reference`), driven by the
+# signal cases (`e1`…`e19`).
 ndn-surface = { workspace = true }
 # The signal wire written from the spec (`signal`): run keys and their signatures, and the seal
 # of a sealed scope — what a hostile member or a relay makes and reads.

@@ -3,8 +3,8 @@
 //! calls its host's link layer was asked, in plain data.
 //!
 //! Every type here is plain data (`Clone + Debug + PartialEq`): what a provider answers is
-//! compared and kept by the cases without knowing which provider it came from, so one case body
-//! runs on `ndn-data`'s `Device::{offer, join, ..}` (through `old_invite`) and on `ndn-invite`.
+//! compared and kept by the cases without knowing which crate's types it came from; `new_invite`
+//! converts `ndn-invite`'s at the edge.
 //! A refusal a verb answers is an [`InviteFailure`] carried as the source of the verb's
 //! `anyhow::Error` (the cases get it back with [`World::join`](crate::world::World::join) and the
 //! like): its `next` names the next step by kind (`"AskOwner"`, `"RetryLater"`, `"FixRequest"`,
@@ -13,7 +13,7 @@
 
 use std::net::SocketAddr;
 
-use ndn_data::Name;
+use ndn_heap::Name;
 
 use crate::case::Failure;
 

@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use ndn_app::{Consumer, EngineAppExt, ForwarderEngine, Node, ServeGuard};
 use ndn_cert::{AnchorLink, GenesisKey, OldRoot, RecoveryPlan, RecoverySeed};
-use ndn_data::Name;
+use ndn_heap::Name;
 use ndn_link::{EngineFaces, FaceSink};
 use ndn_namespace::publish::{OwnCertificates, PublishedContexts};
 use ndn_namespace::{ContextStore, StoredContext};

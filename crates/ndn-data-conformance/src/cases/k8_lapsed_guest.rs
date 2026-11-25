@@ -12,13 +12,18 @@
 //! then revokes the key with a cut at what it held before the lapse, and that cut decides
 //! alone, at Alice's devices as at Bob's: the note from before stays readable with a clock a
 //! year ahead, the one after stays out.
+//!
+//! The space is public: a member's `guest` device is granted no epoch key (heap spec §6.5
+//! condition 2, stage-7 M2: nothing rotates the epoch when a guest lapses), so it could not
+//! seal in a private space. Its entries are Bob's, judged by the members entries alone, and
+//! a guest may still write where the record admits Bob.
 
 use std::time::Duration;
 
 use ndn_sim::ClockSkew;
 
 use super::kit::{
-    DAY, LIMIT, LOOK, SETTLE, has, item_of, items, known, look, n, octets, op_is, private, winning,
+    DAY, LIMIT, LOOK, SETTLE, has, item_of, items, known, look, n, octets, op_is, public, winning,
     wrote,
 };
 use crate::case::{Case, CaseFuture};
@@ -74,16 +79,15 @@ fn run(w: &World) -> CaseFuture<'_> {
             w.spaces(TABLET),
         );
         w.net().offline(TABLET);
-        laptop.create(&space, private(&["/bob"], &["/bob"])).await?;
+        laptop.create(&space, public(&["/bob"])).await?;
         w.retry_later(|| guest.open(&space)).await?;
         w.retry_later(|| bob.open(&space)).await?;
         w.until("the guest knows the shared notes", LIMIT, || {
             known(&*guest, &space)
         })
         .await?;
-        // The guest first reads a note the owner wrote at another path: it then holds the key of
-        // the epoch the owner's device signed. Once its certificate lapsed the owner refuses its
-        // seal key, so a key not held by then never comes.
+        // The guest first reads a note the owner wrote at another path: a public space needs
+        // no key, and the guest has nothing of the owner's but what the space shows.
         let hello = w
             .space_put(LAPTOP, &space, &n("/hello"), octets("welcome, bob"))
             .await?;
@@ -91,7 +95,7 @@ fn run(w: &World) -> CaseFuture<'_> {
             has(&*guest, &space, &hello)
         })
         .await?;
-        // The guest's first put races the epoch key's grant (spec §17.1): put again on RetryLater.
+        // The guest writes a note while its certificate is valid.
         let before = w
             .space_put(GUEST, &space, &path, octets("sown beans"))
             .await?;

@@ -116,6 +116,13 @@ pub trait Channels: Send + Sync {
     /// with none is refused.
     fn next_seq(&self, channel: u64) -> Result<u64, Failure>;
 
+    /// The answer a member that turned hostile gives to `ask` (a signed ask Interest as it
+    /// crossed the network) as if it were the sender of `channel`: the session this device
+    /// holds, its key wrapped to the recipient the ask names, named by the ask, and signed with
+    /// **this device's own key**, which is not the sender's. Returns the Data's octets; sending
+    /// it, and where, is the caller's.
+    fn forge_session(&self, channel: u64, ask: &Bytes) -> Result<Bytes, Failure>;
+
     /// A frame of one message, `bytes` at `path`, sealed under `channel`'s key as this device
     /// holds it, with first sequence `seq0`: **what a member that turned hostile makes**. It
     /// holds the key, not the sender's signing key. Returns the frame's octets; sending it, and

@@ -164,6 +164,17 @@ impl Channels for NewChannels {
         })
     }
 
+    fn forge_session(&self, channel: u64, ask: &Bytes) -> Result<Bytes, Failure> {
+        self.node
+            .adversary_session_data(channel, ask.clone())
+            .ok_or_else(|| {
+                Failure::new(format!(
+                    "this device holds no usable session of channel {channel:016x} to answer \
+                     the ask from, or the ask is none"
+                ))
+            })
+    }
+
     fn forge_data(
         &self,
         channel: u64,

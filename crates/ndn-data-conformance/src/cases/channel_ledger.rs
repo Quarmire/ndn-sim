@@ -46,6 +46,16 @@ impl Ledger {
     /// Checks everything `listener` was given of the sender `from`. Returns how many messages
     /// it was given.
     pub fn check(&self, listener: &Listener, from: &Name) -> Result<usize, Failure> {
+        self.scan(listener, from, false)
+    }
+
+    /// [`check`](Self::check) for a listener of several senders: only what it was given from
+    /// `from` is judged (a message of another sender is no failure here).
+    pub fn check_of(&self, listener: &Listener, from: &Name) -> Result<usize, Failure> {
+        self.scan(listener, from, true)
+    }
+
+    fn scan(&self, listener: &Listener, from: &Name, only: bool) -> Result<usize, Failure> {
         let mut last: Vec<(Name, (usize, u64))> = Vec::new();
         let mut given = 0;
         for event in &listener.events {
@@ -57,6 +67,9 @@ impl Ledger {
             else {
                 continue;
             };
+            if only && writer != from {
+                continue;
+            }
             ensure!(
                 writer == from,
                 "device {} was given {path} from {writer}, not from the sender's device {from}",

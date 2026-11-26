@@ -8,17 +8,19 @@
 //! of it. Once Bob's device holds the record that removes him, his own emit is refused and his
 //! ask of the laptop's channel is too.
 //!
-//! The frame the relay carried before the removal is sent to Carol again once the channel is
-//! re-keyed and the old key's grace is over: it opens nothing, whatever its sequence.
-//!
 //! Then Alice reports her phone lost and her laptop revokes its key; the revocation reaches
-//! Carol's node but not the phone's (a lost device adopts nothing that would stop it), which goes
-//! on emitting on the channel Carol took from it. Carol's session of the phone ends, saying the
-//! sender no longer stands, and a new ask of the phone is refused.
+//! Carol's node but not the phone's (a lost device adopts nothing that would stop it), which
+//! goes on emitting on the channel Carol took from it. Carol's session of the phone ends, saying
+//! the sender no longer stands, and a new ask of the phone is refused. The phone is also a
+//! receiver of the laptop's channel, as Carol is: once the laptop holds the revocation it lets
+//! the phone go and re-keys, and the laptop's later emissions reach Carol and never the phone,
+//! whose own node knows nothing of the revocation; when the phone can ask again, its ask of the
+//! laptop is refused.
 //!
 //! The guards are on signed data's order, not time: the record held → the removed member is
 //! given nothing the channel carries after the re-key; the revocation held → no message of the
-//! revoked key is delivered after the session ended, and no new session is made with it.
+//! revoked key is delivered after the session ended, and no new session is made with it; the
+//! revocation held by the sender → the revoked receiver is given nothing after.
 
 use std::time::Duration;
 
@@ -27,7 +29,7 @@ use ndn_heap::Name;
 
 use super::channel_kit::{
     EMIT_EVERY, Listener, QUIET, emit_until_seen, inject_until, rx_count, rx_state, space,
-    until_ready,
+    transient, until_ready,
 };
 use super::channel_ledger::{Ledger, refused_ask};
 use super::frame_tap::FrameTap;
@@ -49,7 +51,9 @@ pub(super) const CASE: Case = Case {
              re-keyed: the removed member is given nothing after it, the others go on \
              receiving, a frame of the old key opens nothing, and the removed member's own emit \
              and ask are refused; from the moment a receiver holds the revocation of a sender's \
-             key its session of that sender ends and no new one is made.",
+             key its session of that sender ends and no new one is made; from the moment a \
+             sender holds the revocation of a receiver's key the receiver is given nothing it \
+             emits after, the others go on receiving, and the receiver's new ask is refused.",
     budget: Duration::from_secs(3600),
     plan,
     run,
@@ -213,6 +217,17 @@ fn run(w: &World) -> CaseFuture<'_> {
             &mut [&mut at_carol],
         )
         .await?;
+        // Alice's phone also takes the laptop's channel, as a receiver.
+        let mut at_phone = Listener::prepare(w, PHONE, ChannelTrust::Prompt).await?;
+        at_phone.establish(w, LAPTOP).await?;
+        emit_until_seen(
+            w,
+            &laptop_tx,
+            &cursor(),
+            "alice:phoneup",
+            &mut [&mut at_phone],
+        )
+        .await?;
         // The lost phone reaches nothing that would stop it.
         let mut stranded = Vec::new();
         for d in [LAPTOP, BOB, CAROL] {
@@ -232,9 +247,12 @@ fn run(w: &World) -> CaseFuture<'_> {
             i += 1;
             w.sleep(EMIT_EVERY).await;
             at_carol.pump();
-            let ended = at_carol.events.iter().position(
-                |e| matches!(e, ChannelEvent::Ended { why } if why.contains("NotMember")),
-            );
+            // `NotMember` is the end the revocation makes; a lossy network may end the stream
+            // first for a cause it makes (`transient`), and a stream that has ended gives
+            // nothing more either way.
+            let ended = at_carol.events.iter().position(|e| {
+                matches!(e, ChannelEvent::Ended { why } if why.contains("NotMember") || transient(why))
+            });
             if let Some(at) = ended {
                 break at;
             }
@@ -248,16 +266,57 @@ fn run(w: &World) -> CaseFuture<'_> {
         ensure!(
             !at_carol.events[ended..]
                 .iter()
-                .any(|e| matches!(e, ChannelEvent::Message { .. })),
+                .any(|e| matches!(e, ChannelEvent::Message { writer, .. } if *writer == phone)),
             "carol was given a message of the revoked key after its session ended"
         );
         let to_phone = Ledger::new()
             .run("/cursor", "phone:before")
             .run("/cursor", "phone:revoked")
-            .check(&at_carol, &phone)?;
+            .check_of(&at_carol, &phone)?;
         // No new session is made with the revoked key.
         refused_ask(w, &*at_carol.ch, "carol", &space, &phone).await?;
+
+        // The same revocation, held by the laptop, stops the phone as a receiver: the laptop
+        // lets it go and re-keys, and goes on emitting to a receiver that stands (Carol, who
+        // takes its channel anew: her stream of the phone's is over). The phone, which holds
+        // nothing of the revocation, is given nothing the laptop emits from here on.
+        // The laptop's maintenance pass drops a receiver whose key no longer stands and re-keys:
+        // it looks at the record every 250 ms of virtual time.
+        w.sleep(QUIET).await;
+        drop(at_carol);
+        let mut carol_again = Listener::join(w, CAROL, ChannelTrust::Prompt, LAPTOP).await?;
+        emit_until_seen(
+            w,
+            &laptop_tx,
+            &cursor(),
+            "alice:revoked",
+            &mut [&mut carol_again],
+        )
+        .await?;
+        w.sleep(QUIET).await;
+        at_phone.pump();
+        ensure!(
+            at_phone.has_stem(&cursor(), b"alice:phoneup"),
+            "alice's phone, a receiver of the laptop's channel before its key was revoked, was \
+             given nothing of it then: {:?}",
+            at_phone.events
+        );
+        ensure!(
+            !at_phone.has_stem(&cursor(), b"alice:revoked"),
+            "alice's phone, whose key the laptop holds the revocation of, was given a message the \
+             laptop emitted after: {:?}",
+            at_phone.events
+        );
+        let to_revoked = Ledger::new()
+            .run("/cursor", "alice:phoneup")
+            .check_of(&at_phone, &laptop)?;
+        // The laptop's channel went on for Carol.
+        let to_carol_after = Ledger::new()
+            .run("/cursor", "alice:revoked")
+            .check(&carol_again, &laptop)?;
+        // And no new session is made for the revoked receiver, once its phone can ask.
         drop(stranded);
+        refused_ask(w, &*at_phone.ch, "alice's phone", &space, &laptop).await?;
         w.measure(
             "messages Carol was given of the laptop",
             to_carol as u64,
@@ -266,6 +325,16 @@ fn run(w: &World) -> CaseFuture<'_> {
         w.measure(
             "messages Carol was given of the phone",
             to_phone as u64,
+            "messages",
+        );
+        w.measure(
+            "messages Carol was given of the laptop after the phone's revocation",
+            to_carol_after as u64,
+            "messages",
+        );
+        w.measure(
+            "messages the revoked phone was given of the laptop",
+            to_revoked as u64,
             "messages",
         );
         Ok(())

@@ -3,13 +3,19 @@
 //! Alice's laptop sends her pointer to the members of her space. Carol, a member, turns hostile:
 //! many loops of hers ask Alice's laptop for its channel again and again, each ask signed afresh
 //! and verified by the sender, far over the four a second (burst of eight) one key may ask. (A
-//! stranger cannot do this at all: a node signs an ask only as a person its space's record
-//! lists, so the ask of a device that is none never leaves it; the sender's own refusal of one
-//! is c24.) After three seconds of it Bob asks for the channel.
+//! stranger cannot make this half: a node signs an ask only as a person its space's record lists,
+//! so the ask of a device that is none never leaves it, and the sender's own refusal of one is
+//! c24. A stranger that is no node writes forged asks by hand; the sender's budgets that bound
+//! them are per ingress face, and every device of this world reaches Alice over the one face of
+//! the hub, so they could not be told apart here: ndn-heap's `setup_tests` test them over two
+//! faces, channel.md 13.12 item 28.) After three seconds of it Bob asks for the channel.
 //!
 //! The guard: the sender answers Carol's key no more than its rate allows (a burst of eight, then
-//! four a second): the rest are refused or left unanswered, none answered; Bob, whose key is not
-//! hers, is answered while the flood still runs, and receives what Alice emits, as hers.
+//! four a second); every ask over it is **refused and told so**: a `Busy` Nack (a `Congestion`
+//! Nack, over the asker's rate) or a signed `Busy` refusal (a claim of no session over the
+//! channel's one replay a second), so no ask of hers is left to time out (the Nack crosses the
+//! hub's multicast strategy to her); Bob, whose key is not hers, is answered while the flood
+//! still runs, and receives what Alice emits, as hers.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -46,16 +52,19 @@ const CAROL: Dev = Dev(2);
 
 /// How long a loop of Carol's waits between two asks.
 const BETWEEN: Duration = Duration::from_millis(1);
-/// How many loops of hers run at once: an ask nobody answers holds its loop for 4 s, so this
-/// many keep her key asking at a dozen a second or more.
+/// How many loops of hers run at once: each asks again as soon as it is told, so this many keep
+/// her key asking far over the rate.
 const LOOPS: usize = 48;
 /// How long the flood runs before Bob asks.
 const HEAD_START: Duration = Duration::from_secs(3);
 /// The asks of one key the sender answers at once, and in each second after (channel.md 6).
 const BURST: u64 = 8;
 const PER_SECOND: u64 = 4;
-/// What the sender's refusal of an ask over its rate says (heap's `ChanError::Busy`).
-const BUSY: &str = "cannot answer this ask now";
+/// What the sender's `Congestion` Nack of an ask over its rate says at the asker (heap's
+/// `ChanError::Busy`).
+const BUSY_NACK: &str = "cannot answer this ask now";
+/// What a signed `Busy` refusal says (heap's `ChanError::Refused`, code `Busy`).
+const BUSY_REFUSAL: &str = "refused the ask (Busy)";
 
 fn plan() -> Plan {
     let mut p = Plan::new();
@@ -73,9 +82,13 @@ fn pointer() -> Name {
 #[derive(Default)]
 struct Told {
     answered: AtomicU64,
-    busy: AtomicU64,
+    /// Refused by a `Busy` Nack.
+    nacked: AtomicU64,
+    /// Refused by a signed `Busy` refusal.
+    refused: AtomicU64,
+    /// Neither answered nor refused with a reason (an ask left to time out, or any other end).
     other: AtomicU64,
-    /// The first refusal that was neither an answer nor busy, in its words.
+    /// The first of those, in its words.
     first_other: Mutex<Option<String>>,
 }
 
@@ -84,7 +97,8 @@ async fn flood(w: &World, carol: &Listener, alice: &Name, done: &AtomicBool, tol
     while !done.load(Ordering::Relaxed) {
         let count = match carol.ch.ask(&space(), alice).await {
             Ok(_) => &told.answered,
-            Err(e) if e.detail.contains(BUSY) => &told.busy,
+            Err(e) if e.detail.contains(BUSY_NACK) => &told.nacked,
+            Err(e) if e.detail.contains(BUSY_REFUSAL) => &told.refused,
             Err(e) => {
                 told.first_other
                     .lock()
@@ -131,12 +145,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             futures::future::join_all((0..LOOPS).map(|_| flood(w, &carol, &alice, &done, &told)));
         let (_, took) = futures::join!(floods, genuine);
         let (took, flooded) = (took?, began.elapsed());
-        let (answered, busy, other) = (
+        let (answered, nacked, refused, other) = (
             told.answered.load(Ordering::Relaxed),
-            told.busy.load(Ordering::Relaxed),
+            told.nacked.load(Ordering::Relaxed),
+            told.refused.load(Ordering::Relaxed),
             told.other.load(Ordering::Relaxed),
         );
-        let asked = answered + busy + other;
+        let asked = answered + nacked + refused + other;
         let allowed = BURST + PER_SECOND * (flooded.as_secs() + 1);
         ensure!(
             asked > allowed,
@@ -145,10 +160,29 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         ensure!(
             answered <= allowed,
-            "Carol's key was answered {answered} times in {flooded:?} of virtual time ({busy} \
-             refused as busy, {other} left unanswered, the first: {:?}): over a burst of {BURST} \
-             and {PER_SECOND} a second, her key's rate is not enforced",
+            "Carol's key was answered {answered} times in {flooded:?} of virtual time ({nacked} \
+             refused by a Busy Nack, {refused} by a signed Busy refusal, {other} otherwise): over \
+             a burst of {BURST} and {PER_SECOND} a second, her key's rate is not enforced"
+        );
+        // On a clean network no ask ends without a reason. On a faulty one an ask or its Nack
+        // that the network dropped or forged ends in a timeout that nothing could have told:
+        // the share the profile loses on the exchange (an ask and its answer each meet it once),
+        // and a margin, is what may; every ask the sender judged was told.
+        let lost = w.net().faults().map_or(0.0, |f| {
+            1.0 - (1.0 - f.drop).powi(2) * (1.0 - f.forge) + 0.2
+        });
+        let may = (asked as f64 * lost) as u64;
+        ensure!(
+            other <= may,
+            "{other} of Carol's {asked} asks ended with no refusal that says why, over the {may} \
+             the network may lose ({nacked} Busy Nacks, {refused} signed Busy refusals, \
+             {answered} answered); the first: {:?}",
             told.first_other.lock().expect("the case's lock")
+        );
+        ensure!(
+            nacked > 0,
+            "none of Carol's {asked} asks was refused by a Busy Nack ({refused} by a signed Busy \
+             refusal, {answered} answered): the asks over her key's rate were not Nacked"
         );
 
         bob.pump();
@@ -162,8 +196,13 @@ fn run(w: &World) -> CaseFuture<'_> {
             }
         }
         w.measure("Carol's asks the sender answered", answered, "asks");
-        w.measure("Carol's asks refused as busy", busy, "asks");
-        w.measure("Carol's asks refused otherwise", other, "asks");
+        w.measure("Carol's asks refused by a Busy Nack", nacked, "asks");
+        w.measure(
+            "Carol's asks refused by a signed Busy refusal",
+            refused,
+            "asks",
+        );
+        w.measure("Carol's asks that ended without a reason", other, "asks");
         w.measure(
             "virtual time Bob waited for his answer during the flood",
             took.as_millis() as u64,

@@ -16,12 +16,22 @@
 //! channel's one replay a second), so no ask of hers is left to time out (the Nack crosses the
 //! hub's multicast strategy to her); Bob, whose key is not hers, is answered while the flood
 //! still runs, and receives what Alice emits, as hers.
+//!
+//! The network is lossless here, as in c32 and c35: the property is what the sender does with the
+//! asks it judges, and every one it judged must be told (none may end in a timeout). On the
+//! faulty profile an ask or its answer is lost about one time in three over its two hops, and
+//! Bob's own setup (ask, first Keep, `HELLO`, and again after each loss: channel.md 13.12 item
+//! 27) takes a heavy-tailed time: a median of 15 s and a tail past the case's 120 s in about one
+//! run of three hundred, with the flood or without it (the same distribution over 300 seeds
+//! each). Whether the case passed would then be which packets of Bob's link a seed drops, and
+//! the share of Carol's asks the network may lose a margin, not a property.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ndn_heap::Name;
+use ndn_sim::Faults;
 
 use super::channel_kit::{Listener, emit_until_seen, space};
 use super::kit::{n, private};
@@ -68,6 +78,7 @@ const BUSY_REFUSAL: &str = "refused the ask (Busy)";
 
 fn plan() -> Plan {
     let mut p = Plan::new();
+    p.faults(Faults::default());
     p.device("alice", "laptop");
     p.device("bob", "phone");
     p.device("carol", "tablet");
@@ -164,19 +175,12 @@ fn run(w: &World) -> CaseFuture<'_> {
              refused by a Busy Nack, {refused} by a signed Busy refusal, {other} otherwise): over \
              a burst of {BURST} and {PER_SECOND} a second, her key's rate is not enforced"
         );
-        // On a clean network no ask ends without a reason. On a faulty one an ask or its Nack
-        // that the network dropped or forged ends in a timeout that nothing could have told:
-        // the share the profile loses on the exchange (an ask and its answer each meet it once),
-        // and a margin, is what may; every ask the sender judged was told.
-        let lost = w.net().faults().map_or(0.0, |f| {
-            1.0 - (1.0 - f.drop).powi(2) * (1.0 - f.forge) + 0.2
-        });
-        let may = (asked as f64 * lost) as u64;
+        // No ask ends without a reason: every ask the sender judged was told, and on this
+        // network nothing is lost on the way.
         ensure!(
-            other <= may,
-            "{other} of Carol's {asked} asks ended with no refusal that says why, over the {may} \
-             the network may lose ({nacked} Busy Nacks, {refused} signed Busy refusals, \
-             {answered} answered); the first: {:?}",
+            other == 0,
+            "{other} of Carol's {asked} asks ended with no refusal that says why ({nacked} Busy \
+             Nacks, {refused} signed Busy refusals, {answered} answered); the first: {:?}",
             told.first_other.lock().expect("the case's lock")
         );
         ensure!(

@@ -19,7 +19,6 @@ use ndn_sim::{
     ClockSkew, Fabric, FaceKind, FaceProfile, Faults, LinkConfig, NodeId, NodeProfile,
     PrefixSample, SimKernel, Simulation,
 };
-use ndn_surface::signal::Signals;
 use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
@@ -28,7 +27,7 @@ use crate::invite::{
     GrantLog, InviteCode, InviteFailure, InviteJoined, InviteOffer, InviteShort, InviteShortError,
     JoinedList, LinkCall,
 };
-use crate::provider::{Certs, DeviceSpec, Grants, Image, NodeRole, Provider, SignalKeyPair, Tally};
+use crate::provider::{Certs, DeviceSpec, Grants, Image, NodeRole, Provider, Tally};
 use crate::report::{Cost, Measure};
 use crate::spaces::{SpaceEntry, Spaces};
 
@@ -438,6 +437,7 @@ impl Net {
         let s = self.engine(at).side().stats();
         SideCounts {
             frames_in: s.frames_in,
+            bytes_in: s.bytes_in,
             frames_out: s.frames_out,
             lost: s.sink_full + s.sink_error + s.class_unsupported,
             unrouted: s.unrouted,
@@ -445,6 +445,7 @@ impl Net {
             quarantined: s.quarantined,
             unsubs: s.unsubs,
             sinks_lapsed: s.sinks_lapsed,
+            refused_source_mismatch: s.refused_source_mismatch,
         }
     }
 
@@ -733,8 +734,6 @@ pub struct World {
     converge: Cell<Option<Duration>>,
     reported_from: Cell<Option<Mark>>,
     measured: RefCell<Vec<Measure>>,
-    /// Each device's signals once started ([`World::signals`]), shut down with the world.
-    signals: RefCell<Vec<Option<Signals>>>,
 }
 
 impl World {
@@ -767,7 +766,6 @@ impl World {
             converge: Cell::new(None),
             reported_from: Cell::new(None),
             measured: RefCell::new(Vec::new()),
-            signals: RefCell::new(vec![None; plan.devices.len()]),
         })
     }
 
@@ -904,7 +902,6 @@ impl World {
             .await
             .map_err(|e| Failure::new(format!("cannot stop the data layer: {e:#}")))?;
         self.spaces.borrow_mut()[d.0] = None;
-        self.signals.borrow_mut()[d.0] = None;
         Ok(())
     }
 
@@ -941,7 +938,6 @@ impl World {
     /// `d` crashes and starts again on what its store kept (see [`Provider::crash`]);
     /// [`spaces`](Self::spaces) answers the new run's spaces, which this returns.
     pub async fn crash(&self, d: Dev) -> Result<Arc<dyn Spaces>, Failure> {
-        self.signals.borrow_mut()[d.0] = None;
         let started = self
             .provider
             .crash(&self.net.fabric, self.net.spec(d))
@@ -962,7 +958,6 @@ impl World {
     /// `d` starts again on `image` in place of its store (see [`Provider::restore`]);
     /// [`spaces`](Self::spaces) answers the new run's spaces, which this returns.
     pub async fn restore(&self, d: Dev, image: Image) -> Result<Arc<dyn Spaces>, Failure> {
-        self.signals.borrow_mut()[d.0] = None;
         let started = self
             .provider
             .restore(&self.net.fabric, self.net.spec(d), image)
@@ -984,7 +979,6 @@ impl World {
     /// [`Provider::kill`]); [`spaces`](Self::spaces) answers the new run's spaces, which this
     /// returns.
     pub async fn kill(&self, d: Dev) -> Result<Arc<dyn Spaces>, Failure> {
-        self.signals.borrow_mut()[d.0] = None;
         let started = self
             .provider
             .kill(&self.net.fabric, self.net.spec(d))
@@ -1379,57 +1373,6 @@ impl World {
             .map_err(|e| Failure::new(format!("cannot attach channels: {e:#}")))
     }
 
-    /// `d`'s host's signals (see [`Provider::signals`]), started on first ask.
-    pub async fn signals(&self, d: Dev) -> Result<Signals, Failure> {
-        if let Some(signals) = &self.signals.borrow()[d.0] {
-            return Ok(signals.clone());
-        }
-        let signals = self
-            .provider
-            .signals(&self.net.fabric, self.net.spec(d))
-            .await
-            .map_err(|e| Failure::new(format!("cannot start signals: {e:#}")))?;
-        self.signals.borrow_mut()[d.0] = Some(signals.clone());
-        Ok(signals)
-    }
-
-    /// `d`'s host routes the sync group `group` to its signals too, as an eavesdropper on its
-    /// own node does (see [`Provider::listen`]).
-    pub async fn listen(&self, d: Dev, group: &Name) -> Result<(), Failure> {
-        self.provider
-            .listen(&self.net.fabric, self.net.spec(d), group)
-            .await
-            .map_err(|e| Failure::new(format!("cannot listen to {group}: {e:#}")))
-    }
-
-    /// The signal keys `d` holds for `space` to seal with and open by, newest epoch's first, as
-    /// (id, key) (see [`Provider::signal_keys`]).
-    pub fn signal_keys(&self, d: Dev, space: &Name) -> Result<Vec<SignalKeyPair>, Failure> {
-        self.provider
-            .signal_keys(self.net.spec(d), space)
-            .map_err(|e| Failure::new(format!("no signal keys: {e:#}")))
-    }
-
-    /// A run header signed by `d`'s key for `space` (see [`Provider::signal_header`]).
-    pub fn signal_header(
-        &self,
-        d: Dev,
-        space: &Name,
-        run_id: &[u8; 16],
-        body: &[u8],
-    ) -> Result<Bytes, Failure> {
-        self.provider
-            .signal_header(self.net.spec(d), space, run_id, body)
-            .map_err(|e| Failure::new(format!("no run header: {e:#}")))
-    }
-
-    /// Whether `d` holds `key` a member of `space` now (see [`Provider::signal_member`]).
-    pub fn signal_member(&self, d: Dev, space: &Name, key: &Name) -> Result<bool, Failure> {
-        self.provider
-            .signal_member(self.net.spec(d), space, key)
-            .map_err(|e| Failure::new(format!("no member verdict: {e:#}")))
-    }
-
     /// `d`'s own signing key, as a hostile program on it holds it (see [`Provider::signer`]).
     pub fn signer(&self, d: Dev) -> Result<Arc<dyn Signer>, Failure> {
         self.provider
@@ -1563,11 +1506,8 @@ impl World {
         }
     }
 
-    /// Shut the device's signals and the fabric down.
+    /// Shut the fabric down.
     pub async fn shutdown(self) {
-        for signals in self.signals.borrow().iter().flatten() {
-            signals.shutdown();
-        }
         self.net.fabric.shutdown().await;
     }
 }
@@ -1586,6 +1526,8 @@ pub enum Fwd {
 pub struct SideCounts {
     /// Frames offered to the table by faces.
     pub frames_in: u64,
+    /// The octets of those frames.
+    pub bytes_in: u64,
     /// Frames handed to sink faces, one per sink that took one.
     pub frames_out: u64,
     /// Frames a sink did not take (full, refused, a class it cannot carry).
@@ -1600,6 +1542,9 @@ pub struct SideCounts {
     pub unsubs: u64,
     /// Sinks that lapsed for want of a `Keep`.
     pub sinks_lapsed: u64,
+    /// Route installs refused because a route of that id exists with another source: a Data
+    /// that claimed the channel of a sender whose frames it did not come from.
+    pub refused_source_mismatch: u64,
 }
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,4 @@
-//! `ndn-heap`'s channels as [`Channels`]: `Heap::emit` and `Heap::live` over a node attached to
+//! `ndn-heap`'s channels as [`Channels`]: `Heap::emit` and `Heap::get` (emissions only) over a node attached to
 //! its forwarder's side table, and the `adversary` seam a member holding a channel's key forges
 //! with.
 
@@ -72,6 +72,12 @@ impl ChannelItems for NewItems {
                 Err(GetNotice::Retracted { writer, from, to }) => {
                     ChannelEvent::Retracted { writer, from, to }
                 }
+                Err(GetNotice::Withdrawn { id, why }) => ChannelEvent::Ended {
+                    why: format!(
+                        "kept entry {id:?} withdrawn ({why:?}), which a stream of emissions only \
+                         never tells"
+                    ),
+                },
                 Err(GetNotice::LiveEnded(end)) => ChannelEvent::Ended {
                     why: format!("{end:?}"),
                 },
@@ -94,6 +100,7 @@ impl Channels for NewChannels {
     ) -> Result<Box<dyn ChannelItems>, Failure> {
         let heap = self.heap(space).await?;
         let opts = GetOptions {
+            kept: false,
             trust: match trust {
                 ChannelTrust::Prompt => Trust::Prompt,
                 ChannelTrust::Verified => Trust::Verified,
@@ -101,7 +108,7 @@ impl Channels for NewChannels {
             ..GetOptions::default()
         };
         let items = heap
-            .live(Select::Prefix(Name::root()), opts)
+            .get(Select::Prefix(Name::root()), opts)
             .map_err(|e| refused(&format!("{space} cannot be taken live"), &e, e.next()))?;
         Ok(Box::new(NewItems(items)))
     }

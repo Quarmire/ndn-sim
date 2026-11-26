@@ -68,11 +68,6 @@ pub enum Feature {
     /// version 1 checked as the genesis the name hashes, and a device of such a person serves
     /// what an adopter fetches — its namespace's trust-context versions and its certificate.
     SelfCertifying,
-    /// Signals (`ndn_surface::signal`, spec signals.md): ephemeral live data pushed unsigned into
-    /// a space's sync group, each packet signed by a run key a member's device key vouched
-    /// for, sealed under the space's signal key in a sealed space, gated by the members in
-    /// force on every packet, never an entry and never cached. `ndn-heap` only.
-    Signals,
     /// Durability under a crash: a device's own log survives its process dying between a
     /// write and its flush (`Provider::crash`, `image`, `restore`, `block_flush`), a signed gap
     /// statement stands for what was lost, and a restored backup is detected.
@@ -80,7 +75,7 @@ pub enum Feature {
     /// A log is a chain: an entry names the entry before it, and a removal keeps exactly the
     /// chain's ancestors of its tip.
     Chain,
-    /// Channels (`ndn_heap`'s `Heap::emit` and `live`, docs/specs/channel.md): live data carried
+    /// Channels (`ndn_heap`'s `Heap::emit` and `Heap::get`, docs/specs/channel.md): live data carried
     /// as sealed frames through the forwarders' side tables, fanned out by a relay, and judged
     /// against the sender's signed checkpoints (`Provider::channels`). `ndn-heap` only.
     Channels,
@@ -106,7 +101,6 @@ impl Feature {
             | Feature::FolderWatch
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
-            Feature::Signals => 7,
             Feature::Channels => 8,
             Feature::Crash | Feature::Chain => 9,
         }
@@ -135,7 +129,6 @@ impl Feature {
             Feature::FolderWatch => "folder watch",
             Feature::Introduction => "introduction",
             Feature::SelfCertifying => "names by key",
-            Feature::Signals => "signals",
             Feature::Channels => "channels",
             Feature::Crash => "crash durability",
             Feature::Chain => "chain tip",

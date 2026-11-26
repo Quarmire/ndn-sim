@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use bytes::Bytes;
-use ndn_app::{Connection, EngineAppExt};
+use ndn_app::EngineAppExt;
 use ndn_heap::wire::{self, Body, Entry, Payload, PutBody};
 use ndn_heap::{
     Adopter, Alert, Change, Changes, Config, CutBound, EntryId, Frontier, Heap, HeapError, Item,
@@ -35,7 +35,6 @@ use ndn_invite::{Entropy, HintCandidate, HintKind, IntroPolicy, InviteConfig, In
 use ndn_packet::{Data, NameComponent};
 use ndn_security::{ScopedContext, SecurityManager, Signer, Validator, public_key_digest};
 use ndn_sim::{Fabric, NodeId};
-use ndn_surface::signal::{SignalOptions, Signals};
 use ndn_sync::DataStore;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -50,7 +49,7 @@ use crate::invite::{
     LinkCall,
 };
 use crate::new_invite::{self, Stand, heap_kind, next_name};
-use crate::provider::{Certs, DeviceSpec, Grants, Image, Provider, SignalKeyPair, Tally};
+use crate::provider::{Certs, DeviceSpec, Grants, Image, Provider, Tally};
 use crate::spaces::{
     AlertKind, EntryRead, RefusalKind, SpaceAlert, SpaceChange, SpaceChanges, SpaceEntry,
     SpaceEntryKey, SpaceEpoch, SpaceEvent, SpaceItem, SpaceMembers, SpaceShare, Spaces,
@@ -105,9 +104,6 @@ struct Run {
     runs: u64,
     /// The introductions of the node while it runs, taken with it.
     invites: Mutex<Option<Invites>>,
-    /// The device's signals and the connection of their own they run on, once a case asks for
-    /// them ([`Provider::signals`]); they end with the node.
-    signals: Mutex<Option<(Signals, Arc<dyn Connection>)>>,
 }
 
 impl Run {
@@ -116,9 +112,6 @@ impl Run {
     }
 
     fn take(&self) -> Option<Arc<Node>> {
-        if let Some((signals, _)) = self.signals.lock().expect("the run's lock").take() {
-            signals.shutdown();
-        }
         self.invites.lock().expect("the run's lock").take();
         self.node.lock().expect("the run's lock").take()
     }
@@ -246,7 +239,6 @@ impl NewReference {
             cancel,
             runs,
             invites: Mutex::new(Some(invites)),
-            signals: Mutex::new(None),
         });
         self.own
             .lock()
@@ -670,7 +662,7 @@ impl NewSpaces {
                 path,
                 payload: Payload::Inline(bytes),
             }) => Ok(read(path.clone(), bytes.clone())),
-            Body::Put(PutBody { path, .. }) => match heap.get(path).await.map_err(failure)? {
+            Body::Put(PutBody { path, .. }) => match heap.kept(path).await.map_err(failure)? {
                 Some(head) if head.id == *id => Ok(read(path.clone(), head.bytes)),
                 _ => Err(Failure::new(format!(
                     "{}: its value is in pieces and it is no longer the head at {path}, whose \
@@ -759,7 +751,7 @@ impl Spaces for NewSpaces {
     }
 
     async fn get(&self, space: &Name, path: &Name) -> Result<Option<SpaceItem>, Failure> {
-        let got = self.heap(space).await?.get(path).await;
+        let got = self.heap(space).await?.kept(path).await;
         match got {
             Ok(item) => Ok(item.map(|item| self.item(space, &item))),
             Err(HeapError::Unavailable { .. }) => Ok(None),
@@ -943,7 +935,7 @@ impl Provider for NewReference {
     }
 
     /// What the cases need of the layer: not UnboundCut (a cut without bytes does not exist in
-    /// the new wire). Signals are `ndn-surface`'s over the node's gate (heap spec §11).
+    /// the new wire). Channels are `ndn-heap`'s (`Heap::emit`, `Heap::get`).
     /// Introductions are `ndn-invite`'s, started with every node. Members are persons by exact
     /// namespace, which is all the cases that need [`Feature::WritersAcrossPrefixes`] ask: a
     /// writer under another person's namespace, listed by its own.
@@ -972,7 +964,6 @@ impl Provider for NewReference {
                 | Feature::Introduction
                 | Feature::Crash
                 | Feature::Chain
-                | Feature::Signals
                 | Feature::Channels
         )
     }
@@ -1442,104 +1433,6 @@ impl Provider for NewReference {
 
     fn signer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Signer>> {
         self.common.signer_of(device)
-    }
-
-    /// A host's signals over the device's node: `ndn-surface`'s hub on a connection of its own
-    /// to its forwarder (an app face of the node's engine), gated by the node (its
-    /// [`NodeHandle`](ndn_heap::host::NodeHandle)), dating by the node's (possibly lying) clock,
-    /// its clock and sequence counter kept in the store the node runs on, so a device that
-    /// starts again on its store numbers past what it sent. A space's group is routed to that
-    /// connection's face when the space is first subscribed. Every device of a case is its own
-    /// host, yet the sim runs them all in one process, where one device's ring would be
-    /// another's local ring: rings are off, so every signal crosses the simulated links.
-    async fn signals(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Signals> {
-        let run = self.run(device)?;
-        if let Some((signals, _)) = &*run.signals.lock().expect("the run's lock") {
-            return Ok(signals.clone());
-        }
-        let node = run
-            .node()
-            .with_context(|| format!("{}'s data layer is not running", device.name()))?;
-        let engine = fabric
-            .engine_of(device.node)
-            .with_context(|| format!("no engine on node {}", device.node))?;
-        let conn = engine.app_face(run.cancel.child_token());
-        let clock = fabric.node_clock(device.node)?;
-        // The sim's hub is a plain forwarder on the fabric, with no ndn-link serving quota
-        // (ndn-link §15.3) for the default push budget to keep a device under; e10's four
-        // members push 64 packets/s into one group, 256 push Interests/s each.
-        let options = SignalOptions {
-            local_ring: false,
-            clock: Some(Arc::new(move || clock.now_ns() / 1_000)),
-            push_rate: std::num::NonZeroU32::new(10_000).expect("not 0"),
-            push_burst: std::num::NonZeroU32::new(20_000).expect("not 0"),
-            ..SignalOptions::default()
-        };
-        let signals = Signals::start(
-            node.handle(),
-            Arc::clone(&conn),
-            options,
-            Arc::clone(&run.store) as Arc<dyn DataStore>,
-        )
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "{}'s signals did not start: {e} (next step: {:?})",
-                device.name(),
-                e.next()
-            )
-        })?;
-        *run.signals.lock().expect("the run's lock") = Some((signals.clone(), conn));
-        Ok(signals)
-    }
-
-    async fn listen(
-        &self,
-        _fabric: &Fabric,
-        device: &DeviceSpec,
-        group: &Name,
-    ) -> anyhow::Result<()> {
-        let conn = self
-            .run(device)?
-            .signals
-            .lock()
-            .expect("the run's lock")
-            .as_ref()
-            .map(|(_, conn)| Arc::clone(conn))
-            .with_context(|| format!("{} runs no signals", device.name()))?;
-        // The owner's `<O>/32=sync`, as a subscription routes it: the node's own sync face is
-        // routed by it, so the eavesdropper joins it as another next hop, where a route of the
-        // whole group would take the space's Sync Interests from the face.
-        let comps = group.components();
-        let at = comps
-            .iter()
-            .position(|c| *c == NameComponent::keyword(Bytes::from_static(b"sync")));
-        let prefix = at.map_or_else(
-            || group.clone(),
-            |at| Name::from_components(comps[..=at].to_vec()),
-        );
-        conn.register_prefix(&prefix)
-            .await
-            .map_err(|e| anyhow::anyhow!("{prefix} not routed to {}: {e}", device.name()))
-    }
-
-    fn signal_keys(&self, device: &DeviceSpec, space: &Name) -> anyhow::Result<Vec<SignalKeyPair>> {
-        let scope = self.node_of(device)?.signal_scope(space)?;
-        Ok(scope.keys.iter().map(|k| (k.id, *k.expose())).collect())
-    }
-
-    fn signal_header(
-        &self,
-        device: &DeviceSpec,
-        space: &Name,
-        run_id: &[u8; 16],
-        body: &[u8],
-    ) -> anyhow::Result<Bytes> {
-        Ok(self.node_of(device)?.signal_header(space, run_id, body)?)
-    }
-
-    fn signal_member(&self, device: &DeviceSpec, space: &Name, key: &Name) -> anyhow::Result<bool> {
-        Ok(self.node_of(device)?.signal_member(space, key))
     }
 
     fn stored_names(&self, device: &DeviceSpec) -> anyhow::Result<Vec<Name>> {

@@ -11,11 +11,11 @@
 //! data types) and the neutral verbs of [`invite`] (offer, join, the grants a host is told of, the
 //! spaces a device joined, the calls its host's link layer was asked), whose recording core is
 //! [`host::IntroduceCore`]. One implementation runs them: `ndn-heap`'s `Node`
-//! ([`NewReference`]) and `ndn-invite`'s host (through `new_invite`). The signal cases
-//! (`e1`–`e19`) are written over `Spaces` and `ndn-surface`'s signals, a space being a signal's
-//! scope, like the durability and chain cases (`d9`–`d16`, `q1`–`q6`). The channel cases
-//! (`c19`–`c22`) drive [`Channels`], `ndn-heap`'s live channels over the forwarders' side tables
-//! (its `adversary` feature seals a frame or a checkpoint as a compromised key holder would).
+//! ([`NewReference`]) and `ndn-invite`'s host (through `new_invite`). The channel cases
+//! (`c19`–`c41`) drive [`Channels`], `ndn-heap`'s live channels over the forwarders' side tables
+//! (its `adversary` feature seals a frame or a checkpoint as a compromised key holder would),
+//! beside the durability and chain cases (`d9`–`d16`, `q1`–`q6`), which are written over
+//! `Spaces`.
 //! The suite once ran on a
 //! second implementation, the `ndn-data` crate; that crate is removed (see
 //! `ndn-rs/docs/specs/history/`) and so are the six cases that only it could run.
@@ -54,7 +54,6 @@ pub mod new_reference;
 pub mod provider;
 pub mod report;
 pub mod runner;
-pub mod signal;
 pub mod spaces;
 pub mod world;
 pub mod world_common;

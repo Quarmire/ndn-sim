@@ -81,6 +81,9 @@ impl ChannelItems for NewItems {
                 Err(GetNotice::LiveEnded(end)) => ChannelEvent::Ended {
                     why: format!("{end:?}"),
                 },
+                Err(GetNotice::KeptEnded { why }) => ChannelEvent::Ended {
+                    why: format!("the kept part ended: {why}"),
+                },
             });
         }
         told

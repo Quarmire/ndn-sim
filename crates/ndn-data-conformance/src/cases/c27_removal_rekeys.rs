@@ -286,22 +286,18 @@ fn run(w: &World) -> CaseFuture<'_> {
         refused_ask(w, &*at_carol.ch, "carol", &space, &phone).await?;
 
         // The same revocation, held by the laptop, stops the phone as a receiver: the laptop
-        // lets it go and re-keys, and goes on emitting to a receiver that stands (Carol, who
-        // takes its channel anew: her stream of the phone's is over). The phone, which holds
-        // nothing of the revocation, is given nothing the laptop emits from here on.
-        // The laptop's maintenance pass drops a receiver whose key no longer stands and re-keys:
-        // it looks at the record every 250 ms of virtual time.
+        // lets it go and re-keys. The phone, which holds nothing of the revocation, is given
+        // nothing the laptop emits from here on. The laptop's maintenance pass drops a receiver
+        // whose key no longer stands and re-keys: it looks at the record every 250 ms of
+        // virtual time.
         w.sleep(QUIET).await;
-        drop(at_carol);
-        let mut carol_again = Listener::join(w, CAROL, ChannelTrust::Prompt, LAPTOP).await?;
-        emit_until_seen(
-            w,
-            &laptop_tx,
-            &cursor(),
-            "alice:revoked",
-            &mut [&mut carol_again],
-        )
-        .await?;
+        for i in 0..12 {
+            laptop_tx
+                .emit(&space, &cursor(), Ledger::payload("alice:revoked", i))
+                .await?;
+            w.sleep(EMIT_EVERY).await;
+            at_phone.pump();
+        }
         w.sleep(QUIET).await;
         at_phone.pump();
         ensure!(
@@ -320,9 +316,20 @@ fn run(w: &World) -> CaseFuture<'_> {
             .run("/cursor", "alice:phoneup")
             .run("/cursor", "alice:cutoff")
             .check_of(&at_phone, &laptop)?;
-        // The laptop's channel went on for Carol.
+        // The laptop's channel goes on for a receiver that stands: Carol takes it anew (her
+        // stream of the phone's is over).
+        drop(at_carol);
+        let mut carol_again = Listener::join(w, CAROL, ChannelTrust::Prompt, LAPTOP).await?;
+        emit_until_seen(
+            w,
+            &laptop_tx,
+            &cursor(),
+            "alice:control",
+            &mut [&mut carol_again],
+        )
+        .await?;
         let to_carol_after = Ledger::new()
-            .run("/cursor", "alice:revoked")
+            .run("/cursor", "alice:control")
             .check(&carol_again, &laptop)?;
         // And no new session is made for the revoked receiver, once its phone can ask.
         drop(stranded);

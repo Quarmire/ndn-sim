@@ -43,15 +43,15 @@
 //! stopped (`c27`, from `e5`); a relay sees only ciphertext (`c28`, replacing `e6`); no store
 //! keeps a channel packet (`c29`, from `e7`); the newest per path under loss, duplicates and
 //! reordering (`c30`, from `e8`); live edits end in one commit (`c31`, from `e9`); four senders
-//! at 60 Hz (`c32`, from `e10`); a member's Data claiming another sender's channel is refused at
-//! the relay (`c33`, replacing `e11`); a member's flood of asks does not keep a genuine receiver
-//! out (`c34`, replacing `e12`); a flood of frames that do not authenticate starves none
-//! (`c35`, from `e13`); a frame at the largest sequences stops nothing (`c37`, from `e15`); a
-//! revoked issuer ends the session held of its key (`c38`, from `e16`); a space and a path
-//! named as long as they go (`c39`, replacing `e17`); and a sender restarted with its clock
-//! stepped back, and a crash loop with a corrected clock, need nothing durable (`c40`, `c41`,
-//! from `e18`, `e19`). `e3` has no case of its own: `c19` and `c20` assert it; `e14` has none
-//! (the caps it asserted are unit tests), and `c36` is unused).
+//! at 60 Hz (`c32`, from `e10`); a member's flood of asks does not keep a genuine receiver out
+//! (`c34`, replacing `e12`); a flood of frames that do not authenticate starves none (`c35`,
+//! from `e13`); a frame at the largest sequences stops nothing (`c37`, from `e15`); a revoked
+//! issuer ends the session held of its key (`c38`, from `e16`); a space and a path named as long
+//! as they go (`c39`, replacing `e17`); and a sender restarted with its clock stepped back, and
+//! a crash loop with a corrected clock, need nothing durable (`c40`, `c41`, from `e18`, `e19`).
+//! `e3` has no case of its own: `c19` and `c20` assert it; `e11` and `e14` have none (a
+//! member's Data under another sender's name never reaches a side table, and the route-id squat
+//! and the caps are engine and heap unit tests), and `c33` and `c36` are unused).
 //! Each file states the story, the devices, and the invariant it asserts.
 //!
 //! Six cases of the earlier two-implementation suite (`p2`, `r2`, `r3`, `r6`, `f3`, `f4`) drove
@@ -79,7 +79,6 @@ mod c29_no_store_keeps_a_frame;
 mod c30_latest_under_loss;
 mod c31_live_edits_one_commit;
 mod c32_sixty_hertz;
-mod c33_claimed_route;
 mod c34_ask_flood;
 mod c35_forged_flood_starves_nothing;
 mod c37_last_sequence;
@@ -234,7 +233,6 @@ pub const CASES: &[Case] = &[
     c30_latest_under_loss::CASE,
     c31_live_edits_one_commit::CASE,
     c32_sixty_hertz::CASE,
-    c33_claimed_route::CASE,
     c34_ask_flood::CASE,
     c35_forged_flood_starves_nothing::CASE,
     c37_last_sequence::CASE,

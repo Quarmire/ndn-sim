@@ -55,40 +55,55 @@ pub struct Listener {
     items: Option<Box<dyn ChannelItems>>,
     /// What the stream told it so far, in order.
     pub events: Vec<ChannelEvent>,
-    /// The channel it asked.
+    /// The space it takes live.
+    pub space: Name,
+    /// The channel it asked last.
     pub channel: u64,
-    /// The device it asked.
-    sender: Option<Dev>,
+    /// Every channel it asked, by the sender's device, in the order it asked them.
+    pub channels: Vec<(Dev, u64)>,
+    /// The devices it asks, in the order it first asked them.
+    senders: Vec<Dev>,
 }
 
 impl Listener {
     /// `dev` opens the space, waits for its members record and epoch key, and takes it live
     /// with `trust`; it has asked no sender yet.
     pub async fn prepare(w: &World, dev: Dev, trust: ChannelTrust) -> Result<Listener, Failure> {
+        Listener::prepare_in(w, dev, trust, &space()).await
+    }
+
+    /// [`prepare`](Self::prepare) for `space` instead of [`space()`].
+    pub async fn prepare_in(
+        w: &World,
+        dev: Dev,
+        trust: ChannelTrust,
+        space: &Name,
+    ) -> Result<Listener, Failure> {
         let spaces = w.spaces(dev);
-        let space = space();
-        w.retry_later(|| spaces.open(&space)).await?;
-        w.until("the members record", LIMIT, || known(&*spaces, &space))
+        w.retry_later(|| spaces.open(space)).await?;
+        w.until("the members record", LIMIT, || known(&*spaces, space))
             .await?;
-        w.until("the epoch key", LIMIT, || holds_key(&*spaces, &space))
+        w.until("the epoch key", LIMIT, || holds_key(&*spaces, space))
             .await?;
         let ch = w.channels(dev).await?;
-        let items = Some(ch.live(&space, trust).await?);
+        let items = Some(ch.live(space, trust).await?);
         Ok(Listener {
             dev,
             ch,
             trust,
             items,
             events: Vec::new(),
+            space: space.clone(),
             channel: 0,
-            sender: None,
+            channels: Vec::new(),
+            senders: Vec::new(),
         })
     }
 
     /// One ask of `sender`'s device for its channel; returns the channel's id.
     pub async fn ask(&self, w: &World, sender: Dev) -> Result<u64, Failure> {
         let from = w.net().spec(sender).name();
-        self.ch.ask(&space(), &from).await
+        self.ch.ask(&self.space, &from).await
     }
 
     /// [`prepare`](Self::prepare), then [`establish`](Self::establish) a channel from `sender`'s
@@ -112,10 +127,20 @@ impl Listener {
     /// ([`restart`](Self::restart)). That notice is not kept among `events`. Sets
     /// [`channel`](Self::channel).
     pub async fn establish(&mut self, w: &World, sender: Dev) -> Result<(), Failure> {
-        self.sender = Some(sender);
+        if !self.senders.contains(&sender) {
+            self.senders.push(sender);
+        }
         let start = tokio::time::Instant::now();
+        let mut asked = vec![sender];
         loop {
-            self.channel = w.retry_later(|| self.ask(w, sender)).await?;
+            for s in asked.drain(..) {
+                let channel = w.retry_later(|| self.ask(w, s)).await?;
+                self.channels.retain(|(d, _)| *d != s);
+                self.channels.push((s, channel));
+                if s == sender {
+                    self.channel = channel;
+                }
+            }
             loop {
                 w.sleep(Duration::from_millis(100)).await;
                 self.pump();
@@ -126,6 +151,7 @@ impl Listener {
                     self.events
                         .retain(|e| !matches!(e, ChannelEvent::Ended { why } if transient(why)));
                     self.restart(w).await?;
+                    asked.clone_from(&self.senders);
                     break;
                 }
                 ensure!(
@@ -209,10 +235,10 @@ impl Listener {
     /// space live again after [`QUIET`]: the network holds or reorders a datagram for less, so
     /// that no `Unsub` of the session let go is still on its way when the next ask installs a
     /// session and its first `Keep` (an `Unsub` that overtook it would remove the new sink).
-    async fn restart(&mut self, w: &World) -> Result<(), Failure> {
+    pub async fn restart(&mut self, w: &World) -> Result<(), Failure> {
         self.items = None;
         w.sleep(QUIET).await;
-        self.items = Some(self.ch.live(&space(), self.trust).await?);
+        self.items = Some(self.ch.live(&self.space, self.trust).await?);
         Ok(())
     }
 
@@ -239,9 +265,10 @@ impl Listener {
         if !self.lapsed() && !companions.iter().any(|c| c.lapsed()) {
             return Ok(false);
         }
-        let Some(sender) = self.sender else {
+        if self.senders.is_empty() {
             return Ok(false);
-        };
+        }
+        let senders = self.senders.clone();
         self.events
             .retain(|e| !matches!(e, ChannelEvent::Ended { why } if transient(why)));
         for c in companions.iter_mut() {
@@ -249,9 +276,11 @@ impl Listener {
             c.items = None;
         }
         self.restart(w).await?;
-        self.establish(w, sender).await?;
+        for sender in senders {
+            self.establish(w, sender).await?;
+        }
         for c in companions.iter_mut() {
-            c.items = Some(c.ch.live(&space(), c.trust).await?);
+            c.items = Some(c.ch.live(&c.space, c.trust).await?);
         }
         Ok(true)
     }

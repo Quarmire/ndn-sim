@@ -445,7 +445,6 @@ impl Net {
             quarantined: s.quarantined,
             unsubs: s.unsubs,
             sinks_lapsed: s.sinks_lapsed,
-            refused_source_mismatch: s.refused_source_mismatch,
         }
     }
 
@@ -1542,9 +1541,6 @@ pub struct SideCounts {
     pub unsubs: u64,
     /// Sinks that lapsed for want of a `Keep`.
     pub sinks_lapsed: u64,
-    /// Route installs refused because a route of that id exists with another source: a Data
-    /// that claimed the channel of a sender whose frames it did not come from.
-    pub refused_source_mismatch: u64,
 }
 #[cfg(test)]
 mod tests {

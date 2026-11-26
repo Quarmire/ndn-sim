@@ -15,7 +15,7 @@ pub struct Case {
     /// `k1`…`k10` for slice 5's keys over time,
     /// `b1`…`b4` and `f1`, `f2` for slice 6's merge rules by name, app-built
     /// operations and merge pieces, and folder members, `i1`…`i13` for joining a folder
-    /// by a code, `n1` for people named by their keys, `e1`…`e10` for slice 7's signals,
+    /// by a code, `n1` for people named by their keys, `c19`…`c41` for slice 8's channels,
     /// `o1`…`o4` for the open items, `r1`…`r4` for the slice-2 security review (the attacks it
     /// found, and the concurrent share its merge keeps).
     pub id: &'static str,

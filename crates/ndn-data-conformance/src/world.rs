@@ -611,10 +611,19 @@ impl Net {
             .fabric
             .engine_of(self.specs[d.0].node)
             .expect("every device is a node");
+        // The sink's route is written to the FIB itself: an application's registration goes
+        // through the RIB as `CHILD_INHERIT` and keeps the routes of the prefixes above it (a
+        // sync group under a routed namespace must reach the link), which would leave `prefix`
+        // reaching the link as well. This one is meant to shadow them.
+        let before = engine.faces().face_ids();
         let sink = engine.app_face(CancellationToken::new());
-        sink.register_prefix(prefix)
-            .await
-            .expect("an in-process face routes any prefix");
+        let face = engine
+            .faces()
+            .face_ids()
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .expect("the sink's face is in the face table");
+        engine.fib().add_nexthop(prefix, face, 0);
         let task = tokio::spawn(async move { while sink.recv().await.is_some() {} });
         CutOff {
             engine,

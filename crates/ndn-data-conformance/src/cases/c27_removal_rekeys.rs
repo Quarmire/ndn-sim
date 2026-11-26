@@ -233,6 +233,15 @@ fn run(w: &World) -> CaseFuture<'_> {
         for d in [LAPTOP, BOB, CAROL] {
             stranded.push(w.net().cut_off(PHONE, &w.net().spec(d).name()).await);
         }
+        // Cut off, the phone still receives what the laptop emits (the control of what follows).
+        emit_until_seen(
+            w,
+            &laptop_tx,
+            &cursor(),
+            "alice:cutoff",
+            &mut [&mut at_phone],
+        )
+        .await?;
         let lost = loss_time(w, LAPTOP).await;
         w.revoke_at(LAPTOP, PHONE, lost).await?;
         w.spread(CAROL).await?;
@@ -309,6 +318,7 @@ fn run(w: &World) -> CaseFuture<'_> {
         );
         let to_revoked = Ledger::new()
             .run("/cursor", "alice:phoneup")
+            .run("/cursor", "alice:cutoff")
             .check_of(&at_phone, &laptop)?;
         // The laptop's channel went on for Carol.
         let to_carol_after = Ledger::new()

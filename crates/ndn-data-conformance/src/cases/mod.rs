@@ -34,7 +34,14 @@
 //! and round 11's chain, fold and grants of the log (`q1`…`q6`: two packets at one name from a
 //! copied key, a removal that keeps exactly the chain ancestors of its tip, the membership fold
 //! applied in three arrival orders, a cold device that asks for nothing inside a declared gap,
-//! the epoch repair after two concurrent removals, and a new device's grant of the epoch key).
+//! the epoch repair after two concurrent removals, and a new device's grant of the epoch key),
+//! and the channels (`c19`…`c22`, over `ndn-heap`'s live channels through the forwarders' side
+//! tables: a signed checkpoint exposes a forgery by a member holding the channel key, with
+//! evidence against its link, and a lost frame is no forgery (`c19`); what such a member cannot
+//! forge: a session, another session's frame under this channel's id, a checkpoint (`c20`,
+//! which stands where the design's e3 row says "c3"; `c3` itself is the stolen-key case);
+//! `Verified` is never given a frame no checkpoint lists (`c21`); two receivers behind a relay
+//! cost the sender's link one copy of each frame (`c22`)).
 //! Each file states the story, the devices, and the invariant it asserts.
 //!
 //! Six cases of the earlier two-implementation suite (`p2`, `r2`, `r3`, `r6`, `f3`, `f4`) drove
@@ -49,7 +56,12 @@ mod c03_stolen_key;
 mod c04_lens_seal;
 mod c08_nested_summaries;
 mod c09_family_chat;
+mod c19_checkpoint_exposes_forgery;
+mod c20_forged_forms_refused;
+mod c21_verified_never_unlisted;
+mod c22_channel_fan_out;
 mod chain_kit;
+mod channel_kit;
 mod d10_crash_peer_returns_entries;
 mod d11_no_peer_hole_is_signed;
 mod d12_restored_image_rolled_back;
@@ -219,6 +231,10 @@ pub const CASES: &[Case] = &[
     e17_signal_long_scope::CASE,
     e18_signal_clock_stepped_back::CASE,
     e19_signal_clock_not_ratcheted::CASE,
+    c22_channel_fan_out::CASE,
+    c19_checkpoint_exposes_forgery::CASE,
+    c21_verified_never_unlisted::CASE,
+    c20_forged_forms_refused::CASE,
     d8_batched_burst::CASE,
     d9_crash_between_put_and_flush::CASE,
     d10_crash_peer_returns_entries::CASE,

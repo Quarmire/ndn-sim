@@ -41,6 +41,7 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
+use crate::channel::Channels;
 use crate::crash_store::CrashStore;
 use crate::feature::Feature;
 use crate::host::{IntroduceCore, Listening, link_address};
@@ -885,8 +886,11 @@ fn alert_of(alert: Alert) -> SpaceAlert {
         } => format!(
             "a frame of {writer}'s channel {channel:016x} at sequence {seq} is not the one the \
              sender sent (its signed checkpoint contradicts it): a holder of the channel key \
-             made it; the face it came over ({}) is barred: look at that link, and remove the \
-             member holding the key if it is not expected",
+             made it; the node asked its forwarder to bar the face it came over ({}) from \
+             channel frames, but this alert does not say it did (the forwarder refuses the \
+             node's own face and a face it does not hold, and a node with no ingress bar asks \
+             nothing): look at that link, bar it if it is not barred, and remove the member \
+             holding the key if it is not expected",
             via.0
         ),
         Alert::ChannelCheckpoint {
@@ -896,9 +900,10 @@ fn alert_of(alert: Alert) -> SpaceAlert {
             ..
         } => format!(
             "a checkpoint of {writer}'s channel {channel:016x} opened under the channel key and \
-             was not signed by the sender: a holder of the key made it; the session was dropped \
-             and the face it came over ({}) is barred: ask the sender again once that link is \
-             dealt with",
+             was not signed by the sender: a holder of the key made it; the session was dropped; \
+             the node asked its forwarder to bar the face it came over ({}) from channel frames, \
+             but this alert does not say it did: bar that link if it is not barred, and ask the \
+             sender again once that link is dealt with",
             via.0
         ),
         other => format!("{other:?}"),
@@ -968,6 +973,7 @@ impl Provider for NewReference {
                 | Feature::Crash
                 | Feature::Chain
                 | Feature::Signals
+                | Feature::Channels
         )
     }
 
@@ -1422,6 +1428,16 @@ impl Provider for NewReference {
 
     fn short_write(&self, short: &InviteShort) -> Result<String, InviteShortError> {
         new_invite::short_write(short)
+    }
+
+    /// `device`'s node attached to its forwarder's side table: its channel frames leave through
+    /// it and the frames routed to it come back (`NodeHandle::attach_forwarder`).
+    async fn channels(
+        &self,
+        _fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<Arc<dyn Channels>> {
+        crate::new_channels::NewChannels::attach(self.node_of(device)?)
     }
 
     fn signer(&self, device: &DeviceSpec) -> anyhow::Result<Arc<dyn Signer>> {

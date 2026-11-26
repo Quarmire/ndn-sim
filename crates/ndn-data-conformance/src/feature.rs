@@ -80,6 +80,10 @@ pub enum Feature {
     /// A log is a chain: an entry names the entry before it, and a removal keeps exactly the
     /// chain's ancestors of its tip.
     Chain,
+    /// Channels (`ndn_heap`'s `Heap::emit` and `live`, docs/specs/channel.md): live data carried
+    /// as sealed frames through the forwarders' side tables, fanned out by a relay, and judged
+    /// against the sender's signed checkpoints (`Provider::channels`). `ndn-heap` only.
+    Channels,
 }
 
 impl Feature {
@@ -103,6 +107,7 @@ impl Feature {
             | Feature::Introduction
             | Feature::SelfCertifying => 6,
             Feature::Signals => 7,
+            Feature::Channels => 8,
             Feature::Crash | Feature::Chain => 9,
         }
     }
@@ -131,6 +136,7 @@ impl Feature {
             Feature::Introduction => "introduction",
             Feature::SelfCertifying => "names by key",
             Feature::Signals => "signals",
+            Feature::Channels => "channels",
             Feature::Crash => "crash durability",
             Feature::Chain => "chain tip",
         }

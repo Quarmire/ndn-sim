@@ -3,6 +3,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use crate::channel::Channels;
 use bytes::Bytes;
 use ndn_heap::{Name, Timestamp};
 use ndn_security::Signer;
@@ -582,6 +583,19 @@ pub trait Provider: Send + Sync {
     async fn signals(&self, fabric: &Fabric, device: &DeviceSpec) -> anyhow::Result<Signals> {
         let _ = fabric;
         anyhow::bail!("this provider cannot start signals on {}", device.name())
+    }
+
+    /// `device`'s live channels, over its node's forwarder: the node's frames leave through the
+    /// forwarder's side table and the frames routed to it come back through it. Attached once;
+    /// asked again it answers the same. A provider without channels ([`Feature::Channels`])
+    /// says so.
+    async fn channels(
+        &self,
+        fabric: &Fabric,
+        device: &DeviceSpec,
+    ) -> anyhow::Result<Arc<dyn Channels>> {
+        let _ = fabric;
+        anyhow::bail!("this provider has no channels on {}", device.name())
     }
 
     /// Fault injection: `device`'s host routes the sync group `group` — one it has not

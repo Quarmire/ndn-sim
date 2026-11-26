@@ -15,7 +15,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use ndn_runtime::{Instant, Runtime};
 use ndn_transport::face::ScopePolicy;
-use ndn_transport::{FaceError, FaceId, FaceKind, FaceTrust, LinkType, Transport};
+use ndn_transport::{
+    FaceError, FaceId, FaceKind, FaceTrust, LinkType, SIDE_MARKER, SideClass, SideRefused,
+    Transport,
+};
 use parking_lot::Mutex;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::sync::mpsc;
@@ -24,6 +27,17 @@ use tracing::trace;
 use crate::faults::{Fate, FaultStream};
 use crate::shared_channel::SharedChannel;
 use crate::sim_link::{FaceProfile, IPV4_HEADER, LinkConfig, UDP_HEADER};
+
+/// The longest side frame a simulated face carries: the channel's own stream-frame grant (1 MiB).
+/// A datagram frame is also held to the face's MTU, where it has one.
+const SIDE_FRAME_MAX: usize = 1 << 20;
+
+/// A frame the link did not lose: how many copies arrive, after how long.
+struct Sent {
+    copies: u8,
+    wait: Duration,
+    pkt: Bytes,
+}
 
 /// Which wire frames a [`HoldRule`] arms on, by network-packet type. On an NDNLPv2 link (every
 /// UDP/Ethernet-kind face) the packet rides inside an `LpPacket`, so the matcher looks through
@@ -420,6 +434,66 @@ impl Transport for SimFace {
     }
 
     async fn send_bytes(&self, pkt: Bytes) -> Result<(), FaceError> {
+        match self.plan(pkt, false) {
+            Some(sent) => self.deliver(sent).await,
+            None => Ok(()),
+        }
+    }
+
+    /// A side frame crosses the link as a packet does, but as its class says: a datagram meets
+    /// the link's loss, jitter and the standing fault profile; a stream frame is reliable and
+    /// in order, and the fault profile (a datagram network's draws) does not touch it.
+    async fn send_side(&self, frame: Bytes, class: SideClass) -> Result<(), SideRefused> {
+        self.side_checked(&frame, class)?;
+        match self.plan(frame, class == SideClass::Stream) {
+            Some(sent) => self.deliver(sent).await.map_err(Into::into),
+            None => Ok(()),
+        }
+    }
+
+    /// The same without waiting: a frame that crosses at once goes into the far face's queue
+    /// (`Full` when it has no room); one that waits for its delay is delivered by a task on the
+    /// runtime seam.
+    fn forward_side(&self, frame: Bytes, class: SideClass) -> Result<(), SideRefused> {
+        self.side_checked(&frame, class)?;
+        let Some(Sent { copies, wait, pkt }) = self.plan(frame, class == SideClass::Stream) else {
+            return Ok(());
+        };
+        if let (Outbound::Pipe(tx), true) = (&self.out, wait.is_zero()) {
+            for _ in 0..copies {
+                tx.try_send(pkt.clone()).map_err(|e| match e {
+                    mpsc::error::TrySendError::Full(_) => SideRefused::Full,
+                    mpsc::error::TrySendError::Closed(_) => SideRefused::Closed,
+                })?;
+            }
+            return Ok(());
+        }
+        self.deliver_later(Sent { copies, wait, pkt });
+        Ok(())
+    }
+
+    fn side_frame_max(&self) -> usize {
+        SIDE_FRAME_MAX
+    }
+}
+
+impl SimFace {
+    /// A uniform jitter in `[0, config.jitter]`, drawn from the seeded PRNG (reproducible).
+    fn jitter(&self) -> Duration {
+        let max = self.config.jitter;
+        if max.is_zero() {
+            return Duration::ZERO;
+        }
+        let nanos = self.rng.lock().random_range(0..=max.as_nanos() as u64);
+        Duration::from_nanos(nanos)
+    }
+
+    /// What crossing the link does to `pkt` sent now: `None` when the link loses it, else how
+    /// many copies arrive, after how long, and as which bytes. A `stream` frame is reliable
+    /// whatever the face's profile says: no loss, no jitter, in order, and the standing fault
+    /// profile does not draw for it.
+    fn plan(&self, pkt: Bytes, stream: bool) -> Option<Sent> {
+        let reliable = self.reliable || stream;
         // Per-prefix accounting: count the EMISSION (before the loss roll — the node emitted it, so
         // a lossy link shows out > in for the prefix, which is the informative truth).
         if let Some(tap) = &self.prefix_tap {
@@ -428,7 +502,7 @@ impl Transport for SimFace {
         // A partitioned / downed link drops everything (a runtime Fault::Partition or a down link).
         if self.state.is_down() {
             trace!(face = %self.id, "SimFace: packet dropped (link down)");
-            return Ok(());
+            return None;
         }
         // Targeted hold (delay WITHOUT drop): a held frame is exempt from the loss roll —
         // "delayed, never dropped" is the rule's contract.
@@ -447,7 +521,7 @@ impl Transport for SimFace {
                 Some(done) => Some(done),
                 None => {
                     trace!(face = %self.id, channel = channel.name(), "SimFace: tail-dropped (medium backlog full)");
-                    return Ok(());
+                    return None;
                 }
             },
             None => None,
@@ -460,7 +534,7 @@ impl Transport for SimFace {
         // IP-reassembly failure on Wi-Fi while single-datagram telemetry was unaffected. With
         // `loss_frame_bytes`, each frame's loss follows its own size (independent bit errors).
         let loss_rate = self.state.loss_override().unwrap_or(self.config.loss_rate);
-        if hold.is_none() && !self.reliable && loss_rate > 0.0 {
+        if hold.is_none() && !reliable && loss_rate > 0.0 {
             let survive = (1.0 - loss_rate).max(0.0);
             let mut rng = self.rng.lock();
             let lost = match self.loss_frame_bytes {
@@ -472,21 +546,32 @@ impl Transport for SimFace {
             drop(rng);
             if lost {
                 trace!(face = %self.id, frames, "SimFace: packet dropped (loss)");
-                return Ok(());
+                return None;
             }
         }
 
         // The standing fault profile, after the link's own impairments: ndf's per-arrival layer
         // (dropped, duplicated, forged, held). Its hold rides on top of everything below, the
         // reliable cursor included, so a faulty stream reorders as ndf's faulty connection does.
-        let fate = self.state.fault_fate(pkt);
+        // A stream frame is the network's too, but never lost, copied or altered by it: it meets
+        // the profile's delay as a retransmission would make it wait, and stays in order behind
+        // the frames before it.
+        let fate = if stream {
+            Fate {
+                copies: 1,
+                delay: self.state.fault_fate(pkt.clone()).delay,
+                frame: pkt,
+            }
+        } else {
+            self.state.fault_fate(pkt)
+        };
         if fate.copies == 0 {
             trace!(face = %self.id, "SimFace: packet dropped (fault profile)");
-            return Ok(());
+            return None;
         }
         let Fate {
             copies,
-            delay: fault_delay,
+            delay: mut fault_delay,
             frame: pkt,
         } = fate;
 
@@ -512,7 +597,7 @@ impl Transport for SimFace {
         };
 
         // Reliable streams add no reordering jitter; datagrams may reorder.
-        let jitter = if self.reliable {
+        let jitter = if reliable {
             Duration::ZERO
         } else {
             self.jitter()
@@ -523,8 +608,13 @@ impl Transport for SimFace {
             + self.state.extra_delay()
             + hold.unwrap_or_default();
 
+        // A stream frame waits out the profile's delay before the in-order cursor, so a held
+        // frame holds back those after it.
+        if stream {
+            deliver_at += std::mem::take(&mut fault_delay);
+        }
         // Reliable: never deliver before the previous packet (in-order, HOL-style).
-        if self.reliable {
+        if reliable {
             let mut last = self.last_delivery.lock();
             if deliver_at <= *last {
                 deliver_at = *last + Duration::from_nanos(1);
@@ -533,38 +623,56 @@ impl Transport for SimFace {
         }
 
         let wait = (deliver_at + fault_delay).saturating_duration_since(now);
+        Some(Sent { copies, wait, pkt })
+    }
+
+    /// Hand a planned frame to the far end: at once, or after its delay on the runtime seam.
+    async fn deliver(&self, Sent { copies, wait, pkt }: Sent) -> Result<(), FaceError> {
         if wait.is_zero() {
             for _ in 1..copies {
                 self.out.deliver(pkt.clone()).await?;
             }
             self.out.deliver(pkt).await
         } else {
-            // Delayed delivery on the runtime seam (virtual under the virtual/DES kernels).
-            let out = self.out.clone();
-            let face_id = self.id;
-            let rt = Arc::clone(&self.runtime);
-            self.runtime.spawn(Box::pin(async move {
-                rt.sleep(wait).await;
-                for _ in 0..copies {
-                    if out.deliver(pkt.clone()).await.is_err() {
-                        trace!(face = %face_id, "SimFace: remote end closed during delayed delivery");
-                        return;
-                    }
-                }
-            }));
+            self.deliver_later(Sent { copies, wait, pkt });
             Ok(())
         }
     }
-}
 
-impl SimFace {
-    /// A uniform jitter in `[0, config.jitter]`, drawn from the seeded PRNG (reproducible).
-    fn jitter(&self) -> Duration {
-        let max = self.config.jitter;
-        if max.is_zero() {
-            return Duration::ZERO;
+    /// Delayed delivery on the runtime seam (virtual under the virtual/DES kernels).
+    fn deliver_later(&self, Sent { copies, wait, pkt }: Sent) {
+        let out = self.out.clone();
+        let face_id = self.id;
+        let rt = Arc::clone(&self.runtime);
+        self.runtime.spawn(Box::pin(async move {
+            if !wait.is_zero() {
+                rt.sleep(wait).await;
+            }
+            for _ in 0..copies {
+                if out.deliver(pkt.clone()).await.is_err() {
+                    trace!(face = %face_id, "SimFace: remote end closed during delayed delivery");
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// A side frame this face may carry: a marked frame, a datagram within the face's MTU and a
+    /// stream frame within [`SIDE_FRAME_MAX`].
+    fn side_checked(&self, frame: &[u8], class: SideClass) -> Result<(), SideRefused> {
+        if frame.first() != Some(&SIDE_MARKER) {
+            return Err(SideRefused::Malformed);
         }
-        let nanos = self.rng.lock().random_range(0..=max.as_nanos() as u64);
-        Duration::from_nanos(nanos)
+        let max = match (class, self.send_mtu) {
+            (SideClass::Datagram, Some(mtu)) => mtu,
+            _ => SIDE_FRAME_MAX,
+        };
+        if frame.len() > max {
+            return Err(SideRefused::TooLarge {
+                size: frame.len(),
+                max,
+            });
+        }
+        Ok(())
     }
 }

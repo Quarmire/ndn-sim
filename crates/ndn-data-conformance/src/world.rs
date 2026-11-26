@@ -23,6 +23,7 @@ use ndn_surface::signal::Signals;
 use tokio_util::sync::CancellationToken;
 
 use crate::case::Failure;
+use crate::channel::Channels;
 use crate::invite::{
     GrantLog, InviteCode, InviteFailure, InviteJoined, InviteOffer, InviteShort, InviteShortError,
     JoinedList, LinkCall,
@@ -419,6 +420,115 @@ impl Net {
             .fetch_with(InterestBuilder::new(name.clone()).lifetime(Duration::from_secs(2)))
             .await
             .is_ok()
+    }
+
+    /// The forwarder `at`.
+    fn engine(&self, at: Fwd) -> ForwarderEngine {
+        let node = match at {
+            Fwd::Hub => self.hub,
+            Fwd::Device(d) => self.specs[d.0].node,
+        };
+        self.fabric
+            .engine_of(node)
+            .expect("the hub and every device are nodes")
+    }
+
+    /// What the side table of the forwarder `at` counted since the run began.
+    pub fn side_counts(&self, at: Fwd) -> SideCounts {
+        let s = self.engine(at).side().stats();
+        SideCounts {
+            frames_in: s.frames_in,
+            frames_out: s.frames_out,
+            lost: s.sink_full + s.sink_error + s.class_unsupported,
+            unrouted: s.unrouted,
+            wrong_source: s.wrong_source,
+            quarantined: s.quarantined,
+            unsubs: s.unsubs,
+            sinks_lapsed: s.sinks_lapsed,
+        }
+    }
+
+    /// How many sink faces the forwarder `at` holds for the channel `channel`'s route.
+    pub fn side_sinks(&self, at: Fwd, channel: u64) -> usize {
+        self.engine(at)
+            .side()
+            .sinks(ndn_engine::side::SideId(channel))
+    }
+
+    /// The route of the channel `channel` at the forwarder `at`: the frames it routed on it since
+    /// it was made (a keep-alive is not one) and the sinks it fans them out to. `None` when the
+    /// forwarder holds no such route.
+    pub fn side_route(&self, at: Fwd, channel: u64) -> Option<(u64, usize)> {
+        self.engine(at)
+            .side()
+            .list()
+            .into_iter()
+            .find(|r| r.id == channel)
+            .map(|r| (r.frames, r.sinks.len()))
+    }
+
+    /// The faces that are sinks of the channel `channel`'s route at the forwarder `at`.
+    pub fn side_sink_faces(&self, at: Fwd, channel: u64) -> Vec<u64> {
+        self.engine(at)
+            .side()
+            .list()
+            .into_iter()
+            .find(|r| r.id == channel)
+            .map(|r| r.sinks.iter().map(|s| s.face.0).collect())
+            .unwrap_or_default()
+    }
+
+    /// The faces of the forwarder `at` barred from carrying channel frames now.
+    pub fn side_barred(&self, at: Fwd) -> Vec<u64> {
+        self.engine(at)
+            .side()
+            .quarantined()
+            .into_iter()
+            .map(|(face, _)| face.0)
+            .collect()
+    }
+
+    /// The face of `d`'s forwarder toward the hub: what its node names a frame that came over
+    /// the link as that frame's ingress.
+    pub fn link_face(&self, d: Dev) -> u64 {
+        self.fabric
+            .face_between(self.specs[d.0].node, self.hub)
+            .expect("every device is linked to the hub")
+            .0
+    }
+
+    /// A relay that holds a channel's key turns hostile: it sends `frame`, a channel frame it
+    /// made, to `to` over its own link, as the relay that carries the genuine frames does, on
+    /// the datagram class or the stream class. The frame crosses the link like any other of its
+    /// class (the faulty network meets a datagram, never a stream frame), and `to`'s forwarder
+    /// takes it for the route's, as it comes over the route's source face.
+    pub async fn relay_inject(&self, to: Dev, frame: Bytes, stream: bool) -> Result<(), Failure> {
+        let face = self
+            .fabric
+            .face_between(self.hub, self.specs[to.0].node)
+            .expect("every device is linked to the hub");
+        let face = self
+            .engine(Fwd::Hub)
+            .faces()
+            .get(face)
+            .ok_or_else(|| Failure::new("the hub's link to the device is gone"))?;
+        let class = if stream {
+            ndn_transport::SideClass::Stream
+        } else {
+            ndn_transport::SideClass::Datagram
+        };
+        face.send_side(frame, class)
+            .await
+            .map_err(|e| Failure::new(format!("the relay cannot send the frame: {e}")))
+    }
+
+    /// An app of `d`'s own on its node that lives until `cancel`: when it ends, so does its face
+    /// and every prefix it registered.
+    pub fn app_face_until(&self, d: Dev, cancel: CancellationToken) -> Arc<dyn Connection> {
+        self.fabric
+            .engine_of(self.specs[d.0].node)
+            .expect("every device is a node")
+            .app_face(cancel)
     }
 
     /// An app of `d`'s own on its node: a raw face to its forwarder, for packets a case makes
@@ -1252,6 +1362,14 @@ impl World {
         Ok(())
     }
 
+    /// `d`'s live channels (see [`Provider::channels`]), attached on first ask.
+    pub async fn channels(&self, d: Dev) -> Result<Arc<dyn Channels>, Failure> {
+        self.provider
+            .channels(&self.net.fabric, self.net.spec(d))
+            .await
+            .map_err(|e| Failure::new(format!("cannot attach channels: {e:#}")))
+    }
+
     /// `d`'s host's signals (see [`Provider::signals`]), started on first ask.
     pub async fn signals(&self, d: Dev) -> Result<Signals, Failure> {
         if let Some(signals) = &self.signals.borrow()[d.0] {
@@ -1445,6 +1563,35 @@ impl World {
     }
 }
 
+/// A forwarder of the case: the hub that relays between devices, or a device's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fwd {
+    /// The relay every frame between two devices crosses.
+    Hub,
+    /// A device's forwarder.
+    Device(Dev),
+}
+
+/// What a forwarder's side table counted: the generic fan-out of frames it does not read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SideCounts {
+    /// Frames offered to the table by faces.
+    pub frames_in: u64,
+    /// Frames handed to sink faces, one per sink that took one.
+    pub frames_out: u64,
+    /// Frames a sink did not take (full, refused, a class it cannot carry).
+    pub lost: u64,
+    /// Frames no route took: no route of that channel (yet, or any more).
+    pub unrouted: u64,
+    /// Frames that came over a face that is not the route's source.
+    pub wrong_source: u64,
+    /// Frames dropped for coming over a barred face.
+    pub quarantined: u64,
+    /// `Unsub`s accepted: sinks released.
+    pub unsubs: u64,
+    /// Sinks that lapsed for want of a `Keep`.
+    pub sinks_lapsed: u64,
+}
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

@@ -22,7 +22,9 @@ ndn-sync    = { workspace = true }
 # Introduction codes the cases alter; anchor links the provider adopts.
 ndn-trust-envelope = { workspace = true }
 # The data layer on every device (`new_reference`).
-ndn-heap    = { workspace = true }
+# `adversary`: a member holding a channel's key seals frames and checkpoints as a compromised
+# holder would (the channel cases c19-c22); off in every shipped build.
+ndn-heap    = { workspace = true, features = ["adversary"] }
 # The introductions the cases run over (`new_reference`, `new_invite`).
 ndn-invite  = { workspace = true }
 # A device's sync groups set up as a daemon's libraries set them up (`new_reference`).
@@ -53,6 +55,8 @@ tracing-subscriber = { workspace = true }
 ndn-packet = { workspace = true }
 # The faulty fabric's device links wired permanent, as the clean fabric's are (`world`).
 ndn-transport = { workspace = true }
+# The side table of a forwarder, read by the channel cases (`world`).
+ndn-engine = { workspace = true }
 # Signals (spec signals.md): the hub a host starts on each device (`new_reference`), driven by the
 # signal cases (`e1`…`e19`).
 ndn-surface = { workspace = true }

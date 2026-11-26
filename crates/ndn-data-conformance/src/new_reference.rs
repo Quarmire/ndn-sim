@@ -875,7 +875,34 @@ impl NewChanges {
 
 /// An alert as the neutral surface states it, by its variant.
 fn alert_of(alert: Alert) -> SpaceAlert {
-    let detail = format!("{alert:?}");
+    let detail = match &alert {
+        Alert::ChannelForgery {
+            writer,
+            channel,
+            seq,
+            via,
+            ..
+        } => format!(
+            "a frame of {writer}'s channel {channel:016x} at sequence {seq} is not the one the \
+             sender sent (its signed checkpoint contradicts it): a holder of the channel key \
+             made it; the face it came over ({}) is barred: look at that link, and remove the \
+             member holding the key if it is not expected",
+            via.0
+        ),
+        Alert::ChannelCheckpoint {
+            writer,
+            channel,
+            via,
+            ..
+        } => format!(
+            "a checkpoint of {writer}'s channel {channel:016x} opened under the channel key and \
+             was not signed by the sender: a holder of the key made it; the session was dropped \
+             and the face it came over ({}) is barred: ask the sender again once that link is \
+             dealt with",
+            via.0
+        ),
+        other => format!("{other:?}"),
+    };
     let kind = match alert {
         Alert::Equivocation { device, seq } => AlertKind::Equivocation { device, seq },
         Alert::OutsideCut { .. } => AlertKind::OutsideCut,
@@ -884,6 +911,7 @@ fn alert_of(alert: Alert) -> SpaceAlert {
         Alert::GapSigned { .. } => AlertKind::GapSigned,
         Alert::UnbackedCounter { .. } => AlertKind::UnbackedCounter,
         Alert::StoreFailed { .. } => AlertKind::StoreFailed,
+        Alert::ChannelForgery { .. } | Alert::ChannelCheckpoint { .. } => AlertKind::Other,
     };
     SpaceAlert { kind, detail }
 }

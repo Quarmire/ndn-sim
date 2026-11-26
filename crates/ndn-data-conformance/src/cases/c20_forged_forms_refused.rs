@@ -32,7 +32,8 @@ use ndn_packet::encode::DataBuilder;
 use tokio_util::sync::CancellationToken;
 
 use super::channel_kit::{
-    Listener, QUIET, emit_until_seen, inject_until, route_took, space, until_ready,
+    Listener, QUIET, channel_state, emit_until_seen, inject_until, rx_count, rx_state, space,
+    transient, until_ready,
 };
 use super::kit::{n, private};
 use crate::case::{Case, CaseFuture, Failure};
@@ -147,13 +148,13 @@ fn run(w: &World) -> CaseFuture<'_> {
         let dave = w.channels(DAVE).await?;
         // Dave's device holds the space, as a sender of its channel must.
         let _dave_listens = Listener::prepare(w, DAVE, ChannelTrust::Prompt).await?;
-        let carol_of_dave = Listener::join(w, CAROL, ChannelTrust::Prompt, DAVE).await?;
+        // Carol asks Dave's channel too and takes no stream of it: she needs its key only.
+        let dave_channel = w.retry_later(|| carol.ask(w, DAVE)).await?;
         ensure!(
-            channel == carol.channel && channel != carol_of_dave.channel,
+            channel == carol.channel && channel != dave_channel,
             "Alice's channel {channel:016x} was answered to Carol as {:016x}, and Dave's is \
-             {:016x}",
-            carol.channel,
-            carol_of_dave.channel
+             {dave_channel:016x}",
+            carol.channel
         );
         until_ready(w, &[&bob, &carol], channel, 2).await?;
         emit_until_seen(
@@ -170,17 +171,28 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // 2. A frame sealed under Dave's channel key, with Alice's channel id written in its
         // header: it opens under neither key.
-        let seq = carol_of_dave.ch.next_seq(carol_of_dave.channel)?;
-        let frame = carol_of_dave.ch.forge_data(
-            carol_of_dave.channel,
-            seq,
-            &pointer(),
-            b"under daves key",
-        )?;
+        let seq = carol.ch.next_seq(dave_channel)?;
+        let frame = carol
+            .ch
+            .forge_data(dave_channel, seq, &pointer(), b"under daves key")?;
         let frame = relabelled(&frame, channel);
-        inject_until(w, BOB, &frame, false, route_took(w, BOB, channel))
+        // Bob's session must stand for the frame to be tried against it; it landed when his
+        // node counts a frame it could not open: the key's epoch it does not hold, or a key that
+        // does not open it.
+        bob.heal(w).await?;
+        let refused =
+            |bob: &Listener| rx_count(&bob.ch, "unauthentic") + rx_count(&bob.ch, "unknown_epoch");
+        let failed = refused(&bob);
+        inject_until(w, &mut bob, &frame, false, |bob| refused(bob) > failed)
             .await
-            .map_err(|e| Failure::new(format!("the relabelled frame: {e}")))?;
+            .map_err(|e| {
+                Failure::new(format!(
+                    "the relabelled frame: {e}; Bob's events {:?}; receiver [{}]; {}",
+                    bob.events,
+                    rx_state(&bob.ch),
+                    channel_state(w, channel, &[Fwd::Hub, Fwd::Device(BOB)])
+                ))
+            })?;
         w.sleep(QUIET).await;
         bob.pump();
         ensure!(
@@ -191,10 +203,11 @@ fn run(w: &World) -> CaseFuture<'_> {
         ensure!(
             bob.ch.evidence().is_empty()
                 && w.net().side_barred(Fwd::Device(BOB)).is_empty()
-                && !bob.events.iter().any(|e| matches!(
-                    e,
-                    ChannelEvent::Retracted { .. } | ChannelEvent::Ended { .. }
-                )),
+                && !bob
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, ChannelEvent::Retracted { .. })
+                        || matches!(e, ChannelEvent::Ended { why } if !transient(why))),
             "a frame that fails to authenticate proves nothing of anyone, and it left evidence {:?}, \
              a bar {:?} or an end {:?}",
             bob.ch.evidence(),
@@ -204,16 +217,21 @@ fn run(w: &World) -> CaseFuture<'_> {
         emit_until_seen(w, &sender, &pointer(), "after", &mut [&mut bob, &mut carol]).await?;
 
         // 3. A checkpoint Carol signed: sealed under Alice's channel key, signed with her own.
-        w.sleep(QUIET).await;
+        // It landed when Bob's node counts a checkpoint that opened under the key and did not
+        // verify under Alice's.
+        bob.heal(w).await?;
         let from = w.net().spec(ALICE).name();
         let ch = carol.ch.clone();
         let space = space();
         w.retry_later(|| ch.ask(&space, &from)).await?;
         let seq = carol.ch.next_seq(channel)?;
         let checkpoint = carol.ch.forge_checkpoint(channel, seq, seq, seq + 1, &[])?;
-        inject_until(w, BOB, &checkpoint, true, route_took(w, BOB, channel))
-            .await
-            .map_err(|e| Failure::new(format!("the checkpoint Carol made: {e}")))?;
+        let bad = rx_count(&bob.ch, "bad_checkpoints");
+        inject_until(w, &mut bob, &checkpoint, true, |bob| {
+            rx_count(&bob.ch, "bad_checkpoints") > bad
+        })
+        .await
+        .map_err(|e| Failure::new(format!("the checkpoint Carol made: {e}")))?;
         w.sleep(QUIET).await;
         bob.pump();
         let evidence = bob.ch.evidence();

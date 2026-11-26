@@ -26,10 +26,10 @@ use bytes::Bytes;
 use ndn_heap::Name;
 
 use super::channel_kit::{
-    EMIT_EVERY, Listener, NEAR, QUIET, channel_state, emit_until_seen, forge_ahead, space,
-    until_ready,
+    EMIT_EVERY, Listener, Marks, NEAR, QUIET, channel_state, emit_until_seen, forge_ahead,
+    rx_state, space, until_ready,
 };
-use super::kit::{LIMIT, drain, n, private};
+use super::kit::{drain, n, private};
 use crate::case::{Case, CaseFuture, Failure};
 use crate::channel::{ChannelEvent, ChannelTrust};
 use crate::ensure;
@@ -52,6 +52,14 @@ pub(super) const CASE: Case = Case {
     plan,
     run,
 };
+
+/// How many frames Carol forges one after another before the case says none was exposed.
+const ATTEMPTS: usize = 6;
+
+/// How long Alice's emissions go on after a forged frame landed before it is taken as one no
+/// checkpoint will judge (it landed after the checkpoint that covers it): the sender's period is
+/// 20 ms, and a faulty link holds a packet for less than 2 s.
+const EXPOSE_WITHIN: Duration = Duration::from_secs(10);
 
 const ALICE: Dev = Dev(0);
 const BOB: Dev = Dev(1);
@@ -108,7 +116,9 @@ fn run(w: &World) -> CaseFuture<'_> {
         let alice = w.net().spec(ALICE).name();
         let link = w.net().link_face(BOB);
 
+        let mut marks = Marks::new();
         until_ready(w, &[&bob, &carol, &dave], channel, 3).await?;
+        marks.at("ready", &bob.ch);
 
         // A frame that was lost on the way: Bob's link is down while Alice emits, so only the
         // others get it. Alice goes on; her checkpoints list the frame Bob never had.
@@ -120,12 +130,14 @@ fn run(w: &World) -> CaseFuture<'_> {
             &mut [&mut bob, &mut carol, &mut dave],
         )
         .await?;
+        marks.at("honest seen", &bob.ch);
         w.net().offline(BOB);
         sender
             .emit(&space(), &pointer(), Bytes::from_static(b"lost#0"))
             .await?;
         w.sleep(Duration::from_millis(500)).await;
         w.net().online(BOB);
+        marks.at("online", &bob.ch);
         emit_until_seen(
             w,
             &sender,
@@ -134,7 +146,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             &mut [&mut bob, &mut carol, &mut dave],
         )
         .await?;
+        marks.at("after-loss emitted, before QUIET", &bob.ch);
         w.sleep(QUIET).await;
+        marks.at("after QUIET", &bob.ch);
         bob.pump();
         ensure!(
             !bob.has(&pointer(), b"lost#0"),
@@ -157,69 +171,90 @@ fn run(w: &World) -> CaseFuture<'_> {
             bob.events
         );
 
-        // Carol forges, on Bob's link, a frame a few sequences above the one Alice sends next.
+        // Carol forges, on Bob's link, a frame a few sequences above the one Alice sends next,
+        // while Alice is silent; Alice then sends on, and the checkpoint that covers the frame's
+        // sequence does not list it. A frame accepted after the checkpoint that covers its
+        // sequence is never judged (channel.md 13.12 item 2), and a network that delays
+        // datagrams makes that happen: when the exposure does not come within a stated window
+        // of Alice's emissions, or Bob's session ended meanwhile (a frame that waited 3 s for a
+        // checkpoint that never covered it), Bob asks again and Carol forges anew. Every frame
+        // she forged is kept: nothing but those is evidence.
         let forged_path = pointer();
-        let (seq, forged) = forge_ahead(
-            w,
-            ALICE,
-            &carol,
-            &mut bob,
-            &forged_path,
-            "forged by carol",
-            NEAR,
-        )
-        .await?;
-        bob.pump();
-        ensure!(
-            bob.has(&forged_path, b"forged by carol"),
-            "Bob, who takes frames as they come, was not given the forged frame within the \
-             window: {:?}",
-            bob.events
-        );
-
-        // Alice sends on; the checkpoint after her next frames does not list the forged one.
-        let start = tokio::time::Instant::now();
-        let mut round = 0u64;
-        loop {
-            sender
-                .emit(
-                    &space(),
-                    &pointer(),
-                    Bytes::from(format!("genuine#{round}")),
-                )
-                .await?;
-            round += 1;
-            w.sleep(EMIT_EVERY).await;
-            bob.pump();
-            if bob
-                .ch
-                .evidence()
-                .iter()
-                .any(|e| e.kind == "mismatch" && e.seq0 == seq)
-            {
-                break;
-            }
+        let mut forgeries: Vec<(u64, Bytes)> = Vec::new();
+        let mut tried = 0;
+        let mut began: tokio::time::Instant;
+        let (seq, forged) = 'attempts: loop {
+            tried += 1;
             ensure!(
-                start.elapsed() < LIMIT,
-                "after {round} genuine emissions over {LIMIT:?} of virtual time no checkpoint \
-                 exposed the forged frame at sequence {seq}; Bob's evidence {:?}, last events \
-                 {:?}; {}",
+                tried <= ATTEMPTS,
+                "after {ATTEMPTS} frames forged one after another none was exposed by the \
+                 checkpoints that cover it; Bob's evidence {:?}, events {:?}; receiver: {}; now \
+                 [{}]; {}",
                 bob.ch
                     .evidence()
                     .iter()
                     .map(|e| (e.kind, e.seq0))
                     .collect::<Vec<_>>(),
-                &bob.events[bob.events.len().saturating_sub(4)..],
+                bob.events
+                    .iter()
+                    .filter(|e| !matches!(e, ChannelEvent::Message { .. }))
+                    .collect::<Vec<_>>(),
+                marks.said(),
+                rx_state(&bob.ch),
                 channel_state(
                     w,
                     channel,
                     &[Fwd::Device(ALICE), Fwd::Hub, Fwd::Device(BOB)]
                 )
             );
-        }
+            bob.heal(w).await?;
+            marks.at("before forging", &bob.ch);
+            let Some(forgery) = forge_ahead(
+                w,
+                ALICE,
+                &carol,
+                &mut bob,
+                &forged_path,
+                &format!("forged by carol#{tried}"),
+                NEAR,
+            )
+            .await?
+            else {
+                marks.at("the forged frame did not land", &bob.ch);
+                continue;
+            };
+            marks.at("forged frame given", &bob.ch);
+            forgeries.push(forgery);
+            began = tokio::time::Instant::now();
+            let mut round = 0u64;
+            loop {
+                sender
+                    .emit(
+                        &space(),
+                        &pointer(),
+                        Bytes::from(format!("genuine#{round}")),
+                    )
+                    .await?;
+                round += 1;
+                w.sleep(EMIT_EVERY).await;
+                bob.pump();
+                let evidence = bob.ch.evidence();
+                if let Some(hit) = forgeries.iter().find(|(s, _)| {
+                    evidence
+                        .iter()
+                        .any(|e| e.kind == "mismatch" && e.seq0 == *s)
+                }) {
+                    break 'attempts hit.clone();
+                }
+                if bob.lapsed() || began.elapsed() >= EXPOSE_WITHIN {
+                    marks.at("not exposed", &bob.ch);
+                    break;
+                }
+            }
+        };
         w.measure(
             "virtual time from Alice's next frame to the exposure",
-            start.elapsed().as_millis() as u64,
+            began.elapsed().as_millis() as u64,
             "ms",
         );
         w.sleep(QUIET).await;
@@ -244,9 +279,9 @@ fn run(w: &World) -> CaseFuture<'_> {
              contradicts it"
         );
         ensure!(
-            evidence
-                .iter()
-                .all(|e| e.seq0 == seq && e.ingress == link && e.channel == channel),
+            evidence.iter().all(|e| e.ingress == link
+                && e.channel == channel
+                && forgeries.iter().any(|(s, _)| *s == e.seq0)),
             "evidence about something other than the forged frame: {evidence:?}"
         );
 
@@ -298,6 +333,7 @@ fn run(w: &World) -> CaseFuture<'_> {
 
         // What Alice sends from now on reaches the others and no longer Bob.
         let dropped = w.net().side_counts(Fwd::Device(BOB)).quarantined;
+        let routed = w.net().side_sink_faces(Fwd::Hub, channel).len() == 3;
         emit_until_seen(
             w,
             &sender,
@@ -306,6 +342,9 @@ fn run(w: &World) -> CaseFuture<'_> {
             &mut [&mut carol, &mut dave],
         )
         .await?;
+        // What the network still holds of what was sent has come by now (QUIET); the frames
+        // that came over the barred face are counted by then.
+        w.sleep(QUIET).await;
         bob.pump();
         ensure!(
             !bob.messages()
@@ -313,8 +352,14 @@ fn run(w: &World) -> CaseFuture<'_> {
                 .any(|(_, payload)| payload.starts_with(b"later")),
             "Bob was given a frame over the barred face {link}"
         );
+        // A frame over the barred face is dropped at Bob's forwarder; unless the relay holds no
+        // sink of Bob's any more: a frame accepted over the face before it was barred that no
+        // checkpoint covers ends his session (13.12 item 2), and an ended session leaves its
+        // route, so that nothing is sent over the face at all.
         ensure!(
-            w.net().side_counts(Fwd::Device(BOB)).quarantined > dropped,
+            !routed
+                || w.net().side_counts(Fwd::Device(BOB)).quarantined > dropped
+                || w.net().side_sink_faces(Fwd::Hub, channel).len() < 3,
             "Bob's forwarder dropped no frame for coming over the barred face"
         );
         bob.alive("Bob")?;

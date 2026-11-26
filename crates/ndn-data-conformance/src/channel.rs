@@ -139,4 +139,10 @@ pub trait Channels: Send + Sync {
         hi: u64,
         listed: &[Bytes],
     ) -> Result<Bytes, Failure>;
+
+    /// What this device's receiver counted so far, as `(name, count)` (every channel of the
+    /// device): frames taken (`accepted`), frames no checkpoint judged (`unchecked`),
+    /// checkpoints read and verified, frames they contradicted (`mismatches`). A case reads
+    /// them to say what happened to a frame it made, never to time anything.
+    fn rx_counters(&self) -> Vec<(&'static str, u64)>;
 }

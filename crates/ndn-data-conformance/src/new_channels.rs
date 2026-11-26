@@ -189,4 +189,8 @@ impl Channels for NewChannels {
                 ))
             })
     }
+
+    fn rx_counters(&self) -> Vec<(&'static str, u64)> {
+        self.node.adversary_rx_counters()
+    }
 }

@@ -35,6 +35,15 @@ pub fn space() -> Name {
     n("/alice/32=data/live")
 }
 
+/// Whether a stream's end `why` is one a lossy or slow network makes, and a host answers by
+/// asking again: `NoPath` (the first `Keep` was lost or the session held up, so the sender
+/// dropped its `HELLO`; channel.md 13.12 item 27) and `Unverifiable` (a frame was accepted after
+/// the checkpoint that covers it, and no later checkpoint came within 3 s: channel.md 13.12
+/// item 2). Every other end is a refusal.
+pub fn transient(why: &str) -> bool {
+    why.starts_with("NoPath") || why.contains("Unverifiable")
+}
+
 /// A device that takes the live messages of the space and keeps everything its stream told it.
 pub struct Listener {
     /// Which device.
@@ -48,6 +57,8 @@ pub struct Listener {
     pub events: Vec<ChannelEvent>,
     /// The channel it asked.
     pub channel: u64,
+    /// The device it asked.
+    sender: Option<Dev>,
 }
 
 impl Listener {
@@ -70,6 +81,7 @@ impl Listener {
             items,
             events: Vec::new(),
             channel: 0,
+            sender: None,
         })
     }
 
@@ -94,11 +106,13 @@ impl Listener {
 
     /// Asks `sender`'s device for its channel (again while the answer is "retry later") and
     /// waits for the sender's `HELLO`, which says the path works. On a network that holds the
-    /// session Data back for longer than a stream frame waits for its route, the `HELLO` is
-    /// dropped and the stream says `NoPath` 2 s after the session; the receiver then does what
-    /// a host does: it lets the stream go (the channel is released), takes the space live again
-    /// and asks anew. That notice is not kept among `events`. Sets [`channel`](Self::channel).
+    /// session Data back for longer than a stream frame waits for its route, or loses the first
+    /// `Keep`, the `HELLO` is dropped and the stream says `NoPath` 2 s after the session
+    /// (channel.md 13.12 item 27); the receiver then does what a host does and asks again
+    /// ([`restart`](Self::restart)). That notice is not kept among `events`. Sets
+    /// [`channel`](Self::channel).
     pub async fn establish(&mut self, w: &World, sender: Dev) -> Result<(), Failure> {
+        self.sender = Some(sender);
         let start = tokio::time::Instant::now();
         loop {
             self.channel = w.retry_later(|| self.ask(w, sender)).await?;
@@ -108,33 +122,24 @@ impl Listener {
                 if self.hello() {
                     return Ok(());
                 }
-                if let Some(no_path) = self.events.iter().position(
-                    |e| matches!(e, ChannelEvent::Ended { why } if why.starts_with("NoPath")),
-                ) {
-                    self.events.remove(no_path);
-                    self.items = None;
-                    let (dev, channel) = (self.dev, self.channel);
-                    w.until("the released route to go", LIMIT, || async move {
-                        Ok(w.net().side_route(Fwd::Device(dev), channel).is_none())
-                    })
-                    .await
-                    .map_err(|e| {
-                        Failure::new(format!(
-                            "{e}; the stream said {:?}; {}",
-                            self.events,
-                            channel_state(w, channel, &[Fwd::Device(dev), Fwd::Hub])
-                        ))
-                    })?;
-                    self.items = Some(self.ch.live(&space(), self.trust).await?);
+                if self.lapsed() {
+                    self.events
+                        .retain(|e| !matches!(e, ChannelEvent::Ended { why } if transient(why)));
+                    self.restart(w).await?;
                     break;
                 }
                 ensure!(
                     start.elapsed() < LIMIT,
                     "device {} heard no HELLO of {}'s channel within {LIMIT:?} of virtual time: \
-                     {:?}",
+                     {:?}; {}",
                     self.dev.0,
                     sender.0,
-                    self.events
+                    self.events,
+                    channel_state(
+                        w,
+                        self.channel,
+                        &[Fwd::Device(self.dev), Fwd::Hub, Fwd::Device(sender)]
+                    )
                 );
             }
         }
@@ -179,14 +184,86 @@ impl Listener {
     }
 
     /// Fail unless the stream so far is only messages, lags and retractions the case expects:
-    /// a session that ended is a refusal the case did not provoke.
+    /// a session that ended for a cause the case did not provoke is a refusal. The ends a lossy
+    /// or slow network makes (see [`transient`]) are not: a host asks again.
     pub fn alive(&self, who: &str) -> Result<(), Failure> {
         for e in &self.events {
-            if let ChannelEvent::Ended { why } = e {
+            if let ChannelEvent::Ended { why } = e
+                && !transient(why)
+            {
                 return Err(Failure::new(format!("{who}'s live stream ended: {why}")));
             }
         }
         Ok(())
+    }
+
+    /// Whether the stream told that a session ended for a cause a lossy or slow network makes
+    /// ([`transient`]) and the receiver has not asked again since.
+    pub fn lapsed(&self) -> bool {
+        self.events
+            .iter()
+            .any(|e| matches!(e, ChannelEvent::Ended { why } if transient(why)))
+    }
+
+    /// The receiver lets the stream go (the channel is released: an `Unsub` leaves) and takes the
+    /// space live again after [`QUIET`]: the network holds or reorders a datagram for less, so
+    /// that no `Unsub` of the session let go is still on its way when the next ask installs a
+    /// session and its first `Keep` (an `Unsub` that overtook it would remove the new sink).
+    async fn restart(&mut self, w: &World) -> Result<(), Failure> {
+        self.items = None;
+        w.sleep(QUIET).await;
+        self.items = Some(self.ch.live(&space(), self.trust).await?);
+        Ok(())
+    }
+
+    /// What a host does when the stream says a session ended for a cause a lossy or slow network
+    /// makes: ask again. Does nothing when none did. Returns whether it asked again. The notice
+    /// is not kept among `events`.
+    pub async fn heal(&mut self, w: &World) -> Result<bool, Failure> {
+        self.heal_with(w, &mut []).await
+    }
+
+    /// [`heal`](Self::heal) for a receiver whose device holds `companions`, other streams over
+    /// the same session (a second `Items` of the node): the session is let go when the last of
+    /// them is, and a session not let go is renewed with no new `HELLO`, so they are let go with
+    /// it and take the space live again after it asked.
+    pub async fn heal_with(
+        &mut self,
+        w: &World,
+        companions: &mut [&mut Listener],
+    ) -> Result<bool, Failure> {
+        self.pump();
+        for c in companions.iter_mut() {
+            c.pump();
+        }
+        if !self.lapsed() && !companions.iter().any(|c| c.lapsed()) {
+            return Ok(false);
+        }
+        let Some(sender) = self.sender else {
+            return Ok(false);
+        };
+        self.events
+            .retain(|e| !matches!(e, ChannelEvent::Ended { why } if transient(why)));
+        for c in companions.iter_mut() {
+            c.settle_lapse();
+            c.items = None;
+        }
+        self.restart(w).await?;
+        self.establish(w, sender).await?;
+        for c in companions.iter_mut() {
+            c.items = Some(c.ch.live(&space(), c.trust).await?);
+        }
+        Ok(true)
+    }
+
+    /// Drops the notice of an end that another receiver of the same device answered. Returns
+    /// whether there was one.
+    pub fn settle_lapse(&mut self) -> bool {
+        self.pump();
+        let before = self.events.len();
+        self.events
+            .retain(|e| !matches!(e, ChannelEvent::Ended { why } if transient(why)));
+        self.events.len() != before
     }
 }
 
@@ -211,6 +288,7 @@ pub async fn emit_until_seen(
         w.sleep(EMIT_EVERY).await;
         let mut seen = Vec::new();
         for l in listeners.iter_mut() {
+            l.heal(w).await?;
             l.pump();
             let last = l
                 .messages()
@@ -234,13 +312,21 @@ pub async fn emit_until_seen(
 /// compares later: past the longest a faulty link holds a packet back (delay, reorder, block).
 pub const QUIET: Duration = Duration::from_secs(3);
 
+/// How long a forged frame is sent again before the sender's sequence is read anew: past it the
+/// sender may have taken more than [`NEAR`] sequences (an idle sender's checkpoint takes one
+/// every 5 s), and a frame below what the sender has had checkpointed is never judged.
+pub const FORGE_WINDOW: Duration = Duration::from_secs(4);
+
 /// `holder`, a member that holds the channel's key like every receiver, turns hostile. It asks
 /// `sender`'s device again (a renewal queues nothing) to read the sequence the sender takes next
 /// (plus `ahead`), seals a frame of one message, `payload` at `path`, at that sequence, and the
 /// relay it runs sends it over its link to `watch`'s device (again every [`EMIT_EVERY`]) until
 /// `watch`, a receiver that takes frames as they come, has been given it. The sender emits
 /// nothing meanwhile, and must emit soon after: a receiver that took a frame no checkpoint has
-/// listed yet waits only so long for one. Returns the frame's sequence and its octets.
+/// listed yet waits only so long for one. Returns the frame's sequence and its octets, or `None`
+/// when the frame did not land within [`FORGE_WINDOW`] or `watch`'s session ended on the way
+/// (the sequence may be stale, and a frame a session that ended held is gone): the caller heals
+/// and tries again.
 pub async fn forge_ahead(
     w: &World,
     sender: Dev,
@@ -249,8 +335,9 @@ pub async fn forge_ahead(
     path: &Name,
     payload: &str,
     ahead: u64,
-) -> Result<(u64, Bytes), Failure> {
-    w.sleep(QUIET).await;
+) -> Result<Option<(u64, Bytes)>, Failure> {
+    // The checkpoint the sender queued after its last frame has taken its sequence by now.
+    w.sleep(EMIT_EVERY).await;
     let space = space();
     let from = w.net().spec(sender).name();
     let ch = holder.ch.clone();
@@ -259,57 +346,58 @@ pub async fn forge_ahead(
     let frame = holder
         .ch
         .forge_data(holder.channel, seq, path, payload.as_bytes())?;
-    let to = watch.dev;
-    inject_until(w, to, &frame, false, || {
+    let start = tokio::time::Instant::now();
+    loop {
+        w.net()
+            .relay_inject(watch.dev, frame.clone(), false)
+            .await?;
+        w.sleep(EMIT_EVERY).await;
         watch.pump();
-        watch.has(path, payload.as_bytes())
-    })
-    .await
-    .map_err(|e| Failure::new(format!("the forged frame at sequence {seq}: {e}")))?;
-    Ok((seq, frame))
+        if watch.has(path, payload.as_bytes()) {
+            return Ok(Some((seq, frame)));
+        }
+        if watch.lapsed() || start.elapsed() >= FORGE_WINDOW {
+            return Ok(None);
+        }
+    }
 }
 
-/// The relay `to`'s link runs sends `frame` (a stream frame when `stream`) over it, again every
-/// [`EMIT_EVERY`], until `landed` says it had its effect, for at most [`LIMIT`].
+/// The relay `listener`'s link runs sends `frame` (a stream frame when `stream`) over it, again
+/// every [`EMIT_EVERY`], until `landed` says it had its effect, for at most [`LIMIT`]. A frame
+/// is tried against the session the receiver holds: when the session ended on the way (a frame
+/// accepted after the checkpoint that covers it, nothing after it for 3 s, channel.md 13.12
+/// item 2) the receiver asks again first.
 pub async fn inject_until(
     w: &World,
-    to: Dev,
+    listener: &mut Listener,
     frame: &Bytes,
     stream: bool,
-    mut landed: impl FnMut() -> bool,
+    landed: impl Fn(&Listener) -> bool,
 ) -> Result<(), Failure> {
     let start = tokio::time::Instant::now();
     loop {
-        w.net().relay_inject(to, frame.clone(), stream).await?;
+        listener.heal(w).await?;
+        w.net()
+            .relay_inject(listener.dev, frame.clone(), stream)
+            .await?;
         w.sleep(EMIT_EVERY).await;
-        if landed() {
+        listener.pump();
+        if landed(listener) {
             return Ok(());
         }
         ensure!(
             start.elapsed() < LIMIT,
             "the frame had no effect on device {} within {LIMIT:?} of virtual time",
-            to.0
+            listener.dev.0
         );
     }
 }
 
-/// What tells that a frame of `channel` the relay sent over `to`'s link reached `to`'s forwarder
-/// when it has no other visible effect: its route counted one more, or the route is gone (a
-/// checkpoint the sender did not sign ends the session the route belonged to, and the route
-/// with it). For a frame no genuine traffic of the channel meets: the sender is quiet.
-pub fn route_took<'w>(w: &'w World, to: Dev, channel: u64) -> impl FnMut() -> bool + 'w {
-    let route = move || w.net().side_route(Fwd::Device(to), channel);
-    let before = route();
-    move || match (before, route()) {
-        (Some((was, _)), Some((now, _))) => now > was,
-        (Some(_), None) => true,
-        _ => false,
-    }
-}
-
-/// Wait until the relay holds a sink for each of `sinks` receivers of `channel` and every one of
-/// `listeners` has seen the sender's `HELLO`. When it does not, the failure says where setup
-/// stopped: each forwarder's route and counters, and which receivers heard a `HELLO`.
+/// Wait until the relay holds a sink for at least each of `sinks` receivers of `channel` (a
+/// device that has the space live asks a channel an announce told it of, so there may be more
+/// than the case asked for) and every one of `listeners` has seen the sender's `HELLO`. When it
+/// does not, the failure says where setup stopped: each forwarder's route and counters, and
+/// which receivers heard a `HELLO`.
 pub async fn until_ready(
     w: &World,
     listeners: &[&Listener],
@@ -319,7 +407,7 @@ pub async fn until_ready(
     w.until("every receiver's route and HELLO", LIMIT, || async {
         Ok(w.net()
             .side_route(Fwd::Hub, channel)
-            .is_some_and(|(_, held)| held == sinks)
+            .is_some_and(|(_, held)| held >= sinks)
             && listeners.iter().all(|l| l.hello()))
     })
     .await
@@ -349,4 +437,51 @@ pub fn channel_state(w: &World, channel: u64, at: &[Fwd]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// What `ch`'s device's receiver counted under `name` (0 when it counts nothing of that name).
+pub fn rx_count(ch: &Arc<dyn Channels>, name: &str) -> u64 {
+    ch.rx_counters()
+        .into_iter()
+        .find_map(|(n, v)| (n == name).then_some(v))
+        .unwrap_or(0)
+}
+
+/// The counters of `ch`'s device's receiver that are not zero, for a failure to say.
+pub fn rx_state(ch: &Arc<dyn Channels>) -> String {
+    ch.rx_counters()
+        .into_iter()
+        .filter(|(_, v)| *v > 0)
+        .map(|(n, v)| format!("{n}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The receiver's counters at the phases of a case, in virtual time: what a failure says so that
+/// it can be read without a rerun.
+pub struct Marks {
+    t0: tokio::time::Instant,
+    said: Vec<String>,
+}
+
+impl Marks {
+    pub fn new() -> Marks {
+        Marks {
+            t0: tokio::time::Instant::now(),
+            said: Vec::new(),
+        }
+    }
+
+    /// `what` happened now; `ch`'s device's receiver counted [`rx_state`].
+    pub fn at(&mut self, what: &str, ch: &Arc<dyn Channels>) {
+        self.said.push(format!(
+            "{what}@{}ms [{}]",
+            self.t0.elapsed().as_millis(),
+            rx_state(ch)
+        ));
+    }
+
+    pub fn said(&self) -> String {
+        self.said.join("; ")
+    }
 }

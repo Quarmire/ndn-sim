@@ -41,7 +41,9 @@ use bytes::Bytes;
 use ndn_app::Consumer;
 use ndn_app::EngineAppExt;
 use ndn_app::error::AppError;
+use ndn_engine::RibRoute;
 use ndn_engine::builder::EngineConfig;
+use ndn_mgmt_wire::control_parameters::{origin, route_flags};
 use ndn_packet::encode::{DataBuilder, InterestBuilder};
 use ndn_packet::{Name, name};
 use ndn_repo::{
@@ -751,8 +753,10 @@ async fn drive_reader(
 /// Topology: an undropped hub `SW` carries everything under `/grp` (sync + data, since ndnd names
 /// publications under the group), so connectivity survives any member dropping. Members drop by
 /// downing their hub link (a presence-absence). The mutation is separated from sync by prefix
-/// specificity: repo3's `/grp/w` (data) route is overridden to the writer in RED, while its `/grp`
-/// (sync) route always reaches the hub — so it still HEARS the survivor but cannot FETCH from it.
+/// specificity: repo3's `/grp/w` (data) route is a CAPTURE route to the writer in RED (a plain
+/// route would inherit `/grp`'s hub nexthop, NFD's CHILD_INHERIT, and the mutation would cut
+/// nothing), while its `/grp` (sync) route always reaches the hub — so it still HEARS the
+/// survivor but cannot FETCH from it.
 #[allow(clippy::too_many_lines)]
 fn run_cooperative_ha(
     backfill_from_peer: bool,
@@ -794,11 +798,27 @@ fn run_cooperative_ha(
         // than `/grp`, so it governs data fetches while `/grp` still governs sync). GREEN leaves
         // it unset → data rides `/grp` to the hub (a surviving repo). RED points it at the writer
         // (direct link, and the writer is offline) → repo3 can only "catch up from the writer".
-        if !backfill_from_peer {
-            sim.add_route(repo3, "/grp/w", w);
-        }
+        // The route is installed with CAPTURE (NFD route flag): a config route is CHILD_INHERIT,
+        // so a plain `/grp/w` route would still INHERIT `/grp`'s hub nexthop (and the repo's own
+        // `/grp` registration) and the data fetch would reach the survivor anyway — the
+        // mutation would cut nothing. CAPTURE stops the inheritance from `/grp` into `/grp/w`.
 
         let fabric = sim.start().await.unwrap();
+        if !backfill_from_peer {
+            let engine = fabric.engine_of(repo3).expect("repo3 engine");
+            let to_writer = fabric.face_between(repo3, w).expect("repo3 → writer link");
+            engine.rib().add(
+                &name("/grp/w"),
+                RibRoute {
+                    face_id: to_writer,
+                    origin: origin::STATIC,
+                    cost: 10,
+                    flags: route_flags::CAPTURE,
+                    expires_at: None,
+                },
+            );
+            engine.rib().apply_to_fib(&name("/grp/w"), &engine.fib());
+        }
         let cancel = CancellationToken::new();
         let group = name(GROUP);
         let w_base = name("/grp/w"); // publisher under the group (ndnd naming)

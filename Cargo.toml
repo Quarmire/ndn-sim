@@ -54,6 +54,8 @@ ndn-coding       = { path = "../ndn-radio/crates/coding/ndn-coding" }
 ndn-radio-cognition = { path = "../ndn-radio/crates/faces/ndn-radio-cognition" }
 ndn-pipes        = { path = "../ndn-ext/crates/pipes/ndn-pipes" }
 ndn-sync         = { path = "../ndn-rs/crates/protocols/ndn-sync" }
+# tests/field_faults.rs: the NFD route flags (CAPTURE) and origins a RIB route is installed with.
+ndn-mgmt-wire    = { path = "../ndn-rs/crates/core/ndn-mgmt-wire" }
 # Test-only: the D-42 history-serving gates drive a real `ndn-repo` in two-phase mode.
 # `default-features = false` drops the fjall on-disk store — the gates use `MemoryStore`.
 ndn-repo         = { path = "../ndn-repo/crates/ndn-repo", default-features = false }

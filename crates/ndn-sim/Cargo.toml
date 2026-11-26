@@ -103,6 +103,8 @@ tokio      = { workspace = true, features = ["full"] }
 ndn-security = { workspace = true }
 # tests/field_faults.rs: the D-42 history-serving gates drive a real ndn-repo (two-phase mode).
 ndn-repo     = { workspace = true }
+# tests/field_faults.rs: the NFD route flags (CAPTURE) and origins a RIB route is installed with.
+ndn-mgmt-wire = { workspace = true }
 # multihop.rs / relay_hops.rs: pipe relaying over a simulated multi-hop net.
 ndn-coding       = { workspace = true }
 ndn-pipes        = { workspace = true }

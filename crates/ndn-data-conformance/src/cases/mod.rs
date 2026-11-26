@@ -11,13 +11,7 @@
 //! (`f1`: a folder's members record;
 //! `i1`…`i13`: joining a folder by a code;
 //! `n1`, `n2`: people named by their keys, adopting each other by name alone, and members of
-//! one folder reading each other), and slice 7's signals (`e1`…`e19`, over spaces and
-//! `ndn-surface`: live data pushed to a
-//! space's members — reach, a stranger, a forger, a replay, a removal and a revocation, what a
-//! relay sees, no store, the newest per address under loss, a commit, four senders at 60 Hz, a
-//! member claiming another's run, a flood of unfetchable headers, forgeries starving a run, one
-//! member's devices hogging run slots, the last sequence, a revoked issuer, and a scope named
-//! in very many words, and a member whose clock stepped back across a restart), and round 5's
+//! one folder reading each other), and round 5's
 //! batching (`d8`: a burst of puts, each stored as one batch, arriving in
 //! order and surviving a restart), round 11's durability under a crash (`d9`…`d16`: a crash
 //! between a put and its flush never re-signs a seq a peer saw, or returns the entries whole
@@ -41,7 +35,23 @@
 //! forge: a session, another session's frame under this channel's id, a checkpoint (`c20`,
 //! which stands where the design's e3 row says "c3"; `c3` itself is the stolen-key case);
 //! `Verified` is never given a frame no checkpoint lists (`c21`); two receivers behind a relay
-//! cost the sender's link one copy of each frame (`c22`)).
+//! cost the sender's link one copy of each frame (`c22`); the cases ported from the retired
+//! signals: members' live messages reach each other, newest per path, once, attributed to the
+//! sender's device (`c23`, from `e1`); a stranger's ask is refused saying why, a frame made
+//! without the key does not open, a reader receives and cannot emit (`c24`, from `e2`); a frame
+//! sent again is refused as replayed (`c26`, from `e4`); a removed member and a revoked key are
+//! stopped (`c27`, from `e5`); a relay sees only ciphertext (`c28`, replacing `e6`); no store
+//! keeps a channel packet (`c29`, from `e7`); the newest per path under loss, duplicates and
+//! reordering (`c30`, from `e8`); live edits end in one commit (`c31`, from `e9`); four senders
+//! at 60 Hz (`c32`, from `e10`); a member's Data claiming another sender's channel is refused at
+//! the relay (`c33`, replacing `e11`); a member's flood of asks does not keep a genuine receiver
+//! out (`c34`, replacing `e12`); a flood of frames that do not authenticate starves none
+//! (`c35`, from `e13`); a frame at the largest sequences stops nothing (`c37`, from `e15`); a
+//! revoked issuer ends the session held of its key (`c38`, from `e16`); a space and a path
+//! named as long as they go (`c39`, replacing `e17`); and a sender restarted with its clock
+//! stepped back, and a crash loop with a corrected clock, need nothing durable (`c40`, `c41`,
+//! from `e18`, `e19`). `e3` has no case of its own: `c19` and `c20` assert it; `e14` has none
+//! (the caps it asserted are unit tests), and `c36` is unused).
 //! Each file states the story, the devices, and the invariant it asserts.
 //!
 //! Six cases of the earlier two-implementation suite (`p2`, `r2`, `r3`, `r6`, `f3`, `f4`) drove
@@ -60,8 +70,26 @@ mod c19_checkpoint_exposes_forgery;
 mod c20_forged_forms_refused;
 mod c21_verified_never_unlisted;
 mod c22_channel_fan_out;
+mod c23_live_reach;
+mod c24_stranger_takes_no_part;
+mod c26_replayed_frame_refused;
+mod c27_removal_rekeys;
+mod c28_relay_sees_ciphertext;
+mod c29_no_store_keeps_a_frame;
+mod c30_latest_under_loss;
+mod c31_live_edits_one_commit;
+mod c32_sixty_hertz;
+mod c33_claimed_route;
+mod c34_ask_flood;
+mod c35_forged_flood_starves_nothing;
+mod c37_last_sequence;
+mod c38_revoked_issuer;
+mod c39_long_names;
+mod c40_clock_stepped_back;
+mod c41_clock_not_ratcheted;
 mod chain_kit;
 mod channel_kit;
+mod channel_ledger;
 mod d10_crash_peer_returns_entries;
 mod d11_no_peer_hole_is_signed;
 mod d12_restored_image_rolled_back;
@@ -72,26 +100,8 @@ mod d16_members_op_waits_for_flush;
 mod d8_batched_burst;
 mod d9_crash_between_put_and_flush;
 mod durability;
-mod e10_signal_sixty_hertz;
-mod e11_signal_claimed_run;
-mod e12_signal_admission_flood;
-mod e13_signal_forged_starve;
-mod e14_signal_slot_hog;
-mod e15_signal_last_sequence;
-mod e16_signal_revoked_issuer;
-mod e17_signal_long_scope;
-mod e18_signal_clock_stepped_back;
-mod e19_signal_clock_not_ratcheted;
-mod e1_signal_reach;
-mod e2_signal_stranger;
-mod e3_signal_forgery;
-mod e4_signal_replay;
-mod e5_signal_removal;
-mod e6_signal_relay_ciphertext;
-mod e7_signal_no_store;
-mod e8_signal_latest_under_loss;
-mod e9_signal_commit;
 mod f1_folder_members;
+mod frame_tap;
 mod h10_holder_serves_others;
 mod h1_large_photo;
 mod i10_removal_lasts;
@@ -149,7 +159,6 @@ mod r1_concurrent_shares;
 mod r4_concurrent_add_remove;
 mod r5_removal_cut_bytes;
 mod r7_removal_across_revisions;
-mod signal_kit;
 mod w1_folder_watch;
 
 /// Every case, in study order.
@@ -212,29 +221,27 @@ pub const CASES: &[Case] = &[
     i26_short_code_refused::CASE,
     n1_named_by_key::CASE,
     n2_members_read_each_other::CASE,
-    e1_signal_reach::CASE,
-    e2_signal_stranger::CASE,
-    e3_signal_forgery::CASE,
-    e4_signal_replay::CASE,
-    e5_signal_removal::CASE,
-    e6_signal_relay_ciphertext::CASE,
-    e7_signal_no_store::CASE,
-    e8_signal_latest_under_loss::CASE,
-    e9_signal_commit::CASE,
-    e10_signal_sixty_hertz::CASE,
-    e11_signal_claimed_run::CASE,
-    e12_signal_admission_flood::CASE,
-    e13_signal_forged_starve::CASE,
-    e14_signal_slot_hog::CASE,
-    e15_signal_last_sequence::CASE,
-    e16_signal_revoked_issuer::CASE,
-    e17_signal_long_scope::CASE,
-    e18_signal_clock_stepped_back::CASE,
-    e19_signal_clock_not_ratcheted::CASE,
     c22_channel_fan_out::CASE,
     c19_checkpoint_exposes_forgery::CASE,
     c21_verified_never_unlisted::CASE,
     c20_forged_forms_refused::CASE,
+    c23_live_reach::CASE,
+    c24_stranger_takes_no_part::CASE,
+    c26_replayed_frame_refused::CASE,
+    c27_removal_rekeys::CASE,
+    c28_relay_sees_ciphertext::CASE,
+    c29_no_store_keeps_a_frame::CASE,
+    c30_latest_under_loss::CASE,
+    c31_live_edits_one_commit::CASE,
+    c32_sixty_hertz::CASE,
+    c33_claimed_route::CASE,
+    c34_ask_flood::CASE,
+    c35_forged_flood_starves_nothing::CASE,
+    c37_last_sequence::CASE,
+    c38_revoked_issuer::CASE,
+    c39_long_names::CASE,
+    c40_clock_stepped_back::CASE,
+    c41_clock_not_ratcheted::CASE,
     d8_batched_burst::CASE,
     d9_crash_between_put_and_flush::CASE,
     d10_crash_peer_returns_entries::CASE,

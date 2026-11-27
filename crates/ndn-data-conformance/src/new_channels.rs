@@ -84,6 +84,9 @@ impl ChannelItems for NewItems {
                 Err(GetNotice::KeptEnded { why }) => ChannelEvent::Ended {
                     why: format!("the kept part ended: {why}"),
                 },
+                Err(other) => ChannelEvent::Ended {
+                    why: format!("a notice a stream of emissions never tells: {other:?}"),
+                },
             });
         }
         told

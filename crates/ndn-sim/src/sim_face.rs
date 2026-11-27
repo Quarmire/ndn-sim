@@ -472,6 +472,15 @@ impl Transport for SimFace {
         Ok(())
     }
 
+    /// Whether the far face's queue has room for a frame: what `forward_side` finds at once
+    /// for a frame that crosses without waiting. A UDP path has no queue to fill.
+    fn side_room(&self, _class: SideClass) -> bool {
+        match &self.out {
+            Outbound::Pipe(tx) => tx.capacity() > 0,
+            Outbound::Udp(_) => true,
+        }
+    }
+
     fn side_frame_max(&self) -> usize {
         SIDE_FRAME_MAX
     }

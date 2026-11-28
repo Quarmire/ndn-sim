@@ -36,8 +36,8 @@ use ndn_heap::Name;
 use tokio_util::sync::CancellationToken;
 
 use super::channel_kit::{
-    EMIT_EVERY, Listener, NEAR, QUIET, channel_state, emit_until_seen, inject_until, rx_count,
-    rx_state, space, transient, until_ready,
+    EMIT_EVERY, Listener, NEAR, QUIET, channel_state, emit_until_seen, rx_count, rx_state, space,
+    transient, until_ready,
 };
 use super::kit::{n, private};
 use crate::case::{Case, CaseFuture, Failure};
@@ -326,18 +326,44 @@ fn run(w: &World) -> CaseFuture<'_> {
         // 3. A checkpoint Carol signed: sealed under Alice's channel key, signed with her own.
         // It landed when Bob's node counts a checkpoint that opened under the key and did not
         // verify under Alice's.
-        bob.heal(w).await?;
-        let checkpoint = forged(w, &mut carol, &[ALICE], |c| {
-            let seq = c.ch.next_seq(channel)?;
-            c.ch.forge_checkpoint(channel, seq, seq, seq + 1, &[])
-        })
-        .await?;
+        //
+        // Like the frame above it must take a sequence Bob's window has not seen, and the
+        // sender takes one for each checkpoint it queues (after a frame, and an idle one every
+        // 5 s) at times the case does not choose: a checkpoint of Alice's that takes the
+        // sequence Carol read between her ask and the frame's arrival makes the forged one a copy
+        // of a sequence Bob has seen, which his window drops unjudged. A checkpoint that waits is
+        // forged anew at the sequence then, just ahead of Alice's as Carol reads it.
         let bad = rx_count(&bob.ch, "bad_checkpoints");
-        inject_until(w, &mut bob, &checkpoint, true, |bob| {
-            rx_count(&bob.ch, "bad_checkpoints") > bad
-        })
-        .await
-        .map_err(|e| Failure::new(format!("the checkpoint Carol made: {e}")))?;
+        let mut sequences = Vec::new();
+        let mut forgery = None;
+        'landing: for _ in 0..12 {
+            bob.heal(w).await?;
+            let (seq, checkpoint) = forged(w, &mut carol, &[ALICE], |c| {
+                let seq = c.ch.next_seq(channel)? + NEAR;
+                let checkpoint = c.ch.forge_checkpoint(channel, seq, seq, seq + 1, &[])?;
+                Ok((seq, checkpoint))
+            })
+            .await?;
+            sequences.push(seq);
+            for _ in 0..4 {
+                w.net().relay_inject(BOB, checkpoint.clone(), true).await?;
+                w.sleep(EMIT_EVERY).await;
+                bob.pump();
+                if rx_count(&bob.ch, "bad_checkpoints") > bad {
+                    forgery = Some(checkpoint);
+                    break 'landing;
+                }
+            }
+        }
+        let Some(checkpoint) = forgery else {
+            return Err(Failure::new(format!(
+                "the checkpoint Carol made, forged at sequences {sequences:?}, had no effect on \
+                 Bob's device; Bob's events {:?}; receiver [{}]; {}",
+                bob.events,
+                rx_state(&bob.ch),
+                channel_state(w, channel, &[Fwd::Hub, Fwd::Device(BOB)])
+            )));
+        };
         w.sleep(QUIET).await;
         bob.pump();
         let evidence = bob.ch.evidence();

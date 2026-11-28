@@ -66,7 +66,7 @@ impl ChannelItems for NewItems {
                 Ok(got) => ChannelEvent::Message {
                     path: got.path,
                     bytes: got.bytes,
-                    writer: got.writer,
+                    writer: got.author.writer.clone(),
                 },
                 Err(GetNotice::Lagged { missed }) => ChannelEvent::Lagged { missed },
                 Err(GetNotice::Retracted { writer, from, to }) => {
